@@ -1,0 +1,5 @@
+saves.json
+*.tmp.*
+facebook-import.json
+pinterest-import.json
+facebook-saves.txt

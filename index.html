@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#c2410c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Interests">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+<title>Interests — Your AI Discovery Feed</title>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="logo">Inter<span>ests</span></div>
+    <nav>
+      <button class="tab active" data-tab="feed" onclick="showTab('feed')">Feed</button>
+      <button class="tab" data-tab="stumble" onclick="showTab('stumble')">Stumble</button>
+      <button class="tab" data-tab="saved" onclick="showTab('saved')">Saved <span class="cnt" id="savedCnt"></span></button>
+      <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" id="impCnt"></span></button>
+      <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
+    </nav>
+    <button class="btn btn-primary" id="refreshBtn" onclick="refreshFeed()">&#10227; New ideas</button>
+  </div>
+</header>
+
+<main>
+  <div id="catBar" class="catbar"></div>
+  <div id="view-feed"><div class="masonry" id="feedGrid"></div><div id="feedEmpty"></div></div>
+  <div id="view-stumble" style="display:none"></div>
+  <div id="view-saved" style="display:none"><div class="masonry" id="savedGrid"></div><div id="savedEmpty"></div></div>
+  <div id="view-imported" style="display:none"></div>
+
+  <div id="view-settings" style="display:none">
+    <div class="panel">
+      <h2>Settings</h2>
+      <div class="sub">Everything is stored locally in your browser — keys never leave this machine except to call the AI provider you choose.</div>
+
+      <div class="sec">
+        <h3>AI Provider</h3>
+        <div class="prov" id="provPick">
+          <label data-p="anthropic"><input type="radio" name="prov" value="anthropic">Claude<div class="hint">Anthropic</div></label>
+          <label data-p="openai"><input type="radio" name="prov" value="openai">ChatGPT<div class="hint">OpenAI</div></label>
+          <label data-p="gemini"><input type="radio" name="prov" value="gemini">Gemini<div class="hint">Google — free tier</div></label>
+          <label data-p="groq"><input type="radio" name="prov" value="groq">Groq<div class="hint">Fast — free tier</div></label>
+          <label data-p="local"><input type="radio" name="prov" value="local">Local / Custom<div class="hint">Ollama · OpenRouter</div></label>
+        </div>
+        <div id="provFields"></div>
+      </div>
+
+      <div class="sec">
+        <h3>Category importance</h3>
+        <div class="hint" style="margin-bottom:12px">Higher = more of the feed devoted to it. Set to 0 to turn a category off. Custom categories can be removed with &#10005;.</div>
+        <div id="sliders"></div>
+        <div class="row2" style="margin-top:14px;align-items:center">
+          <div><input type="text" id="newCatName" placeholder="Add your own category, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
+          <div style="flex:0 0 auto;display:flex;gap:8px">
+            <button class="btn btn-ghost" onclick="addCategory()">+ Add</button>
+            <button class="btn btn-ghost" id="catSugBtn" onclick="suggestCategories()">&#10024; Suggest categories</button>
+          </div>
+        </div>
+        <div id="catSuggest" class="tagwrap"></div>
+        <button id="catSugAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addSelectedCats()">Add selected categories</button>
+      </div>
+
+      <div class="sec">
+        <h3>Your interest profile</h3>
+        <label>About you</label>
+        <textarea id="aboutMe"></textarea>
+        <label>Interests (comma-separated — the feed learns and you can prune anytime)</label>
+        <textarea id="interestList" style="min-height:120px"></textarea>
+        <div class="row2">
+          <div><label>Items per refresh</label><input type="number" id="itemCount" min="4" max="24" step="1"></div>
+          <div><label>&nbsp;</label><button class="btn btn-ghost" style="width:100%" onclick="resetLearning()">Reset learning history</button></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Site popularity filter</h3>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
+          <input type="checkbox" id="popOnly" style="width:auto"> Prefer popular, well-known sites
+        </label>
+        <div class="hint" style="margin:6px 0 10px">When on, the AI is steered toward high-traffic, reputable sites — and if you add a free Open PageRank key below, every recommendation's domain is checked against real popularity rankings and obscure domains are dropped.</div>
+        <label>Open PageRank API key (optional, enforces the filter)</label>
+        <input type="password" id="oprKey" placeholder="Free key — no card needed">
+        <div class="hint">Get one at <a href="https://www.domcop.com/openpagerank/" target="_blank">openpagerank.com</a> — <a href="#" onclick="showGuide('oprkey');return false"><b>step-by-step instructions</b></a>. Without a key the preference is prompt-only.</div>
+      </div>
+
+      <div class="sec">
+        <h3>Import your saves (Facebook · Pinterest · YouTube)</h3>
+        <div class="hint" style="margin-bottom:10px">Drop the platform's export file here — the ZIP works as-is. Imported titles become taste signals the AI learns from (they don't clutter your Saved tab). YouTube playlist exports contain only video IDs; titles are fetched automatically.</div>
+        <div style="margin-bottom:10px">How to export:
+          <button class="catpill" onclick="showGuide('facebook')">Facebook</button>
+          <button class="catpill" onclick="showGuide('pinterest')">Pinterest</button>
+          <button class="catpill" onclick="showGuide('youtube')">YouTube</button>
+        </div>
+        <input type="file" id="impFile" multiple accept=".json,.html,.htm,.txt,.csv,.zip" onchange="handleImport(event)">
+        <div class="hint" id="impStatus" style="margin-top:8px"></div>
+      </div>
+
+      <div class="sec">
+        <h3>Discover new interests</h3>
+        <label>Describe things you might be into — half-formed is fine</label>
+        <textarea id="discInput" placeholder="e.g. I've been curious about welding, smart irrigation, maybe restoring an old arcade cabinet…"></textarea>
+        <button class="btn btn-ghost" id="discBtn" onclick="discoverInterests()" style="margin-top:10px">&#10024; Suggest interest categories</button>
+        <div id="discResults" class="tagwrap"></div>
+        <button id="discAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addDiscovered()">Add selected to my profile</button>
+      </div>
+
+      <div class="sec">
+        <h3>Notion &amp; Jarvis bridge</h3>
+        <div class="hint" style="margin-bottom:10px">Writes <b>saves.json</b> into the app's folder every time you save/hide something. Claude reads that file to sync your saves to Notion and build your morning briefing. Chrome/Edge only.</div>
+        <button class="btn btn-ghost" onclick="connectFolder()">Connect app folder</button>
+        <span class="hint" id="fsStatus" style="margin-left:10px">Not connected</span>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveSettings(true)">Save settings</button>
+      <button class="btn btn-ghost" onclick="exportData()" style="margin-left:8px">Export my data</button>
+    </div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<div id="modal" onclick="if(event.target===this)closeGuide()">
+  <div class="modal-box">
+    <button class="mclose" onclick="closeGuide()">&#10005;</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
