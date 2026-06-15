@@ -88,22 +88,29 @@ async function captureTab(tab, delayMs, force, cardId) {
       log("Metadata extraction failed: " + e.message);
     }
 
+    const blocked = !!meta.blocked;
     let screenshot = "";
-    try {
-      // focus the window/tab first so captureVisibleTab grabs the right surface
-      try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
-      try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
-      await new Promise((r) => setTimeout(r, 150));
-      screenshot = await chrome.tabs.captureVisibleTab(windowId, {
-        format: "jpeg",
-        quality: 60,
-      });
-      log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
-    } catch (e) {
-      log("Screenshot failed: " + e.message);
+    if (blocked) {
+      log("Page is a block/challenge screen — skipping screenshot & metadata");
+    } else {
+      try {
+        // focus the window/tab first so captureVisibleTab grabs the right surface
+        try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
+        try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
+        await new Promise((r) => setTimeout(r, 150));
+        screenshot = await chrome.tabs.captureVisibleTab(windowId, {
+          format: "jpeg",
+          quality: 60,
+        });
+        log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
+      } catch (e) {
+        log("Screenshot failed: " + e.message);
+      }
     }
 
-    if (!meta.ogImage && !meta.contentImage && !screenshot) {
+    // A blocked page still sends a (mostly empty) capture so the app can clear
+    // any stale block-page image; otherwise abort if nothing usable was found.
+    if (!blocked && !meta.ogImage && !meta.contentImage && !screenshot) {
       setBadge("!", 5000);
       await setStatus("No image or metadata could be captured", false);
       return false;
@@ -111,11 +118,12 @@ async function captureTab(tab, delayMs, force, cardId) {
 
     const capture = {
       url: tabUrl,
-      title: meta.title || "",
-      desc: meta.desc || "",
-      ogImage: meta.ogImage || "",
-      contentImage: meta.contentImage || "",
+      title: blocked ? "" : (meta.title || ""),
+      desc: blocked ? "" : (meta.desc || ""),
+      ogImage: blocked ? "" : (meta.ogImage || ""),
+      contentImage: blocked ? "" : (meta.contentImage || ""),
       screenshot,
+      blocked,
       ts: Date.now(),
       force: !!force,
       id: cardId || "",
@@ -134,37 +142,43 @@ async function captureTab(tab, delayMs, force, cardId) {
       log("App not open — stashed capture (" + queue.length + " in queue)");
     }
 
-    setBadge("✓", 4000);
-    const shotKb = screenshot ? Math.round(screenshot.length / 1024) + "KB shot" : "no shot";
+    setBadge(blocked ? "⚠" : "✓", 4000);
     const dest = delivered ? "sent to app" : "app closed — queued";
-    await setStatus("Captured ✓ — " + dest + " (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
+    if (blocked) {
+      await setStatus("Site blocked the page — cleared bad image (" + dest + ")", true);
+    } else {
+      const shotKb = screenshot ? Math.round(screenshot.length / 1024) + "KB shot" : "no shot";
+      await setStatus("Captured ✓ — " + dest + " (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
+    }
 
     try {
       chrome.notifications.create("cap-" + Date.now(), {
         type: "basic",
         iconUrl: "icon128.png",
         title: "Interests Capture",
-        message: "Captured: " + (meta.title || tabUrl).slice(0, 60),
+        message: blocked ? "Site blocked the page — cleared the bad image" : ("Captured: " + (meta.title || tabUrl).slice(0, 60)),
         silent: true,
       });
     } catch (e) {
       log("Notification failed: " + e.message);
     }
 
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const d = document.createElement("div");
-          d.textContent = "✓ Captured for Interests";
-          d.style.cssText =
-            "position:fixed;bottom:20px;right:20px;z-index:2147483647;background:rgba(0,0,0,.85);color:#fff;padding:12px 20px;border-radius:10px;font:600 14px/1 system-ui,sans-serif;transition:opacity .5s;opacity:1;pointer-events:none";
-          document.body.appendChild(d);
-          setTimeout(() => { d.style.opacity = "0"; }, 2000);
-          setTimeout(() => d.remove(), 2600);
-        },
-      });
-    } catch (e) {}
+    if (!blocked) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            const d = document.createElement("div");
+            d.textContent = "✓ Captured for Interests";
+            d.style.cssText =
+              "position:fixed;bottom:20px;right:20px;z-index:2147483647;background:rgba(0,0,0,.85);color:#fff;padding:12px 20px;border-radius:10px;font:600 14px/1 system-ui,sans-serif;transition:opacity .5s;opacity:1;pointer-events:none";
+            document.body.appendChild(d);
+            setTimeout(() => { d.style.opacity = "0"; }, 2000);
+            setTimeout(() => d.remove(), 2600);
+          },
+        });
+      } catch (e) {}
+    }
 
     return true;
   } catch (e) {

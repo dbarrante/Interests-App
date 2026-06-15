@@ -2106,6 +2106,14 @@ function drainCaptures(){
       continue;
     }
     matched++;
+    if(cap.blocked){
+      // the page was a block/challenge screen — don't store its junk; clear
+      // any stale block-page/proxy image so the card shows a clean favicon
+      console.log("[drainCaptures] blocked page for "+cap.url+" — clearing bad image");
+      if(isBadImg(match.img)){ match.img=""; changed=true; }
+      match.captured=now; match.blocked=now; persisted=true;
+      continue;
+    }
     const force = !!cap.force;                 // manual capture forces overwrite
     // manual: prefer the actual screenshot (what you see); auto: prefer clean OG image
     const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
@@ -2115,7 +2123,7 @@ function drainCaptures(){
     if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
     if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
     // stamp/refresh the capture time so future visits skip until it goes stale
-    match.captured=now; persisted=true;
+    match.captured=now; if(match.blocked) delete match.blocked; persisted=true;
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   if(usedLastOpened){ try{ localStorage.removeItem("ia_last_opened"); }catch(e){} }
