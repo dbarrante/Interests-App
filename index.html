@@ -2118,19 +2118,23 @@ function drainCaptures(){
   let changed=false, persisted=false, matched=0, unmatched=0;
   const remaining=[];
   const now=Date.now();
-  // for manual captures with no id and a redirected URL, fall back to the
-  // card the user most recently opened (set by impOpen)
-  let lastOpened=null, usedLastOpened=false;
+  // The "active card": the card the user most recently opened (set by impOpen).
+  // A manual capture has no id, so when its URL doesn't match any card it's
+  // assigned to the active card — this lets you open a card, browse to ANY
+  // subpage on that site, and capture that page's screenshot for the card.
+  const ACTIVE_WINDOW = 30*60*1000;
+  let lastOpened=null, refreshActive=false, assignedTitle="";
   try{ lastOpened=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
+    let viaActive=false;
     let match = cap.id ? imported.find(it=>it.id===cap.id) : null;          // 1. stable id (most reliable)
     if(!match) match=imported.find(it=>it.url===cap.url);                    // 2. exact url
     if(!match) match=imported.find(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url)); // 3. normalized url
-    if(!match && !usedLastOpened && lastOpened && lastOpened.id && now-(lastOpened.ts||0) < 3*60*1000){ // 4. last-opened (manual after redirect)
+    if(!match && lastOpened && lastOpened.id && now-(lastOpened.ts||0) < ACTIVE_WINDOW){ // 4. active card (manual capture on a subpage)
       match=imported.find(it=>it.id===lastOpened.id);
-      if(match){ usedLastOpened=true; console.log("[drainCaptures] matched via last-opened card"); }
+      if(match){ viaActive=true; refreshActive=true; console.log("[drainCaptures] assigned to active card "+lastOpened.id); }
     }
     if(!match){
       unmatched++;
@@ -2141,10 +2145,10 @@ function drainCaptures(){
     }
     matched++;
     if(cap.blocked){
-      // the page was a block/challenge screen — don't store its junk; clear
-      // any stale block-page/proxy image so the card shows a clean favicon
+      // active-card subpage being blocked says nothing about the card itself — ignore
+      if(viaActive){ console.log("[drainCaptures] active-card subpage was blocked — ignoring"); continue; }
+      // the card's own page is a block/challenge screen — clear its junk image
       console.log("[drainCaptures] blocked page for "+cap.url+" — clearing bad image");
-      // clear proxy images AND block-page screenshots saved as data URLs
       if(isBadImg(match.img) || /^data:/.test(match.img||"")){ match.img=""; changed=true; }
       match.captured=now; match.blocked=now; persisted=true;
       continue;
@@ -2153,20 +2157,26 @@ function drainCaptures(){
     // manual: prefer the actual screenshot (what you see); auto: prefer clean OG image
     const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
                        : (cap.ogImage || cap.contentImage || cap.screenshot);
-    console.log("[drainCaptures] matched "+cap.url+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage+" curImgBad="+isBadImg(match.img));
+    console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
     if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
-    if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
-    if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
+    // a subpage capture only sets the image — don't overwrite the card's
+    // title/description with the unrelated subpage's metadata
+    if(!viaActive){
+      if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
+      if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
+    }
+    if(viaActive) assignedTitle=match.title||"";
     // stamp/refresh the capture time so future visits skip until it goes stale
     match.captured=now; if(match.blocked) delete match.blocked; persisted=true;
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
-  if(usedLastOpened){ try{ localStorage.removeItem("ia_last_opened"); }catch(e){} }
-  if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — URL mismatch"); }
+  // keep the active card alive on a rolling window while you're working on it
+  if(refreshActive){ try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:lastOpened.id, ts:Date.now()})); }catch(e){} }
+  if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
   if(changed || persisted){ save("imported", imported); writeSavesFile(); }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
-    toast("Updated cards from extension capture");
+    toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
   }
 }
 
