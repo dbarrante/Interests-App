@@ -1755,16 +1755,26 @@ function impEdit(idx){
     <label>Card image</label>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
       <div id="edImgPrev" style="width:72px;height:54px;border-radius:7px;border:1px solid var(--line);background:#8883 center/cover no-repeat;flex-shrink:0;font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center"></div>
-      <button type="button" class="btn btn-ghost" onclick="edRemoveImg()">Remove image</button>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button type="button" class="btn btn-ghost" onclick="edRemoveImg()">Remove image</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('edImgFile').click()">Upload image…</button>
+      </div>
+      <input type="file" id="edImgFile" accept="image/*" style="display:none">
     </div>
     <input type="text" id="edImg" value="${/^https?:/.test(it.img||"")?esc(it.img):""}" placeholder="…or paste an image URL" oninput="edSetImg(this.value)">
-    <div class="hint">Remove a bad screenshot to fall back to a favicon, or paste an image URL. To capture a page screenshot, open the article and use the extension's “Capture this page”.</div>
+    <div class="hint">Snip the page yourself (Win+Shift+S), then <b>paste it here (Ctrl+V)</b> — or upload a file / paste an image URL. Remove falls back to a favicon.</div>
     <div class="ed-row">
       <button class="btn btn-primary" onclick="impEditSave()">Save changes</button>
       <button class="btn btn-ghost" onclick="closeGuide()">Cancel</button>
     </div>`;
   edRenderPrev();
-  document.getElementById("modal").classList.add("open");
+  const modal=document.getElementById("modal");
+  document.getElementById("edImgFile").onchange = e=>{ const f=e.target.files&&e.target.files[0]; if(f) edReadFile(f); };
+  modal.onpaste = e=>{
+    const items=(e.clipboardData||{}).items||[];
+    for(const it of items){ if(it.type && it.type.indexOf("image")===0){ const f=it.getAsFile(); if(f){ edReadFile(f); e.preventDefault(); } break; } }
+  };
+  modal.classList.add("open");
   setTimeout(()=>{ const t=document.getElementById("edTitle"); if(t){ t.focus(); t.setSelectionRange(t.value.length,t.value.length); } }, 40);
 }
 function edAddTag(t){
@@ -1779,6 +1789,27 @@ function edRenderPrev(){
 }
 function edSetImg(v){ _editImg=(v||"").trim(); edRenderPrev(); }
 function edRemoveImg(){ _editImg=""; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }
+// read an uploaded/pasted image file, downscaling to keep the data URL small
+function edReadFile(f){
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      const maxW=900; let w=img.width||maxW, h=img.height||0;
+      if(w>maxW && h){ h=Math.round(h*maxW/w); w=maxW; }
+      try{
+        const c=document.createElement("canvas"); c.width=w; c.height=h||Math.round(w*0.6);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        _editImg=c.toDataURL("image/jpeg",0.82);
+      }catch(e){ _editImg=r.result; }
+      const u=document.getElementById("edImg"); if(u) u.value="";
+      edRenderPrev();
+    };
+    img.onerror=()=>{ _editImg=r.result; edRenderPrev(); };
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+}
 function impEditSave(){
   if(_editIdx<0) return;
   const it=imported[_editIdx]; if(!it){ closeGuide(); return; }
