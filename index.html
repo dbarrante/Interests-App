@@ -1432,7 +1432,7 @@ function renderImported(){
     <div class="imp-head">
       <input type="text" placeholder="Search ${imported.length} imported items…" value="${esc(impQuery)}"
         oninput="impQuery=this.value.toLowerCase();renderImportedKeepFocus()">
-      <span class="hint">${list.length} shown</span>
+      <span class="hint" title="Tip: hover a card and press Ctrl+V to paste a screenshot (e.g. from FireShot) as its image">${list.length} shown</span>
       <button class="btn btn-ghost" onclick="toggleImpSort()" title="Sort order">${impSort==="newest"?"&#9660; Newest":"&#9650; Oldest"}</button>
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
       ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
@@ -1713,7 +1713,7 @@ function impCardHTML(it,idx){
     : (dom
       ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
       : `<div class="ic">${yt?"YT":"IM"}</div>`);
-  return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}">
+  return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1">
@@ -1729,7 +1729,7 @@ function impCardHTML(it,idx){
     </div>
   </div>`;
 }
-let _editIdx = -1, _editImg = "";
+let _editIdx = -1, _editImg = "", _hoverCardId = "";
 function impEdit(idx){
   const it=imported[idx]; if(!it) return;
   if(!it.id){ it.id=newId(); save("imported",imported); }
@@ -1789,26 +1789,53 @@ function edRenderPrev(){
 }
 function edSetImg(v){ _editImg=(v||"").trim(); edRenderPrev(); }
 function edRemoveImg(){ _editImg=""; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }
-// read an uploaded/pasted image file, downscaling to keep the data URL small
-function edReadFile(f){
+// read an image file (upload/paste) and downscale to keep the data URL small
+function downscaleImage(file, cb){
   const r=new FileReader();
   r.onload=()=>{
-    const img=new Image();
-    img.onload=()=>{
-      const maxW=900; let w=img.width||maxW, h=img.height||0;
+    const im=new Image();
+    im.onload=()=>{
+      const maxW=900; let w=im.width||maxW, h=im.height||0;
       if(w>maxW && h){ h=Math.round(h*maxW/w); w=maxW; }
+      let out;
       try{
         const c=document.createElement("canvas"); c.width=w; c.height=h||Math.round(w*0.6);
-        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
-        _editImg=c.toDataURL("image/jpeg",0.82);
-      }catch(e){ _editImg=r.result; }
-      const u=document.getElementById("edImg"); if(u) u.value="";
-      edRenderPrev();
+        c.getContext("2d").drawImage(im,0,0,c.width,c.height);
+        out=c.toDataURL("image/jpeg",0.82);
+      }catch(e){ out=r.result; }
+      cb(out);
     };
-    img.onerror=()=>{ _editImg=r.result; edRenderPrev(); };
-    img.src=r.result;
+    im.onerror=()=>cb(r.result);
+    im.src=r.result;
   };
-  r.readAsDataURL(f);
+  r.readAsDataURL(file);
+}
+function edReadFile(f){ downscaleImage(f, d=>{ _editImg=d; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }); }
+// global paste: hover a card on the Imported tab and press Ctrl+V to set its image
+function setupPasteToCard(){
+  document.addEventListener("paste", e=>{
+    if(curTab!=="imported") return;
+    const modal=document.getElementById("modal");
+    if(modal && modal.classList.contains("open")) return;   // edit dialog handles its own paste
+    const items=(e.clipboardData||{}).items||[];
+    let file=null;
+    for(const it of items){ if(it.type && it.type.indexOf("image")===0){ file=it.getAsFile(); break; } }
+    if(!file) return;
+    const idx = _hoverCardId ? imported.findIndex(i=>i.id===_hoverCardId) : -1;
+    if(idx<0){ toast("Hover over a card first, then paste (Ctrl+V) to set its image"); return; }
+    e.preventDefault();
+    pasteImageToCard(idx, file);
+  });
+}
+function pasteImageToCard(idx, file){
+  const it=imported[idx]; if(!it) return;
+  downscaleImage(file, d=>{
+    it.img=d; if(it.blocked) delete it.blocked; it.edited=Date.now();
+    save("imported",imported); writeSavesFile();
+    _impAnchorId=it.id||""; const el=document.querySelector('.imp-card[data-id="'+it.id+'"]'); _impAnchorTop=el?el.getBoundingClientRect().top:0;
+    renderImported(); restoreImpScrollSettle();
+    toast("Image pasted to: "+(it.title||"card"));
+  });
 }
 function impEditSave(){
   if(_editIdx<0) return;
@@ -2251,6 +2278,7 @@ updateCounts();
 showTab(load("tab","feed"));
 restoreFolder();
 setInterval(drainCaptures, 3000);
+setupPasteToCard();
 </script>
 </body>
 </html>
