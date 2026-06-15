@@ -271,21 +271,34 @@ async function deliverDead(dead){
   await chrome.storage.local.set({ pendingCapture: dead });
   return false;
 }
-async function reportDead(url, reason){
+// close a browser tab, but never the app tab (localhost) or a browser page
+async function closeTabSafe(tabId){
+  if (typeof tabId !== "number" || tabId < 0) return;
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (!t || !t.url) return;
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)/.test(t.url)) return;
+    if (/^(chrome|chrome-extension|about|edge):/.test(t.url)) return;
+    await chrome.tabs.remove(tabId);
+    log("Closed tab for removed card: " + t.url);
+  } catch (e) {}
+}
+async function reportDead(url, reason, tabId){
   const match = recentWatches.find(w => normalizeUrl(w.url) === normalizeUrl(url));
   if (!match) return;                                 // only cards the user just opened
   log("Dead (" + reason + "): " + url);
   recentWatches = recentWatches.filter(w => w !== match);
   if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(url)) { clearTimeout(pendingTimer); pendingRequest = null; }
   setBadge("✕", 5000);
-  await setStatus("Removing card — " + reason, false);
+  await setStatus("Removing card + closing tab — " + reason, false);
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
+  await closeTabSafe(tabId);
 }
 // network-level failure (DNS, connection refused/reset/timeout, cert)
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (details.frameId !== 0) return;                  // main frame only
   if (!HARD_ERR.test(details.error || "")) return;    // only definitive "can't reach" errors
-  reportDead(details.url, details.error);
+  reportDead(details.url, details.error, details.tabId);
 });
 // HTTP-level "page gone" — 404 Not Found / 410 Gone (page loads, so the
 // navigation API can't see it; webRequest exposes the status code)
@@ -293,7 +306,7 @@ const DEAD_STATUS = new Set([404, 410]);
 chrome.webRequest.onCompleted.addListener((details) => {
   if (details.type !== "main_frame") return;
   if (!DEAD_STATUS.has(details.statusCode)) return;
-  reportDead(details.url, "HTTP " + details.statusCode);
+  reportDead(details.url, "HTTP " + details.statusCode, details.tabId);
 }, { urls: ["<all_urls>"], types: ["main_frame"] });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -328,8 +341,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // remove the card matching this page's URL, or fall back to the
         // last-opened ("active") card in the app
         await deliverDead({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
-        await setStatus("Removed card from Interests", true);
+        await setStatus("Removed card from Interests + closing tab", true);
         sendResponse({ ok: true });
+        if (tab && tab.id != null) await closeTabSafe(tab.id);   // close the page tab
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
       }
