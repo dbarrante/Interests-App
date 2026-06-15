@@ -316,6 +316,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
       </div>
 
       <div class="sec">
+        <h3>Browser extension</h3>
+        <div class="hint" style="margin-bottom:10px">The Interests Capture extension grabs screenshots and metadata when you click imported articles. Set a delay so the page has time to load before the capture fires.</div>
+        <label>Capture delay (seconds)</label>
+        <input type="number" id="captureDelay" min="0" max="30" step="1" style="width:80px">
+        <div class="hint">0 = capture immediately when page loads. Higher values help with slow sites or CAPTCHAs.</div>
+      </div>
+
+      <div class="sec">
         <h3>Notion &amp; Jarvis bridge</h3>
         <div class="hint" style="margin-bottom:10px">Writes <b>saves.json</b> into the app's folder every time you save/hide something. Claude reads that file to sync your saves to Notion and build your morning briefing. Chrome/Edge only.</div>
         <button class="btn btn-ghost" onclick="connectFolder()">Connect app folder</button>
@@ -374,6 +382,7 @@ const DEFAULTS = {
   localUrl:"http://localhost:11434/v1",
   popularOnly:false,
   oprKey:"",
+  captureDelay:3,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -620,6 +629,8 @@ function renderSettings(){
   document.getElementById("popOnly").onchange = e=>{ S.popularOnly=e.target.checked; save("settings",S); };
   document.getElementById("oprKey").value = S.oprKey||"";
   document.getElementById("oprKey").oninput = e=>{ S.oprKey=e.target.value.trim(); };
+  document.getElementById("captureDelay").value = S.captureDelay||0;
+  document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
   renderImportStatus();
 }
 function saveSettings(notify){
@@ -1606,7 +1617,7 @@ function impOpen(idx){
   _impScrollY = window.scrollY;
   persistAll();
   if(!it.img || !it.desc){
-    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, idx:idx})); }catch(e){}
+    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, idx:idx, delay:(S.captureDelay||0)*1000})); }catch(e){}
   }
   window.open(it.url,"_blank");
   if(!it.desc || !it.img) enrichOnOpen(it, idx);

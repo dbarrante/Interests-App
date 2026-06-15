@@ -3,6 +3,7 @@ const QUEUE_KEY = "ia_captures";
 const REQUEST_KEY = "ia_capture_request";
 const MAX_QUEUE = 20;
 const REQUEST_TIMEOUT_MS = 60000;
+const DEFAULT_DELAY_MS = 3000;
 
 let pendingRequest = null;
 let pendingTimer = null;
@@ -46,40 +47,24 @@ function normalizeUrl(url) {
   } catch { return url.toLowerCase(); }
 }
 
-async function checkForRequest() {
-  if (pendingRequest) return;
-  const appTab = await findAppTab();
-  if (!appTab) return;
+function notify(message) {
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: "icon128.png",
+    title: "Interests Capture",
+    message: message,
+    silent: true,
+  });
+}
 
-  const req = await readAppLocalStorage(appTab.id, REQUEST_KEY);
-  if (!req || !req.url) return;
-
-  pendingRequest = { url: req.url, idx: req.idx, appTabId: appTab.id };
-  await clearAppLocalStorage(appTab.id, REQUEST_KEY);
+async function captureTab(tabId, tabUrl, appTabId, delayMs) {
+  const delay = typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS;
+  if (delay > 0) {
+    await new Promise((r) => setTimeout(r, delay));
+  }
 
   chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
   chrome.action.setBadgeText({ text: "..." });
-
-  pendingTimer = setTimeout(() => {
-    console.warn("Capture request timed out:", pendingRequest.url);
-    pendingRequest = null;
-    chrome.action.setBadgeText({ text: "" });
-  }, REQUEST_TIMEOUT_MS);
-}
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!pendingRequest) return;
-  if (changeInfo.status !== "complete") return;
-  if (!tab.url) return;
-  if (/^(chrome|chrome-extension|about|edge):/.test(tab.url)) return;
-
-  const reqNorm = normalizeUrl(pendingRequest.url);
-  const tabNorm = normalizeUrl(tab.url);
-  if (reqNorm !== tabNorm) return;
-
-  clearTimeout(pendingTimer);
-  const appTabId = pendingRequest.appTabId;
-  pendingRequest = null;
 
   try {
     const metaResults = await chrome.scripting.executeScript({
@@ -101,7 +86,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 
     const capture = {
-      url: tab.url,
+      url: tabUrl,
       title: meta.title || "",
       desc: meta.desc || "",
       ogImage: meta.ogImage || "",
@@ -112,6 +97,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     const appTab = await findAppTab();
     const writeTabId = appTab ? appTab.id : appTabId;
+    if (!writeTabId) {
+      await chrome.storage.local.set({ pendingCapture: capture });
+      notify("Captured — will sync when app is open");
+      chrome.action.setBadgeText({ text: "1" });
+      return;
+    }
+
     let queue = (await readAppLocalStorage(writeTabId, QUEUE_KEY)) || [];
     queue = queue.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
     queue.push(capture);
@@ -119,6 +111,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     await writeAppLocalStorage(writeTabId, QUEUE_KEY, queue);
 
     chrome.action.setBadgeText({ text: "✓" });
+    notify("Captured for Interests ✓");
+
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -133,13 +127,73 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         },
       });
     } catch (e) {
-      console.warn("Toast injection failed:", e);
+      console.warn("Toast injection failed (CSP?):", e);
     }
 
     setTimeout(() => chrome.action.setBadgeText({ text: "" }), 2000);
   } catch (e) {
     console.error("Capture pipeline failed:", e);
     chrome.action.setBadgeText({ text: "" });
+    notify("Capture failed: " + (e.message || e));
+  }
+}
+
+async function checkForRequest() {
+  if (pendingRequest) return;
+  const appTab = await findAppTab();
+  if (!appTab) return;
+
+  const req = await readAppLocalStorage(appTab.id, REQUEST_KEY);
+  if (!req || !req.url) return;
+
+  pendingRequest = { url: req.url, idx: req.idx, appTabId: appTab.id, delay: req.delay };
+  await clearAppLocalStorage(appTab.id, REQUEST_KEY);
+
+  chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
+  chrome.action.setBadgeText({ text: "⏳" });
+
+  pendingTimer = setTimeout(() => {
+    console.warn("Capture request timed out:", pendingRequest?.url);
+    pendingRequest = null;
+    chrome.action.setBadgeText({ text: "" });
+  }, REQUEST_TIMEOUT_MS);
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (!pendingRequest) return;
+  if (changeInfo.status !== "complete") return;
+  if (!tab.url) return;
+  if (/^(chrome|chrome-extension|about|edge):/.test(tab.url)) return;
+
+  const reqNorm = normalizeUrl(pendingRequest.url);
+  const tabNorm = normalizeUrl(tab.url);
+  if (reqNorm !== tabNorm) return;
+
+  clearTimeout(pendingTimer);
+  const appTabId = pendingRequest.appTabId;
+  const delayMs = pendingRequest.delay;
+  pendingRequest = null;
+
+  await captureTab(tabId, tab.url, appTabId, delayMs);
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === "manualCapture") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) {
+          sendResponse({ ok: false, error: "Cannot capture this page" });
+          return;
+        }
+        const appTab = await findAppTab();
+        await captureTab(tab.id, tab.url, appTab ? appTab.id : null, 0);
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
   }
 });
 

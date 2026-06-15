@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body{width:220px;font-family:system-ui,sans-serif;padding:12px;margin:0;background:#1f1d1a;color:#f6f5f3}
+h3{margin:0 0 10px;font-size:14px;font-weight:700;color:#fff}
+button{width:100%;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:6px}
+.cap{background:#c2410c;color:#fff}
+.cap:hover{filter:brightness(1.15)}
+.cap:disabled{opacity:.5;cursor:wait}
+.status{font-size:11px;color:#9a958d;text-align:center;min-height:16px;margin-top:4px}
+</style>
+</head>
+<body>
+<h3>Interests Capture</h3>
+<button class="cap" id="captureBtn">Capture this page</button>
+<div class="status" id="status"></div>
+<script>
+const btn = document.getElementById("captureBtn");
+const status = document.getElementById("status");
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  btn.textContent = "Capturing...";
+  status.textContent = "";
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: "manualCapture" });
+    if (resp && resp.ok) {
+      btn.textContent = "Captured!";
+      status.textContent = "Card will update in a few seconds";
+      setTimeout(() => window.close(), 1500);
+    } else {
+      btn.textContent = "Capture this page";
+      status.textContent = resp?.error || "Capture failed";
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = "Capture this page";
+    status.textContent = e.message || "Error";
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
