@@ -17,38 +17,6 @@ button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font
 <button class="cap" id="captureBtn">Capture this page</button>
 <div class="status" id="status"></div>
 <div class="info" id="info"></div>
-<script>
-const btn = document.getElementById("captureBtn");
-const status = document.getElementById("status");
-const info = document.getElementById("info");
-
-btn.onclick = function() {
-  btn.disabled = true;
-  btn.textContent = "Capturing...";
-  status.textContent = "";
-  chrome.runtime.sendMessage({ action: "manualCapture" }, function(resp) {
-    if (chrome.runtime.lastError) {
-      status.textContent = "Error: " + chrome.runtime.lastError.message;
-      btn.textContent = "Capture this page";
-      btn.disabled = false;
-      return;
-    }
-    if (resp && resp.ok) {
-      btn.textContent = "Captured!";
-      status.textContent = "Card will update shortly";
-      setTimeout(function(){ btn.textContent = "Capture this page"; btn.disabled = false; }, 2000);
-    } else {
-      status.textContent = resp ? resp.error : "No response from extension";
-      btn.textContent = "Capture this page";
-      btn.disabled = false;
-    }
-  });
-};
-
-chrome.storage.local.get("ia_capture_queue", function(stored) {
-  var q = (stored && stored.ia_capture_queue) || [];
-  info.textContent = "Queue: " + q.length + " capture(s)";
-});
-</script>
+<script src="popup.js"></script>
 </body>
 </html>
