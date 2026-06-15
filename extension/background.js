@@ -275,18 +275,30 @@ async function deliverDead(dead){
   await chrome.storage.local.set({ pendingCapture: dead });
   return false;
 }
-chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
+async function reportDead(url, reason){
+  const match = recentWatches.find(w => normalizeUrl(w.url) === normalizeUrl(url));
+  if (!match) return;                                 // only cards the user just opened
+  log("Dead (" + reason + "): " + url);
+  recentWatches = recentWatches.filter(w => w !== match);
+  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(url)) { clearTimeout(pendingTimer); pendingRequest = null; }
+  setBadge("✕", 5000);
+  await setStatus("Removing card — " + reason, false);
+  await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
+}
+// network-level failure (DNS, connection refused/reset/timeout, cert)
+chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (details.frameId !== 0) return;                  // main frame only
   if (!HARD_ERR.test(details.error || "")) return;    // only definitive "can't reach" errors
-  const match = recentWatches.find(w => normalizeUrl(w.url) === normalizeUrl(details.url));
-  if (!match) return;                                 // only cards the user just opened
-  log("Unreachable (" + details.error + "): " + details.url);
-  recentWatches = recentWatches.filter(w => w !== match);
-  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(details.url)) { clearTimeout(pendingTimer); pendingRequest = null; }
-  setBadge("✕", 5000);
-  await setStatus("Site unreachable — removing card (" + details.error + ")", false);
-  await deliverDead({ url: match.url, id: match.id, dead: true, error: details.error, ts: Date.now() });
+  reportDead(details.url, details.error);
 });
+// HTTP-level "page gone" — 404 Not Found / 410 Gone (page loads, so the
+// navigation API can't see it; webRequest exposes the status code)
+const DEAD_STATUS = new Set([404, 410]);
+chrome.webRequest.onCompleted.addListener((details) => {
+  if (details.type !== "main_frame") return;
+  if (!DEAD_STATUS.has(details.statusCode)) return;
+  reportDead(details.url, "HTTP " + details.statusCode);
+}, { urls: ["<all_urls>"], types: ["main_frame"] });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "captureRequest" && msg.data) {
