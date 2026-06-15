@@ -6,9 +6,7 @@ AI-powered personal discovery feed — like a smart Pinterest/Facebook feed that
 
 Single-page vanilla web app. No framework, no build step, no backend. Opens via `index.html` in any browser.
 
-- `index.html` — HTML structure + modal templates
-- `styles.css` — All CSS (design system, responsive layout, view modes, components)
-- `app.js` — All application logic (~1400 lines)
+- `index.html` — Everything: HTML structure, `<style>` block with all CSS, `<script>` block with all JS (~1600 lines total). Must stay a single file so it works via double-click.
 
 Everything runs client-side. API keys go only to the user's chosen AI provider.
 
@@ -16,7 +14,7 @@ Everything runs client-side. API keys go only to the user's chosen AI provider.
 
 - **Zero tooling**: No bundler, no npm, no build. Just open `index.html`.
 - **No backend**: localStorage + IndexedDB only. The `saves.json` bridge uses File System Access API (Chrome/Edge).
-- **Single-user**: Hardcoded for Dave's profile in DEFAULTS. Not multi-tenant.
+- **Single-user**: Profile stored in DEFAULTS / localStorage. Not multi-tenant.
 - **Privacy-first**: Keys stored in localStorage, never sent anywhere except the chosen AI provider.
 
 ## Storage

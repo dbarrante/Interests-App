@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Interests Capture",
+  "version": "1.0",
+  "description": "Captures screenshots and metadata for the Interests App",
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "Interests Capture (inactive)"
+  }
+}
