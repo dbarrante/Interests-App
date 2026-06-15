@@ -276,6 +276,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
           <input type="checkbox" id="darkToggle" style="width:auto"> Dark mode
         </label>
         <div class="hint" style="margin-top:6px">Switches the whole app to a dark color scheme. Saved on this device.</div>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer;margin-top:12px">
+          <input type="checkbox" id="datesToggle" style="width:auto"> Show date saved on each card
+        </label>
+        <div class="hint" style="margin-top:6px">Displays when each imported item was saved/added.</div>
       </div>
 
       <div class="sec">
@@ -435,6 +439,7 @@ const DEFAULTS = {
   oprKey:"",
   captureDelay:3,
   recaptureMonths:0,
+  showDates:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -811,6 +816,8 @@ function renderSettings(){
   document.getElementById("recaptureMonths").onchange = e=>{ S.recaptureMonths=+e.target.value||0; save("settings",S); };
   document.getElementById("darkToggle").checked = (localStorage.getItem("ia_theme")==="dark");
   document.getElementById("darkToggle").onchange = e=>{ setTheme(e.target.checked?"dark":"light"); };
+  document.getElementById("datesToggle").checked = !!S.showDates;
+  document.getElementById("datesToggle").onchange = e=>{ S.showDates=e.target.checked; save("settings",S); if(curTab==="imported") renderImported(); };
   renderImportStatus();
 }
 function saveSettings(notify){
@@ -1765,6 +1772,7 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
   renderImported();
   toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
 }
+function fmtCardDate(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }catch(e){ return ""; } }
 function impCardHTML(it,idx){
   const dom = it.url ? domain(it.url) : "";
   const yt = /^YouTube/i.test(it.title) || /youtu/.test(dom);
@@ -1783,7 +1791,7 @@ function impCardHTML(it,idx){
     <div style="flex:1">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
-      <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}</div>
+      <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.ts)?" · &#128197; "+esc(fmtCardDate(it.ts)):""}</div>
       ${tagRow(it.tags)}
       <div class="imp-acts">
         ${it.liked?"":`<button onclick="impLike(${idx})">&#128077; Like</button>`}
