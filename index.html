@@ -467,6 +467,53 @@ function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} docu
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
 function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
 
+/* ============ image store (IndexedDB) ============
+   Card screenshots are large; localStorage (~5MB) can't hold many. We keep a
+   small reference "idb:<cardId>" in localStorage and the actual data URL in
+   IndexedDB. _imgCache mirrors them in memory so rendering stays synchronous. */
+let _imgDB=null, _imgCache={};
+function imgDB(){
+  return new Promise((res,rej)=>{
+    if(_imgDB) return res(_imgDB);
+    let rq; try{ rq=indexedDB.open("ia_img",1); }catch(e){ return rej(e); }
+    rq.onupgradeneeded=()=>{ if(!rq.result.objectStoreNames.contains("imgs")) rq.result.createObjectStore("imgs"); };
+    rq.onsuccess=()=>{ _imgDB=rq.result; res(_imgDB); };
+    rq.onerror=()=>rej(rq.error);
+  });
+}
+async function idbPutImg(id,dataUrl){ try{ const db=await imgDB(); await new Promise((res,rej)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").put(dataUrl,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); return true; }catch(e){ console.warn("idbPutImg failed",e); return false; } }
+async function idbDelImg(id){ try{ const db=await imgDB(); await new Promise((res)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
+async function idbAllImgs(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const out={}; const tx=db.transaction("imgs","readonly"); const st=tx.objectStore("imgs"); const cur=st.openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
+// assign an image to a card: data URLs go to IndexedDB (ref kept in it.img),
+// http(s) URLs are stored inline. Updates the in-memory cache immediately.
+function setCardImage(it, src){
+  if(src && src.indexOf("data:")===0){
+    _imgCache[it.id]=src;
+    it.img="idb:"+it.id;
+    idbPutImg(it.id, src);   // persisted async; cache makes render immediate
+  } else {
+    it.img=src||"";
+    if(_imgCache[it.id]){ delete _imgCache[it.id]; idbDelImg(it.id); }
+  }
+}
+// resolve a card's stored image to something usable in an <img src>
+function resolveImg(v){ if(!v) return ""; return v.indexOf("idb:")===0 ? (_imgCache[v.slice(4)]||"") : v; }
+// load all IDB images into cache, and migrate any legacy inline data URLs out
+// of localStorage into IndexedDB (frees space). Returns when done.
+async function initImageStore(){
+  _imgCache = await idbAllImgs();
+  let migrated=0;
+  for(const it of imported){
+    if(it.img && it.img.indexOf("data:")===0 && it.id){
+      _imgCache[it.id]=it.img;
+      await idbPutImg(it.id, it.img);
+      it.img="idb:"+it.id;
+      migrated++;
+    }
+  }
+  if(migrated){ save("imported",imported); console.log("[img] migrated "+migrated+" inline images to IndexedDB"); }
+}
+
 /* ============ ui helpers ============ */
 function toast(msg, ms){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"), ms||2600); }
 function esc(s){ const d=document.createElement("div"); d.textContent=s==null?"":String(s); return d.innerHTML; }
@@ -641,30 +688,33 @@ function resetLearning(){
 }
 // keys that are transient extension/runtime state — no point backing these up
 const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
-function collectBackup(){
+async function collectBackup(){
   const keys={};
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);
     if(!k || !k.startsWith("ia_") || BACKUP_SKIP.includes(k)) continue;
     keys[k]=localStorage.getItem(k);   // raw stored strings, preserved exactly
   }
-  return { _app:"interests-app", _version:1, _exported:new Date().toISOString(),
-           _counts:{imported:imported.length, saved:saved.length, likes:likes.length}, keys };
+  const images = await idbAllImgs();   // card screenshots live in IndexedDB now
+  return { _app:"interests-app", _version:2, _exported:new Date().toISOString(),
+           _counts:{imported:imported.length, saved:saved.length, likes:likes.length, images:Object.keys(images).length},
+           keys, images };
 }
 function downloadJSON(obj, name){
   const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
-function exportData(){
-  const data=collectBackup();
+async function exportData(){
+  const data=await collectBackup();
   const stamp=new Date().toISOString().slice(0,10);
   let size=JSON.stringify(data).length;
   downloadJSON(data, "interests-backup-"+stamp+".json");
   const mb=(size/1048576).toFixed(1);
-  toast("Backup downloaded — "+Object.keys(data.keys).length+" data sets, "+mb+" MB");
+  const nImg=Object.keys(data.images||{}).length;
+  toast("Backup downloaded — "+Object.keys(data.keys).length+" data sets, "+nImg+" images, "+mb+" MB");
   const info=document.getElementById("backupInfo");
-  if(info) info.textContent="Last backup: "+imported.length+" imported, "+saved.length+" saved, "+mb+" MB";
+  if(info) info.textContent="Last backup: "+imported.length+" imported, "+saved.length+" saved, "+nImg+" images, "+mb+" MB";
 }
 function restoreData(ev){
   const file=ev.target.files && ev.target.files[0];
@@ -683,20 +733,25 @@ function restoreData(ev){
     const when = data._exported ? (" from "+data._exported.slice(0,10)) : "";
     const cnt = data._counts ? (" ("+data._counts.imported+" imported, "+data._counts.saved+" saved)") : "";
     if(!confirm("Restore this backup"+when+cnt+"?\n\nThis REPLACES everything currently in the app. A safety copy of your current data will be downloaded first.")){ reset(); return; }
-    // 1. safety backup of current state
-    try{ downloadJSON(collectBackup(), "interests-backup-before-restore-"+Date.now()+".json"); }catch(e){}
-    // 2. wipe existing ia_ keys
-    const existing=[];
-    for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
-    existing.forEach(k=>localStorage.removeItem(k));
-    // 3. write backup values back verbatim
-    try{
-      Object.keys(keys).forEach(k=>{ if(k.startsWith("ia_")){ const v=keys[k]; localStorage.setItem(k, typeof v==="string"?v:JSON.stringify(v)); } });
-    }catch(e){
-      toast("Restore failed: "+e.message+" — data may exceed this browser's storage limit"); reset(); return;
-    }
-    toast("Restored "+n+" data sets — reloading…");
-    setTimeout(()=>location.reload(), 1000);
+    (async()=>{
+      // 1. safety backup of current state
+      try{ downloadJSON(await collectBackup(), "interests-backup-before-restore-"+Date.now()+".json"); }catch(e){}
+      // 2. wipe existing ia_ keys
+      const existing=[];
+      for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
+      existing.forEach(k=>localStorage.removeItem(k));
+      // 3. write backup values back verbatim
+      try{
+        Object.keys(keys).forEach(k=>{ if(k.startsWith("ia_")){ const v=keys[k]; localStorage.setItem(k, typeof v==="string"?v:JSON.stringify(v)); } });
+      }catch(e){
+        toast("Restore failed: "+e.message+" — data may exceed this browser's storage limit"); reset(); return;
+      }
+      // 4. restore card images into IndexedDB
+      const images = data.images || {};
+      for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); }catch(e){} }
+      toast("Restored "+n+" data sets + "+Object.keys(images).length+" images — reloading…");
+      setTimeout(()=>location.reload(), 1000);
+    })();
   };
   reader.readAsText(file);
 }
@@ -1493,7 +1548,7 @@ function srcHint(name){
   return null;
 }
 function impThumb(it){
-  if(it.img) return it.img;
+  if(it.img){ const r=resolveImg(it.img); if(r) return r; if(it.img.indexOf("idb:")===0) return null; }
   if(it.blocked) return null;   // site serves a block/challenge page — don't fetch a screenshot proxy of it
   if(!it.url) return null;
   const yt = it.url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{8,16})/);
@@ -1734,7 +1789,7 @@ function impEdit(idx){
   const it=imported[idx]; if(!it) return;
   if(!it.id){ it.id=newId(); save("imported",imported); }
   _editIdx = idx;
-  _editImg = it.img || "";
+  _editImg = resolveImg(it.img);
   // suggest existing categories/tags to add with one click
   const counts={};
   imported.forEach(i=>(i.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));
@@ -1833,11 +1888,10 @@ function setupPasteToCard(){
 function pasteImageToCard(idx, file){
   const it=imported[idx]; if(!it) return;
   downscaleImage(file, d=>{
-    const prevImg=it.img, prevBlocked=it.blocked;
-    it.img=d; if(it.blocked) delete it.blocked; it.edited=Date.now();
+    setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
+    if(it.blocked) delete it.blocked; it.edited=Date.now();
     if(!save("imported",imported)){
-      it.img=prevImg; if(prevBlocked) it.blocked=prevBlocked;
-      toast("Storage is full — couldn't save that image. Remove some card images (Edit → Remove image) to free space.", 8000);
+      toast("Storage is full — but the image was stored. Try again or reload.", 6000);
       return;
     }
     writeSavesFile();
@@ -1852,20 +1906,15 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  const prevImg=it.img;
   if(title) it.title=title;
   it.desc=desc;
   it.tags=tags;
-  it.img=_editImg;                 // user-set image / removal wins
-  if(!_editImg){ it.blocked=Date.now(); }  // removing the image: also suppress the mshots fallback
+  setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
+  if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
   if(!save("imported",imported)){
-    // storage full — keep the text edits, drop the image that broke it
-    it.img = (prevImg && !prevImg.startsWith("data:")) ? prevImg : "";
-    if(!it.img) it.blocked=Date.now();
-    save("imported",imported);
-    toast("Storage is full — couldn't save that image. Text saved. Remove some card images (Edit → Remove image) to free space.", 8000);
+    toast("Storage is full — text saved. Try removing some items to free space.", 8000);
   }
   writeSavesFile();
   closeGuide();
@@ -2016,7 +2065,8 @@ function impDrop(idx){
     _impAnchorId = anchorEl.dataset.id;
     _impAnchorTop = anchorEl.getBoundingClientRect().top;
   }
-  imported.splice(idx,1);
+  const gone=imported.splice(idx,1)[0];
+  if(gone && gone.img && gone.img.indexOf("idb:")===0){ idbDelImg(gone.id); delete _imgCache[gone.id]; } // free its IndexedDB image
   save("imported",imported); writeSavesFile();
   renderImported(); restoreImpScrollSettle();
   updateCounts();
@@ -2243,7 +2293,8 @@ function drainCaptures(){
       if(viaActive){ console.log("[drainCaptures] active-card subpage was blocked — ignoring"); continue; }
       // the card's own page is a block/challenge screen — clear its junk image
       console.log("[drainCaptures] blocked page for "+cap.url+" — clearing bad image");
-      if(isBadImg(match.img) || /^data:/.test(match.img||"")){ match.img=""; changed=true; }
+      const cur=match.img||"";
+      if(isBadImg(cur) || cur.indexOf("data:")===0 || cur.indexOf("idb:")===0){ setCardImage(match,""); changed=true; }
       match.captured=now; match.blocked=now; persisted=true;
       continue;
     }
@@ -2252,7 +2303,7 @@ function drainCaptures(){
     const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
                        : (cap.ogImage || cap.contentImage || cap.screenshot);
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
-    if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
+    if(best && (force || isBadImg(match.img))){ setCardImage(match, best); changed=true; }
     // a subpage capture only sets the image — don't overwrite the card's
     // title/description with the unrelated subpage's metadata
     if(!viaActive){
@@ -2294,6 +2345,8 @@ save("settings", S);
 updateCounts();
 showTab(load("tab","feed"));
 restoreFolder();
+// load card images from IndexedDB (+ migrate any legacy inline images), then refresh
+initImageStore().then(()=>{ if(curTab==="imported") renderImported(); }).catch(e=>console.warn("image store init failed",e));
 setInterval(drainCaptures, 3000);
 setupPasteToCard();
 </script>
