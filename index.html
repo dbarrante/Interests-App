@@ -1672,7 +1672,7 @@ function impCardHTML(it,idx){
     : (dom
       ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
       : `<div class="ic">${yt?"YT":"IM"}</div>`);
-  return `<div class="imp-card${selPicks.has(idx)?" selpick":""}">
+  return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}">
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:""}
     ${icon}
     <div style="flex:1">
@@ -1688,13 +1688,35 @@ function impCardHTML(it,idx){
     </div>
   </div>`;
 }
-let _impScrollY = 0;
+let _impScrollY = 0, _impAnchorId = "", _impAnchorTop = 0;
+// Restore the imported list to where it was when an article was opened.
+// Anchors on the opened card (stable id) rather than a pixel offset, because
+// the masonry layout reflows and remote images load after render — a saved
+// scrollY would land on the wrong card.
+function restoreImpScroll(){
+  if(_impAnchorId){
+    const el=document.querySelector('.imp-card[data-id="'+_impAnchorId+'"]');
+    if(el){ window.scrollBy(0, el.getBoundingClientRect().top - _impAnchorTop); return; }
+  }
+  window.scrollTo(0, _impScrollY);
+}
+// Re-run the restore across a few frames to catch layout reflow + image loads.
+function restoreImpScrollSettle(){
+  restoreImpScroll();
+  requestAnimationFrame(restoreImpScroll);
+  setTimeout(restoreImpScroll, 200);
+  setTimeout(restoreImpScroll, 600);
+}
 function impOpen(idx){
   const it=imported[idx]; if(!it||!it.url) return;
   clicks.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   _impScrollY = window.scrollY;
   if(!it.id){ it.id=newId(); save("imported",imported); }
+  // remember the opened card and its current viewport position as the anchor
+  _impAnchorId = it.id;
+  const _ael = document.querySelector('.imp-card[data-id="'+it.id+'"]');
+  _impAnchorTop = _ael ? _ael.getBoundingClientRect().top : 0;
   persistAll();
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
@@ -1762,10 +1784,9 @@ async function enrichOnOpen(it, idx){
     }
     if(changed){
       save("imported",imported); writeSavesFile();
-      renderImported();
-      window.scrollTo(0, _impScrollY);
+      if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
       toast("Card updated with article info");
-      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); renderImported(); window.scrollTo(0, _impScrollY); };
+      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } };
       document.addEventListener("visibilitychange", onReturn);
     }
   }catch(e){ console.warn("enrichOnOpen failed",e); }
@@ -2028,7 +2049,7 @@ function drainCaptures(){
   if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — URL mismatch"); }
   if(changed || persisted){ save("imported", imported); writeSavesFile(); }
   if(changed){
-    if(curTab==="imported"){ renderImported(); window.scrollTo(0,_impScrollY); }
+    if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
     toast("Updated cards from extension capture");
   }
 }
