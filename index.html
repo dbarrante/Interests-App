@@ -1600,7 +1600,10 @@ function renderImportedKeepFocus(){
   const scrollY=window.scrollY;
   const pos=document.activeElement&&document.activeElement.selectionStart;
   renderImported();
-  window.scrollTo(0, scrollY);
+  // re-apply across frames: content-visibility:auto under-reports scrollHeight
+  // right after render, which clamps a single scrollTo toward the top
+  const restore=()=>window.scrollTo(0, scrollY);
+  restore(); requestAnimationFrame(restore); setTimeout(restore,200);
   const inp=document.querySelector(".imp-head input");
   if(inp){ inp.focus(); if(pos!=null) inp.setSelectionRange(pos,pos); }
 }
@@ -1875,8 +1878,20 @@ function impSave(idx){
   toast("Moved to Saved");
 }
 function impDrop(idx){
+  // anchor on the deleted card's visual neighbour so the view stays in place
+  // after the masonry reflows (rather than restoring a now-meaningless pixel)
+  _impScrollY = window.scrollY; _impAnchorId = "";
+  const delId = imported[idx] && imported[idx].id;
+  const delEl = delId ? document.querySelector('.imp-card[data-id="'+delId+'"]') : null;
+  const anchorEl = delEl ? (delEl.nextElementSibling || delEl.previousElementSibling) : null;
+  if(anchorEl && anchorEl.dataset && anchorEl.dataset.id){
+    _impAnchorId = anchorEl.dataset.id;
+    _impAnchorTop = anchorEl.getBoundingClientRect().top;
+  }
   imported.splice(idx,1);
-  save("imported",imported); writeSavesFile(); renderImportedKeepFocus(); updateCounts();
+  save("imported",imported); writeSavesFile();
+  renderImported(); restoreImpScrollSettle();
+  updateCounts();
 }
 
 /* ============ custom categories ============ */
