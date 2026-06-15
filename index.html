@@ -461,7 +461,7 @@ let spool  = load("spool", []);
 let stCur  = load("stcur", null);
 
 function load(k,d){ try{ const v=localStorage.getItem("ia_"+k); return v?JSON.parse(v):d; }catch(e){ return d; } }
-function save(k,v){ localStorage.setItem("ia_"+k, JSON.stringify(v)); }
+function save(k,v){ try{ localStorage.setItem("ia_"+k, JSON.stringify(v)); return true; }catch(e){ console.warn("save failed ("+k+"):", e && e.name); return false; } }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
@@ -1795,13 +1795,16 @@ function downscaleImage(file, cb){
   r.onload=()=>{
     const im=new Image();
     im.onload=()=>{
-      const maxW=900; let w=im.width||maxW, h=im.height||0;
-      if(w>maxW && h){ h=Math.round(h*maxW/w); w=maxW; }
+      // fit within a 720×720 box (keeps big/full-page captures small in storage)
+      const maxW=720, maxH=720;
+      let w=im.width||maxW, h=im.height||maxW;
+      const scale=Math.min(1, maxW/w, maxH/h);
+      w=Math.max(1,Math.round(w*scale)); h=Math.max(1,Math.round(h*scale));
       let out;
       try{
-        const c=document.createElement("canvas"); c.width=w; c.height=h||Math.round(w*0.6);
-        c.getContext("2d").drawImage(im,0,0,c.width,c.height);
-        out=c.toDataURL("image/jpeg",0.82);
+        const c=document.createElement("canvas"); c.width=w; c.height=h;
+        c.getContext("2d").drawImage(im,0,0,w,h);
+        out=c.toDataURL("image/jpeg",0.8);
       }catch(e){ out=r.result; }
       cb(out);
     };
@@ -1830,8 +1833,14 @@ function setupPasteToCard(){
 function pasteImageToCard(idx, file){
   const it=imported[idx]; if(!it) return;
   downscaleImage(file, d=>{
+    const prevImg=it.img, prevBlocked=it.blocked;
     it.img=d; if(it.blocked) delete it.blocked; it.edited=Date.now();
-    save("imported",imported); writeSavesFile();
+    if(!save("imported",imported)){
+      it.img=prevImg; if(prevBlocked) it.blocked=prevBlocked;
+      toast("Storage is full — couldn't save that image. Remove some card images (Edit → Remove image) to free space.", 8000);
+      return;
+    }
+    writeSavesFile();
     _impAnchorId=it.id||""; const el=document.querySelector('.imp-card[data-id="'+it.id+'"]'); _impAnchorTop=el?el.getBoundingClientRect().top:0;
     renderImported(); restoreImpScrollSettle();
     toast("Image pasted to: "+(it.title||"card"));
@@ -1843,6 +1852,7 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+  const prevImg=it.img;
   if(title) it.title=title;
   it.desc=desc;
   it.tags=tags;
@@ -1850,7 +1860,14 @@ function impEditSave(){
   if(!_editImg){ it.blocked=Date.now(); }  // removing the image: also suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
-  save("imported",imported); writeSavesFile();
+  if(!save("imported",imported)){
+    // storage full — keep the text edits, drop the image that broke it
+    it.img = (prevImg && !prevImg.startsWith("data:")) ? prevImg : "";
+    if(!it.img) it.blocked=Date.now();
+    save("imported",imported);
+    toast("Storage is full — couldn't save that image. Text saved. Remove some card images (Edit → Remove image) to free space.", 8000);
+  }
+  writeSavesFile();
   closeGuide();
   // keep the edited card in place across the re-render (height may change)
   _impScrollY=window.scrollY; _impAnchorId=it.id||"";
