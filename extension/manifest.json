@@ -1,12 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["activeTab", "scripting", "tabs", "storage", "notifications"],
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:*/*", "http://127.0.0.1:*/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "icons": {
     "48": "icon48.png",
     "128": "icon128.png"
