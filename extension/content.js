@@ -21,22 +21,35 @@
   // hCaptcha, reCAPTCHA, GeeTest, PerimeterX, Temu, etc.) so we don't store a
   // screenshot of the challenge as the card image. Tuned to avoid false
   // positives on normal pages that merely embed an invisible captcha widget.
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40) return false;        // hidden/zero-size widgets
+    const s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity || "1") === 0) return false;
+    return true;
+  }
+  function anyVisible(sel) {
+    const els = document.querySelectorAll(sel);
+    for (const el of els) if (isVisible(el)) return true;
+    return false;
+  }
   function isBlockedPage() {
     const t = (document.title || "").toLowerCase();
     if (/just a moment|attention required|access denied|you have been blocked|are you a robot|verify you are human|403 forbidden/.test(t)) return true;
 
     const fullText = (document.body && document.body.innerText) || "";
     const body = fullText.slice(0, 4000).toLowerCase();
-    // visible challenge wording only appears on actual challenge screens
+    // innerText is visible-only, so this only fires on actual challenge screens
     if (/you have been blocked|checking your browser before access|verify you are human|are you a human|press *(?:&|and) *hold|complete the security check|enable javascript and cookies to continue|performance & security by cloudflare|verifying you are human|confirm you are a human|slide to verify|drag the slider to/.test(body)) return true;
 
-    // full-page challenge containers (not embedded/invisible widgets)
-    if (document.querySelector("#cf-wrapper, .cf-error-code, #challenge-running, #challenge-form, #challenge-stage, #px-captcha")) return true;
+    // full-page challenge containers — must be VISIBLE (sites like Temu leave
+    // hidden anti-bot elements in the DOM on normal pages)
+    if (anyVisible("#cf-wrapper, #challenge-running, #challenge-form, #challenge-stage, #px-captcha")) return true;
 
-    // an iframe-based captcha that IS basically the whole page (short body) —
-    // a content-rich page with an invisible captcha won't trip this
+    // a captcha iframe that IS basically the whole page (short body + visible)
     if (fullText.trim().length < 600 &&
-        document.querySelector("iframe[src*='hcaptcha'], iframe[src*='recaptcha'], iframe[src*='geetest'], iframe[title*='captcha' i], iframe[title*='challenge' i]")) return true;
+        anyVisible("iframe[src*='hcaptcha'], iframe[src*='recaptcha'], iframe[src*='geetest'], iframe[title*='captcha' i], iframe[title*='challenge' i]")) return true;
 
     return false;
   }
