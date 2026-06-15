@@ -22,9 +22,9 @@ function setBadge(text, ms) {
   if (ms) setTimeout(() => chrome.action.setBadgeText({ text: "" }), ms);
 }
 
-async function captureTab(tabId, tabUrl, delayMs) {
+async function captureTab(tabId, tabUrl, delayMs, force) {
   const delay = typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS;
-  log("Capturing " + tabUrl + " with " + delay + "ms delay");
+  log("Capturing " + tabUrl + " with " + delay + "ms delay" + (force ? " (force)" : ""));
 
   if (delay > 0) {
     setBadge("⏳");
@@ -65,6 +65,7 @@ async function captureTab(tabId, tabUrl, delayMs) {
       contentImage: meta.contentImage || "",
       screenshot,
       ts: Date.now(),
+      force: !!force,
     };
 
     const stored = await chrome.storage.local.get("ia_capture_queue");
@@ -170,7 +171,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: "Cannot capture this page" });
           return;
         }
-        const ok = await captureTab(tab.id, tab.url, 0);
+        const ok = await captureTab(tab.id, tab.url, 0, true);
         sendResponse({ ok });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });

@@ -1616,11 +1616,11 @@ function impOpen(idx){
   if(clicks.length>60) clicks=clicks.slice(-60);
   _impScrollY = window.scrollY;
   persistAll();
-  if(!it.img || !it.desc){
+  if(isBadImg(it.img) || !it.desc){
     try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, idx:idx, delay:(S.captureDelay||0)*1000})); }catch(e){}
   }
   window.open(it.url,"_blank");
-  if(!it.desc || !it.img) enrichOnOpen(it, idx);
+  if(!it.desc || isBadImg(it.img)) enrichOnOpen(it, idx);
 }
 async function enrichOnOpen(it, idx){
   try{
@@ -1876,10 +1876,19 @@ function writeSavesFile(){
 }
 
 /* ============ extension capture drain ============ */
+// images from external screenshot proxies are unreliable (blocked sites,
+// CAPTCHAs) — a real extension capture should always replace them.
+function isBadImg(u){ return !u || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
 function normalizeUrl(url){
-  try{ const u=new URL(url); return (u.hostname.replace(/^www\./,"")+u.pathname).replace(/\/$/,"").toLowerCase(); }
+  try{
+    // decode Facebook redirect wrappers (l.facebook.com/l.php?u=…)
+    let m = /[?&]u=([^&]+)/.exec(url);
+    if(/l\.facebook\.com|lm\.facebook\.com/.test(url) && m){ url = decodeURIComponent(m[1]); }
+    const u=new URL(url); return (u.hostname.replace(/^www\./,"")+u.pathname).replace(/\/$/,"").toLowerCase();
+  }
   catch(e){ return url.toLowerCase(); }
 }
+const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
   try{ raw=localStorage.getItem("ia_captures"); }catch(e){ return; }
@@ -1889,18 +1898,21 @@ function drainCaptures(){
   if(!Array.isArray(queue)||!queue.length) return;
   let changed=false;
   const remaining=[];
+  const now=Date.now();
   for(const cap of queue){
-    if(!cap.url){ remaining.push(cap); continue; }
+    if(!cap.url){ continue; }
     let match=imported.find(it=>it.url===cap.url);
     if(!match) match=imported.find(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
-    if(!match){ remaining.push(cap); continue; }
-    if(!match.img){
-      if(cap.ogImage) { match.img=cap.ogImage; changed=true; }
-      else if(cap.contentImage) { match.img=cap.contentImage; changed=true; }
-      else if(cap.screenshot) { match.img=cap.screenshot; changed=true; }
+    if(!match){
+      // keep briefly in case the item shows up, then drop
+      if(!cap.ts || now-cap.ts < CAP_TTL_MS) remaining.push(cap);
+      continue;
     }
-    if(!match.desc && cap.desc){ match.desc=cap.desc; changed=true; }
-    if(match.title && cap.title && /^saved\b|^from your\b/i.test(match.title)){ match.title=cap.title; changed=true; }
+    const force = !!cap.force;                 // manual capture forces overwrite
+    const best = cap.ogImage || cap.contentImage || cap.screenshot;
+    if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
+    if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
+    if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   if(changed){
