@@ -28,6 +28,38 @@ function setBadge(text, ms) {
   if (ms) setTimeout(() => chrome.action.setBadgeText({ text: "" }), ms);
 }
 
+// Write the capture straight into the app tab's localStorage (we hold
+// <all_urls>, so this works on localhost/127.0.0.1). Returns true if at
+// least one app tab received it.
+async function deliverToApp(capture) {
+  const tabs = await chrome.tabs.query({});
+  let delivered = false;
+  for (const tab of tabs) {
+    if (!tab.url) continue;
+    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(tab.url)) continue;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (cap) => {
+          function norm(u){ try{ const p=new URL(u); return (p.hostname.replace(/^www\./,"")+p.pathname).replace(/\/$/,"").toLowerCase(); }catch(e){ return u.toLowerCase(); } }
+          let q = [];
+          try { const r = localStorage.getItem("ia_captures"); if (r) q = JSON.parse(r); } catch (e) {}
+          if (!Array.isArray(q)) q = [];
+          q = q.filter((c) => norm(c.url) !== norm(cap.url));
+          q.push(cap);
+          localStorage.setItem("ia_captures", JSON.stringify(q));
+        },
+        args: [capture],
+      });
+      delivered = true;
+      log("Delivered capture to app tab " + tab.id);
+    } catch (e) {
+      log("Delivery to tab " + tab.id + " failed: " + e.message);
+    }
+  }
+  return delivered;
+}
+
 async function captureTab(tab, delayMs, force) {
   const tabId = tab.id;
   const tabUrl = tab.url;
@@ -88,17 +120,23 @@ async function captureTab(tab, delayMs, force) {
       force: !!force,
     };
 
-    const stored = await chrome.storage.local.get("ia_capture_queue");
-    let queue = stored.ia_capture_queue || [];
-    queue = queue.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
-    queue.push(capture);
-    if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
-    await chrome.storage.local.set({ ia_capture_queue: queue });
-    log("Capture queued (" + queue.length + " in queue)");
+    // Primary path: write straight into the open app tab's localStorage.
+    const delivered = await deliverToApp(capture);
+    // Fallback: if the app isn't open, stash for the bridge to pick up later.
+    if (!delivered) {
+      const stored = await chrome.storage.local.get("ia_capture_queue");
+      let queue = stored.ia_capture_queue || [];
+      queue = queue.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
+      queue.push(capture);
+      if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
+      await chrome.storage.local.set({ ia_capture_queue: queue });
+      log("App not open — stashed capture (" + queue.length + " in queue)");
+    }
 
     setBadge("✓", 4000);
     const shotKb = screenshot ? Math.round(screenshot.length / 1024) + "KB shot" : "no shot";
-    await setStatus("Captured ✓ (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
+    const dest = delivered ? "sent to app" : "app closed — queued";
+    await setStatus("Captured ✓ — " + dest + " (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
 
     try {
       chrome.notifications.create("cap-" + Date.now(), {
