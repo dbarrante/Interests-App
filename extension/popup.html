@@ -2,22 +2,28 @@
 <html>
 <head>
 <style>
-body{width:220px;font-family:system-ui,sans-serif;padding:12px;margin:0;background:#1f1d1a;color:#f6f5f3}
-h3{margin:0 0 10px;font-size:14px;font-weight:700;color:#fff}
-button{width:100%;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:6px}
+body{width:240px;font-family:system-ui,sans-serif;padding:14px;margin:0;background:#1f1d1a;color:#f6f5f3}
+h3{margin:0 0 12px;font-size:15px;font-weight:700;color:#fff}
+button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:6px}
 .cap{background:#c2410c;color:#fff}
 .cap:hover{filter:brightness(1.15)}
 .cap:disabled{opacity:.5;cursor:wait}
-.status{font-size:11px;color:#9a958d;text-align:center;min-height:16px;margin-top:4px}
+.status{font-size:11px;color:#9a958d;text-align:center;min-height:16px;margin-top:6px}
+.info{font-size:11px;color:#6f6a62;margin-top:10px;padding-top:10px;border-top:1px solid #333}
+.info div{margin-bottom:4px}
+.ok{color:#4ade80}
+.warn{color:#fbbf24}
 </style>
 </head>
 <body>
 <h3>Interests Capture</h3>
 <button class="cap" id="captureBtn">Capture this page</button>
 <div class="status" id="status"></div>
+<div class="info" id="info">Checking...</div>
 <script>
 const btn = document.getElementById("captureBtn");
 const status = document.getElementById("status");
+const info = document.getElementById("info");
 
 btn.addEventListener("click", async () => {
   btn.disabled = true;
@@ -28,7 +34,8 @@ btn.addEventListener("click", async () => {
     if (resp && resp.ok) {
       btn.textContent = "Captured!";
       status.textContent = "Card will update in a few seconds";
-      setTimeout(() => window.close(), 1500);
+      setTimeout(() => { btn.textContent = "Capture this page"; btn.disabled = false; }, 2000);
+      setTimeout(loadInfo, 1000);
     } else {
       btn.textContent = "Capture this page";
       status.textContent = resp?.error || "Capture failed";
@@ -40,6 +47,29 @@ btn.addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+
+async function loadInfo() {
+  try {
+    const stored = await chrome.storage.local.get("ia_capture_queue");
+    const queue = stored.ia_capture_queue || [];
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabUrl = tab?.url || "unknown";
+    const isChrome = /^(chrome|about|edge):/.test(tabUrl);
+
+    let html = "";
+    html += '<div>Queue: <b>' + queue.length + '</b> capture(s) pending</div>';
+    html += '<div>Page: ' + (isChrome ? '<span class="warn">internal page</span>' : '✓ capturable') + '</div>';
+
+    if (queue.length > 0) {
+      html += '<div style="margin-top:6px;font-size:10px;color:#555">Latest: ' + (queue[queue.length-1].title || queue[queue.length-1].url).slice(0, 40) + '</div>';
+    }
+    info.innerHTML = html;
+  } catch (e) {
+    info.textContent = "Error: " + e.message;
+  }
+}
+
+loadInfo();
 </script>
 </body>
 </html>
