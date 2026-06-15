@@ -1688,11 +1688,14 @@ function impOpen(idx){
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
-  if(isBadImg(it.img) || !it.desc){
+  // only request a capture if one hasn't already run for this card and it
+  // still needs an image or description (manual "Capture this page" bypasses this)
+  const needs = isBadImg(it.img) || !it.desc;
+  if(!it.captured && needs){
     try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000})); }catch(e){}
   }
   window.open(it.url,"_blank");
-  if(!it.desc || isBadImg(it.img)) enrichOnOpen(it, idx);
+  if(!it.captured && needs) enrichOnOpen(it, idx);
 }
 async function enrichOnOpen(it, idx){
   try{
@@ -1968,7 +1971,7 @@ function drainCaptures(){
   let queue;
   try{ queue=JSON.parse(raw); }catch(e){ return; }
   if(!Array.isArray(queue)||!queue.length) return;
-  let changed=false, matched=0, unmatched=0;
+  let changed=false, persisted=false, matched=0, unmatched=0;
   const remaining=[];
   const now=Date.now();
   // for manual captures with no id and a redirected URL, fall back to the
@@ -2001,13 +2004,14 @@ function drainCaptures(){
     if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
     if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
     if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
+    // mark the card as captured so future visits don't re-capture it
+    if(!match.captured){ match.captured=now; persisted=true; }
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   if(usedLastOpened){ try{ localStorage.removeItem("ia_last_opened"); }catch(e){} }
   if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — URL mismatch"); }
+  if(changed || persisted){ save("imported", imported); writeSavesFile(); }
   if(changed){
-    save("imported", imported);
-    writeSavesFile();
     if(curTab==="imported"){ renderImported(); window.scrollTo(0,_impScrollY); }
     toast("Updated cards from extension capture");
   }
