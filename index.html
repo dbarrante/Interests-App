@@ -190,6 +190,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .pickov{position:absolute;inset:0;z-index:5;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
 .pickov:hover{background:rgba(194,65,12,.08)}
 .selpick .pickov{background:rgba(194,65,12,.13)}
+.imp-edit{position:absolute;top:6px;right:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.imp-card:hover .imp-edit{display:flex}
+.imp-edit:hover{border-color:var(--accent);color:var(--accent)}
+.ed-row{display:flex;gap:8px;margin-top:18px}
 .pk{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
 .imp-card img.fv{width:22px;height:22px;border-radius:6px;margin-top:2px;flex-shrink:0}
 .imp-card .ic{width:22px;height:22px;border-radius:6px;flex-shrink:0;background:linear-gradient(135deg,#c2410c,#9a3412);color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:2px}
@@ -1673,7 +1677,7 @@ function impCardHTML(it,idx){
       ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
       : `<div class="ic">${yt?"YT":"IM"}</div>`);
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}">
-    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:""}
+    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
@@ -1687,6 +1691,60 @@ function impCardHTML(it,idx){
       </div>
     </div>
   </div>`;
+}
+let _editIdx = -1;
+function impEdit(idx){
+  const it=imported[idx]; if(!it) return;
+  if(!it.id){ it.id=newId(); save("imported",imported); }
+  _editIdx = idx;
+  // suggest existing categories/tags to add with one click
+  const counts={};
+  imported.forEach(i=>(i.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));
+  const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,16).map(e=>e[0]);
+  const chips = top.length
+    ? `<div class="hint" style="margin:8px 0 4px">Click to add a category:</div>
+       <div class="tagwrap">${top.map(t=>`<span class="catpill" onclick="edAddTag('${esc(t)}')">${esc(t)}</span>`).join("")}</div>`
+    : "";
+  document.getElementById("modalBody").innerHTML = `
+    <h2>Edit card</h2>
+    <label>Title</label>
+    <input type="text" id="edTitle" value="${esc(it.title||"")}">
+    <label>Description</label>
+    <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
+    <label>Categories / tags <span style="font-weight:400;color:var(--muted)">(comma-separated)</span></label>
+    <input type="text" id="edTags" value="${esc((it.tags||[]).join(", "))}" placeholder="e.g. woodworking, tools, diy">
+    ${chips}
+    <div class="ed-row">
+      <button class="btn btn-primary" onclick="impEditSave()">Save changes</button>
+      <button class="btn btn-ghost" onclick="closeGuide()">Cancel</button>
+    </div>`;
+  document.getElementById("modal").classList.add("open");
+  setTimeout(()=>{ const t=document.getElementById("edTitle"); if(t){ t.focus(); t.setSelectionRange(t.value.length,t.value.length); } }, 40);
+}
+function edAddTag(t){
+  const inp=document.getElementById("edTags"); if(!inp) return;
+  const cur=inp.value.split(",").map(s=>s.trim()).filter(Boolean);
+  if(!cur.some(x=>x.toLowerCase()===t.toLowerCase())){ cur.push(t); inp.value=cur.join(", "); }
+}
+function impEditSave(){
+  if(_editIdx<0) return;
+  const it=imported[_editIdx]; if(!it){ closeGuide(); return; }
+  const title=document.getElementById("edTitle").value.trim();
+  const desc=document.getElementById("edDesc").value.trim();
+  const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+  if(title) it.title=title;
+  it.desc=desc;
+  it.tags=tags;
+  it.edited=Date.now();
+  save("imported",imported); writeSavesFile();
+  closeGuide();
+  // keep the edited card in place across the re-render (height may change)
+  _impScrollY=window.scrollY; _impAnchorId=it.id||"";
+  const el = _impAnchorId ? document.querySelector('.imp-card[data-id="'+_impAnchorId+'"]') : null;
+  _impAnchorTop = el ? el.getBoundingClientRect().top : 0;
+  renderImported();
+  restoreImpScrollSettle();
+  toast("Card updated");
 }
 let _impScrollY = 0, _impAnchorId = "", _impAnchorTop = 0;
 // Restore the imported list to where it was when an article was opened.
