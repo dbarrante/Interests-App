@@ -330,8 +330,17 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
         <span class="hint" id="fsStatus" style="margin-left:10px">Not connected</span>
       </div>
 
+      <div class="sec">
+        <h3>Backup &amp; restore</h3>
+        <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
+        <button class="btn btn-primary" onclick="exportData()">&#11015; Download full backup</button>
+        <span class="hint" id="backupInfo" style="margin-left:10px"></span>
+        <label style="margin-top:16px;display:block">Restore from a backup file</label>
+        <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)">
+        <div class="hint">Replaces everything currently in the app. A safety copy of your current data is downloaded automatically before the restore runs.</div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSettings(true)">Save settings</button>
-      <button class="btn btn-ghost" onclick="exportData()" style="margin-left:8px">Export my data</button>
     </div>
   </div>
 </main>
@@ -586,9 +595,66 @@ function resetLearning(){
   hidden=[]; clicks=[]; shown=[]; likes=[]; spool=[];
   persistAll(); toast("Learning history cleared");
 }
+// keys that are transient extension/runtime state — no point backing these up
+const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
+function collectBackup(){
+  const keys={};
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(!k || !k.startsWith("ia_") || BACKUP_SKIP.includes(k)) continue;
+    keys[k]=localStorage.getItem(k);   // raw stored strings, preserved exactly
+  }
+  return { _app:"interests-app", _version:1, _exported:new Date().toISOString(),
+           _counts:{imported:imported.length, saved:saved.length, likes:likes.length}, keys };
+}
+function downloadJSON(obj, name){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
 function exportData(){
-  const blob = new Blob([JSON.stringify({settings:S,feed,saved,hidden,clicks},null,2)],{type:"application/json"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="interests-data.json"; a.click();
+  const data=collectBackup();
+  const stamp=new Date().toISOString().slice(0,10);
+  let size=JSON.stringify(data).length;
+  downloadJSON(data, "interests-backup-"+stamp+".json");
+  const mb=(size/1048576).toFixed(1);
+  toast("Backup downloaded — "+Object.keys(data.keys).length+" data sets, "+mb+" MB");
+  const info=document.getElementById("backupInfo");
+  if(info) info.textContent="Last backup: "+imported.length+" imported, "+saved.length+" saved, "+mb+" MB";
+}
+function restoreData(ev){
+  const file=ev.target.files && ev.target.files[0];
+  if(!file){ return; }
+  const reset=()=>{ ev.target.value=""; };
+  const reader=new FileReader();
+  reader.onerror=()=>{ toast("Couldn't read that file"); reset(); };
+  reader.onload=()=>{
+    let data;
+    try{ data=JSON.parse(reader.result); }catch(e){ toast("Not a valid backup file (bad JSON)"); reset(); return; }
+    const keys = data && data.keys;
+    if(!keys || typeof keys!=="object" || !Object.keys(keys).length){
+      toast("This file isn't an Interests backup"); reset(); return;
+    }
+    const n=Object.keys(keys).length;
+    const when = data._exported ? (" from "+data._exported.slice(0,10)) : "";
+    const cnt = data._counts ? (" ("+data._counts.imported+" imported, "+data._counts.saved+" saved)") : "";
+    if(!confirm("Restore this backup"+when+cnt+"?\n\nThis REPLACES everything currently in the app. A safety copy of your current data will be downloaded first.")){ reset(); return; }
+    // 1. safety backup of current state
+    try{ downloadJSON(collectBackup(), "interests-backup-before-restore-"+Date.now()+".json"); }catch(e){}
+    // 2. wipe existing ia_ keys
+    const existing=[];
+    for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
+    existing.forEach(k=>localStorage.removeItem(k));
+    // 3. write backup values back verbatim
+    try{
+      Object.keys(keys).forEach(k=>{ if(k.startsWith("ia_")){ const v=keys[k]; localStorage.setItem(k, typeof v==="string"?v:JSON.stringify(v)); } });
+    }catch(e){
+      toast("Restore failed: "+e.message+" — data may exceed this browser's storage limit"); reset(); return;
+    }
+    toast("Restored "+n+" data sets — reloading…");
+    setTimeout(()=>location.reload(), 1000);
+  };
+  reader.readAsText(file);
 }
 
 /* ============ settings ui ============ */
