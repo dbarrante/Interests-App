@@ -1909,7 +1909,9 @@ function drainCaptures(){
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
-    const best = cap.ogImage || cap.contentImage || cap.screenshot;
+    // manual: prefer the actual screenshot (what you see); auto: prefer clean OG image
+    const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
+                       : (cap.ogImage || cap.contentImage || cap.screenshot);
     if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
     if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
     if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }

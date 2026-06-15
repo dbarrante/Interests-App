@@ -16,15 +16,25 @@ function log(msg) {
   console.log("[Interests Capture]", msg);
 }
 
+async function setStatus(message, ok) {
+  try {
+    await chrome.storage.local.set({ ia_last_status: { message, ok: !!ok, ts: Date.now() } });
+  } catch (e) {}
+}
+
 function setBadge(text, ms) {
   chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
   chrome.action.setBadgeText({ text });
   if (ms) setTimeout(() => chrome.action.setBadgeText({ text: "" }), ms);
 }
 
-async function captureTab(tabId, tabUrl, delayMs, force) {
+async function captureTab(tab, delayMs, force) {
+  const tabId = tab.id;
+  const tabUrl = tab.url;
+  const windowId = tab.windowId;
   const delay = typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS;
   log("Capturing " + tabUrl + " with " + delay + "ms delay" + (force ? " (force)" : ""));
+  await setStatus("Capturing…", true);
 
   if (delay > 0) {
     setBadge("⏳");
@@ -48,13 +58,23 @@ async function captureTab(tabId, tabUrl, delayMs, force) {
 
     let screenshot = "";
     try {
-      screenshot = await chrome.tabs.captureVisibleTab(null, {
+      // focus the window/tab first so captureVisibleTab grabs the right surface
+      try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
+      try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
+      await new Promise((r) => setTimeout(r, 150));
+      screenshot = await chrome.tabs.captureVisibleTab(windowId, {
         format: "jpeg",
         quality: 60,
       });
       log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
     } catch (e) {
       log("Screenshot failed: " + e.message);
+    }
+
+    if (!meta.ogImage && !meta.contentImage && !screenshot) {
+      setBadge("!", 5000);
+      await setStatus("No image or metadata could be captured", false);
+      return false;
     }
 
     const capture = {
@@ -76,7 +96,9 @@ async function captureTab(tabId, tabUrl, delayMs, force) {
     await chrome.storage.local.set({ ia_capture_queue: queue });
     log("Capture queued (" + queue.length + " in queue)");
 
-    setBadge("✓", 3000);
+    setBadge("✓", 4000);
+    const shotKb = screenshot ? Math.round(screenshot.length / 1024) + "KB shot" : "no shot";
+    await setStatus("Captured ✓ (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
 
     try {
       chrome.notifications.create("cap-" + Date.now(), {
@@ -97,7 +119,7 @@ async function captureTab(tabId, tabUrl, delayMs, force) {
           const d = document.createElement("div");
           d.textContent = "✓ Captured for Interests";
           d.style.cssText =
-            "position:fixed;bottom:20px;right:20px;z-index:999999;background:rgba(0,0,0,.8);color:#fff;padding:12px 20px;border-radius:10px;font:600 14px/1 system-ui,sans-serif;transition:opacity .5s;opacity:1;pointer-events:none";
+            "position:fixed;bottom:20px;right:20px;z-index:2147483647;background:rgba(0,0,0,.85);color:#fff;padding:12px 20px;border-radius:10px;font:600 14px/1 system-ui,sans-serif;transition:opacity .5s;opacity:1;pointer-events:none";
           document.body.appendChild(d);
           setTimeout(() => { d.style.opacity = "0"; }, 2000);
           setTimeout(() => d.remove(), 2600);
@@ -109,6 +131,7 @@ async function captureTab(tabId, tabUrl, delayMs, force) {
   } catch (e) {
     log("Capture pipeline failed: " + e.message);
     setBadge("!", 5000);
+    await setStatus("Failed: " + e.message, false);
     return false;
   }
 }
@@ -122,6 +145,7 @@ async function handleCaptureRequest(req) {
   log("Received capture request for: " + req.url);
   pendingRequest = { url: req.url, delay: req.delay };
   setBadge("⏳");
+  await setStatus("Waiting for page to load…", true);
 
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
@@ -130,7 +154,7 @@ async function handleCaptureRequest(req) {
       log("Found matching tab already loaded: " + tab.id);
       clearTimeout(pendingTimer);
       pendingRequest = null;
-      await captureTab(tab.id, tab.url, req.delay);
+      await captureTab(tab, req.delay, false);
       return;
     }
   }
@@ -140,6 +164,7 @@ async function handleCaptureRequest(req) {
     log("Capture request timed out: " + pendingRequest?.url);
     pendingRequest = null;
     setBadge("", 0);
+    setStatus("Timed out waiting for the page", false);
   }, REQUEST_TIMEOUT_MS);
 }
 
@@ -155,7 +180,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const delayMs = pendingRequest.delay;
   pendingRequest = null;
 
-  await captureTab(tabId, tab.url, delayMs);
+  await captureTab(tab, delayMs, false);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -168,12 +193,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) {
+          await setStatus("Cannot capture this page (browser page)", false);
           sendResponse({ ok: false, error: "Cannot capture this page" });
           return;
         }
-        const ok = await captureTab(tab.id, tab.url, 0, true);
+        const ok = await captureTab(tab, 0, true);
         sendResponse({ ok });
       } catch (e) {
+        await setStatus("Failed: " + e.message, false);
         sendResponse({ ok: false, error: e.message });
       }
     })();
@@ -184,6 +211,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const stored = await chrome.storage.local.get("ia_capture_queue");
       sendResponse({ queue: stored.ia_capture_queue || [] });
+    })();
+    return true;
+  }
+
+  if (msg.action === "getStatus") {
+    (async () => {
+      const stored = await chrome.storage.local.get(["ia_capture_queue", "ia_last_status"]);
+      sendResponse({
+        queue: (stored.ia_capture_queue || []).length,
+        status: stored.ia_last_status || null,
+      });
     })();
     return true;
   }

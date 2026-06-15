@@ -16,16 +16,32 @@ btn.onclick = function() {
     if (resp && resp.ok) {
       btn.textContent = "Captured!";
       status.textContent = "Card will update shortly";
-      setTimeout(function(){ btn.textContent = "Capture this page"; btn.disabled = false; }, 2000);
     } else {
       status.textContent = resp ? resp.error : "No response from extension";
-      btn.textContent = "Capture this page";
-      btn.disabled = false;
     }
+    setTimeout(function(){ btn.textContent = "Capture this page"; btn.disabled = false; }, 2000);
   });
 };
 
-chrome.storage.local.get("ia_capture_queue", function(stored) {
-  var q = (stored && stored.ia_capture_queue) || [];
-  info.textContent = "Queue: " + q.length + " capture(s)";
-});
+function refresh() {
+  chrome.runtime.sendMessage({ action: "getStatus" }, function(resp) {
+    if (chrome.runtime.lastError) {
+      info.textContent = "SW not responding: " + chrome.runtime.lastError.message;
+      return;
+    }
+    if (!resp) { info.textContent = "No response from service worker"; return; }
+    var lines = [];
+    lines.push("Queue: " + resp.queue + " pending");
+    if (resp.status) {
+      var ago = Math.round((Date.now() - resp.status.ts) / 1000);
+      var cls = resp.status.ok ? "ok" : "err";
+      lines.push('<span class="' + cls + '">' + resp.status.message + '</span> (' + ago + 's ago)');
+    } else {
+      lines.push("No capture yet");
+    }
+    info.innerHTML = lines.join("<br>");
+  });
+}
+
+refresh();
+setInterval(refresh, 1000);
