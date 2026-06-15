@@ -410,6 +410,8 @@ let stCur  = load("stcur", null);
 
 function load(k,d){ try{ const v=localStorage.getItem("ia_"+k); return v?JSON.parse(v):d; }catch(e){ return d; } }
 function save(k,v){ localStorage.setItem("ia_"+k, JSON.stringify(v)); }
+function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
+function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
 function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
 
 /* ============ ui helpers ============ */
@@ -1615,9 +1617,13 @@ function impOpen(idx){
   clicks.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   _impScrollY = window.scrollY;
+  if(!it.id){ it.id=newId(); save("imported",imported); }
   persistAll();
+  // remember which card we just opened, so a manual capture on the
+  // (possibly redirected) page can still be matched back to it
+  try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
   if(isBadImg(it.img) || !it.desc){
-    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, idx:idx, delay:(S.captureDelay||0)*1000})); }catch(e){}
+    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000})); }catch(e){}
   }
   window.open(it.url,"_blank");
   if(!it.desc || isBadImg(it.img)) enrichOnOpen(it, idx);
@@ -1899,14 +1905,23 @@ function drainCaptures(){
   let changed=false, matched=0, unmatched=0;
   const remaining=[];
   const now=Date.now();
+  // for manual captures with no id and a redirected URL, fall back to the
+  // card the user most recently opened (set by impOpen)
+  let lastOpened=null, usedLastOpened=false;
+  try{ lastOpened=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
-    let match=imported.find(it=>it.url===cap.url);
-    if(!match) match=imported.find(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
+    let match = cap.id ? imported.find(it=>it.id===cap.id) : null;          // 1. stable id (most reliable)
+    if(!match) match=imported.find(it=>it.url===cap.url);                    // 2. exact url
+    if(!match) match=imported.find(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url)); // 3. normalized url
+    if(!match && !usedLastOpened && lastOpened && lastOpened.id && now-(lastOpened.ts||0) < 3*60*1000){ // 4. last-opened (manual after redirect)
+      match=imported.find(it=>it.id===lastOpened.id);
+      if(match){ usedLastOpened=true; console.log("[drainCaptures] matched via last-opened card"); }
+    }
     if(!match){
       unmatched++;
-      console.warn("[drainCaptures] no card matches "+cap.url+" (normalized: "+normalizeUrl(cap.url)+")");
+      console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normalizeUrl(cap.url)+")");
       // keep briefly in case the item shows up, then drop
       if(!cap.ts || now-cap.ts < CAP_TTL_MS) remaining.push(cap);
       continue;
@@ -1922,6 +1937,7 @@ function drainCaptures(){
     if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
+  if(usedLastOpened){ try{ localStorage.removeItem("ia_last_opened"); }catch(e){} }
   if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — URL mismatch"); }
   if(changed){
     save("imported", imported);
@@ -1945,6 +1961,7 @@ function drainCaptures(){
     save("imported", imported);
     setTimeout(()=>toast("Cleaned up "+(before-imported.length)+" junk imports, reset "+wiped+" vague descriptions — re-import pinterest-import.json, then hit Enrich"), 800);
   }
+  ensureIds();
 })();
 save("settings", S);
 updateCounts();

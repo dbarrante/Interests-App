@@ -60,7 +60,7 @@ async function deliverToApp(capture) {
   return delivered;
 }
 
-async function captureTab(tab, delayMs, force) {
+async function captureTab(tab, delayMs, force, cardId) {
   const tabId = tab.id;
   const tabUrl = tab.url;
   const windowId = tab.windowId;
@@ -118,6 +118,7 @@ async function captureTab(tab, delayMs, force) {
       screenshot,
       ts: Date.now(),
       force: !!force,
+      id: cardId || "",
     };
 
     // Primary path: write straight into the open app tab's localStorage.
@@ -181,7 +182,7 @@ async function handleCaptureRequest(req) {
   }
 
   log("Received capture request for: " + req.url);
-  pendingRequest = { url: req.url, delay: req.delay };
+  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "" };
   setBadge("⏳");
   await setStatus("Waiting for page to load…", true);
 
@@ -191,8 +192,9 @@ async function handleCaptureRequest(req) {
     if (normalizeUrl(tab.url) === normalizeUrl(req.url) && tab.status === "complete") {
       log("Found matching tab already loaded: " + tab.id);
       clearTimeout(pendingTimer);
+      const cid = pendingRequest.id;
       pendingRequest = null;
-      await captureTab(tab, req.delay, false);
+      await captureTab(tab, req.delay, false, cid);
       return;
     }
   }
@@ -216,9 +218,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   log("Tab loaded for pending request: " + tab.url);
   clearTimeout(pendingTimer);
   const delayMs = pendingRequest.delay;
+  const cid = pendingRequest.id;
   pendingRequest = null;
 
-  await captureTab(tab, delayMs, false);
+  await captureTab(tab, delayMs, false, cid);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
