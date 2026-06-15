@@ -321,6 +321,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
         <label>Capture delay (seconds)</label>
         <input type="number" id="captureDelay" min="0" max="30" step="1" style="width:80px">
         <div class="hint">0 = capture immediately when page loads. Higher values help with slow sites or CAPTCHAs.</div>
+        <label style="margin-top:14px;display:block">Re-capture older articles</label>
+        <select id="recaptureMonths" style="width:auto">
+          <option value="0">Never — capture each article once</option>
+          <option value="1">Refresh if older than 1 month</option>
+          <option value="2">Refresh if older than 2 months</option>
+          <option value="3">Refresh if older than 3 months</option>
+        </select>
+        <div class="hint">Already-captured cards are normally skipped. Pick an age here to re-capture (and refresh the image &amp; description of) a card the next time you open it, once its last capture is older than the threshold.</div>
       </div>
 
       <div class="sec">
@@ -392,6 +400,7 @@ const DEFAULTS = {
   popularOnly:false,
   oprKey:"",
   captureDelay:3,
+  recaptureMonths:0,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -699,6 +708,8 @@ function renderSettings(){
   document.getElementById("oprKey").oninput = e=>{ S.oprKey=e.target.value.trim(); };
   document.getElementById("captureDelay").value = S.captureDelay||0;
   document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
+  document.getElementById("recaptureMonths").value = String(S.recaptureMonths||0);
+  document.getElementById("recaptureMonths").onchange = e=>{ S.recaptureMonths=+e.target.value||0; save("settings",S); };
   renderImportStatus();
 }
 function saveSettings(notify){
@@ -1688,14 +1699,19 @@ function impOpen(idx){
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
-  // only request a capture if one hasn't already run for this card and it
-  // still needs an image or description (manual "Capture this page" bypasses this)
+  // decide whether to capture: skip already-captured cards unless their
+  // capture is older than the re-capture threshold (Settings). A stale
+  // refresh forces an overwrite so the old image/description gets replaced.
   const needs = isBadImg(it.img) || !it.desc;
-  if(!it.captured && needs){
-    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000})); }catch(e){}
+  const recaptureMs = (S.recaptureMonths||0) * 2592000000; // months × 30 days
+  const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
+  const blocked = it.captured && !stale;
+  const doCapture = !blocked && (needs || stale);
+  if(doCapture){
+    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale})); }catch(e){}
   }
   window.open(it.url,"_blank");
-  if(!it.captured && needs) enrichOnOpen(it, idx);
+  if(doCapture) enrichOnOpen(it, idx);
 }
 async function enrichOnOpen(it, idx){
   try{
@@ -2004,8 +2020,8 @@ function drainCaptures(){
     if(best && (force || isBadImg(match.img))){ match.img=best; changed=true; }
     if(cap.desc && (force || !match.desc)){ match.desc=cap.desc; changed=true; }
     if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
-    // mark the card as captured so future visits don't re-capture it
-    if(!match.captured){ match.captured=now; persisted=true; }
+    // stamp/refresh the capture time so future visits skip until it goes stale
+    match.captured=now; persisted=true;
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   if(usedLastOpened){ try{ localStorage.removeItem("ia_last_opened"); }catch(e){} }

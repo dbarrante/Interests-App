@@ -181,8 +181,8 @@ async function handleCaptureRequest(req) {
     return;
   }
 
-  log("Received capture request for: " + req.url);
-  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "" };
+  log("Received capture request for: " + req.url + (req.force ? " (refresh)" : ""));
+  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force };
   setBadge("⏳");
   await setStatus("Waiting for page to load…", true);
 
@@ -193,8 +193,9 @@ async function handleCaptureRequest(req) {
       log("Found matching tab already loaded: " + tab.id);
       clearTimeout(pendingTimer);
       const cid = pendingRequest.id;
+      const cforce = pendingRequest.force;
       pendingRequest = null;
-      await captureTab(tab, req.delay, false, cid);
+      await captureTab(tab, req.delay, cforce, cid);
       return;
     }
   }
@@ -219,9 +220,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   clearTimeout(pendingTimer);
   const delayMs = pendingRequest.delay;
   const cid = pendingRequest.id;
+  const cforce = pendingRequest.force;
   pendingRequest = null;
 
-  await captureTab(tab, delayMs, false, cid);
+  await captureTab(tab, delayMs, cforce, cid);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
