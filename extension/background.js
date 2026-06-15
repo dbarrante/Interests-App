@@ -4,6 +4,7 @@ const MAX_QUEUE = 20;
 
 let pendingRequest = null;
 let pendingTimer = null;
+let recentWatches = [];   // recently-opened card URLs, for unreachable-site detection
 
 function normalizeUrl(url) {
   try {
@@ -195,22 +196,28 @@ async function handleCaptureRequest(req) {
     return;
   }
 
-  log("Received capture request for: " + req.url + (req.force ? " (refresh)" : ""));
-  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force };
+  log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
+  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false };
+  // remember recently-opened cards so a navigation error can be matched even if
+  // it fires before/after the pending request is set
+  recentWatches.push({ url: req.url, id: req.id || "", ts: Date.now() });
+  recentWatches = recentWatches.filter(w => Date.now()-w.ts < 90000).slice(-12);
   setBadge("⏳");
   await setStatus("Waiting for page to load…", true);
 
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (!tab.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) continue;
-    if (normalizeUrl(tab.url) === normalizeUrl(req.url) && tab.status === "complete") {
-      log("Found matching tab already loaded: " + tab.id);
-      clearTimeout(pendingTimer);
-      const cid = pendingRequest.id;
-      const cforce = pendingRequest.force;
-      pendingRequest = null;
-      await captureTab(tab, req.delay, cforce, cid);
-      return;
+  if (pendingRequest.capture) {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (!tab.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) continue;
+      if (normalizeUrl(tab.url) === normalizeUrl(req.url) && tab.status === "complete") {
+        log("Found matching tab already loaded: " + tab.id);
+        clearTimeout(pendingTimer);
+        const cid = pendingRequest.id;
+        const cforce = pendingRequest.force;
+        pendingRequest = null;
+        await captureTab(tab, req.delay, cforce, cid);
+        return;
+      }
     }
   }
 
@@ -235,9 +242,50 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const delayMs = pendingRequest.delay;
   const cid = pendingRequest.id;
   const cforce = pendingRequest.force;
+  const doCap = pendingRequest.capture;
   pendingRequest = null;
 
-  await captureTab(tab, delayMs, cforce, cid);
+  if (doCap) await captureTab(tab, delayMs, cforce, cid);
+  else { setBadge("", 0); }   // watch-only: page reachable, nothing to capture
+});
+
+// Detect genuinely unreachable sites (DNS failure, connection refused, etc.)
+// and tell the app to remove that card. Only hard network errors — not 404s
+// (those "load" fine) and not user-side issues (offline, aborted).
+const HARD_ERR = /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_TIMED_OUT|ERR_ADDRESS_UNREACHABLE|ERR_SSL_PROTOCOL_ERROR|ERR_CERT_/i;
+async function deliverDead(dead){
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (!tab.url) continue;
+    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(tab.url)) continue;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (d) => {
+          let q=[]; try{ const r=localStorage.getItem("ia_captures"); if(r) q=JSON.parse(r); }catch(e){}
+          if(!Array.isArray(q)) q=[];
+          q.push(d);
+          localStorage.setItem("ia_captures", JSON.stringify(q));
+        },
+        args: [dead],
+      });
+      return true;
+    } catch (e) {}
+  }
+  await chrome.storage.local.set({ pendingCapture: dead });
+  return false;
+}
+chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
+  if (details.frameId !== 0) return;                  // main frame only
+  if (!HARD_ERR.test(details.error || "")) return;    // only definitive "can't reach" errors
+  const match = recentWatches.find(w => normalizeUrl(w.url) === normalizeUrl(details.url));
+  if (!match) return;                                 // only cards the user just opened
+  log("Unreachable (" + details.error + "): " + details.url);
+  recentWatches = recentWatches.filter(w => w !== match);
+  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(details.url)) { clearTimeout(pendingTimer); pendingRequest = null; }
+  setBadge("✕", 5000);
+  await setStatus("Site unreachable — removing card (" + details.error + ")", false);
+  await deliverDead({ url: match.url, id: match.id, dead: true, error: details.error, ts: Date.now() });
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

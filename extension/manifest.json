@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "1.7",
+  "version": "1.8",
   "description": "Captures screenshots and metadata for the Interests App",
-  "permissions": ["scripting", "tabs", "storage", "notifications"],
+  "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

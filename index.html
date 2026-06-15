@@ -515,7 +515,16 @@ async function initImageStore(){
 }
 
 /* ============ ui helpers ============ */
-function toast(msg, ms){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"), ms||2600); }
+function toast(msg, ms, onclick){
+  const t=document.getElementById("toast");
+  t.textContent=msg;
+  t.onclick = onclick ? ()=>{ onclick(); t.classList.remove("show"); t.onclick=null; t.style.pointerEvents="none"; } : null;
+  t.style.cursor = onclick ? "pointer" : "";
+  t.style.pointerEvents = onclick ? "auto" : "none";
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h=setTimeout(()=>{ t.classList.remove("show"); t.onclick=null; t.style.pointerEvents="none"; }, ms||2600);
+}
 function esc(s){ const d=document.createElement("div"); d.textContent=s==null?"":String(s); return d.innerHTML; }
 function domain(u){ try{ return new URL(u).hostname.replace(/^www\./,""); }catch(e){ return ""; } }
 function catByName(n){ return CATS.find(c=>c.name===n) || CATS.find(c=> n && n.toLowerCase().includes(c.key)) || CATS[0]; }
@@ -1967,9 +1976,9 @@ function impOpen(idx){
   const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
   const blocked = it.captured && !stale;
   const doCapture = !blocked && (needs || stale);
-  if(doCapture){
-    try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale})); }catch(e){}
-  }
+  // always send a request so the extension can watch for an unreachable site
+  // (and remove the card); capture:false means "watch only, don't screenshot"
+  try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture})); }catch(e){}
   window.open(it.url,"_blank");
   if(doCapture) enrichOnOpen(it, idx);
 }
@@ -2259,7 +2268,7 @@ function drainCaptures(){
   let queue;
   try{ queue=JSON.parse(raw); }catch(e){ return; }
   if(!Array.isArray(queue)||!queue.length) return;
-  let changed=false, persisted=false, matched=0, unmatched=0;
+  let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0;
   const remaining=[];
   const now=Date.now();
   // The "active card": the card the user most recently opened (set by impOpen).
@@ -2272,6 +2281,18 @@ function drainCaptures(){
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
+    if(cap.dead){
+      // extension reported this site as unreachable — remove the card
+      let di = cap.id ? imported.findIndex(it=>it.id===cap.id) : -1;
+      if(di<0) di = imported.findIndex(it=>it.url===cap.url);
+      if(di<0) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
+      if(di>=0){
+        const removed=imported.splice(di,1)[0];
+        _deadUndo=removed; removedDead++; changed=true;
+        console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")");
+      }
+      continue;
+    }
     let viaActive=false;
     let match = cap.id ? imported.find(it=>it.id===cap.id) : null;          // 1. stable id (most reliable)
     if(!match) match=imported.find(it=>it.url===cap.url);                    // 2. exact url
@@ -2317,12 +2338,24 @@ function drainCaptures(){
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:lastOpened.id, ts:Date.now()})); }catch(e){} }
-  if(unmatched && !matched){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
-  if(changed || persisted){ save("imported", imported); writeSavesFile(); }
+  if(unmatched && !matched && !removedDead){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
+  if(changed || persisted){ save("imported", imported); writeSavesFile(); updateCounts(); }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
-    toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
+    if(removedDead){
+      toast("Removed "+(_deadUndo?("“"+(_deadUndo.title||"card").slice(0,40)+"”"):removedDead+" card(s)")+" — unreachable site. Click to undo.", 9000, undoDead);
+    } else {
+      toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
+    }
   }
+}
+let _deadUndo=null;
+function undoDead(){
+  if(!_deadUndo) return;
+  imported.unshift(_deadUndo); _deadUndo=null;
+  save("imported", imported); writeSavesFile(); updateCounts();
+  if(curTab==="imported") renderImported();
+  toast("Card restored");
 }
 
 /* ============ init ============ */
