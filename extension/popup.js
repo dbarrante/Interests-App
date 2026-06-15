@@ -1,6 +1,24 @@
 var btn = document.getElementById("captureBtn");
+var removeBtn = document.getElementById("removeBtn");
 var status = document.getElementById("status");
 var info = document.getElementById("info");
+
+removeBtn.onclick = function() {
+  removeBtn.disabled = true;
+  removeBtn.textContent = "Removing...";
+  status.textContent = "";
+  chrome.runtime.sendMessage({ action: "removeCard" }, function(resp) {
+    if (chrome.runtime.lastError) {
+      status.textContent = "Error: " + chrome.runtime.lastError.message;
+    } else if (resp && resp.ok) {
+      removeBtn.textContent = "Removed";
+      status.textContent = "Card removed (undo from the app)";
+    } else {
+      status.textContent = resp ? resp.error : "No response from extension";
+    }
+    setTimeout(function(){ removeBtn.textContent = "Remove this card from Interests"; removeBtn.disabled = false; }, 2000);
+  });
+};
 
 btn.onclick = function() {
   btn.disabled = true;

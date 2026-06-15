@@ -205,23 +205,16 @@ async function handleCaptureRequest(req) {
   setBadge("⏳");
   await setStatus("Waiting for page to load…", true);
 
-  if (pendingRequest.capture) {
-    const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      if (!tab.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) continue;
-      if (normalizeUrl(tab.url) === normalizeUrl(req.url) && tab.status === "complete") {
-        log("Found matching tab already loaded: " + tab.id);
-        clearTimeout(pendingTimer);
-        const cid = pendingRequest.id;
-        const cforce = pendingRequest.force;
-        pendingRequest = null;
-        await captureTab(tab, req.delay, cforce, cid);
-        return;
-      }
-    }
+  // already-loaded race: the page may have finished before this request arrived
+  const tabs = await chrome.tabs.query({});
+  const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && normalizeUrl(t.url) === normalizeUrl(req.url));
+  if (tab && tab.status === "complete") {
+    log("Matching tab already loaded: " + tab.id);
+    await finishPending(tab);
+    return;
   }
 
-  log("Tab not loaded yet, waiting for onUpdated...");
+  log("Waiting for page load (webNavigation.onCompleted)...");
   pendingTimer = setTimeout(() => {
     log("Capture request timed out: " + pendingRequest?.url);
     pendingRequest = null;
@@ -230,23 +223,26 @@ async function handleCaptureRequest(req) {
   }, REQUEST_TIMEOUT_MS);
 }
 
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+// run the pending request against a now-loaded tab (capture, or finish watch-only)
+async function finishPending(tab) {
   if (!pendingRequest) return;
-  if (changeInfo.status !== "complete") return;
-  if (!tab.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) return;
-
-  if (normalizeUrl(tab.url) !== normalizeUrl(pendingRequest.url)) return;
-
-  log("Tab loaded for pending request: " + tab.url);
   clearTimeout(pendingTimer);
-  const delayMs = pendingRequest.delay;
-  const cid = pendingRequest.id;
-  const cforce = pendingRequest.force;
-  const doCap = pendingRequest.capture;
+  const { delay, id, force, capture } = pendingRequest;
   pendingRequest = null;
+  if (capture) await captureTab(tab, delay, force, id);
+  else { setBadge("", 0); await setStatus("Page reached — nothing to capture", true); }
+}
 
-  if (doCap) await captureTab(tab, delayMs, cforce, cid);
-  else { setBadge("", 0); }   // watch-only: page reachable, nothing to capture
+// onCompleted fires reliably when the document finishes loading (more robust
+// than tab.status, which can stay "loading" on pages with open connections)
+chrome.webNavigation.onCompleted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  if (!pendingRequest) return;
+  if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
+  if (normalizeUrl(details.url) !== normalizeUrl(pendingRequest.url)) return;
+  let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { return; }
+  log("Page loaded for pending request: " + details.url);
+  await finishPending(tab);
 });
 
 // Detect genuinely unreachable sites (DNS failure, connection refused, etc.)
@@ -318,6 +314,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok });
       } catch (e) {
         await setStatus("Failed: " + e.message, false);
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === "removeCard") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const url = (tab && tab.url) || "";
+        // remove the card matching this page's URL, or fall back to the
+        // last-opened ("active") card in the app
+        await deliverDead({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
+        await setStatus("Removed card from Interests", true);
+        sendResponse({ ok: true });
+      } catch (e) {
         sendResponse({ ok: false, error: e.message });
       }
     })();

@@ -8,6 +8,9 @@ button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font
 .cap{background:#c2410c;color:#fff}
 .cap:hover{filter:brightness(1.15)}
 .cap:disabled{opacity:.5;cursor:wait}
+.rm{background:transparent;color:#f87171;border:1px solid #5a2d2d}
+.rm:hover{background:#3a1f1f}
+.rm:disabled{opacity:.5;cursor:wait}
 .status{font-size:12px;color:#ccc;text-align:center;min-height:18px;margin-top:8px}
 .info{font-size:11px;color:#9a958d;margin-top:10px;padding-top:10px;border-top:1px solid #333;line-height:1.6}
 .info .ok{color:#4ade80}
@@ -17,6 +20,7 @@ button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font
 <body>
 <h3>Interests Capture</h3>
 <button class="cap" id="captureBtn">Capture this page</button>
+<button class="rm" id="removeBtn">Remove this card from Interests</button>
 <div class="status" id="status"></div>
 <div class="info" id="info"></div>
 <script src="popup.js"></script>

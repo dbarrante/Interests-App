@@ -2282,10 +2282,15 @@ function drainCaptures(){
   for(const cap of queue){
     if(!cap.url){ continue; }
     if(cap.dead){
-      // extension reported this site as unreachable — remove the card
+      // extension reported this site as unreachable/gone, or the user clicked
+      // "Remove this card" — remove the matching (or last-opened) card
       let di = cap.id ? imported.findIndex(it=>it.id===cap.id) : -1;
-      if(di<0) di = imported.findIndex(it=>it.url===cap.url);
-      if(di<0) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
+      if(di<0 && cap.url) di = imported.findIndex(it=>it.url===cap.url);
+      if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
+      if(di<0 && cap.removeActive){
+        let lo=null; try{ lo=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
+        if(lo && lo.id) di = imported.findIndex(it=>it.id===lo.id);
+      }
       if(di>=0){
         const removed=imported.splice(di,1)[0];
         _deadUndo=removed; removedDead++; changed=true;
