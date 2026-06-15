@@ -43,13 +43,10 @@
     // innerText is visible-only, so this only fires on actual challenge screens
     if (/you have been blocked|checking your browser before access|verify you are human|are you a human|press *(?:&|and) *hold|complete the security check|enable javascript and cookies to continue|performance & security by cloudflare|verifying you are human|confirm you are a human|slide to verify|drag the slider to/.test(body)) return true;
 
-    // full-page challenge containers — must be VISIBLE (sites like Temu leave
-    // hidden anti-bot elements in the DOM on normal pages)
-    if (anyVisible("#cf-wrapper, #challenge-running, #challenge-form, #challenge-stage, #px-captcha")) return true;
-
-    // a captcha iframe that IS basically the whole page (short body + visible)
-    if (fullText.trim().length < 600 &&
-        anyVisible("iframe[src*='hcaptcha'], iframe[src*='recaptcha'], iframe[src*='geetest'], iframe[title*='captcha' i], iframe[title*='challenge' i]")) return true;
+    // challenge containers / captcha iframes — VISIBLE only (sites like Temu
+    // leave hidden anti-bot elements in the DOM on normal pages). A visible
+    // captcha iframe is an active challenge even when it's a modal over content.
+    if (anyVisible("#cf-wrapper, #challenge-running, #challenge-form, #challenge-stage, #px-captcha, iframe[src*='hcaptcha'], iframe[src*='recaptcha'], iframe[src*='geetest'], iframe[src*='/captcha'], iframe[title*='captcha' i], iframe[title*='verif' i], iframe[title*='challenge' i]")) return true;
 
     return false;
   }

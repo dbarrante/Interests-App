@@ -1729,11 +1729,12 @@ function impCardHTML(it,idx){
     </div>
   </div>`;
 }
-let _editIdx = -1;
+let _editIdx = -1, _editImg = "";
 function impEdit(idx){
   const it=imported[idx]; if(!it) return;
   if(!it.id){ it.id=newId(); save("imported",imported); }
   _editIdx = idx;
+  _editImg = it.img || "";
   // suggest existing categories/tags to add with one click
   const counts={};
   imported.forEach(i=>(i.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));
@@ -1751,10 +1752,18 @@ function impEdit(idx){
     <label>Categories / tags <span style="font-weight:400;color:var(--muted)">(comma-separated)</span></label>
     <input type="text" id="edTags" value="${esc((it.tags||[]).join(", "))}" placeholder="e.g. woodworking, tools, diy">
     ${chips}
+    <label>Card image</label>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+      <div id="edImgPrev" style="width:72px;height:54px;border-radius:7px;border:1px solid var(--line);background:#8883 center/cover no-repeat;flex-shrink:0;font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center"></div>
+      <button type="button" class="btn btn-ghost" onclick="edRemoveImg()">Remove image</button>
+    </div>
+    <input type="text" id="edImg" value="${/^https?:/.test(it.img||"")?esc(it.img):""}" placeholder="…or paste an image URL" oninput="edSetImg(this.value)">
+    <div class="hint">Remove a bad screenshot to fall back to a favicon, or paste an image URL. To capture a page screenshot, open the article and use the extension's “Capture this page”.</div>
     <div class="ed-row">
       <button class="btn btn-primary" onclick="impEditSave()">Save changes</button>
       <button class="btn btn-ghost" onclick="closeGuide()">Cancel</button>
     </div>`;
+  edRenderPrev();
   document.getElementById("modal").classList.add("open");
   setTimeout(()=>{ const t=document.getElementById("edTitle"); if(t){ t.focus(); t.setSelectionRange(t.value.length,t.value.length); } }, 40);
 }
@@ -1763,6 +1772,13 @@ function edAddTag(t){
   const cur=inp.value.split(",").map(s=>s.trim()).filter(Boolean);
   if(!cur.some(x=>x.toLowerCase()===t.toLowerCase())){ cur.push(t); inp.value=cur.join(", "); }
 }
+function edRenderPrev(){
+  const p=document.getElementById("edImgPrev"); if(!p) return;
+  if(_editImg){ p.style.backgroundImage="url('"+_editImg.replace(/'/g,"%27")+"')"; p.textContent=""; }
+  else { p.style.backgroundImage=""; p.textContent="favicon"; }
+}
+function edSetImg(v){ _editImg=(v||"").trim(); edRenderPrev(); }
+function edRemoveImg(){ _editImg=""; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }
 function impEditSave(){
   if(_editIdx<0) return;
   const it=imported[_editIdx]; if(!it){ closeGuide(); return; }
@@ -1772,6 +1788,9 @@ function impEditSave(){
   if(title) it.title=title;
   it.desc=desc;
   it.tags=tags;
+  it.img=_editImg;                 // user-set image / removal wins
+  if(!_editImg){ it.blocked=Date.now(); }  // removing the image: also suppress the mshots fallback
+  else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
   save("imported",imported); writeSavesFile();
   closeGuide();
