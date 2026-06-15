@@ -18,6 +18,27 @@
   --radius:14px; --shadow:0 1px 3px rgba(0,0,0,.07),0 6px 18px rgba(0,0,0,.05);
 }
 
+/* ============ dark theme ============ */
+html.dark{
+  --bg:#1a1816; --card:#242120; --ink:#ece8e2; --muted:#a39d93;
+  --accent:#ef6c2e; --accent-soft:#352016; --line:#383330;
+  --shadow:0 1px 3px rgba(0,0,0,.45),0 6px 20px rgba(0,0,0,.4);
+}
+html.dark header{background:rgba(26,24,22,.9)}
+html.dark .tab.active{background:var(--accent);color:#fff}
+html.dark #toast{background:#322e2b;color:var(--ink)}
+html.dark .thumb{background:#2c2926}
+html.dark .benefit{color:#cfc9c0}
+html.dark .act{background:#2c2926;color:#cfc9c0}
+html.dark input[type=text],html.dark input[type=password],html.dark input[type=number],html.dark textarea,html.dark select{background:#2c2926;color:var(--ink)}
+html.dark .imp-card img.th{background:#2c2926}
+html.dark .imp-acts button{background:#2c2926;color:#cfc9c0}
+html.dark .tagchip{background:#2c2926;color:#cfc9c0}
+html.dark .tg{background:#332f2a;color:#cfc9c0}
+html.dark .imp-edit{background:rgba(36,33,32,.95)}
+html.dark .banner{background:#2e2920;border-color:#5a4f33;color:var(--ink)}
+html.dark .note{border-color:#5a4f33}
+
 /* ============ reset & layout ============ */
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;min-height:100vh}
@@ -220,6 +241,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .imp-acts button:hover{border-color:var(--accent);color:var(--accent)}
 .imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
 </style>
+<script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 </head>
 <body>
 <header>
@@ -247,6 +269,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
     <div class="panel">
       <h2>Settings</h2>
       <div class="sub">Everything is stored locally in your browser — keys never leave this machine except to call the AI provider you choose.</div>
+
+      <div class="sec">
+        <h3>Appearance</h3>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
+          <input type="checkbox" id="darkToggle" style="width:auto"> Dark mode
+        </label>
+        <div class="hint" style="margin-top:6px">Switches the whole app to a dark color scheme. Saved on this device.</div>
+      </div>
 
       <div class="sec">
         <h3>AI Provider</h3>
@@ -433,6 +463,7 @@ let stCur  = load("stcur", null);
 function load(k,d){ try{ const v=localStorage.getItem("ia_"+k); return v?JSON.parse(v):d; }catch(e){ return d; } }
 function save(k,v){ localStorage.setItem("ia_"+k, JSON.stringify(v)); }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
+function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
 function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
 
@@ -714,6 +745,8 @@ function renderSettings(){
   document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
   document.getElementById("recaptureMonths").value = String(S.recaptureMonths||0);
   document.getElementById("recaptureMonths").onchange = e=>{ S.recaptureMonths=+e.target.value||0; save("settings",S); };
+  document.getElementById("darkToggle").checked = (localStorage.getItem("ia_theme")==="dark");
+  document.getElementById("darkToggle").onchange = e=>{ setTheme(e.target.checked?"dark":"light"); };
   renderImportStatus();
 }
 function saveSettings(notify){
