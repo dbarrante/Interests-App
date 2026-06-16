@@ -1561,6 +1561,7 @@ function renderImported(){
         return miss?`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Automatically open, screenshot &amp; close each card that has no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`:"";
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
+      ${(function(){const d=dupeCount(); return d?`<button class="btn btn-ghost" onclick="groomDupes()" title="Merge & remove cards that share the same link">&#128203; Remove ${d} duplicate${d>1?"s":""}</button>`:"";})()}
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -2160,6 +2161,36 @@ function groomNoLink(){
   save("imported",imported); writeSavesFile(); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
+}
+function dupeCount(){
+  const seen=new Set(); let d=0;
+  imported.forEach(i=>{ if(!i.url) return; const k=normalizeUrl(i.url); if(seen.has(k)) d++; else seen.add(k); });
+  return d;
+}
+function groomDupes(){
+  const d=dupeCount();
+  if(!d){ toast("No duplicate links found"); return; }
+  if(!confirm("Remove "+d+" duplicate card"+(d>1?"s":"")+" (same link)?\n\nOne copy of each is kept and the best image/description/date/tags merged into it. This can't be undone.")) return;
+  const byUrl=new Map(); const keep=[]; const removed=[];
+  for(const it of imported){
+    if(!it.url){ keep.push(it); continue; }      // link-less stay (use Groom for those)
+    const k=normalizeUrl(it.url);
+    if(!byUrl.has(k)){ byUrl.set(k,it); keep.push(it); continue; }
+    const m=byUrl.get(k);                          // merge this duplicate into the kept copy
+    if(isBadImg(m.img||"") && !isBadImg(it.img||"")){ const src=resolveImg(it.img); if(src) setCardImage(m, src); }
+    if(!m.desc && it.desc) m.desc=it.desc;
+    if(!m.sdate && it.sdate) m.sdate=it.sdate;
+    if(it.liked) m.liked=true;
+    if(it.tags && it.tags.length) m.tags=[...new Set([...(m.tags||[]), ...it.tags])];
+    if(it.captured && (!m.captured || it.captured<m.captured)) m.captured=it.captured;
+    if(it.blocked && !m.blocked) m.blocked=it.blocked;
+    removed.push(it);
+  }
+  removed.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ idbDelImg(it.id); delete _imgCache[it.id]; } });
+  imported = keep;
+  save("imported",imported); writeSavesFile(); updateCounts();
+  if(curTab==="imported") renderImported();
+  toast("Removed "+removed.length+" duplicate"+(removed.length>1?"s":"")+" — kept the best copy of each");
 }
 function impLike(idx){
   const it=imported[idx]; if(!it) return;
