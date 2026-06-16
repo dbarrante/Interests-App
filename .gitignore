@@ -2,4 +2,6 @@ saves.json
 *.tmp.*
 facebook-import.json
 pinterest-import.json
+youtube-import.json
 facebook-saves.txt
+*.zip
