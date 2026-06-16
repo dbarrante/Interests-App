@@ -339,9 +339,16 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay) {
   let tab;
-  try { tab = await chrome.tabs.create({ url, active: false }); }   // load in background — don't steal focus per tab
+  // Load in the FOREGROUND (active:true). Background tabs get throttled and can be
+  // discarded by Chrome — that silently breaks executeScript (no og:image) AND
+  // captureVisibleTab (no screenshot) on heavy SPA pages like YouTube/Pinterest,
+  // so the capture lands as a "no image" failure and the card never fills. A
+  // foreground tab renders + persists exactly like a manual capture, which is the
+  // one path that has always worked. Tabs still open/close automatically.
+  try { tab = await chrome.tabs.create({ url, active: true }); }
   catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
   const tabId = tab.id;
+  try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}  // belt & suspenders: never discard mid-capture
   batchTabs.add(tabId);
   recentWatches.push({ url, id, ts: Date.now() });
   recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
