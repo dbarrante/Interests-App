@@ -2057,8 +2057,9 @@ function impOpen(idx){
   const needs = isBadImg(it.img) || !it.desc;
   const recaptureMs = (S.recaptureMonths||0) * 2592000000; // months × 30 days
   const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
-  const blocked = it.captured && !stale;
-  const doCapture = !blocked && (needs || stale);
+  const tried = (it.captured || it.lastUpdate) && !stale;   // already attempted — don't auto re-capture
+  const doCapture = !tried && (needs || stale);
+  if(doCapture){ it.lastUpdate=Date.now(); if(!it.lastResult) it.lastResult="pending"; save("imported",imported); }
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
   try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture})); }catch(e){}
@@ -2129,8 +2130,8 @@ let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress brief
 // Facebook permalink, AND not already attempted (so the batch never re-does a
 // card unless you explicitly retry it)
 function captureable(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
-function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }
-function needsRetry(i){ return captureable(i) && i.lastResult==="fail"; }   // explicitly re-try past failures
+function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }   // never tried
+function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }      // tried but still no image (fail/blocked-cleared/lost result)
 function startBatchCapture(mode){
   if(batchUI.active){ toast("A capture run is already going"); return; }
   const need = imported.filter(mode==="retry" ? needsRetry : needsCapture);
@@ -2139,7 +2140,13 @@ function startBatchCapture(mode){
   const seen=new Set();
   const uniq=need.filter(i=>{ const k=normalizeUrl(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
   const items = uniq.slice(0, BATCH_CAP).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
-  save("imported", imported);   // persist any new ids
+  // Mark every dispatched page (and its duplicates) as attempted RIGHT NOW, so a
+  // card is never retried even if its capture result is lost (quota/SW sleep).
+  // drainCaptures will later refine lastResult to ok/fail.
+  const dispatched=new Set(items.map(it=>normalizeUrl(it.url)));
+  const at=Date.now();
+  imported.forEach(c=>{ if(c.url && dispatched.has(normalizeUrl(c.url)) && captureable(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
+  save("imported", imported);   // persist ids + attempt stamps
   _batchIgnoreUntil = 0;
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
