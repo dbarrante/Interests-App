@@ -381,6 +381,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
         <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
         <button class="btn btn-primary" onclick="exportData()">&#11015; Download full backup</button>
         <span class="hint" id="backupInfo" style="margin-left:10px"></span>
+        <label style="margin-top:16px;display:block">Auto-backup</label>
+        <select id="autoBackup" style="width:auto">
+          <option value="0">Off</option>
+          <option value="1">Every day I open the app</option>
+          <option value="7">Weekly</option>
+          <option value="30">Monthly</option>
+        </select>
+        <div class="hint">Automatically downloads a full backup when the app is opened and this much time has passed. (Also: press <b>Ctrl+Shift+B</b> anytime to back up now.)</div>
         <label style="margin-top:16px;display:block">Restore from a backup file</label>
         <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)">
         <div class="hint">Replaces everything currently in the app. A safety copy of your current data is downloaded automatically before the restore runs.</div>
@@ -440,6 +448,7 @@ const DEFAULTS = {
   captureDelay:3,
   recaptureMonths:0,
   showDates:false,
+  autoBackup:0,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -729,7 +738,17 @@ async function exportData(){
   toast("Backup downloaded — "+Object.keys(data.keys).length+" data sets, "+nImg+" images, "+mb+" MB");
   const info=document.getElementById("backupInfo");
   if(info) info.textContent="Last backup: "+imported.length+" imported, "+saved.length+" saved, "+nImg+" images, "+mb+" MB";
+  try{ localStorage.setItem("ia_lastbackup", String(Date.now())); }catch(e){}
 }
+// auto-download a backup on load if the chosen interval has elapsed
+async function maybeAutoBackup(){
+  const days=+S.autoBackup||0; if(!days) return;
+  let last=0; try{ last=+localStorage.getItem("ia_lastbackup")||0; }catch(e){}
+  if(Date.now()-last < days*86400000) return;
+  try{ await exportData(); toast("Auto-backup downloaded"); }catch(e){ console.warn("auto-backup failed",e); }
+}
+// Ctrl+Shift+B = back up now
+document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); exportData(); } });
 function restoreData(ev){
   const file=ev.target.files && ev.target.files[0];
   if(!file){ return; }
@@ -818,6 +837,8 @@ function renderSettings(){
   document.getElementById("darkToggle").onchange = e=>{ setTheme(e.target.checked?"dark":"light"); };
   document.getElementById("datesToggle").checked = !!S.showDates;
   document.getElementById("datesToggle").onchange = e=>{ S.showDates=e.target.checked; save("settings",S); if(curTab==="imported") renderImported(); };
+  document.getElementById("autoBackup").value = String(S.autoBackup||0);
+  document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
   renderImportStatus();
 }
 function saveSettings(notify){
@@ -2424,7 +2445,7 @@ updateCounts();
 showTab(load("tab","feed"));
 restoreFolder();
 // load card images from IndexedDB (+ migrate any legacy inline images), then refresh
-initImageStore().then(()=>{ if(curTab==="imported") renderImported(); }).catch(e=>console.warn("image store init failed",e));
+initImageStore().then(()=>{ if(curTab==="imported") renderImported(); maybeAutoBackup(); }).catch(e=>console.warn("image store init failed",e));
 setInterval(drainCaptures, 3000);
 setupPasteToCard();
 </script>
