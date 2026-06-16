@@ -1456,7 +1456,7 @@ async function handleImport(ev){
       if(i.desc && (!ex.desc || ex.desc.startsWith("Saved from") || ex.desc.startsWith("From your"))){ ex.desc=i.desc; changed=true; }
       if(i.url && !ex.url){ ex.url=i.url; changed=true; }
       // backfill the real saved date from the export (only when the export has one)
-      const sd=normTs(i.ts); if(sd && ex.sdate!==sd){ ex.sdate=sd; changed=true; }
+      const sd=normTs(i.sdate); if(sd && ex.sdate!==sd){ ex.sdate=sd; changed=true; }
       if(changed) updated++;
     } else {
       imported.push(i); added++;
