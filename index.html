@@ -1556,9 +1556,13 @@ function renderImported(){
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
       ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
       ${(function(){
-        const miss=imported.filter(needsCapture).length;
         if(batchUI.active) return `<button class="btn btn-primary" id="batchBtn" onclick="cancelBatchCapture()">&#9632; Stop capture (${batchUI.done}/${batchUI.total})</button>`;
-        return miss?`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Automatically open, screenshot &amp; close each card that has no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`:"";
+        const miss=imported.filter(needsCapture).length;
+        const fail=imported.filter(needsRetry).length;
+        var out="";
+        if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
+        if(fail) out+=`<button class="btn btn-ghost" onclick="startBatchCapture('retry')" title="Re-try cards whose last capture failed">&#128260; Retry ${fail} failed</button>`;
+        return out;
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
       ${(function(){const d=dupeCount(); return d?`<button class="btn btn-ghost" onclick="groomDupes()" title="Merge & remove cards that share the same link">&#128203; Remove ${d} duplicate${d>1?"s":""}</button>`:"";})()}
@@ -1880,6 +1884,7 @@ function impEdit(idx){
     <input type="text" id="edTags" value="${esc((it.tags||[]).join(", "))}" placeholder="e.g. woodworking, tools, diy">
     ${chips}
     <label>Card image</label>
+    ${it.lastUpdate?`<div class="hint" style="margin-bottom:6px">Last capture: <b style="color:${it.lastResult==="ok"?"var(--chip-life)":"#f87171"}">${it.lastResult||"done"}</b> on ${esc(fmtCardDate(it.lastUpdate))}</div>`:""}
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
       <div id="edImgPrev" style="width:72px;height:54px;border-radius:7px;border:1px solid var(--line);background:#8883 center/cover no-repeat;flex-shrink:0;font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center"></div>
       <div style="display:flex;flex-direction:column;gap:6px">
@@ -2105,13 +2110,16 @@ async function enrichOnOpen(it, idx){
 const BATCH_CAP = 100;   // per run; re-run for more
 let batchUI = {active:false, done:0, total:0};
 let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress briefly
-// a card worth auto-capturing: has a link, no real image, not already a known
-// block page, and not a Facebook permalink (those just hit a login wall)
-function needsCapture(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
-function startBatchCapture(){
+// a card worth auto-capturing: has a link, no real image, not blocked, not a
+// Facebook permalink, AND not already attempted (so the batch never re-does a
+// card unless you explicitly retry it)
+function captureable(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
+function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }
+function needsRetry(i){ return captureable(i) && i.lastResult==="fail"; }   // explicitly re-try past failures
+function startBatchCapture(mode){
   if(batchUI.active){ toast("A capture run is already going"); return; }
-  const need = imported.filter(needsCapture);
-  if(!need.length){ toast("No cards are missing a picture"); return; }
+  const need = imported.filter(mode==="retry" ? needsRetry : needsCapture);
+  if(!need.length){ toast(mode==="retry" ? "No failed cards to retry" : "No new cards to capture"); return; }
   // dedupe by normalized URL so the same page isn't fetched once per duplicate card
   const seen=new Set();
   const uniq=need.filter(i=>{ const k=normalizeUrl(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
@@ -2475,7 +2483,13 @@ function drainCaptures(){
       console.log("[drainCaptures] blocked page for "+cap.url+" — clearing bad image");
       const cur=match.img||"";
       if(isBadImg(cur) || cur.indexOf("data:")===0 || cur.indexOf("idb:")===0){ setCardImage(match,""); changed=true; }
-      match.captured=now; match.blocked=now; persisted=true;
+      match.captured=now; match.blocked=now; match.lastUpdate=now; match.lastResult="blocked"; persisted=true;
+      continue;
+    }
+    if(cap.attempt && !cap.ok){
+      // page loaded but no usable image — record the failed attempt (no image change)
+      console.log("[drainCaptures] failed attempt for "+cap.url);
+      match.lastUpdate=now; match.lastResult="fail"; persisted=true;
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
@@ -2491,12 +2505,12 @@ function drainCaptures(){
       if(cap.title && (force || /^saved\b|^from your\b/i.test(match.title||""))){ match.title=cap.title; changed=true; }
     }
     if(viaActive) assignedTitle=match.title||"";
-    // stamp/refresh the capture time so future visits skip until it goes stale
-    match.captured=now; if(match.blocked) delete match.blocked; persisted=true;
+    // stamp/refresh capture + last-update so future runs skip it
+    match.captured=now; if(match.blocked) delete match.blocked; match.lastUpdate=now; match.lastResult="ok"; persisted=true;
     // fill any DUPLICATE cards sharing this URL so they aren't re-fetched later
     if(best && match.url){
       const nu=normalizeUrl(match.url);
-      imported.forEach(o=>{ if(o!==match && o.url && normalizeUrl(o.url)===nu && isBadImg(o.img||"") && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; changed=true; } });
+      imported.forEach(o=>{ if(o!==match && o.url && normalizeUrl(o.url)===nu && isBadImg(o.img||"") && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}

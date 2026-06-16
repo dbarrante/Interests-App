@@ -122,10 +122,12 @@ async function captureTab(tab, delayMs, force, cardId) {
     }
 
     // A blocked page still sends a (mostly empty) capture so the app can clear
-    // any stale block-page image; otherwise abort if nothing usable was found.
+    // any stale block-page image; otherwise report a failed attempt so the app
+    // records it and won't auto-retry the card.
     if (!blocked && !meta.ogImage && !meta.contentImage && !screenshot) {
       setBadge("!", 5000);
-      await setStatus("No image or metadata could be captured", false);
+      await setStatus("No image found (marked attempted)", false);
+      await deliverToApp({ url: tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
       return false;
     }
 
@@ -337,7 +339,7 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
 async function captureOneTab(url, id, delay) {
   let tab;
   try { tab = await chrome.tabs.create({ url, active: false }); }   // load in background — don't steal focus per tab
-  catch (e) { return "tab-fail"; }
+  catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
   const tabId = tab.id;
   recentWatches.push({ url, id, ts: Date.now() });
   recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
@@ -349,6 +351,7 @@ async function captureOneTab(url, id, delay) {
     };
   });
   try { await chrome.tabs.remove(tabId); } catch (e) {}
+  if (outcome === "watchdog") await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });  // never loaded → mark attempted
   return outcome;
 }
 
