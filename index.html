@@ -533,6 +533,20 @@ async function initImageStore(){
     }
   }
   if(migrated){ save("imported",imported); console.log("[img] migrated "+migrated+" inline images to IndexedDB"); }
+  // Favicon sweep: any card whose image is just a site favicon/placeholder gets
+  // cleared and flagged for re-capture, so the extension can fetch a real
+  // screenshot. Idempotent — once cleared there's nothing left to match.
+  let faviconCleared=0;
+  for(const it of imported){
+    const cur = resolveImg(it.img) || it.img || "";
+    if(cur && isFavicon(cur)){
+      setCardImage(it, "");                                       // drop the favicon
+      delete it.captured; delete it.blocked;                      // treat as never-captured…
+      delete it.lastUpdate; delete it.lastResult;                 // …so it enters "Capture missing"
+      faviconCleared++;
+    }
+  }
+  if(faviconCleared){ save("imported",imported); console.log("[img] cleared "+faviconCleared+" favicon image(s) for re-capture"); }
 }
 
 /* ============ ui helpers ============ */
@@ -2446,7 +2460,11 @@ function writeSavesFile(){
 /* ============ extension capture drain ============ */
 // images from external screenshot proxies are unreliable (blocked sites,
 // CAPTCHAs) — a real extension capture should always replace them.
-function isBadImg(u){ return !u || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
+// a bare site favicon / tab-icon masquerading as a card image — it's a tiny
+// placeholder, not a real thumbnail, so we treat it as "no image" and let the
+// extension capture a proper screenshot.
+function isFavicon(u){ return !!u && /favicon|apple-touch-icon|icons\.duckduckgo\.com\/ip3|\/s2\/favicons/i.test(u); }
+function isBadImg(u){ return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
 function normalizeUrl(url){
   try{
     // decode Facebook redirect wrappers (l.facebook.com/l.php?u=…)
