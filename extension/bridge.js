@@ -90,6 +90,7 @@
     B = null; inFlight = 0;
     writeProg(done, total, false);
     try { localStorage.removeItem("ia_batch_state"); } catch (e) {}
+    try { chrome.runtime.sendMessage({ action: "cleanupBatch" }, function () {}); } catch (e) {}  // close any leftover capture tabs
     log("Batch finished " + done + "/" + total);
   }
   function driveBatch() {

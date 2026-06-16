@@ -336,11 +336,13 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
   delete pendings[tabId];
   p.resolve("captured");
 }
+const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay) {
   let tab;
   try { tab = await chrome.tabs.create({ url, active: false }); }   // load in background — don't steal focus per tab
   catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
   const tabId = tab.id;
+  batchTabs.add(tabId);
   recentWatches.push({ url, id, ts: Date.now() });
   recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
   const outcome = await new Promise((resolve) => {
@@ -350,9 +352,14 @@ async function captureOneTab(url, id, delay) {
       wd: setTimeout(() => settlePending(tabId, "watchdog"), (delay || 0) + 45000),  // hard give-up
     };
   });
-  try { await chrome.tabs.remove(tabId); } catch (e) {}
+  try { await chrome.tabs.remove(tabId); batchTabs.delete(tabId); } catch (e) { /* removal failed — leave it for the end-of-run sweep */ }
   if (outcome === "watchdog") await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });  // never loaded → mark attempted
   return outcome;
+}
+// close any tabs the batch opened but didn't manage to close (e.g. the worker
+// was suspended between capturing and removing a heavy page like YouTube)
+async function sweepBatchTabs() {
+  for (const tid of [...batchTabs]) { try { await chrome.tabs.remove(tid); } catch (e) {} batchTabs.delete(tid); }
 }
 
 // network-level failure (DNS, connection refused/reset/timeout, cert)
@@ -380,6 +387,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try { const outcome = await captureOneTab(msg.data.url, msg.data.id, msg.data.delay); sendResponse({ ok: true, outcome }); }
       catch (e) { sendResponse({ ok: false, error: e.message }); }
     })();
+    return true;
+  }
+
+  if (msg.action === "cleanupBatch") {
+    (async () => { await sweepBatchTabs(); sendResponse({ ok: true }); })();
     return true;
   }
 
