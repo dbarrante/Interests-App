@@ -311,16 +311,27 @@ async function reportDead(url, reason, tabId){
    Outcome per item is settled by webNavigation.onCompleted (captured),
    reportDead (dead/removed), or a timeout. */
 let batchItems = [], batchActive = false, batchPending = null, batchDone = 0, batchTotal = 0, batchDelay = 0;
+// write progress into the app AND read back the cancel flag in the same call,
+// so Stop works even if the bridge isn't relaying messages. Returns true if
+// the user asked to cancel.
 async function pushBatchProgress() {
   const prog = { active: batchActive, done: batchDone, total: batchTotal };
+  let cancelled = false;
   try {
     const tabs = await chrome.tabs.query({});
     for (const t of tabs) {
-      if (t.url && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)) {
-        await chrome.scripting.executeScript({ target: { tabId: t.id }, func: (p) => localStorage.setItem("ia_batch_progress", JSON.stringify(p)), args: [prog] }).catch(()=>{});
-      }
+      if (!t.url || !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)) continue;
+      try {
+        const res = await chrome.scripting.executeScript({
+          target: { tabId: t.id },
+          func: (p) => { localStorage.setItem("ia_batch_progress", JSON.stringify(p)); var c = localStorage.getItem("ia_batch_cancel"); if (c) localStorage.removeItem("ia_batch_cancel"); return c === "1"; },
+          args: [prog],
+        });
+        if (res && res[0] && res[0].result) cancelled = true;
+      } catch (e) {}
     }
   } catch (e) {}
+  return cancelled;
 }
 async function startBatch(items, delay) {
   if (batchActive) { log("batch already running"); return; }
@@ -336,6 +347,9 @@ function cancelBatch() { if (batchActive) { log("batch cancelled"); batchActive 
 async function runBatchNext() {
   if (!batchActive) { await pushBatchProgress(); return; }
   if (!batchItems.length) { batchActive = false; setBadge("✓", 4000); await setStatus("Batch done: " + batchDone + "/" + batchTotal, true); await pushBatchProgress(); return; }
+  // honor a Stop requested between items (read directly from the app)
+  if (await pushBatchProgress()) { cancelBatch(); await setStatus("Batch stopped at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); return; }
+  if (!batchActive) { await pushBatchProgress(); return; }
   const item = batchItems.shift();
   recentWatches.push({ url: item.url, id: item.id, ts: Date.now() });
   recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-40);
@@ -366,8 +380,8 @@ async function runBatchNext() {
   });
   try { await chrome.tabs.remove(tab.id); } catch (e) {}
   batchDone++;
-  await pushBatchProgress();
-  if (batchActive) setTimeout(runBatchNext, 500); else { await setStatus("Batch cancelled at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); }
+  if (await pushBatchProgress()) cancelBatch();   // user hit Stop during this item
+  if (batchActive) setTimeout(runBatchNext, 500); else { await setStatus("Batch stopped at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); }
 }
 
 // network-level failure (DNS, connection refused/reset/timeout, cert)
