@@ -38,19 +38,7 @@
           });
         }
       }
-      var braw = localStorage.getItem("ia_batch_request");
-      if (braw) {
-        localStorage.removeItem("ia_batch_request");
-        var b = JSON.parse(braw);
-        if (b && b.items && b.items.length) {
-          log("Forwarding batch capture: " + b.items.length + " items");
-          chrome.runtime.sendMessage({ action: "batchCapture", data: b }, function() {});
-        }
-      }
-      if (localStorage.getItem("ia_batch_cancel")) {
-        localStorage.removeItem("ia_batch_cancel");
-        chrome.runtime.sendMessage({ action: "cancelBatch" }, function() {});
-      }
+      driveBatch();
     } catch (e) {
       if (/invalidated|disconnected/i.test(e.message)) die(e.message);
       else log("checkForRequest error: " + e.message);
@@ -85,6 +73,46 @@
     } catch (e) {
       if (/invalidated|disconnected/i.test(e.message)) die(e.message);
     }
+  }
+
+  // ---- batch driver (the loop lives here, in the stable page context) ----
+  var batchBusy = false;
+  function writeProg(done, total, active) {
+    try { localStorage.setItem("ia_batch_progress", JSON.stringify({ done: done, total: total, active: active, ts: Date.now() })); } catch (e) {}
+  }
+  function driveBatch() {
+    if (batchBusy || isDisconnected()) return;
+    var st; try { st = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { return; }
+    if (!st || !st.items || !st.items.length || st.done >= st.items.length) return;
+    batchBusy = true;
+    runOne();
+  }
+  function endBatch(done, total) {
+    batchBusy = false;
+    writeProg(done, total, false);
+    try { localStorage.removeItem("ia_batch_state"); } catch (e) {}
+    log("Batch finished " + done + "/" + total);
+  }
+  function runOne() {
+    var st; try { st = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { st = null; }
+    if (!st || !st.items) { batchBusy = false; return; }
+    if (localStorage.getItem("ia_batch_cancel")) { localStorage.removeItem("ia_batch_cancel"); return endBatch(st.done, st.items.length); }
+    if (st.done >= st.items.length) return endBatch(st.done, st.items.length);
+    var item = st.items[st.done];
+    writeProg(st.done, st.items.length, true);
+    chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: st.delay || 0 } }, function (resp) {
+      if (chrome.runtime.lastError) {            // SW was waking/asleep — retry same item shortly
+        if (/invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); batchBusy = false; return; }
+        setTimeout(runOne, 1500); return;
+      }
+      // advance (re-read state so a Stop mid-item is honored)
+      var cur; try { cur = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { cur = st; }
+      if (!cur) { batchBusy = false; return; }
+      cur.done = (cur.done || 0) + 1;
+      try { localStorage.setItem("ia_batch_state", JSON.stringify(cur)); } catch (e) {}
+      writeProg(cur.done, cur.items.length, true);
+      setTimeout(runOne, 400);
+    });
   }
 
   log("Bridge loaded on " + location.href);

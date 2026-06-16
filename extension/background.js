@@ -239,12 +239,12 @@ async function finishPending(tab) {
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
-  // batch capture: a tab we opened for an item finished loading (match by tab
-  // identity, not URL, so redirects don't stall the run)
-  if (batchPending && !batchPending.done && details.tabId === batchPending.tabId) {
-    const bp = batchPending; bp.done = true; clearTimeout(bp.fallback); batchPending = null;
+  // batch (one-item) capture: a tab we opened finished loading (match by tab
+  // identity, not URL, so redirects don't stall it)
+  if (onePending && !onePending.done && details.tabId === onePending.tabId) {
+    const bp = onePending; bp.done = true; clearTimeout(bp.fb); onePending = null;
     let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { bp.resolve("gone"); return; }
-    await captureTab(tab, batchDelay, false, bp.id);
+    await captureTab(tab, bp.delay, false, bp.id);
     bp.resolve("captured");
     return;
   }
@@ -303,85 +303,39 @@ async function reportDead(url, reason, tabId){
   await setStatus("Removing card + closing tab — " + reason, false);
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
   await closeTabSafe(tabId);
-  // settle the batch item (dead links are removed and counted as processed)
-  if (batchPending && !batchPending.done && normalizeUrl(batchPending.url) === normalizeUrl(url)) { const bp = batchPending; bp.done = true; clearTimeout(bp.fallback); batchPending = null; bp.resolve("dead"); }
+  // settle the in-flight batch item (dead links are removed + counted)
+  if (onePending && !onePending.done && normalizeUrl(onePending.url) === normalizeUrl(url)) { const bp = onePending; bp.done = true; clearTimeout(bp.fb); onePending = null; bp.resolve("dead"); }
 }
-/* ============ batch capture ============
-   Open each card's URL in turn, capture it, close the tab. Cancellable.
-   Outcome per item is settled by webNavigation.onCompleted (captured),
-   reportDead (dead/removed), or a timeout. */
-let batchItems = [], batchActive = false, batchPending = null, batchDone = 0, batchTotal = 0, batchDelay = 0;
-// write progress into the app AND read back the cancel flag in the same call,
-// so Stop works even if the bridge isn't relaying messages. Returns true if
-// the user asked to cancel.
-async function pushBatchProgress() {
-  const prog = { active: batchActive, done: batchDone, total: batchTotal };
-  let cancelled = false;
-  try {
-    const tabs = await chrome.tabs.query({});
-    for (const t of tabs) {
-      if (!t.url || !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)) continue;
-      try {
-        const res = await chrome.scripting.executeScript({
-          target: { tabId: t.id },
-          func: (p) => { localStorage.setItem("ia_batch_progress", JSON.stringify(p)); var c = localStorage.getItem("ia_batch_cancel"); if (c) localStorage.removeItem("ia_batch_cancel"); return c === "1"; },
-          args: [prog],
-        });
-        if (res && res[0] && res[0].result) cancelled = true;
-      } catch (e) {}
-    }
-  } catch (e) {}
-  return cancelled;
-}
-async function startBatch(items, delay) {
-  if (batchActive) { log("batch already running"); return; }
-  batchItems = (items || []).slice(); batchTotal = batchItems.length; batchDone = 0;
-  batchDelay = typeof delay === "number" ? delay : DEFAULT_DELAY_MS;
-  if (!batchTotal) return;
-  batchActive = true;
-  log("Batch start: " + batchTotal + " items");
-  await pushBatchProgress();
-  runBatchNext();
-}
-function cancelBatch() { if (batchActive) { log("batch cancelled"); batchActive = false; batchItems = []; if (batchPending) { batchPending.resolve("cancel"); } } }
-async function runBatchNext() {
-  if (!batchActive) { await pushBatchProgress(); return; }
-  if (!batchItems.length) { batchActive = false; setBadge("✓", 4000); await setStatus("Batch done: " + batchDone + "/" + batchTotal, true); await pushBatchProgress(); return; }
-  // honor a Stop requested between items (read directly from the app)
-  if (await pushBatchProgress()) { cancelBatch(); await setStatus("Batch stopped at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); return; }
-  if (!batchActive) { await pushBatchProgress(); return; }
-  const item = batchItems.shift();
-  recentWatches.push({ url: item.url, id: item.id, ts: Date.now() });
-  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-40);
-  setBadge("" + (batchDone + 1), 0);
-  await setStatus("Batch capture " + (batchDone + 1) + "/" + batchTotal, true);
+/* ============ batch capture (one item per call) ============
+   The LOOP is driven by the page-side bridge (a stable context). The service
+   worker only handles ONE capture per "captureOneTab" message — short enough
+   to finish before the SW can be suspended. This survives SW termination:
+   each item is a fresh message that wakes a fresh worker. */
+let onePending = null;
+async function captureOneTab(url, id, delay) {
   let tab;
-  try { tab = await chrome.tabs.create({ url: item.url, active: true }); }
-  catch (e) { batchDone++; return runBatchNext(); }
-  // Settle this item by: (a) onCompleted/reportDead via batchPending, (b) a
-  // fallback that captures whatever's loaded if no load event fires, and
-  // (c) a hard watchdog so a hung captureTab can never freeze the loop.
-  await new Promise((resolve) => {
+  try { tab = await chrome.tabs.create({ url, active: true }); }
+  catch (e) { return "tab-fail"; }
+  recentWatches.push({ url, id, ts: Date.now() });
+  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-40);
+  setBadge("…", 0);
+  const outcome = await new Promise((resolve) => {
     let settled = false;
-    const done = (why) => { if (settled) return; settled = true; if (batchPending && batchPending.tabId === tab.id) { batchPending.done = true; clearTimeout(batchPending.fallback); batchPending = null; } resolve(why); };
-    batchPending = {
-      url: item.url, id: item.id, tabId: tab.id, done: false,
-      resolve: (why) => done(why),
-      // capture whatever has loaded if the page never fires onCompleted
-      fallback: setTimeout(async () => {
-        if (!batchPending || batchPending.done || batchPending.tabId !== tab.id) return;
-        batchPending.done = true; batchPending = null;
-        try { const t = await chrome.tabs.get(tab.id); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, 0, false, item.id); } catch (e) {}
+    const done = (why) => { if (settled) return; settled = true; if (onePending && onePending.tabId === tab.id) { onePending.done = true; clearTimeout(onePending.fb); onePending = null; } resolve(why); };
+    onePending = {
+      url, id, tabId: tab.id, delay: delay || 0, done: false, resolve: done,
+      fb: setTimeout(async () => {
+        if (!onePending || onePending.done || onePending.tabId !== tab.id) return;
+        onePending.done = true; onePending = null;
+        try { const t = await chrome.tabs.get(tab.id); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, 0, false, id); } catch (e) {}
         done("fallback");
-      }, (batchDelay || 0) + 12000),
+      }, (delay || 0) + 12000),
     };
-    // absolute last resort — always advance even if captureTab itself hangs
-    setTimeout(() => done("watchdog"), (batchDelay || 0) + 30000);
+    setTimeout(() => done("watchdog"), (delay || 0) + 30000);
   });
   try { await chrome.tabs.remove(tab.id); } catch (e) {}
-  batchDone++;
-  if (await pushBatchProgress()) cancelBatch();   // user hit Stop during this item
-  if (batchActive) setTimeout(runBatchNext, 500); else { await setStatus("Batch stopped at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); }
+  setBadge("", 0);
+  return outcome;
 }
 
 // network-level failure (DNS, connection refused/reset/timeout, cert)
@@ -404,11 +358,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     handleCaptureRequest(msg.data);
   }
 
-  if (msg.action === "batchCapture" && msg.data) {
-    startBatch(msg.data.items, msg.data.delay);
-  }
-  if (msg.action === "cancelBatch") {
-    cancelBatch();
+  if (msg.action === "captureOneTab" && msg.data) {
+    (async () => {
+      try { const outcome = await captureOneTab(msg.data.url, msg.data.id, msg.data.delay); sendResponse({ ok: true, outcome }); }
+      catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
   }
 
   if (msg.action === "manualCapture") {

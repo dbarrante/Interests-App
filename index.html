@@ -2108,14 +2108,18 @@ function startBatchCapture(){
   const items = need.slice(0, BATCH_CAP).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
   save("imported", imported);   // persist any new ids
   _batchIgnoreUntil = 0;
-  try{ localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel"); localStorage.setItem("ia_batch_request", JSON.stringify({items, delay:(S.captureDelay||0)*1000})); }catch(e){}
+  try{
+    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    // the page-side bridge drives this loop (survives the extension's service-worker sleep)
+    localStorage.setItem("ia_batch_state", JSON.stringify({items, done:0, total:items.length, delay:(S.captureDelay||0)*1000, active:true}));
+  }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
-  toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this running.", 6000);
+  toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this tab open.", 6000);
   renderImportedKeepFocus();
 }
 function cancelBatchCapture(){
-  // tell the extension to stop, clear stale progress, and revert the button now
-  try{ localStorage.setItem("ia_batch_cancel","1"); localStorage.removeItem("ia_batch_progress"); }catch(e){}
+  // tell the driver to stop, clear state/progress, and revert the button now
+  try{ localStorage.setItem("ia_batch_cancel","1"); localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_state"); }catch(e){}
   _batchIgnoreUntil = Date.now()+8000;
   batchUI={active:false, done:batchUI.done, total:batchUI.total};
   toast("Capture run stopped"); renderImportedKeepFocus();
@@ -2124,6 +2128,8 @@ function pollBatchProgress(){
   if(Date.now() < _batchIgnoreUntil) return;          // just stopped — don't flip back to Stop
   let p; try{ p=JSON.parse(localStorage.getItem("ia_batch_progress")||"null"); }catch(e){ return; }
   if(!p) return;
+  // stale progress (driver/tab gone) — treat as finished so the button never sticks
+  if(p.active && p.ts && (Date.now()-p.ts > 90000)){ p.active=false; }
   const was=batchUI.active;
   batchUI={active:!!p.active, done:p.done||0, total:p.total||0};
   const btn=document.getElementById("batchBtn");
