@@ -116,14 +116,12 @@
       dispatch(item);
     }
   }
-  function dispatch(item, tries) {
-    tries = tries || 0;
+  function dispatch(item) {
     chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: B ? B.delay : 0 } }, function (resp) {
-      if (chrome.runtime.lastError) {
-        if (/invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); B = null; inFlight = 0; return; }
-        if (tries < 5 && B && !localStorage.getItem("ia_batch_cancel")) { setTimeout(function () { dispatch(item, tries + 1); }, 1500); return; } // keep slot, retry same item
-        inFlight--; if (B) { B.done++; saveState(); writeProg(B.done, B.total, true); } pump(); return;
-      }
+      if (chrome.runtime.lastError && /invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); B = null; inFlight = 0; return; }
+      // Either way, advance. Do NOT retry on a lost response: the worker already
+      // opened the tab and reported the capture's result independently (via
+      // ia_captures), so retrying would just re-open the same site.
       inFlight--;
       if (B) { B.done++; saveState(); writeProg(B.done, B.total, true); }
       pump();
