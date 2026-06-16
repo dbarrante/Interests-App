@@ -1533,6 +1533,7 @@ function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); ren
 let impSrc = load("isrc","");
 let impSort = load("isort","newest");
 let impUnreviewed = load("iunrev", false);
+let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
@@ -1559,7 +1560,8 @@ function renderImported(){
                  || (r.it.tags||[]).some(t=>t.includes(impQuery)))
             && (!impSrc || platformOf(r.it)===impSrc)
             && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
-            && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url)))))
+            && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url))))
+            && (!impFailed || needsRetry(r.it)))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
   v.innerHTML = `
@@ -1576,7 +1578,12 @@ function renderImported(){
         const fail=imported.filter(needsRetry).length;
         var out="";
         if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
-        if(fail) out+=`<button class="btn btn-ghost" onclick="startBatchCapture('retry')" title="Re-try cards whose last capture failed">&#128260; Retry ${fail} failed</button>`;
+        if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
+          <div class="tag-menu" id="retryMenu">
+            ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
+            ${fail?`<button onclick="closeRetryMenu();startBatchCapture('retry')">&#128260; Retry all ${fail}</button>`:""}
+            ${impFailed?`<button onclick="closeRetryMenu();clearFailedFilter()">&#10005; Show all cards</button>`:""}
+          </div></div>`;
         return out;
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
@@ -1729,9 +1736,14 @@ ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
 }
 
 /* ============ auto-tagging ============ */
-function toggleTagMenu(){ const m=document.getElementById("tagMenu"); if(m) m.classList.toggle("open"); }
+function closeMenus(){ document.querySelectorAll(".tag-menu.open").forEach(m=>m.classList.remove("open")); }
+function toggleTagMenu(){ const m=document.getElementById("tagMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
 function closeTagMenu(){ const m=document.getElementById("tagMenu"); if(m) m.classList.remove("open"); }
-document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeTagMenu(); });
+function toggleRetryMenu(){ const m=document.getElementById("retryMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
+function closeRetryMenu(){ const m=document.getElementById("retryMenu"); if(m) m.classList.remove("open"); }
+function viewFailures(){ impFailed=true; renderImportedKeepFocus(); }
+function clearFailedFilter(){ impFailed=false; renderImportedKeepFocus(); }
+document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeMenus(); });
 async function autoTag(limit){
   if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("tagBtn");
