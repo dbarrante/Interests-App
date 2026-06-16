@@ -289,6 +289,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
           <label data-p="openai"><input type="radio" name="prov" value="openai">ChatGPT<div class="hint">OpenAI</div></label>
           <label data-p="gemini"><input type="radio" name="prov" value="gemini">Gemini<div class="hint">Google — free tier</div></label>
           <label data-p="groq"><input type="radio" name="prov" value="groq">Groq<div class="hint">Fast — free tier</div></label>
+          <label data-p="openrouter"><input type="radio" name="prov" value="openrouter">OpenRouter<div class="hint">Many models · pay-per-use</div></label>
           <label data-p="local"><input type="radio" name="prov" value="local">Local / Custom<div class="hint">Ollama · OpenRouter</div></label>
         </div>
         <div id="provFields"></div>
@@ -438,13 +439,15 @@ const PROVIDERS = {
     keyUrl:"https://aistudio.google.com/apikey", keyName:"Google AI Studio API key"},
   groq:{label:"Groq", model:"llama-3.3-70b-versatile",
     keyUrl:"https://console.groq.com/keys", keyName:"Groq API key"},
+  openrouter:{label:"OpenRouter", model:"openai/gpt-4o-mini",
+    keyUrl:"https://openrouter.ai/keys", keyName:"OpenRouter API key"},
   local:{label:"Local / Custom", model:"llama3.1:8b",
     keyUrl:"https://ollama.com/download", keyName:"API key (optional for Ollama)"}
 };
 const DEFAULTS = {
   provider:"gemini",
-  keys:{anthropic:"",openai:"",gemini:"",groq:"",local:""},
-  models:{anthropic:PROVIDERS.anthropic.model,openai:PROVIDERS.openai.model,gemini:PROVIDERS.gemini.model,groq:PROVIDERS.groq.model,local:PROVIDERS.local.model},
+  keys:{anthropic:"",openai:"",gemini:"",groq:"",openrouter:"",local:""},
+  models:{anthropic:PROVIDERS.anthropic.model,openai:PROVIDERS.openai.model,gemini:PROVIDERS.gemini.model,groq:PROVIDERS.groq.model,openrouter:PROVIDERS.openrouter.model,local:PROVIDERS.local.model},
   localUrl:"http://localhost:11434/v1",
   popularOnly:false,
   oprKey:"",
@@ -810,10 +813,10 @@ function renderSettings(){
   document.getElementById("provFields").innerHTML = `${localExtra}
     <label>${esc(p.keyName)}</label>
     <input type="password" id="apiKey" value="${esc(S.keys[S.provider])}" placeholder="${S.provider==="local"?"Leave blank for Ollama":"Paste your key…"}">
-    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for the feed.`:""}</div>
+    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for the feed.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). No web search, so feed links can occasionally be stale — great for Enrich.`:""}</div>
     <label>Model</label>
     <input type="text" id="modelName" value="${esc(S.models[S.provider])}">
-    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
+    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"e.g. openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-001, meta-llama/llama-3.3-70b-instruct:free — see openrouter.ai/models.":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
   document.getElementById("apiKey").oninput = e=>{ S.keys[S.provider]=e.target.value.trim(); };
   document.getElementById("modelName").oninput = e=>{ S.models[S.provider]=e.target.value.trim(); };
   if(S.provider==="local") document.getElementById("localUrl").oninput = e=>{ S.localUrl=e.target.value.trim().replace(/\/$/,""); };
@@ -961,6 +964,18 @@ async function callGroq(prompt){
   const d = await r.json();
   return d.choices?.[0]?.message?.content || "";
 }
+async function callOpenRouter(prompt){
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.keys.openrouter,
+      "HTTP-Referer":"http://localhost:3456","X-Title":"Interests App"},
+    body:JSON.stringify({model:S.models.openrouter, temperature:0.8,
+      messages:[{role:"user", content:prompt}]})
+  });
+  if(!r.ok) throw new Error("OpenRouter API error "+r.status+": "+(await r.text()).slice(0,300));
+  const d = await r.json();
+  return d.choices?.[0]?.message?.content || "";
+}
 async function callLocal(prompt){
   const headers = {"Content-Type":"application/json"};
   if(S.keys.local) headers["Authorization"] = "Bearer "+S.keys.local;
@@ -1050,7 +1065,7 @@ async function refreshFeed(){
   btn.disabled=true; btn.innerHTML='<span class="spin"></span> Thinking…';
   try{
     const prompt = buildPrompt();
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const text = await call(prompt);
     let items = dropAlreadySaved(parseItems(text));
     if(!items.length) throw new Error("Model returned no usable items");
@@ -1079,7 +1094,7 @@ async function stumbleFetch(){
   if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return false; }
   stLoading = true; renderStumble();
   try{
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await call(buildPrompt("stumble"))))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
     if(shown.length>200) shown=shown.slice(-200);
@@ -1696,7 +1711,7 @@ async function enrichImported(){
       const prompt = `Here are titles of things the user saved on social platforms. For EACH numbered title, write ONE short sentence (under 20 words) describing what it likely is and why it caught their eye. Never name the platform or content type — no "Facebook post", "Pinterest pin", "YouTube video", "reel", or "This is a…". Start directly with the substance (e.g. "Bass-fishing knot trick that locks under tension."). No web search needed — infer from the title. Return ONLY a JSON array of ${batch.length} strings, same order, no other text.
 
 ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
       const text = await call(prompt);
       const t = text.replace(/```json|```/g,"").trim();
       const a=t.indexOf("["), z=t.lastIndexOf("]");
@@ -1731,7 +1746,7 @@ async function autoTag(limit){
 Return ONLY a JSON array of ${queue.length} objects, same order, shape: [{"t":["tag1","tag2"],"c":"Category Name"}]
 
 ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
       const text = await call(prompt);
       const t = text.replace(/```json|```/g,"").trim();
       const a=t.indexOf("["), z=t.lastIndexOf("]");
@@ -1818,7 +1833,7 @@ async function fetchSelectedInfo(){
       const prompt = `For EACH numbered saved-item title, write ONE short sentence (under 20 words) describing what it likely is. No platform names, no "This is" filler — start with the substance. Return ONLY a JSON array of ${noDesc.length} strings, same order.
 
 ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
       const text = await call(prompt);
       const t=text.replace(/```json|```/g,"").trim();
       const a=t.indexOf("["), z=t.lastIndexOf("]");
@@ -2091,7 +2106,7 @@ async function enrichOnOpen(it, idx){
     }
     if(!it.desc && (S.keys[S.provider] || S.provider==="local")){
       try{
-        const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+        const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
         const text = await call(`Write ONE short sentence (under 20 words) describing what this saved item likely is: "${it.title}". No platform names, no filler — start with the substance. Return ONLY the sentence, no quotes.`);
         const d=text.replace(/^["'\s]+|["'\s]+$/g,"").trim();
         if(d.length>10 && d.length<250){ it.desc=d; changed=true; }
@@ -2281,7 +2296,7 @@ SAMPLE OF THINGS HE SAVES:
 ${sample||"(none)"}
 
 Suggest 6-10 NEW feed categories (2-4 words each, title case) that would usefully partition his interests — specific enough to be meaningful, broad enough to fill a feed section. Return ONLY a JSON array of strings.`;
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const text = await call(prompt);
     const t = text.replace(/```json|```/g,"").trim();
     const a=t.indexOf("["), z=t.lastIndexOf("]");
@@ -2322,7 +2337,7 @@ He just typed this rough musing about things he might be into:
 "${txt}"
 
 Suggest 10-14 concise interest categories (2-5 words each) he could add to his profile. Make them specific and feed-able (good topics for finding articles/projects), expand on what he typed, include a few adjacent ideas he didn't think of, and do NOT duplicate anything already in his profile. Return ONLY a JSON array of strings, e.g. ["MIG welding basics","drip irrigation automation"]`;
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, local:callLocal}[S.provider];
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const text = await call(prompt);
     const t = text.replace(/```json|```/g,"").trim();
     const a=t.indexOf("["), b=t.lastIndexOf("]");
