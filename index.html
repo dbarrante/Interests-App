@@ -2097,6 +2097,7 @@ async function enrichOnOpen(it, idx){
 /* ============ batch "capture missing" ============ */
 const BATCH_CAP = 100;   // per run; re-run for more
 let batchUI = {active:false, done:0, total:0};
+let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress briefly
 // a card worth auto-capturing: has a link, no real image, not already a known
 // block page, and not a Facebook permalink (those just hit a login wall)
 function needsCapture(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
@@ -2106,22 +2107,29 @@ function startBatchCapture(){
   if(!need.length){ toast("No cards are missing a picture"); return; }
   const items = need.slice(0, BATCH_CAP).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
   save("imported", imported);   // persist any new ids
-  try{ localStorage.setItem("ia_batch_request", JSON.stringify({items, delay:(S.captureDelay||0)*1000})); }catch(e){}
+  _batchIgnoreUntil = 0;
+  try{ localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel"); localStorage.setItem("ia_batch_request", JSON.stringify({items, delay:(S.captureDelay||0)*1000})); }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this running.", 6000);
   renderImportedKeepFocus();
 }
 function cancelBatchCapture(){
-  try{ localStorage.setItem("ia_batch_cancel","1"); }catch(e){}
-  batchUI.active=false; toast("Stopping capture run…"); renderImportedKeepFocus();
+  // tell the extension to stop, clear stale progress, and revert the button now
+  try{ localStorage.setItem("ia_batch_cancel","1"); localStorage.removeItem("ia_batch_progress"); }catch(e){}
+  _batchIgnoreUntil = Date.now()+8000;
+  batchUI={active:false, done:batchUI.done, total:batchUI.total};
+  toast("Capture run stopped"); renderImportedKeepFocus();
 }
 function pollBatchProgress(){
+  if(Date.now() < _batchIgnoreUntil) return;          // just stopped — don't flip back to Stop
   let p; try{ p=JSON.parse(localStorage.getItem("ia_batch_progress")||"null"); }catch(e){ return; }
   if(!p) return;
   const was=batchUI.active;
   batchUI={active:!!p.active, done:p.done||0, total:p.total||0};
   const btn=document.getElementById("batchBtn");
-  if(btn && batchUI.active) btn.textContent="■ Stop capture ("+batchUI.done+"/"+batchUI.total+")";
+  if(btn) btn.textContent = batchUI.active
+    ? ("■ Stop capture ("+batchUI.done+"/"+batchUI.total+")")
+    : ("📷 Capture missing ("+imported.filter(needsCapture).length+")");
   if(was && !batchUI.active){
     try{ localStorage.removeItem("ia_batch_progress"); }catch(e){}
     toast("Capture run finished — "+batchUI.done+"/"+batchUI.total+" processed");
