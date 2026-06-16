@@ -76,42 +76,57 @@
   }
 
   // ---- batch driver (the loop lives here, in the stable page context) ----
-  var batchBusy = false;
+  // Runs up to `concurrency` captures at once: page loads happen in parallel,
+  // the worker serializes the actual screenshots. State is held here + mirrored
+  // to ia_batch_state so it survives a service-worker sleep / page reload.
+  var B = null;            // active driver state {items,next,done,total,delay,conc}
+  var inFlight = 0;
   function writeProg(done, total, active) {
     try { localStorage.setItem("ia_batch_progress", JSON.stringify({ done: done, total: total, active: active, ts: Date.now() })); } catch (e) {}
   }
-  function driveBatch() {
-    if (batchBusy || isDisconnected()) return;
-    var st; try { st = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { return; }
-    if (!st || !st.items || !st.items.length || st.done >= st.items.length) return;
-    batchBusy = true;
-    runOne();
-  }
-  function endBatch(done, total) {
-    batchBusy = false;
+  function saveState() { if (B) try { localStorage.setItem("ia_batch_state", JSON.stringify({ items: B.items, next: B.next, done: B.done, total: B.total, delay: B.delay, concurrency: B.conc, active: true })); } catch (e) {} }
+  function endBatch() {
+    var done = B ? B.done : 0, total = B ? B.total : 0;
+    B = null; inFlight = 0;
     writeProg(done, total, false);
     try { localStorage.removeItem("ia_batch_state"); } catch (e) {}
     log("Batch finished " + done + "/" + total);
   }
-  function runOne() {
-    var st; try { st = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { st = null; }
-    if (!st || !st.items) { batchBusy = false; return; }
-    if (localStorage.getItem("ia_batch_cancel")) { localStorage.removeItem("ia_batch_cancel"); return endBatch(st.done, st.items.length); }
-    if (st.done >= st.items.length) return endBatch(st.done, st.items.length);
-    var item = st.items[st.done];
-    writeProg(st.done, st.items.length, true);
-    chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: st.delay || 0 } }, function (resp) {
-      if (chrome.runtime.lastError) {            // SW was waking/asleep — retry same item shortly
-        if (/invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); batchBusy = false; return; }
-        setTimeout(runOne, 1500); return;
+  function driveBatch() {
+    if (isDisconnected()) return;
+    if (!B) {
+      var st; try { st = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { return; }
+      if (!st || !st.items || !st.items.length) return;
+      var startAt = (typeof st.next === "number") ? st.next : (st.done || 0);
+      if (startAt >= st.items.length) { try { localStorage.removeItem("ia_batch_state"); } catch (e) {} return; }
+      B = { items: st.items, next: startAt, done: st.done || 0, total: st.items.length, delay: st.delay || 0, conc: Math.max(1, Math.min(10, st.concurrency || 1)) };
+      log("Batch start: " + B.total + " items, concurrency " + B.conc);
+    }
+    pump();
+  }
+  function pump() {
+    if (!B) return;
+    if (localStorage.getItem("ia_batch_cancel")) { localStorage.removeItem("ia_batch_cancel"); return endBatch(); }
+    // finished: all dispatched and all returned
+    if (B.next >= B.items.length && inFlight === 0) return endBatch();
+    while (B && inFlight < B.conc && B.next < B.items.length && !localStorage.getItem("ia_batch_cancel")) {
+      var item = B.items[B.next++];
+      saveState();
+      inFlight++;
+      dispatch(item);
+    }
+  }
+  function dispatch(item, tries) {
+    tries = tries || 0;
+    chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: B ? B.delay : 0 } }, function (resp) {
+      if (chrome.runtime.lastError) {
+        if (/invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); B = null; inFlight = 0; return; }
+        if (tries < 5 && B && !localStorage.getItem("ia_batch_cancel")) { setTimeout(function () { dispatch(item, tries + 1); }, 1500); return; } // keep slot, retry same item
+        inFlight--; if (B) { B.done++; saveState(); writeProg(B.done, B.total, true); } pump(); return;
       }
-      // advance (re-read state so a Stop mid-item is honored)
-      var cur; try { cur = JSON.parse(localStorage.getItem("ia_batch_state") || "null"); } catch (e) { cur = st; }
-      if (!cur) { batchBusy = false; return; }
-      cur.done = (cur.done || 0) + 1;
-      try { localStorage.setItem("ia_batch_state", JSON.stringify(cur)); } catch (e) {}
-      writeProg(cur.done, cur.items.length, true);
-      setTimeout(runOne, 400);
+      inFlight--;
+      if (B) { B.done++; saveState(); writeProg(B.done, B.total, true); }
+      pump();
     });
   }
 

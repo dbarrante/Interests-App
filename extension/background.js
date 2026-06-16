@@ -5,6 +5,15 @@ const MAX_QUEUE = 20;
 let pendingRequest = null;
 let pendingTimer = null;
 let recentWatches = [];   // recently-opened card URLs, for unreachable-site detection
+// serialize the actual screenshot — captureVisibleTab can only grab one visible
+// tab at a time, even though batch page-loads run in parallel
+let captureLock = Promise.resolve();
+function withCaptureLock(fn) {
+  const prev = captureLock;
+  let release;
+  captureLock = new Promise((r) => { release = r; });
+  return prev.then(fn).finally(release);
+}
 
 function normalizeUrl(url) {
   try {
@@ -95,15 +104,17 @@ async function captureTab(tab, delayMs, force, cardId) {
       log("Page is a block/challenge screen — skipping screenshot & metadata");
     } else {
       try {
-        // focus the window/tab first so captureVisibleTab grabs the right surface
-        try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
-        try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
-        await new Promise((r) => setTimeout(r, 150));
-        // bound the capture so a stuck tab can never hang the (batch) pipeline
-        screenshot = await Promise.race([
-          chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 60 }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("capture timeout")), 8000)),
-        ]);
+        // serialize: only one tab can be the "visible" capture target at a time
+        screenshot = await withCaptureLock(async () => {
+          try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
+          try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
+          await new Promise((r) => setTimeout(r, 150));
+          // bound the capture so a stuck tab can never hang the pipeline
+          return await Promise.race([
+            chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 60 }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("capture timeout")), 8000)),
+          ]);
+        });
         log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
       } catch (e) {
         log("Screenshot failed: " + e.message);
@@ -239,13 +250,10 @@ async function finishPending(tab) {
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
-  // batch (one-item) capture: a tab we opened finished loading (match by tab
-  // identity, not URL, so redirects don't stall it)
-  if (onePending && !onePending.done && details.tabId === onePending.tabId) {
-    const bp = onePending; bp.done = true; clearTimeout(bp.fb); onePending = null;
-    let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { bp.resolve("gone"); return; }
-    await captureTab(tab, bp.delay, false, bp.id);
-    bp.resolve("captured");
+  // batch capture: a tab we opened finished loading (match by tab identity,
+  // not URL, so redirects don't stall it)
+  if (pendings[details.tabId] && !pendings[details.tabId].settled) {
+    await capturePending(details.tabId);
     return;
   }
   if (!pendingRequest) return;
@@ -303,38 +311,44 @@ async function reportDead(url, reason, tabId){
   await setStatus("Removing card + closing tab — " + reason, false);
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
   await closeTabSafe(tabId);
-  // settle the in-flight batch item (dead links are removed + counted)
-  if (onePending && !onePending.done && normalizeUrl(onePending.url) === normalizeUrl(url)) { const bp = onePending; bp.done = true; clearTimeout(bp.fb); onePending = null; bp.resolve("dead"); }
+  // settle the in-flight batch item for this tab (dead links are removed + counted)
+  settlePending(tabId, "dead");
 }
 /* ============ batch capture (one item per call) ============
    The LOOP is driven by the page-side bridge (a stable context). The service
-   worker only handles ONE capture per "captureOneTab" message — short enough
-   to finish before the SW can be suspended. This survives SW termination:
-   each item is a fresh message that wakes a fresh worker. */
-let onePending = null;
+   worker handles ONE captureOneTab per message — short enough to finish before
+   the SW can be suspended. Up to `concurrency` run at once; `pendings` tracks
+   each in-flight tab so onCompleted/reportDead settle the right one. */
+let pendings = {};   // tabId -> pending
+function settlePending(tabId, why) {
+  const p = pendings[tabId];
+  if (!p || p.settled) return;
+  p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd); delete pendings[tabId];
+  p.resolve(why);
+}
+async function capturePending(tabId) {   // capture whatever's loaded, then settle
+  const p = pendings[tabId];
+  if (!p || p.settled) return;
+  p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd);
+  try { const t = await chrome.tabs.get(tabId); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, p.delay, false, p.id); } catch (e) {}
+  delete pendings[tabId];
+  p.resolve("captured");
+}
 async function captureOneTab(url, id, delay) {
   let tab;
-  try { tab = await chrome.tabs.create({ url, active: true }); }
+  try { tab = await chrome.tabs.create({ url, active: false }); }   // load in background — don't steal focus per tab
   catch (e) { return "tab-fail"; }
+  const tabId = tab.id;
   recentWatches.push({ url, id, ts: Date.now() });
-  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-40);
-  setBadge("…", 0);
+  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
   const outcome = await new Promise((resolve) => {
-    let settled = false;
-    const done = (why) => { if (settled) return; settled = true; if (onePending && onePending.tabId === tab.id) { onePending.done = true; clearTimeout(onePending.fb); onePending = null; } resolve(why); };
-    onePending = {
-      url, id, tabId: tab.id, delay: delay || 0, done: false, resolve: done,
-      fb: setTimeout(async () => {
-        if (!onePending || onePending.done || onePending.tabId !== tab.id) return;
-        onePending.done = true; onePending = null;
-        try { const t = await chrome.tabs.get(tab.id); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, 0, false, id); } catch (e) {}
-        done("fallback");
-      }, (delay || 0) + 12000),
+    pendings[tabId] = {
+      url, id, delay: delay || 0, settled: false, resolve,
+      fb: setTimeout(() => { capturePending(tabId); }, (delay || 0) + 15000),   // page never fired load → grab what's there
+      wd: setTimeout(() => settlePending(tabId, "watchdog"), (delay || 0) + 45000),  // hard give-up
     };
-    setTimeout(() => done("watchdog"), (delay || 0) + 30000);
   });
-  try { await chrome.tabs.remove(tab.id); } catch (e) {}
-  setBadge("", 0);
+  try { await chrome.tabs.remove(tabId); } catch (e) {}
   return outcome;
 }
 

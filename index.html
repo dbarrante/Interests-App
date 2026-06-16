@@ -359,6 +359,9 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
         <label>Capture delay (seconds)</label>
         <input type="number" id="captureDelay" min="0" max="30" step="1" style="width:80px">
         <div class="hint">0 = capture immediately when page loads. Higher values help with slow sites or CAPTCHAs.</div>
+        <label style="margin-top:14px;display:block">Simultaneous retrievals (batch capture)</label>
+        <input type="number" id="captureConcurrency" min="1" max="10" step="1" style="width:80px">
+        <div class="hint">How many pages “Capture missing” loads at once (1–10). Higher = faster, but more tabs open in the background. Screenshots are still taken one at a time.</div>
         <label style="margin-top:14px;display:block">Re-capture older articles</label>
         <select id="recaptureMonths" style="width:auto">
           <option value="0">Never — capture each article once</option>
@@ -446,6 +449,7 @@ const DEFAULTS = {
   popularOnly:false,
   oprKey:"",
   captureDelay:3,
+  captureConcurrency:3,
   recaptureMonths:0,
   showDates:false,
   autoBackup:0,
@@ -831,6 +835,8 @@ function renderSettings(){
   document.getElementById("oprKey").oninput = e=>{ S.oprKey=e.target.value.trim(); };
   document.getElementById("captureDelay").value = S.captureDelay||0;
   document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
+  document.getElementById("captureConcurrency").value = S.captureConcurrency||1;
+  document.getElementById("captureConcurrency").oninput = e=>{ S.captureConcurrency=Math.max(1,Math.min(10,+e.target.value||1)); save("settings",S); };
   document.getElementById("recaptureMonths").value = String(S.recaptureMonths||0);
   document.getElementById("recaptureMonths").onchange = e=>{ S.recaptureMonths=+e.target.value||0; save("settings",S); };
   document.getElementById("darkToggle").checked = (localStorage.getItem("ia_theme")==="dark");
@@ -2111,7 +2117,7 @@ function startBatchCapture(){
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
     // the page-side bridge drives this loop (survives the extension's service-worker sleep)
-    localStorage.setItem("ia_batch_state", JSON.stringify({items, done:0, total:items.length, delay:(S.captureDelay||0)*1000, active:true}));
+    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:(S.captureDelay||0)*1000, concurrency:Math.max(1,Math.min(10,S.captureConcurrency||1)), active:true}));
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this tab open.", 6000);
