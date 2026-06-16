@@ -1387,7 +1387,8 @@ function normTs(v){
 }
 function clean(i){
   let title=fixTxt(i.title).replace(/^Watched\s+/,"").trim();
-  const o={title:title.slice(0,250), url:i.url||null, ts:(normTs(i.ts) || Date.now())};
+  const o={title:title.slice(0,250), url:i.url||null, ts:Date.now()};
+  const sd=normTs(i.ts); if(sd) o.sdate=sd;   // real "date saved" from the export (only when known)
   if(i.img) o.img=i.img;
   if(i.desc) o.desc=fixTxt(i.desc).trim().slice(0,220);
   return o;
@@ -1454,8 +1455,8 @@ async function handleImport(ev){
       if(i.img && !ex.img){ ex.img=i.img; changed=true; }
       if(i.desc && (!ex.desc || ex.desc.startsWith("Saved from") || ex.desc.startsWith("From your"))){ ex.desc=i.desc; changed=true; }
       if(i.url && !ex.url){ ex.url=i.url; changed=true; }
-      // backfill the real saved date from the export (overrides the import-day default)
-      const its=normTs(i.ts); if(its && ex.ts!==its){ ex.ts=its; changed=true; }
+      // backfill the real saved date from the export (only when the export has one)
+      const sd=normTs(i.ts); if(sd && ex.sdate!==sd){ ex.sdate=sd; changed=true; }
       if(changed) updated++;
     } else {
       imported.push(i); added++;
@@ -1517,7 +1518,7 @@ function renderImported(){
             && (!impSrc || platformOf(r.it)===impSrc)
             && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
             && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url)))))
-    .sort((a,b)=> impSort==="oldest" ? (a.it.ts||0)-(b.it.ts||0) : (b.it.ts||0)-(a.it.ts||0));
+    .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
   v.innerHTML = `
     <div class="imp-head">
@@ -1811,7 +1812,7 @@ function impCardHTML(it,idx){
     <div style="flex:1">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
-      <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.ts)?" · &#128197; "+esc(fmtCardDate(it.ts)):""}</div>
+      <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.sdate)?" · &#128197; "+esc(fmtCardDate(it.sdate)):""}</div>
       ${tagRow(it.tags)}
       <div class="imp-acts">
         ${it.liked?"":`<button onclick="impLike(${idx})">&#128077; Like</button>`}
