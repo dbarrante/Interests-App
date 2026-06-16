@@ -533,20 +533,23 @@ async function initImageStore(){
     }
   }
   if(migrated){ save("imported",imported); console.log("[img] migrated "+migrated+" inline images to IndexedDB"); }
-  // Favicon sweep: any card whose image is just a site favicon/placeholder gets
-  // cleared and flagged for re-capture, so the extension can fetch a real
-  // screenshot. Idempotent — once cleared there's nothing left to match.
-  let faviconCleared=0;
+  // Favicon sweep: a card shows the favicon/initials placeholder whenever it has
+  // no usable picture — an empty image, a stored proxy/favicon URL, a now-dead
+  // IndexedDB reference (image was lost), or a "blocked" flag. Reset those so
+  // they re-enter "Capture missing" and the extension fetches a real screenshot.
+  // Idempotent: after a reset there's nothing left to match, so it won't churn.
+  let favReset=0;
   for(const it of imported){
-    const cur = resolveImg(it.img) || it.img || "";
-    if(cur && isFavicon(cur)){
-      setCardImage(it, "");                                       // drop the favicon
-      delete it.captured; delete it.blocked;                      // treat as never-captured…
-      delete it.lastUpdate; delete it.lastResult;                 // …so it enters "Capture missing"
-      faviconCleared++;
+    const resolved = resolveImg(it.img);                          // "" if empty OR dead idb ref
+    const deadOrBad = it.img && (!resolved || isBadImg(resolved)); // stored image is unusable
+    if(deadOrBad || it.blocked){
+      setCardImage(it, "");                                        // drop the dead ref / bad URL
+      delete it.blocked; delete it.captured;                       // treat as never-captured…
+      delete it.lastUpdate; delete it.lastResult;                  // …so it enters "Capture missing"
+      favReset++;
     }
   }
-  if(faviconCleared){ save("imported",imported); console.log("[img] cleared "+faviconCleared+" favicon image(s) for re-capture"); }
+  if(favReset){ save("imported",imported); console.log("[img] flagged "+favReset+" placeholder/favicon card(s) for re-capture"); setTimeout(()=>toast(favReset+" placeholder card"+(favReset===1?"":"s")+" flagged for re-capture",5000),800); }
 }
 
 /* ============ ui helpers ============ */
