@@ -2063,15 +2063,15 @@ function impOpen(idx){
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
-  // decide whether to capture: skip already-captured cards unless their
-  // capture is older than the re-capture threshold (Settings). A stale
-  // refresh forces an overwrite so the old image/description gets replaced.
+  // Deliberately opening a card always captures if it still needs an image —
+  // even if a batch attempt failed before (opening IS the explicit request).
+  // The batch's no-repeat rule lives in needsCapture, not here.
   const needs = isBadImg(it.img) || !it.desc;
   const recaptureMs = (S.recaptureMonths||0) * 2592000000; // months × 30 days
   const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
-  const tried = (it.captured || it.lastUpdate) && !stale;   // already attempted — don't auto re-capture
-  const doCapture = !tried && (needs || stale);
-  if(doCapture){ it.lastUpdate=Date.now(); if(!it.lastResult) it.lastResult="pending"; save("imported",imported); }
+  const alreadyGood = it.captured && !stale;   // already successfully captured — skip
+  const doCapture = !alreadyGood && (needs || stale);
+  if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; save("imported",imported); }
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
   try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture})); }catch(e){}
