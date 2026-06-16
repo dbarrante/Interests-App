@@ -28,14 +28,29 @@
     if (isDisconnected()) return;
     try {
       var raw = localStorage.getItem(REQUEST_KEY);
-      if (!raw) return;
-      var req = JSON.parse(raw);
-      if (!req || !req.url) return;
-      localStorage.removeItem(REQUEST_KEY);
-      log("Forwarding capture request: " + req.url);
-      chrome.runtime.sendMessage({ action: "captureRequest", data: req }, function() {
-        if (chrome.runtime.lastError) log("sendMessage error: " + chrome.runtime.lastError.message);
-      });
+      if (raw) {
+        var req = JSON.parse(raw);
+        if (req && req.url) {
+          localStorage.removeItem(REQUEST_KEY);
+          log("Forwarding capture request: " + req.url);
+          chrome.runtime.sendMessage({ action: "captureRequest", data: req }, function() {
+            if (chrome.runtime.lastError) log("sendMessage error: " + chrome.runtime.lastError.message);
+          });
+        }
+      }
+      var braw = localStorage.getItem("ia_batch_request");
+      if (braw) {
+        localStorage.removeItem("ia_batch_request");
+        var b = JSON.parse(braw);
+        if (b && b.items && b.items.length) {
+          log("Forwarding batch capture: " + b.items.length + " items");
+          chrome.runtime.sendMessage({ action: "batchCapture", data: b }, function() {});
+        }
+      }
+      if (localStorage.getItem("ia_batch_cancel")) {
+        localStorage.removeItem("ia_batch_cancel");
+        chrome.runtime.sendMessage({ action: "cancelBatch" }, function() {});
+      }
     } catch (e) {
       if (/invalidated|disconnected/i.test(e.message)) die(e.message);
       else log("checkForRequest error: " + e.message);

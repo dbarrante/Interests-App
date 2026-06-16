@@ -237,8 +237,16 @@ async function finishPending(tab) {
 // than tab.status, which can stay "loading" on pages with open connections)
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
-  if (!pendingRequest) return;
   if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
+  // batch capture: this is a tab we opened for an item
+  if (batchPending && !batchPending.done && details.tabId === batchPending.tabId && normalizeUrl(details.url) === normalizeUrl(batchPending.url)) {
+    batchPending.done = true; const bp = batchPending; batchPending = null;
+    let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { bp.resolve("gone"); return; }
+    await captureTab(tab, batchDelay, false, bp.id);
+    bp.resolve("captured");
+    return;
+  }
+  if (!pendingRequest) return;
   if (normalizeUrl(details.url) !== normalizeUrl(pendingRequest.url)) return;
   let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { return; }
   log("Page loaded for pending request: " + details.url);
@@ -293,7 +301,57 @@ async function reportDead(url, reason, tabId){
   await setStatus("Removing card + closing tab — " + reason, false);
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
   await closeTabSafe(tabId);
+  // settle the batch item (dead links are removed and counted as processed)
+  if (batchPending && !batchPending.done && normalizeUrl(batchPending.url) === normalizeUrl(url)) { batchPending.done = true; const bp = batchPending; batchPending = null; bp.resolve("dead"); }
 }
+/* ============ batch capture ============
+   Open each card's URL in turn, capture it, close the tab. Cancellable.
+   Outcome per item is settled by webNavigation.onCompleted (captured),
+   reportDead (dead/removed), or a timeout. */
+let batchItems = [], batchActive = false, batchPending = null, batchDone = 0, batchTotal = 0, batchDelay = 0;
+async function pushBatchProgress() {
+  const prog = { active: batchActive, done: batchDone, total: batchTotal };
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (t.url && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)) {
+        await chrome.scripting.executeScript({ target: { tabId: t.id }, func: (p) => localStorage.setItem("ia_batch_progress", JSON.stringify(p)), args: [prog] }).catch(()=>{});
+      }
+    }
+  } catch (e) {}
+}
+async function startBatch(items, delay) {
+  if (batchActive) { log("batch already running"); return; }
+  batchItems = (items || []).slice(); batchTotal = batchItems.length; batchDone = 0;
+  batchDelay = typeof delay === "number" ? delay : DEFAULT_DELAY_MS;
+  if (!batchTotal) return;
+  batchActive = true;
+  log("Batch start: " + batchTotal + " items");
+  await pushBatchProgress();
+  runBatchNext();
+}
+function cancelBatch() { if (batchActive) { log("batch cancelled"); batchActive = false; batchItems = []; if (batchPending) { batchPending.done = true; const r = batchPending.resolve; batchPending = null; r("cancel"); } } }
+async function runBatchNext() {
+  if (!batchActive) { await pushBatchProgress(); return; }
+  if (!batchItems.length) { batchActive = false; setBadge("✓", 4000); await setStatus("Batch done: " + batchDone + "/" + batchTotal, true); await pushBatchProgress(); return; }
+  const item = batchItems.shift();
+  recentWatches.push({ url: item.url, id: item.id, ts: Date.now() });
+  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-40);
+  setBadge("" + (batchDone + 1), 0);
+  await setStatus("Batch capture " + (batchDone + 1) + "/" + batchTotal, true);
+  let tab;
+  try { tab = await chrome.tabs.create({ url: item.url, active: true }); }
+  catch (e) { batchDone++; return runBatchNext(); }
+  await new Promise((resolve) => {
+    batchPending = { url: item.url, id: item.id, tabId: tab.id, resolve, done: false };
+    setTimeout(() => { if (batchPending && !batchPending.done && batchPending.tabId === tab.id) { batchPending.done = true; const r = batchPending.resolve; batchPending = null; r("timeout"); } }, 45000);
+  });
+  try { await chrome.tabs.remove(tab.id); } catch (e) {}
+  batchDone++;
+  await pushBatchProgress();
+  if (batchActive) setTimeout(runBatchNext, 500); else { await setStatus("Batch cancelled at " + batchDone + "/" + batchTotal, false); await pushBatchProgress(); }
+}
+
 // network-level failure (DNS, connection refused/reset/timeout, cert)
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (details.frameId !== 0) return;                  // main frame only
@@ -312,6 +370,13 @@ chrome.webRequest.onCompleted.addListener((details) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "captureRequest" && msg.data) {
     handleCaptureRequest(msg.data);
+  }
+
+  if (msg.action === "batchCapture" && msg.data) {
+    startBatch(msg.data.items, msg.data.delay);
+  }
+  if (msg.action === "cancelBatch") {
+    cancelBatch();
   }
 
   if (msg.action === "manualCapture") {
