@@ -99,10 +99,11 @@ async function captureTab(tab, delayMs, force, cardId) {
         try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
         try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
         await new Promise((r) => setTimeout(r, 150));
-        screenshot = await chrome.tabs.captureVisibleTab(windowId, {
-          format: "jpeg",
-          quality: 60,
-        });
+        // bound the capture so a stuck tab can never hang the (batch) pipeline
+        screenshot = await Promise.race([
+          chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 60 }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("capture timeout")), 8000)),
+        ]);
         log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
       } catch (e) {
         log("Screenshot failed: " + e.message);
@@ -238,9 +239,10 @@ async function finishPending(tab) {
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
-  // batch capture: this is a tab we opened for an item
-  if (batchPending && !batchPending.done && details.tabId === batchPending.tabId && normalizeUrl(details.url) === normalizeUrl(batchPending.url)) {
-    batchPending.done = true; const bp = batchPending; batchPending = null;
+  // batch capture: a tab we opened for an item finished loading (match by tab
+  // identity, not URL, so redirects don't stall the run)
+  if (batchPending && !batchPending.done && details.tabId === batchPending.tabId) {
+    const bp = batchPending; bp.done = true; clearTimeout(bp.fallback); batchPending = null;
     let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { bp.resolve("gone"); return; }
     await captureTab(tab, batchDelay, false, bp.id);
     bp.resolve("captured");
@@ -302,7 +304,7 @@ async function reportDead(url, reason, tabId){
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
   await closeTabSafe(tabId);
   // settle the batch item (dead links are removed and counted as processed)
-  if (batchPending && !batchPending.done && normalizeUrl(batchPending.url) === normalizeUrl(url)) { batchPending.done = true; const bp = batchPending; batchPending = null; bp.resolve("dead"); }
+  if (batchPending && !batchPending.done && normalizeUrl(batchPending.url) === normalizeUrl(url)) { const bp = batchPending; bp.done = true; clearTimeout(bp.fallback); batchPending = null; bp.resolve("dead"); }
 }
 /* ============ batch capture ============
    Open each card's URL in turn, capture it, close the tab. Cancellable.
@@ -330,7 +332,7 @@ async function startBatch(items, delay) {
   await pushBatchProgress();
   runBatchNext();
 }
-function cancelBatch() { if (batchActive) { log("batch cancelled"); batchActive = false; batchItems = []; if (batchPending) { batchPending.done = true; const r = batchPending.resolve; batchPending = null; r("cancel"); } } }
+function cancelBatch() { if (batchActive) { log("batch cancelled"); batchActive = false; batchItems = []; if (batchPending) { batchPending.resolve("cancel"); } } }
 async function runBatchNext() {
   if (!batchActive) { await pushBatchProgress(); return; }
   if (!batchItems.length) { batchActive = false; setBadge("✓", 4000); await setStatus("Batch done: " + batchDone + "/" + batchTotal, true); await pushBatchProgress(); return; }
@@ -342,9 +344,25 @@ async function runBatchNext() {
   let tab;
   try { tab = await chrome.tabs.create({ url: item.url, active: true }); }
   catch (e) { batchDone++; return runBatchNext(); }
+  // Settle this item by: (a) onCompleted/reportDead via batchPending, (b) a
+  // fallback that captures whatever's loaded if no load event fires, and
+  // (c) a hard watchdog so a hung captureTab can never freeze the loop.
   await new Promise((resolve) => {
-    batchPending = { url: item.url, id: item.id, tabId: tab.id, resolve, done: false };
-    setTimeout(() => { if (batchPending && !batchPending.done && batchPending.tabId === tab.id) { batchPending.done = true; const r = batchPending.resolve; batchPending = null; r("timeout"); } }, 45000);
+    let settled = false;
+    const done = (why) => { if (settled) return; settled = true; if (batchPending && batchPending.tabId === tab.id) { batchPending.done = true; clearTimeout(batchPending.fallback); batchPending = null; } resolve(why); };
+    batchPending = {
+      url: item.url, id: item.id, tabId: tab.id, done: false,
+      resolve: (why) => done(why),
+      // capture whatever has loaded if the page never fires onCompleted
+      fallback: setTimeout(async () => {
+        if (!batchPending || batchPending.done || batchPending.tabId !== tab.id) return;
+        batchPending.done = true; batchPending = null;
+        try { const t = await chrome.tabs.get(tab.id); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, 0, false, item.id); } catch (e) {}
+        done("fallback");
+      }, (batchDelay || 0) + 12000),
+    };
+    // absolute last resort — always advance even if captureTab itself hangs
+    setTimeout(() => done("watchdog"), (batchDelay || 0) + 30000);
   });
   try { await chrome.tabs.remove(tab.id); } catch (e) {}
   batchDone++;
