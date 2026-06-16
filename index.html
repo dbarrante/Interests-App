@@ -1528,6 +1528,7 @@ function renderImported(){
       <button class="btn btn-ghost" onclick="toggleImpSort()" title="Sort order">${impSort==="newest"?"&#9660; Newest":"&#9650; Oldest"}</button>
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
       ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
+      ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -2066,6 +2067,16 @@ async function enrichOnOpen(it, idx){
       document.addEventListener("visibilitychange", onReturn);
     }
   }catch(e){ console.warn("enrichOnOpen failed",e); }
+}
+function groomNoLink(){
+  const nolink=imported.filter(i=>!i.url);
+  if(!nolink.length){ toast("No link-less cards to remove"); return; }
+  if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
+  nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ idbDelImg(it.id); delete _imgCache[it.id]; } });
+  imported = imported.filter(i=>i.url);
+  save("imported",imported); writeSavesFile(); updateCounts();
+  if(curTab==="imported") renderImported();
+  toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
 }
 function impLike(idx){
   const it=imported[idx]; if(!it) return;
