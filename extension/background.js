@@ -70,10 +70,27 @@ async function deliverToApp(capture) {
   return delivered;
 }
 
+// fetch a remote image and return it as a data URL. Extensions with host
+// permissions bypass CORS, so this works for fbcdn/scontent images that a page
+// script couldn't read. Returns "" on failure or if too large.
+async function fetchAsDataUrl(url) {
+  try {
+    if (!/^https?:/.test(url || "")) return "";
+    const r = await fetch(url);
+    if (!r.ok) return "";
+    const blob = await r.blob();
+    if (!/^image\//.test(blob.type) || blob.size > 4000000) return "";
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return "data:" + (blob.type || "image/jpeg") + ";base64," + btoa(bin);
+  } catch (e) { log("fetchAsDataUrl failed: " + e.message); return ""; }
+}
+
 // ---- "Clip this page" — save the current page to the Interests app as a new
 // Saved card. Used by the popup button and the right-click context menu.
-// opts: { url, desc, title } override the page defaults (e.g. a right-clicked
-// link's URL, or selected text as the description).
+// opts: { url, desc, title, image, noShot } — image is a preferred card picture
+// (e.g. the original Facebook post photo); noShot skips the page screenshot.
 async function clipCurrentPage(tab, opts = {}) {
   if (!tab || !tab.url || /^(chrome|chrome-extension|about|edge|view-source):/.test(tab.url)) {
     await setStatus("Cannot clip this page (browser page)", false);
@@ -85,16 +102,21 @@ async function clipCurrentPage(tab, opts = {}) {
   let meta = {};
   try { const mr = await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] }); meta = mr?.[0]?.result || {}; }
   catch (e) { log("clip meta failed: " + e.message); }
-  // screenshot of the page you're looking at (it's the active/foreground tab)
+  // screenshot of the page you're looking at — skipped when we already have the
+  // original image (e.g. a Facebook post photo), which avoids capturing the
+  // greyed-out page behind the still-open Save menu.
   let shot = "";
-  try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
-  catch (e) { log("clip screenshot failed: " + e.message); }
+  if (!opts.noShot) {
+    try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
+    catch (e) { log("clip screenshot failed: " + e.message); }
+  }
   const blocked = !!meta.blocked;
   const payload = {
     clip: true,
     url: opts.url || tab.url,
     title: opts.title || meta.title || tab.title || tab.url,
     desc: opts.desc || (blocked ? "" : (meta.desc || "")),
+    clipImage: opts.image || "",
     ogImage: blocked ? "" : (meta.ogImage || ""),
     contentImage: blocked ? "" : (meta.contentImage || ""),
     screenshot: shot, ts: Date.now(),
@@ -518,10 +540,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         const d = msg.data;
+        // save the ORIGINAL post photo (not a screenshot of the dimmed page).
+        const imgData = d.image ? await fetchAsDataUrl(d.image) : "";
         const res = await clipCurrentPage(tab, {
           url: d.url || d.pageUrl,
           title: d.title,
           desc: (d.text || d.author || "").trim() || undefined,
+          image: imgData || d.image || "",   // data URL preferred; raw URL as fallback
+          noShot: !!(imgData || d.image),    // have a real image → don't screenshot the greyed page
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }

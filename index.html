@@ -2656,8 +2656,13 @@ function addClip(cap){
   }
   if(cap.title && (isNew || genericTitle(item.title||""))) item.title = cap.title.slice(0,250);
   if(!item.title) item.title = domain(cap.url)||cap.url;
-  // image: prefer the screenshot you actually saw; else the page's OG image
-  if(cap.screenshot){ setSavedImage(item, cap.screenshot); }
+  // image priority: an explicit clipImage (e.g. the original Facebook post photo)
+  // wins, then the screenshot you saw, then the page's OG image.
+  if(cap.clipImage){
+    if((cap.clipImage+"").indexOf("data:")===0){ setSavedImage(item, cap.clipImage); }
+    else if(/^https?:/.test(cap.clipImage)){ item.image=cap.clipImage; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
+  }
+  else if(cap.screenshot){ setSavedImage(item, cap.screenshot); }
   else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
   if(cap.desc && (isNew || item.benefit==="Clipped from the web.")){ const d=cleanDesc(cap.desc); if(d) item.benefit=d.slice(0,220); }
   persistAll(); updateCounts();

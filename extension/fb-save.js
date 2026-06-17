@@ -67,8 +67,16 @@
         // body text (strip the trailing reaction/comment chrome as best we can)
         text = (post.innerText || "").replace(/ /g, " ").trim().slice(0, 1200);
 
-        const img = post.querySelector('img[src*="scontent"], img[src*="fbcdn"]');
-        image = img ? img.src : "";
+        // the post's main photo — pick the LARGEST fbcdn image so we skip the
+        // tiny author avatar / reaction icons and grab the actual content image
+        let best = "", bestArea = 0;
+        Array.prototype.forEach.call(post.querySelectorAll("img"), function (im) {
+          const s = im.currentSrc || im.src || "";
+          if (!/scontent|fbcdn/.test(s)) return;
+          const area = (im.naturalWidth || im.width || 0) * (im.naturalHeight || im.height || 0);
+          if (area > bestArea) { bestArea = area; best = s; }
+        });
+        image = bestArea >= 40000 ? best : "";   // require ~200x200+ (skip avatars/icons)
       }
     } catch (e) {}
     return {
