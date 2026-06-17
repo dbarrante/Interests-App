@@ -92,9 +92,11 @@
           const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
           const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
           const image = U.largestImg(post, cfg.imageCdn) || U.largestImg(document, cfg.imageCdn);
-          const rect = (cfg.image === "region") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
+          // include the post rect for region OR photo strategies (photo uses it
+          // only as a fallback for text-only posts with no photo)
+          const rect = (cfg.image !== "screenshot") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
           const title = cfg.title ? cfg.title(author) : (author || "Saved post");
-          const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, pageUrl: location.href };
+          const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
           console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(author),
             "| url=", url, "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
           chrome.runtime.sendMessage({ action: "clipSocialPost", data: info }, function () {

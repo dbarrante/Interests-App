@@ -569,12 +569,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         const d = msg.data;
-        // Save the POST AREA: crop a screenshot to the post's rectangle (what
-        // you're looking at). Fall back to the original photo, then a full
-        // screenshot. All stored as data URLs (Facebook CDN URLs expire).
+        // Build the card image, ordered by the config's strategy. All results
+        // are durable data URLs (CDN URLs expire, so we never store them raw).
+        //   "photo"  (Facebook): the post's own photo first — ignores the
+        //            "Save To" dialog floating over the post; crop is fallback.
+        //   "region" (default): crop the post rectangle first.
+        const tryPhoto = function () { return d.image ? fetchAsDataUrl(d.image) : Promise.resolve(""); };
+        const tryCrop = function () { return (d.rect && d.rect.w > 40 && d.rect.h > 40) ? cropScreenshot(tab, d.rect) : Promise.resolve(""); };
         let imgData = "";
-        if (d.rect && d.rect.w > 40 && d.rect.h > 40) imgData = await cropScreenshot(tab, d.rect);
-        if (!imgData && d.image) imgData = await fetchAsDataUrl(d.image);
+        if (d.strategy === "photo") { imgData = await tryPhoto(); if (!imgData) imgData = await tryCrop(); }
+        else { imgData = await tryCrop(); if (!imgData) imgData = await tryPhoto(); }
         const res = await clipCurrentPage(tab, {
           url: d.url || d.pageUrl,
           title: d.title,

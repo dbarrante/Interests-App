@@ -45,7 +45,9 @@
   const facebook = {
     id: "facebook",
     match: function (h) { return /facebook\.com/.test(h); },
-    image: "region", imageCdn: /scontent|fbcdn/, preCaptureDelayMs: 550, hoverTimestamps: true,
+    // "photo": save the post's own photo (ignores the "Save To" collection
+    // dialog that floats over the post); region crop is only the text-post fallback.
+    image: "photo", imageCdn: /scontent|fbcdn/, preCaptureDelayMs: 550, hoverTimestamps: true,
     init: function (U) {
       document.addEventListener("click", function (e) {
         try {
