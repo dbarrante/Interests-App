@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "4.0",
+  "version": "4.1",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation", "webRequest", "contextMenus"],
   "host_permissions": ["<all_urls>"],
@@ -17,6 +17,11 @@
     {
       "matches": ["*://*.facebook.com/*"],
       "js": ["fb-save.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.instagram.com/*"],
+      "js": ["ig-save.js"],
       "run_at": "document_idle"
     }
   ],

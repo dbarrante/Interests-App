@@ -564,7 +564,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.action === "clipFacebookPost" && msg.data) {
+  if ((msg.action === "clipFacebookPost" || msg.action === "clipSocialPost") && msg.data) {
     (async () => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
