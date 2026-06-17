@@ -62,26 +62,31 @@
       const item = fbItem(e); if (!item) return null;
       const t = U.txtOf(item).toLowerCase().split("\n")[0];
       if (/(unsave|remove from saved)/.test(t)) return null;
-      return (/^save$|^save post$|^save video$|^save reel$|^save link$|save to (your )?saved/.test(t)) ? item : null;
+      const explicit = /^save (post|video|reel|link)$|save to (your )?saved/.test(t);
+      const bareSave = /^save$/.test(t);
+      if (!explicit && !bareSave) return null;
+      // a bare "Save" must be a real menu item in an open menu — otherwise a
+      // generic on-page "Save" button (settings, composer, etc.) would fire a clip
+      if (bareSave && !item.closest('[role="menu"]') && item.getAttribute("role") !== "menuitem" && item.getAttribute("role") !== "menuitemcheckbox") return null;
+      return item;
     },
     // Saving opens a "Save To" collection dialog that floats over the post.
-    // Close it (Done keeps the default save) so the region crop sees the post.
+    // Click only the POSITIVE confirm (Done/Save) — which keeps the default save —
+    // so the region crop sees the post. Never click X/Close/Cancel (that can close
+    // the post view or cancel the save); if no positive button, leave it alone.
     dismiss: function (U) {
       try {
         const dlgs = document.querySelectorAll('[role="dialog"]');
         for (let i = 0; i < dlgs.length; i++) {
           const d = dlgs[i];
-          if (!/save to/i.test((d.textContent || "").slice(0, 200))) continue;
-          const btns = d.querySelectorAll('[role="button"], button, a[role="link"], [aria-label]');
-          let done = null, close = null;
+          // the collection picker: "Save to…" / "New collection" / "Done"
+          if (!/save to|new collection|your collections/i.test((d.textContent || "").slice(0, 400))) continue;
+          const btns = d.querySelectorAll('[role="button"], button');
           for (let j = 0; j < btns.length; j++) {
             const lab = ((btns[j].innerText || btns[j].getAttribute("aria-label") || "")).trim().toLowerCase();
-            if (/^done$/.test(lab)) { done = btns[j]; break; }
-            if (/^close$/.test(lab)) close = btns[j];
+            if (lab === "done" || lab === "save") { btns[j].click(); return; }
           }
-          const btn = done || close;
-          if (btn) btn.click();
-          return;
+          return;   // matched the dialog but no positive button — leave it (don't risk cancelling)
         }
       } catch (e) {}
     },
@@ -96,8 +101,15 @@
       return perma;
     },
     extract: function (post, U) {
-      let author = U.txtOf(post.querySelector('h2 a, h3 a, h4 a, strong a, a[aria-label][role="link"]')).split("\n")[0].slice(0, 120);
-      if (!author) author = U.txtOf(document.querySelector('[role="dialog"] h2 a, [role="dialog"] h3 a, [role="complementary"] a[role="link"]')).split("\n")[0].slice(0, 120);
+      // strip Facebook header CTA cruft ("…, view story", "· Follow", "is live",
+      // "Sponsored") so the author/title is just the name
+      const cleanAuthor = function (s) {
+        return (s || "").split("\n")[0]
+          .replace(/\s*[,·|]\s*(view (story|reel|video)|follow|is (now )?live|sponsored|suggested for you).*$/i, "")
+          .trim().slice(0, 120);
+      };
+      let author = cleanAuthor(U.txtOf(post.querySelector('h2 a, h3 a, h4 a, strong a, a[aria-label][role="link"]')));
+      if (!author) author = cleanAuthor(U.txtOf(document.querySelector('[role="dialog"] h2 a, [role="dialog"] h3 a, [role="complementary"] a[role="link"]')));
       const text = (post.innerText || "").replace(/ /g, " ").trim().slice(0, 1200);
       return { author: author, text: text };
     },

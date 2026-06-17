@@ -76,14 +76,15 @@ async function deliverToApp(capture) {
 async function fetchAsDataUrl(url) {
   try {
     if (!/^https?:/.test(url || "")) return "";
-    const r = await fetch(url);
-    if (!r.ok) return "";
+    const ctl = new AbortController();
+    const tm = setTimeout(() => ctl.abort(), 6000);   // never let a hung fbcdn fetch stall the clip
+    let r;
+    try { r = await fetch(url, { credentials: "include", signal: ctl.signal }); }
+    finally { clearTimeout(tm); }
+    if (!r.ok) { log("fetchAsDataUrl HTTP " + r.status + " for " + url.slice(0, 80)); return ""; }
     const blob = await r.blob();
     if (!/^image\//.test(blob.type) || blob.size > 4000000) return "";
-    const buf = new Uint8Array(await blob.arrayBuffer());
-    let bin = "";
-    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    return "data:" + (blob.type || "image/jpeg") + ";base64," + btoa(bin);
+    return await blobToDataUrl(blob);
   } catch (e) { log("fetchAsDataUrl failed: " + e.message); return ""; }
 }
 
@@ -95,18 +96,35 @@ async function blobToDataUrl(blob) {
   return "data:" + (blob.type || "image/jpeg") + ";base64," + btoa(bin);
 }
 
+// captureVisibleTab serialized through the capture lock + with the target tab
+// activated first — otherwise a concurrent batch capture (which activates other
+// tabs) can hand back a screenshot of the WRONG tab.
+async function lockedCaptureVisible(tab, quality) {
+  return withCaptureLock(async () => {
+    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+    try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
+    await new Promise((r) => setTimeout(r, 150));
+    return await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: quality || 70 });
+  });
+}
+
 // Screenshot the visible tab and crop to a region (CSS-pixel rect from the page
 // + its devicePixelRatio). Returns a data URL of just that area, or "" on fail.
 async function cropScreenshot(tab, rect) {
   try {
-    const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 75 });
+    const shot = await lockedCaptureVisible(tab, 75);
     const blob = await (await fetch(shot)).blob();
     const bmp = await createImageBitmap(blob);
     const dpr = rect.dpr || 1;
-    let sx = Math.max(0, Math.round(rect.x * dpr));
-    let sy = Math.max(0, Math.round(rect.y * dpr));
-    let sw = Math.min(Math.round(rect.w * dpr), bmp.width - sx);
-    let sh = Math.min(Math.round(rect.h * dpr), bmp.height - sy);
+    // crop the VISIBLE intersection of the post rect with the viewport. rect.x/y
+    // can be negative (post scrolled above/left of the viewport) and rect.w/h can
+    // exceed it; clamp each edge so we never grab the header/sidebars/next post.
+    const vx = Math.max(0, rect.x), vy = Math.max(0, rect.y);
+    const vr = Math.min(rect.x + rect.w, bmp.width / dpr);
+    const vb = Math.min(rect.y + rect.h, bmp.height / dpr);
+    let sx = Math.round(vx * dpr), sy = Math.round(vy * dpr);
+    let sw = Math.round((vr - vx) * dpr), sh = Math.round((vb - vy) * dpr);
+    sw = Math.min(sw, bmp.width - sx); sh = Math.min(sh, bmp.height - sy);
     if (sw < 40 || sh < 40) return "";   // too small / off-screen — let caller fall back
     const canvas = new OffscreenCanvas(sw, sh);
     canvas.getContext("2d").drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
@@ -136,7 +154,7 @@ async function clipCurrentPage(tab, opts = {}) {
   let shot = "";
   if (!opts.noShot) {
     if (opts.shotDelay) await new Promise((r) => setTimeout(r, opts.shotDelay));
-    try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
+    try { shot = await lockedCaptureVisible(tab, 60); }
     catch (e) { log("clip screenshot failed: " + e.message); }
   }
   const blocked = !!meta.blocked;

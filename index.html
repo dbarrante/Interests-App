@@ -632,7 +632,9 @@ const imgChains = {};
 function imageChain(item){
   const c = [];
   if(item.image){ const r = item.image.indexOf("idb:")===0 ? (_imgCache[item.image.slice(4)]||"") : item.image; if(r) c.push(r); }
-  if(item.url){
+  // public screenshot proxies can't see auth-walled sites — they'd return a
+  // login wall / "content not available". Skip them for FB/IG (matches impThumb).
+  if(item.url && !/facebook\.com|fb\.watch|instagram\.com/i.test(item.url)){
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
     c.push(`https://image.thum.io/get/width/640/crop/700/${item.url}`);
   }
@@ -2671,8 +2673,23 @@ function setSavedImage(item, src){
 // then swaps in the small version once downscaled.
 function setClipImageInline(item, dataUrl){
   if(item.image && (item.image+"").indexOf("idb:")===0 && _imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); }
-  item.image = dataUrl;   // immediate render
-  downscaleDataUrl(dataUrl, function(small){ item.image = small || dataUrl; save("saved", saved); if(curTab==="saved") renderSaved(); });
+  item.image = dataUrl;   // immediate render (full-res, in memory)
+  downscaleDataUrl(dataUrl, function(small){
+    item.image = small || dataUrl;
+    if(!save("saved", saved)){
+      // localStorage is full — keep the image in IndexedDB instead of losing it on reload
+      try{ setSavedImage(item, item.image); save("saved", saved); }catch(e){}
+    }
+    if(curTab==="saved") renderSaved();
+  });
+}
+// dedupe key for a clip: normalized URL, but for Facebook post identity lives in
+// the query (?story_fbid / ?v / ?fbid) which normalizeUrl strips — fold it in so
+// distinct /watch, /permalink.php, /photo.php posts don't collapse into one card.
+function clipKey(u){
+  const base=normalizeUrl(u||"");
+  try{ const q=new URL(u); if(/facebook\.com|fb\.watch/i.test(q.hostname)){ const id=q.searchParams.get("story_fbid")||q.searchParams.get("v")||q.searchParams.get("fbid"); if(id) return base+"?"+id; } }catch(e){}
+  return base;
 }
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
@@ -2681,7 +2698,8 @@ function addClip(cap){
   // path), not a bare domain/feed like "facebook.com" — otherwise several feed
   // posts with no detectable permalink would collapse into one card.
   const specific = nu && nu.indexOf("/")>0;
-  let item = specific ? saved.find(s=> s.url && normalizeUrl(s.url)===nu) : null;
+  const key = clipKey(cap.url);
+  let item = specific ? saved.find(s=> s.url && clipKey(s.url)===key) : null;
   const isNew = !item;
   if(isNew){
     item = { id:newId(), url:cap.url, source:domain(cap.url), tags:[], category:guessCat(cap.title||cap.url||""), benefit:"Clipped from the web.", clipped:Date.now() };
@@ -2697,6 +2715,13 @@ function addClip(cap){
   }
   else if(cap.screenshot){ setClipImageInline(item, cap.screenshot); }
   else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
+  // Don't create a permanent image-less dead card for an auth-walled host (FB/IG):
+  // the proxy fallbacks can't render it and there's no Saved-tab re-capture path.
+  if(isNew && !item.image && /facebook\.com|fb\.watch|instagram\.com/i.test(cap.url||"")){
+    saved.shift();   // remove the just-added empty card
+    toast("Couldn't capture that post — open it and try Save again", 5000);
+    return;
+  }
   if(cap.desc && (isNew || item.benefit==="Clipped from the web.")){ const d=cleanDesc(cap.desc); if(d) item.benefit=d.slice(0,220); }
   persistAll(); updateCounts();
   if(curTab==="saved") renderSaved();

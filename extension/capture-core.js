@@ -88,25 +88,31 @@
       if (now - lastClipTs < 2500) return;       // debounce
       lastClipTs = now;
 
-      const post = cfg.findPost ? cfg.findPost(trigger, U) : null;
+      let post = cfg.findPost ? cfg.findPost(trigger, U) : null;
       if (cfg.hoverTimestamps) U.hoverTimestamps(post);
 
       const doCapture = function () {
         try {
+          // FB's virtualized feed can detach the post node during the delay — re-resolve it
+          if (post && post.isConnected === false && cfg.findPost) { const re = cfg.findPost(trigger, U); if (re) post = re; }
           const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
           const author = (ex && ex.author) || "";
           const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
           const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
-          const image = U.largestImg(post, cfg.imageCdn) || U.largestImg(document, cfg.imageCdn);
-          // include the post rect for region OR photo strategies (photo uses it
-          // only as a fallback for text/video posts with no still photo)
+          // The post's OWN photo. Only widen to a document-wide image search on a
+          // specific post/photo PAGE (the whole document is the post there) — never
+          // on the feed, where it would grab an unrelated post's image.
+          let image = U.largestImg(post, cfg.imageCdn);
+          if (!image && cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) image = U.largestImg(document, cfg.imageCdn);
+          // post rect for region/photo strategies (photo uses it as the fallback
+          // for text/video posts that have no still photo)
           const rect = (cfg.image !== "screenshot") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
           const title = cfg.title ? cfg.title(author) : (author || "Saved post");
           const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
           console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(author),
             "| url=", url, "| img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
           chrome.runtime.sendMessage({ action: "clipSocialPost", data: info }, function () {
-            if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
+            if (chrome.runtime.lastError) { console.warn("[Interests] clip send failed:", chrome.runtime.lastError.message); lastClipTs = 0; }
           });
         } catch (err) { /* never break the page */ }
       };
