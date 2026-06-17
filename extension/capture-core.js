@@ -116,11 +116,31 @@
           });
         } catch (err) { /* never break the page */ }
       };
+      // poll a predicate every `step`ms until true or `timeout`, then run cb
+      const pollUntil = function (pred, timeout, step, cb) {
+        let waited = 0;
+        (function loop() {
+          let ok = false; try { ok = pred(); } catch (e) {}
+          if (ok || waited >= timeout) { cb(); return; }
+          waited += step; setTimeout(loop, step);
+        })();
+      };
       setTimeout(function () {
-        // close any "Save To" collection dialog the site popped over the post,
-        // then give it a moment to vanish so the region crop is clean.
-        if (cfg.dismiss) { try { cfg.dismiss(U); } catch (e) {} setTimeout(doCapture, 450); }
-        else doCapture();
+        // If the post has its own still photo, the floating "Save To" dialog is
+        // irrelevant (we read the image, not a screenshot) — capture immediately.
+        let hasPhoto = false; try { hasPhoto = !!(post && U.largestImg(post, cfg.imageCdn)); } catch (e) {}
+        if (hasPhoto || !cfg.overlayPresent) { doCapture(); return; }
+        // No still photo -> we must crop, so the overlay MUST be gone first.
+        // Facebook pops the dialog with variable delay, so don't trust fixed
+        // timing: wait for it to APPEAR, dismiss it, then wait until it's GONE.
+        pollUntil(function () { return cfg.overlayPresent(U); }, 1600, 120, function () {
+          if (cfg.overlayPresent(U)) {
+            if (cfg.dismiss) { try { cfg.dismiss(U); } catch (e) {} }
+            pollUntil(function () { return !cfg.overlayPresent(U); }, 2500, 120, doCapture);
+          } else {
+            doCapture();   // never appeared -> no overlay -> safe to capture
+          }
+        });
       }, cfg.preCaptureDelayMs || 300);
     } catch (err) { /* never break the page */ }
   }, true);

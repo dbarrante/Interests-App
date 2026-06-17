@@ -70,18 +70,26 @@
       if (bareSave && !item.closest('[role="menu"]') && item.getAttribute("role") !== "menuitem" && item.getAttribute("role") !== "menuitemcheckbox") return null;
       return item;
     },
-    // Saving opens a "Save To" collection dialog that floats over the post.
-    // Click only the POSITIVE confirm (Done/Save) — which keeps the default save —
-    // so the region crop sees the post. Never click X/Close/Cancel (that can close
-    // the post view or cancel the save); if no positive button, leave it alone.
+    // Is Facebook's "Save To" collection dialog currently floating over the post?
+    overlayPresent: function (U) {
+      try {
+        const dlgs = document.querySelectorAll('[role="dialog"]');
+        for (let i = 0; i < dlgs.length; i++) {
+          if (/save to|new collection|your collections/i.test((dlgs[i].textContent || "").slice(0, 400))) return true;
+        }
+      } catch (e) {}
+      return false;
+    },
+    // Close the "Save To" dialog by clicking only the POSITIVE confirm (Done/Save)
+    // — which keeps the default save — so the region crop sees the post. Never
+    // click X/Close/Cancel (that can close the post view or cancel the save).
     dismiss: function (U) {
       try {
         const dlgs = document.querySelectorAll('[role="dialog"]');
         for (let i = 0; i < dlgs.length; i++) {
           const d = dlgs[i];
-          // the collection picker: "Save to…" / "New collection" / "Done"
           if (!/save to|new collection|your collections/i.test((d.textContent || "").slice(0, 400))) continue;
-          const btns = d.querySelectorAll('[role="button"], button');
+          const btns = d.querySelectorAll('[role="button"], button, [aria-label]');
           for (let j = 0; j < btns.length; j++) {
             const lab = ((btns[j].innerText || btns[j].getAttribute("aria-label") || "")).trim().toLowerCase();
             if (lab === "done" || lab === "save") { btns[j].click(); return; }
