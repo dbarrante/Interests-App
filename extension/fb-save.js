@@ -46,13 +46,38 @@
       // currently-open menu, which is still aria-expanded="true" at click time.
       // Fall back to the last-opened post, then the item's own article.
       const post = openMenuPost() || lastPost || (item.closest && item.closest('[role="article"]')) || null;
-      const info = extractPost(post);
-      console.log("[Interests] FB save →", info.title, info.url);
-      chrome.runtime.sendMessage({ action: "clipFacebookPost", data: info }, function () {
-        if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
-      });
+      // Facebook lazy-fills the timestamp link's href only on hover, so nudge
+      // those links first, then read after a tick once the href is populated.
+      hoverTimestamps(post);
+      setTimeout(function () {
+        const info = extractPost(post);
+        console.log("[Interests] FB save →", info.title, info.url);
+        chrome.runtime.sendMessage({ action: "clipFacebookPost", data: info }, function () {
+          if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
+        });
+      }, 250);
     } catch (err) { /* never break the page */ }
   }, true);
+
+  // A post permalink is on a "timestamp" link (text like "5h", "2d", "Yesterday",
+  // "June 16"). Dispatch hover events on those so Facebook fills in the real href.
+  const TIME_RE = /^\s*(just now|\d+\s*(s|m|h|d|w|hr|hrs|min|mins|y)\b|yesterday|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))/i;
+  function hoverTimestamps(post) {
+    if (!post) return;
+    try {
+      const links = post.querySelectorAll('a[role="link"], a[href]');
+      let nudged = 0;
+      for (let i = 0; i < links.length && nudged < 6; i++) {
+        const tx = (links[i].innerText || "").trim();
+        if (tx && tx.length <= 24 && TIME_RE.test(tx)) {
+          ["mouseover", "mouseenter", "pointerover", "focus"].forEach(function (ev) {
+            try { links[i].dispatchEvent(new MouseEvent(ev, { bubbles: true })); } catch (e) {}
+          });
+          nudged++;
+        }
+      }
+    } catch (e) {}
+  }
 
   // The post whose action menu is currently open (its ⋯ button is expanded).
   function openMenuPost() {
@@ -74,20 +99,23 @@
         const aEl = post.querySelector('h2 a, h3 a, h4 a, strong a, a[aria-label][role="link"]');
         author = txtOf(aEl).split("\n")[0].slice(0, 120);
 
-        // permalink — the post's OWN link. Embedded/shared posts also carry
-        // permalink-shaped links, so prefer the header timestamp anchor (a
-        // permalink anchor with very short text like "5h"/"2d"); only then fall
-        // back to the first permalink. Avoids linking to the wrong post.
+        // permalink — the post's OWN link. Facebook lazy-fills timestamp hrefs
+        // on hover (done just before this runs). Embedded/shared posts also
+        // carry permalink-shaped links, so prefer the short-text timestamp
+        // anchor, then any permalink. Covers post/permalink/video/reel/photo/
+        // story/share and group post URLs.
         function isPerma(h) {
-          if (!h || /comment_id=|reply_comment_id=/.test(h)) return false;
-          return /\/(posts|permalink\.php|permalink|videos|watch|reel|photo\.php|photos|story\.php)\b/.test(h) || /story_fbid=|[?&]fbid=/.test(h);
+          if (!h || h === "#" || /^javascript:/i.test(h) || /comment_id=|reply_comment_id=/.test(h)) return false;
+          return /\/(posts|permalink\.php|permalink|videos|watch|reel\/|photo\.php|photos|story\.php|share\/[pvr]|groups\/[^/]+\/(posts|permalink))/.test(h) || /story_fbid=|[?&]fbid=/.test(h);
         }
-        const anchors = Array.prototype.slice.call(post.querySelectorAll("a[href]"));
+        const anchors = Array.prototype.slice.call(post.querySelectorAll('a[role="link"], a[href]'));
+        function hrefOf(a) { return a.href || a.getAttribute("href") || ""; }
         let perma = "";
         for (let i = 0; i < anchors.length; i++) {
-          if (isPerma(anchors[i].href) && (anchors[i].innerText || "").trim().length <= 14) { perma = anchors[i].href; break; }
+          if (isPerma(hrefOf(anchors[i])) && TIME_RE.test((anchors[i].innerText || "").trim())) { perma = hrefOf(anchors[i]); break; }
         }
-        if (!perma) { for (let j = 0; j < anchors.length; j++) { if (isPerma(anchors[j].href)) { perma = anchors[j].href; break; } } }
+        if (!perma) { for (let k = 0; k < anchors.length; k++) { if (isPerma(hrefOf(anchors[k])) && (anchors[k].innerText || "").trim().length <= 16) { perma = hrefOf(anchors[k]); break; } } }
+        if (!perma) { for (let j = 0; j < anchors.length; j++) { if (isPerma(hrefOf(anchors[j]))) { perma = hrefOf(anchors[j]); break; } } }
         url = perma || location.href;
 
         // body text (strip the trailing reaction/comment chrome as best we can)
