@@ -42,13 +42,29 @@
       if (now - lastClipTs < 2500) return;   // debounce
       lastClipTs = now;
 
-      const post = lastPost || (item.closest && item.closest('[role="article"]')) || null;
+      // Identify the post: the most reliable signal is the ⋯ trigger of the
+      // currently-open menu, which is still aria-expanded="true" at click time.
+      // Fall back to the last-opened post, then the item's own article.
+      const post = openMenuPost() || lastPost || (item.closest && item.closest('[role="article"]')) || null;
       const info = extractPost(post);
+      console.log("[Interests] FB save →", info.title, info.url);
       chrome.runtime.sendMessage({ action: "clipFacebookPost", data: info }, function () {
         if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
       });
     } catch (err) { /* never break the page */ }
   }, true);
+
+  // The post whose action menu is currently open (its ⋯ button is expanded).
+  function openMenuPost() {
+    try {
+      const trigs = document.querySelectorAll('[aria-expanded="true"]');
+      for (let i = 0; i < trigs.length; i++) {
+        const art = trigs[i].closest('[role="article"]');
+        if (art) return art;
+      }
+    } catch (e) {}
+    return null;
+  }
 
   function extractPost(post) {
     let author = "", text = "", url = location.href, image = "";
