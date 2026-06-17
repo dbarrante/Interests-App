@@ -2116,11 +2116,23 @@ function impRefresh(idx){
   save("imported",imported);
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
   try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true})); }catch(e){}
-  window.open(it.url,"_blank");
+  const win = window.open(it.url,"_blank");
+  // track the tab we opened so drainCaptures can close it once the capture lands;
+  // a fallback timer closes it even if no result ever arrives (extension off, etc.)
+  closeRefreshTab(it.id);   // clear any prior pending refresh for this card
+  if(win) _refreshTabs[it.id] = { win, timer: setTimeout(()=>closeRefreshTab(it.id), 60000) };
   enrichOnOpen(it, idx);
   renderImportedKeepFocus();
   const btn=document.querySelector('.imp-card[data-id="'+it.id+'"] .imp-refresh'); if(btn) btn.classList.add("spin");
   toast("Refreshing image — capturing the page…",4000);
+}
+// tabs opened by a manual refresh, keyed by card id, so they can be auto-closed
+let _refreshTabs = {};
+function closeRefreshTab(id){
+  const r = id && _refreshTabs[id]; if(!r) return;
+  delete _refreshTabs[id];
+  if(r.timer) clearTimeout(r.timer);
+  try{ if(r.win && !r.win.closed) r.win.close(); }catch(e){}
 }
 async function enrichOnOpen(it, idx){
   try{
@@ -2566,12 +2578,14 @@ function drainCaptures(){
       const cur=match.img||"";
       if(isBadImg(cur) || cur.indexOf("data:")===0 || cur.indexOf("idb:")===0){ setCardImage(match,""); changed=true; }
       match.captured=now; match.blocked=now; match.lastUpdate=now; match.lastResult="blocked"; persisted=true;
+      closeRefreshTab(match.id);   // refresh attempt resolved (blocked) — close the page
       continue;
     }
     if(cap.attempt && !cap.ok){
       // page loaded but no usable image — record the failed attempt (no image change)
       console.log("[drainCaptures] failed attempt for "+cap.url);
       match.lastUpdate=now; match.lastResult="fail"; persisted=true;
+      closeRefreshTab(match.id);   // refresh attempt resolved (failed) — close the page
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
@@ -2594,6 +2608,7 @@ function drainCaptures(){
       const nu=normalizeUrl(match.url);
       imported.forEach(o=>{ if(o!==match && o.url && normalizeUrl(o.url)===nu && isBadImg(o.img||"") && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
+    closeRefreshTab(match.id);   // a manual refresh opened this page — close it now the capture landed
   }
   try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
   // keep the active card alive on a rolling window while you're working on it
