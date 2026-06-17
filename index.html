@@ -526,6 +526,9 @@ function resolveImg(v){ if(!v) return ""; return v.indexOf("idb:")===0 ? (_imgCa
 // load all IDB images into cache, and migrate any legacy inline data URLs out
 // of localStorage into IndexedDB (frees space). Returns when done.
 async function initImageStore(){
+  // Ask the browser to make this origin's storage persistent so it won't evict
+  // our IndexedDB images under disk pressure (the cause of vanishing pictures).
+  try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().then(p=>console.log("[storage] persistent:",p)); } }catch(e){}
   _imgCache = await idbAllImgs();
   let migrated=0;
   for(const it of imported){
@@ -1993,6 +1996,22 @@ function downscaleImage(file, cb){
   };
   r.readAsDataURL(file);
 }
+// downscale an existing data URL (e.g. a clip screenshot) to ≤640px JPEG so it's
+// small enough to store inline in the saved card. Falls back to the original.
+function downscaleDataUrl(dataUrl, cb){
+  try{
+    const im=new Image();
+    im.onload=()=>{ try{
+      const maxW=640, maxH=640; let w=im.width||maxW, h=im.height||maxW;
+      const s=Math.min(1, maxW/w, maxH/h); w=Math.max(1,Math.round(w*s)); h=Math.max(1,Math.round(h*s));
+      const c=document.createElement("canvas"); c.width=w; c.height=h;
+      c.getContext("2d").drawImage(im,0,0,w,h);
+      cb(c.toDataURL("image/jpeg",0.78));
+    }catch(e){ cb(dataUrl); } };
+    im.onerror=()=>cb(dataUrl);
+    im.src=dataUrl;
+  }catch(e){ cb(dataUrl); }
+}
 function edReadFile(f){ downscaleImage(f, d=>{ _editImg=d; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }); }
 // global paste: hover a card on the Imported tab and press Ctrl+V to set its image
 function setupPasteToCard(){
@@ -2645,6 +2664,16 @@ function setSavedImage(item, src){
   if(src && src.indexOf("data:")===0){ _imgCache[item.id]=src; item.image="idb:"+item.id; idbPutImg(item.id, src); }
   else { item.image=src||""; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
 }
+// A clip's screenshot is stored INLINE in the saved card (downscaled) rather
+// than in IndexedDB. Saved clips are a small, deliberate set, and inline data
+// survives reloads even if the browser evicts IndexedDB under storage pressure
+// (which is what made clip pictures vanish on refresh). Shows full-res now,
+// then swaps in the small version once downscaled.
+function setClipImageInline(item, dataUrl){
+  if(item.image && (item.image+"").indexOf("idb:")===0 && _imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); }
+  item.image = dataUrl;   // immediate render
+  downscaleDataUrl(dataUrl, function(small){ item.image = small || dataUrl; save("saved", saved); if(curTab==="saved") renderSaved(); });
+}
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
   const nu=normalizeUrl(cap.url||"");
@@ -2663,10 +2692,10 @@ function addClip(cap){
   // image priority: an explicit clipImage (e.g. the original Facebook post photo)
   // wins, then the screenshot you saw, then the page's OG image.
   if(cap.clipImage){
-    if((cap.clipImage+"").indexOf("data:")===0){ setSavedImage(item, cap.clipImage); }
+    if((cap.clipImage+"").indexOf("data:")===0){ setClipImageInline(item, cap.clipImage); }
     else if(/^https?:/.test(cap.clipImage)){ item.image=cap.clipImage; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
   }
-  else if(cap.screenshot){ setSavedImage(item, cap.screenshot); }
+  else if(cap.screenshot){ setClipImageInline(item, cap.screenshot); }
   else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
   if(cap.desc && (isNew || item.benefit==="Clipped from the web.")){ const d=cleanDesc(cap.desc); if(d) item.benefit=d.slice(0,220); }
   persistAll(); updateCounts();
