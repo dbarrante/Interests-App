@@ -1,4 +1,3 @@
-var btn = document.getElementById("captureBtn");
 var clipBtn = document.getElementById("clipBtn");
 var removeBtn = document.getElementById("removeBtn");
 var status = document.getElementById("status");
@@ -35,27 +34,6 @@ removeBtn.onclick = function() {
       status.textContent = resp ? resp.error : "No response from extension";
     }
     setTimeout(function(){ removeBtn.textContent = "Remove this card from Interests"; removeBtn.disabled = false; }, 2000);
-  });
-};
-
-btn.onclick = function() {
-  btn.disabled = true;
-  btn.textContent = "Capturing...";
-  status.textContent = "";
-  chrome.runtime.sendMessage({ action: "manualCapture" }, function(resp) {
-    if (chrome.runtime.lastError) {
-      status.textContent = "Error: " + chrome.runtime.lastError.message;
-      btn.textContent = "Capture this page";
-      btn.disabled = false;
-      return;
-    }
-    if (resp && resp.ok) {
-      btn.textContent = "Captured!";
-      status.textContent = "Card will update shortly";
-    } else {
-      status.textContent = resp ? resp.error : "No response from extension";
-    }
-    setTimeout(function(){ btn.textContent = "Capture this page"; btn.disabled = false; }, 2000);
   });
 };
 

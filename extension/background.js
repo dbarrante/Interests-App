@@ -513,6 +513,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.action === "clipFacebookPost" && msg.data) {
+    (async () => {
+      try {
+        const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+        const d = msg.data;
+        const res = await clipCurrentPage(tab, {
+          url: d.url || d.pageUrl,
+          title: d.title,
+          desc: (d.text || d.author || "").trim() || undefined,
+        });
+        sendResponse(res);
+      } catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
+  }
+
   if (msg.action === "removeCard") {
     (async () => {
       try {
