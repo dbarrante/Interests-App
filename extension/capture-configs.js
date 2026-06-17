@@ -170,18 +170,29 @@
   };
 
   /* ============================ Pinterest ============================ */
+  // The SINGLE pin tile that owns the clicked Save button: the tightest ancestor
+  // whose subtree contains exactly ONE /pin/ link (its own). Return null if the
+  // nearest pin-link container holds several (a multi-pin grid, or the focused
+  // pin's closeup with the related grid) — then the engine uses location.href,
+  // which IS correct for the focused pin and avoids grabbing a neighbour's pin.
   function pinClosest(trigger) {
-    let p = trigger.closest('[data-test-id="pin"], [data-test-id="pinWrapper"], [data-grid-item], [role="listitem"]');
-    if (p) return p;
-    let el = trigger;                                   // walk up to a node containing a /pin/ link
-    for (let i = 0; i < 8 && el; i++) { if (el.querySelector && el.querySelector('a[href*="/pin/"]')) return el; el = el.parentElement; }
-    return trigger.closest('[role="dialog"]') || trigger.closest("article") || null;
+    let el = trigger;
+    for (let i = 0; i < 12 && el && el !== document.body; i++) {
+      if (el.querySelectorAll) {
+        const n = el.querySelectorAll('a[href*="/pin/"]').length;
+        if (n === 1) return el;     // a single-pin tile
+        if (n > 1) return null;     // overshot into a multi-pin container — not a tile
+      }
+      el = el.parentElement;
+    }
+    return null;
   }
-  function pinIsSpecific(h) { return /pinterest\.[a-z.]+\/pin\/[\w-]+/.test(h || ""); }
   const pinterest = {
     id: "pinterest",
     match: function (h) { return /pinterest\./.test(h); },
-    image: "region", imageCdn: /pinimg/, preCaptureDelayMs: 500,
+    // "photo": save the pin's own pinimg image (the tile's image), not a region
+    // crop — avoids the rect snapping to a closeup dialog, and is higher quality.
+    image: "photo", imageCdn: /pinimg/, preCaptureDelayMs: 300,
     saveTrigger: function (e, U) {
       const btn = e.target.closest('[data-test-id*="SaveButton"], [aria-label], div[role="button"], button');
       if (!btn) return null;
@@ -192,7 +203,9 @@
       return label === "save" ? btn : null;
     },
     findPost: function (trigger, U) { return pinClosest(trigger); },
-    isSpecificUrl: pinIsSpecific,
+    // a Pinterest page shows MANY pins — never trust location.href to say which
+    // one was saved; always use findPermalink (the clicked tile's own /pin/ link)
+    isSpecificUrl: function () { return false; },
     findPermalink: function (post, U) { const a = post.querySelector('a[href*="/pin/"]'); return a ? U.hrefOf(a) : ""; },
     extract: function (post, U) {
       const author = U.txtOf(post.querySelector('[data-test-id="pinTitle"], [data-test-id="pinrep-title"], a[href*="/pin/"]')).split("\n")[0].slice(0, 120);
