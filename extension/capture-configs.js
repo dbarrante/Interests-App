@@ -106,7 +106,15 @@
       for (let i = 0; i < anchors.length; i++) { if (fbIsPerma(U.hrefOf(anchors[i])) && U.TIME_RE.test((anchors[i].innerText || "").trim())) { perma = U.hrefOf(anchors[i]); break; } }
       if (!perma) { for (let k = 0; k < anchors.length; k++) { if (fbIsPerma(U.hrefOf(anchors[k])) && (anchors[k].innerText || "").trim().length <= 16) { perma = U.hrefOf(anchors[k]); break; } } }
       if (!perma) { for (let j = 0; j < anchors.length; j++) { if (fbIsPerma(U.hrefOf(anchors[j]))) { perma = U.hrefOf(anchors[j]); break; } } }
-      return perma;
+      if (perma) return perma;
+      // No post permalink (sponsored ads / timestamp-less posts): fall back to the
+      // author/page header link so the card opens the poster's page, not the feed.
+      const a = post.querySelector('h2 a[href], h3 a[href], h4 a[href], strong a[href]');
+      const h = a ? U.hrefOf(a) : "";
+      // a real page/profile link, not an in-post action (reactions/comments/photo viewer)
+      // keep the query (profile.php?id=… needs it); just reject in-post action links
+      if (h && /facebook\.com\//i.test(h) && !/comment_id=|reaction|\/photo|\/reactions/i.test(h)) return h;
+      return "";
     },
     extract: function (post, U) {
       // strip Facebook header CTA cruft ("…, view story", "· Follow", "is live",
