@@ -2570,6 +2570,14 @@ function drainCaptures(){
       if(match){ viaActive=true; refreshActive=true; console.log("[drainCaptures] assigned to active card "+lastOpened.id); }
     }
     if(!match){
+      // A manual "Capture this page" (force, no card id) with nothing to attach
+      // to — no matching card and no recently-opened card — is saved as a new
+      // Saved card instead of being dropped, so the button always does something.
+      if(cap.force && !cap.id && !cap.blocked && (cap.screenshot || cap.ogImage || cap.contentImage)){
+        console.log("[clip] manual capture had no target card — saving as a new clip: "+cap.url);
+        try{ addClip(cap); }catch(e){ console.error("[clip] fallback addClip failed",e); }
+        continue;
+      }
       unmatched++;
       console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normalizeUrl(cap.url)+")");
       // keep briefly in case the item shows up, then drop
