@@ -38,6 +38,19 @@ function setBadge(text, ms) {
   if (ms) setTimeout(() => chrome.action.setBadgeText({ text: "" }), ms);
 }
 
+// fire a desktop notification, swallowing the async rejection chrome throws when
+// it "can't download" the icon ("Unable to download all specified images")
+function notify(id, title, message) {
+  try {
+    const p = chrome.notifications.create(id, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icon128.png"),
+      title: title, message: message, silent: true,
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (e) {}
+}
+
 // Write the capture straight into the app tab's localStorage (we hold
 // <all_urls>, so this works on localhost/127.0.0.1). Returns true if at
 // least one app tab received it.
@@ -179,13 +192,7 @@ async function clipCurrentPage(tab, opts = {}) {
   }
   setBadge(delivered ? "✓" : "…", 4000);
   await setStatus(delivered ? "Clipped to Interests ✓" : "Saved — opens when the Interests app is open", delivered);
-  try {
-    chrome.notifications.create("clip-" + Date.now(), {
-      type: "basic", iconUrl: "icon128.png", title: "Interests",
-      message: (delivered ? "Clipped: " : "Saved (open the app): ") + (payload.title || payload.url).slice(0, 70),
-      silent: true,
-    });
-  } catch (e) {}
+  notify("clip-" + Date.now(), "Interests", (delivered ? "Clipped: " : "Saved (open the app): ") + (payload.title || payload.url).slice(0, 70));
   return { ok: true, delivered };
 }
 
@@ -309,17 +316,7 @@ async function captureTab(tab, delayMs, force, cardId) {
       await setStatus("Captured ✓ — " + dest + " (" + (meta.ogImage ? "og image" : shotKb) + ")", true);
     }
 
-    try {
-      chrome.notifications.create("cap-" + Date.now(), {
-        type: "basic",
-        iconUrl: "icon128.png",
-        title: "Interests Capture",
-        message: blocked ? "Site blocked the page — cleared the bad image" : ("Captured: " + (meta.title || tabUrl).slice(0, 60)),
-        silent: true,
-      });
-    } catch (e) {
-      log("Notification failed: " + e.message);
-    }
+    notify("cap-" + Date.now(), "Interests Capture", blocked ? "Site blocked the page — cleared the bad image" : ("Captured: " + (meta.title || tabUrl).slice(0, 60)));
 
     if (!blocked) {
       try {

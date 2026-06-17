@@ -111,8 +111,11 @@
           const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
           console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(author),
             "| url=", url, "| img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+          // the extension may have been reloaded while this tab kept the old
+          // content script — bail quietly instead of throwing "context invalidated"
+          if (!chrome.runtime || !chrome.runtime.id) { console.warn("[Interests] extension reloaded — refresh this tab to re-enable Save mirror"); return; }
           chrome.runtime.sendMessage({ action: "clipSocialPost", data: info }, function () {
-            if (chrome.runtime.lastError) { console.warn("[Interests] clip send failed:", chrome.runtime.lastError.message); lastClipTs = 0; }
+            if (chrome.runtime && chrome.runtime.lastError) { console.warn("[Interests] clip send failed:", chrome.runtime.lastError.message); lastClipTs = 0; }
           });
         } catch (err) { /* never break the page */ }
       };
