@@ -2115,7 +2115,7 @@ function impRefresh(idx){
   it.lastUpdate=Date.now(); it.lastResult="pending";
   save("imported",imported);
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
-  try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true})); }catch(e){}
+  try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true, closeAfter:true})); }catch(e){}
   const win = window.open(it.url,"_blank");
   // track the tab we opened so drainCaptures can close it once the capture lands;
   // a fallback timer closes it even if no result ever arrives (extension off, etc.)

@@ -211,7 +211,7 @@ async function handleCaptureRequest(req) {
   }
 
   log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
-  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false };
+  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false, closeAfter: !!req.closeAfter };
   // remember recently-opened cards so a navigation error can be matched even if
   // it fires before/after the pending request is set
   recentWatches.push({ url: req.url, id: req.id || "", ts: Date.now() });
@@ -241,10 +241,14 @@ async function handleCaptureRequest(req) {
 async function finishPending(tab) {
   if (!pendingRequest) return;
   clearTimeout(pendingTimer);
-  const { delay, id, force, capture } = pendingRequest;
+  const { delay, id, force, capture, closeAfter } = pendingRequest;
   pendingRequest = null;
   if (capture) await captureTab(tab, delay, force, id);
   else { setBadge("", 0); await setStatus("Page reached — nothing to capture", true); }
+  // refresh requests ask us to close the page once we're done with it (the app
+  // opened it via window.open, but chrome.tabs.remove is far more reliable than
+  // a cross-origin window.close())
+  if (closeAfter && tab && tab.id != null) await closeTabSafe(tab.id);
 }
 
 // onCompleted fires reliably when the document finishes loading (more robust
