@@ -28,6 +28,14 @@
     if (!h || h === "#" || /^javascript:/i.test(h) || /comment_id=|reply_comment_id=/.test(h)) return false;
     return /\/(posts|permalink\.php|permalink|videos|watch|reel\/|photo\.php|photos|story\.php|share\/[pvr]|groups\/[^/]+\/(posts|permalink))/.test(h) || /story_fbid=|[?&]fbid=/.test(h);
   }
+  // on-screen rectangle of an element, in CSS px + the device pixel ratio, so
+  // the background can crop a screenshot to exactly this area.
+  function rectOf(el) {
+    if (!el || !el.getBoundingClientRect) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40) return null;
+    return { x: r.left, y: r.top, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1 };
+  }
   // the largest fbcdn image inside a root (skips tiny avatars/reaction icons)
   function largestImg(root) {
     let best = "", bestArea = 0;
@@ -69,14 +77,18 @@
 
       const post = getPostForMenu(item);
       hoverTimestamps(post);   // coax Facebook to fill in lazy permalink hrefs
+      // Wait for Facebook's Save menu to close (so the page isn't dimmed/covered),
+      // then measure the post's on-screen rectangle and let the background crop a
+      // screenshot of exactly that area.
       setTimeout(function () {
         const info = extractPost(post);
+        info.rect = rectOf((post && post.closest('[role="dialog"]')) || post);
         console.log("[Interests] FB save | author=", JSON.stringify(info.author),
-          "| url=", info.url, "| textHead=", JSON.stringify((info.text || "").slice(0, 50)));
+          "| url=", info.url, "| rect=", info.rect ? (Math.round(info.rect.w) + "x" + Math.round(info.rect.h)) : "none");
         chrome.runtime.sendMessage({ action: "clipFacebookPost", data: info }, function () {
           if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
         });
-      }, 250);
+      }, 550);
     } catch (err) { /* never break the page */ }
   }, true);
 

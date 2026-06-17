@@ -87,6 +87,34 @@ async function fetchAsDataUrl(url) {
   } catch (e) { log("fetchAsDataUrl failed: " + e.message); return ""; }
 }
 
+// helper: Uint8Array/blob -> data URL (no FileReader in the SW)
+async function blobToDataUrl(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return "data:" + (blob.type || "image/jpeg") + ";base64," + btoa(bin);
+}
+
+// Screenshot the visible tab and crop to a region (CSS-pixel rect from the page
+// + its devicePixelRatio). Returns a data URL of just that area, or "" on fail.
+async function cropScreenshot(tab, rect) {
+  try {
+    const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 75 });
+    const blob = await (await fetch(shot)).blob();
+    const bmp = await createImageBitmap(blob);
+    const dpr = rect.dpr || 1;
+    let sx = Math.max(0, Math.round(rect.x * dpr));
+    let sy = Math.max(0, Math.round(rect.y * dpr));
+    let sw = Math.min(Math.round(rect.w * dpr), bmp.width - sx);
+    let sh = Math.min(Math.round(rect.h * dpr), bmp.height - sy);
+    if (sw < 40 || sh < 40) return "";   // too small / off-screen — let caller fall back
+    const canvas = new OffscreenCanvas(sw, sh);
+    canvas.getContext("2d").drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
+    const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+    return await blobToDataUrl(out);
+  } catch (e) { log("cropScreenshot failed: " + e.message); return ""; }
+}
+
 // ---- "Clip this page" — save the current page to the Interests app as a new
 // Saved card. Used by the popup button and the right-click context menu.
 // opts: { url, desc, title, image, noShot } — image is a preferred card picture
@@ -541,18 +569,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         const d = msg.data;
-        // save the ORIGINAL post photo as a data URL (Facebook CDN URLs are
-        // signed and expire, so we must NOT store the raw URL — it would 404
-        // and the picture would vanish later). If the fetch fails, fall back to
-        // a slightly-delayed screenshot (so the Save menu has closed).
-        const imgData = d.image ? await fetchAsDataUrl(d.image) : "";
+        // Save the POST AREA: crop a screenshot to the post's rectangle (what
+        // you're looking at). Fall back to the original photo, then a full
+        // screenshot. All stored as data URLs (Facebook CDN URLs expire).
+        let imgData = "";
+        if (d.rect && d.rect.w > 40 && d.rect.h > 40) imgData = await cropScreenshot(tab, d.rect);
+        if (!imgData && d.image) imgData = await fetchAsDataUrl(d.image);
         const res = await clipCurrentPage(tab, {
           url: d.url || d.pageUrl,
           title: d.title,
           desc: (d.text || d.author || "").trim() || undefined,
-          image: imgData,                 // data URL only (durable); never the expiring CDN URL
-          noShot: !!imgData,              // got the photo → skip the screenshot
-          shotDelay: imgData ? 0 : 700,   // no photo → let the menu close before the screenshot
+          image: imgData,                 // post-area crop (or photo) as a data URL
+          noShot: !!imgData,              // got an image, skip the full screenshot
+          shotDelay: imgData ? 0 : 700,   // none: let the menu close, then screenshot
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
