@@ -628,7 +628,7 @@ function applyFilter(list){
 const imgChains = {};
 function imageChain(item){
   const c = [];
-  if(item.image) c.push(item.image);
+  if(item.image){ const r = item.image.indexOf("idb:")===0 ? (_imgCache[item.image.slice(4)]||"") : item.image; if(r) c.push(r); }
   if(item.url){
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
     c.push(`https://image.thum.io/get/width/640/crop/700/${item.url}`);
@@ -2554,6 +2554,12 @@ function drainCaptures(){
       }
       continue;
     }
+    if(cap.clip){
+      // "Clip this page" from the extension — create/update a Saved card (not an
+      // imported one). Handled entirely by addClip; consume the queue entry.
+      addClip(cap);
+      continue;
+    }
     let viaActive=false;
     let match = cap.id ? imported.find(it=>it.id===cap.id) : null;          // 1. stable id (most reliable)
     if(!match) match=imported.find(it=>it.url===cap.url);                    // 2. exact url
@@ -2623,6 +2629,50 @@ function drainCaptures(){
       toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
     }
   }
+}
+// store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
+// under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
+function setSavedImage(item, src){
+  if(src && src.indexOf("data:")===0){ _imgCache[item.id]=src; item.image="idb:"+item.id; idbPutImg(item.id, src); }
+  else { item.image=src||""; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
+}
+// "Clip this page": create (or update) a Saved card from an extension clip.
+function addClip(cap){
+  const nu=normalizeUrl(cap.url||"");
+  let item = saved.find(s=> s.url && normalizeUrl(s.url)===nu);
+  const isNew = !item;
+  if(isNew){
+    item = { id:newId(), url:cap.url, source:domain(cap.url), tags:[], category:guessCat(cap.title||cap.url||""), benefit:"Clipped from the web.", clipped:Date.now() };
+    saved.unshift(item);
+  }
+  if(cap.title && (isNew || genericTitle(item.title||""))) item.title = cap.title.slice(0,250);
+  if(!item.title) item.title = domain(cap.url)||cap.url;
+  // image: prefer the screenshot you actually saw; else the page's OG image
+  if(cap.screenshot){ setSavedImage(item, cap.screenshot); }
+  else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
+  if(cap.desc && (isNew || item.benefit==="Clipped from the web.")){ const d=cleanDesc(cap.desc); if(d) item.benefit=d.slice(0,220); }
+  persistAll(); updateCounts();
+  if(curTab==="saved") renderSaved();
+  toast(isNew?"Clipped to Saved — categorizing…":"Updated saved card — categorizing…",4000);
+  categorizeClip(item);
+}
+// ask the AI provider to assign a category + tags + a one-line "why" for a clip.
+// Falls back silently to the guessCat value already set if no key / on error.
+async function categorizeClip(item){
+  if(!(S.keys[S.provider] || S.provider==="local")) return;
+  try{
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
+    const cats = CATS.map(c=>c.name).join(" | ");
+    const prompt = `A user clipped this web page to keep.\nTitle: "${item.title}"\nNotes: "${(item.benefit||"").slice(0,200)}"\nURL: ${item.url}\n\nReturn ONLY strict JSON, no prose:\n{"category": one of [${cats}], "tags": [up to 4 short lowercase topic tags], "why": "one short sentence (<20 words) on why it's worth keeping"}`;
+    const text = await call(prompt);
+    const m = text.match(/\{[\s\S]*\}/); if(!m) return;
+    const j = JSON.parse(m[0]);
+    let changed=false;
+    if(j.category && CATS.some(c=>c.name===j.category)){ item.category=j.category; changed=true; }
+    if(Array.isArray(j.tags)){ item.tags=j.tags.map(t=>(""+t).toLowerCase().trim()).filter(Boolean).slice(0,4); changed=true; }
+    if(j.why && (""+j.why).length>8){ item.benefit=(""+j.why).slice(0,220); changed=true; }
+    if(changed){ persistAll(); if(curTab==="saved") renderSaved(); toast("Categorized: "+item.category,3000); }
+  }catch(e){ console.warn("categorizeClip failed",e); }
 }
 let _deadUndo=null;
 function undoDead(){

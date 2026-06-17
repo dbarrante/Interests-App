@@ -1,7 +1,25 @@
 var btn = document.getElementById("captureBtn");
+var clipBtn = document.getElementById("clipBtn");
 var removeBtn = document.getElementById("removeBtn");
 var status = document.getElementById("status");
 var info = document.getElementById("info");
+
+clipBtn.onclick = function() {
+  clipBtn.disabled = true;
+  clipBtn.textContent = "Clipping…";
+  status.textContent = "";
+  chrome.runtime.sendMessage({ action: "clipPage" }, function(resp) {
+    if (chrome.runtime.lastError) {
+      status.textContent = "Error: " + chrome.runtime.lastError.message;
+    } else if (resp && resp.ok) {
+      clipBtn.textContent = resp.delivered ? "Clipped ✓" : "Saved (open the app)";
+      status.textContent = resp.delivered ? "Added to Saved — categorizing" : "Will appear when the Interests app is open";
+    } else {
+      status.textContent = resp ? resp.error : "No response from extension";
+    }
+    setTimeout(function(){ clipBtn.innerHTML = "&#128206; Clip this page to Interests"; clipBtn.disabled = false; }, 2500);
+  });
+};
 
 removeBtn.onclick = function() {
   removeBtn.disabled = true;

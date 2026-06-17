@@ -425,6 +425,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.action === "clipPage") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) {
+          await setStatus("Cannot clip this page (browser page)", false);
+          sendResponse({ ok: false, error: "Cannot clip this page" });
+          return;
+        }
+        await setStatus("Clipping…", true);
+        // page metadata (title / description / og image)
+        let meta = {};
+        try { const mr = await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] }); meta = mr?.[0]?.result || {}; }
+        catch (e) { log("clip meta failed: " + e.message); }
+        // screenshot of the page you're looking at (it's the active/foreground tab)
+        let shot = "";
+        try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
+        catch (e) { log("clip screenshot failed: " + e.message); }
+        const payload = {
+          clip: true, url: tab.url,
+          title: meta.title || tab.title || tab.url,
+          desc: meta.blocked ? "" : (meta.desc || ""),
+          ogImage: meta.blocked ? "" : (meta.ogImage || ""),
+          contentImage: meta.blocked ? "" : (meta.contentImage || ""),
+          screenshot: shot, ts: Date.now(),
+        };
+        const delivered = await deliverToApp(payload);
+        if (!delivered) {
+          // app tab isn't open — stash for the bridge to sync when it next loads
+          const stored = await chrome.storage.local.get("ia_capture_queue");
+          let queue = stored.ia_capture_queue || [];
+          queue.push(payload);
+          if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
+          await chrome.storage.local.set({ ia_capture_queue: queue });
+        }
+        setBadge(delivered ? "📎" : "…", 4000);
+        await setStatus(delivered ? "Clipped to Interests ✓" : "Saved — will appear when the Interests app is open", delivered);
+        sendResponse({ ok: true, delivered });
+      } catch (e) {
+        await setStatus("Clip failed: " + e.message, false);
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
   if (msg.action === "removeCard") {
     (async () => {
       try {

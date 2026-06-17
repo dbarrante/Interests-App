@@ -8,6 +8,9 @@ button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font
 .cap{background:#c2410c;color:#fff}
 .cap:hover{filter:brightness(1.15)}
 .cap:disabled{opacity:.5;cursor:wait}
+.clip{background:#0d9488;color:#fff}
+.clip:hover{filter:brightness(1.15)}
+.clip:disabled{opacity:.5;cursor:wait}
 .rm{background:transparent;color:#f87171;border:1px solid #5a2d2d}
 .rm:hover{background:#3a1f1f}
 .rm:disabled{opacity:.5;cursor:wait}
@@ -19,6 +22,7 @@ button{width:100%;padding:11px;border:none;border-radius:8px;font-size:13px;font
 </head>
 <body>
 <h3>Interests Capture</h3>
+<button class="clip" id="clipBtn">&#128206; Clip this page to Interests</button>
 <button class="cap" id="captureBtn">Capture this page</button>
 <button class="rm" id="removeBtn">Remove this card from Interests</button>
 <div class="status" id="status"></div>
