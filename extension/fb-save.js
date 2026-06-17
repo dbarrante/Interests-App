@@ -45,13 +45,14 @@
       // Identify the post: the most reliable signal is the ⋯ trigger of the
       // currently-open menu, which is still aria-expanded="true" at click time.
       // Fall back to the last-opened post, then the item's own article.
-      const post = openMenuPost() || lastPost || (item.closest && item.closest('[role="article"]')) || null;
+      const post = getPostForMenu(item);
       // Facebook lazy-fills the timestamp link's href only on hover, so nudge
       // those links first, then read after a tick once the href is populated.
       hoverTimestamps(post);
       setTimeout(function () {
         const info = extractPost(post);
-        console.log("[Interests] FB save →", info.title, info.url);
+        console.log("[Interests] FB save | author=", JSON.stringify(info.author),
+          "| url=", info.url, "| textHead=", JSON.stringify((info.text || "").slice(0, 50)));
         chrome.runtime.sendMessage({ action: "clipFacebookPost", data: info }, function () {
           if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
         });
@@ -79,16 +80,36 @@
     } catch (e) {}
   }
 
-  // The post whose action menu is currently open (its ⋯ button is expanded).
-  function openMenuPost() {
+  // Find the post (role=article) that owns the just-clicked menu item, as
+  // precisely as possible — Facebook nests/wraps articles, so a loose match
+  // grabs several posts at once.
+  function getPostForMenu(item) {
     try {
-      const trigs = document.querySelectorAll('[aria-expanded="true"]');
-      for (let i = 0; i < trigs.length; i++) {
-        const art = trigs[i].closest('[role="article"]');
+      // 1) spec-correct: the menu's trigger is referenced by aria-controls
+      const menu = item.closest('[role="menu"]');
+      if (menu && menu.id) {
+        const sel = '[aria-controls="' + (window.CSS && CSS.escape ? CSS.escape(menu.id) : menu.id) + '"]';
+        const trig = document.querySelector(sel);
+        const art = trig && smallestArticleAt(trig);
         if (art) return art;
       }
+      // 2) the open menu trigger: an expanded button that pops a menu
+      const trigs = document.querySelectorAll('[aria-haspopup="menu"][aria-expanded="true"], [aria-expanded="true"][aria-label*="ction"]');
+      const arts = [];
+      for (let i = 0; i < trigs.length; i++) { const a = smallestArticleAt(trigs[i]); if (a) arts.push(a); }
+      if (arts.length) { arts.sort(function (a, b) { return (a.innerText || "").length - (b.innerText || "").length; }); return arts[0]; }
     } catch (e) {}
-    return null;
+    // 3) fallbacks
+    return lastPost || (item.closest && item.closest('[role="article"]')) || null;
+  }
+  // innermost (smallest) article ancestor of an element — a single post, not a
+  // feed container that holds many posts.
+  function smallestArticleAt(el) {
+    const a = el && el.closest && el.closest('[role="article"]');
+    if (!a) return null;
+    const inner = a.querySelector('[role="article"]');
+    if (inner && inner.contains(el)) return inner;
+    return a;
   }
 
   function extractPost(post) {
