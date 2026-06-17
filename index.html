@@ -2648,7 +2648,11 @@ function setSavedImage(item, src){
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
   const nu=normalizeUrl(cap.url||"");
-  let item = saved.find(s=> s.url && normalizeUrl(s.url)===nu);
+  // Only treat it as a duplicate when the URL points to a SPECIFIC page (has a
+  // path), not a bare domain/feed like "facebook.com" — otherwise several feed
+  // posts with no detectable permalink would collapse into one card.
+  const specific = nu && nu.indexOf("/")>0;
+  let item = specific ? saved.find(s=> s.url && normalizeUrl(s.url)===nu) : null;
   const isNew = !item;
   if(isNew){
     item = { id:newId(), url:cap.url, source:domain(cap.url), tags:[], category:guessCat(cap.title||cap.url||""), benefit:"Clipped from the web.", clipped:Date.now() };

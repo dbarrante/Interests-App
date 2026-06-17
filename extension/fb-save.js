@@ -58,11 +58,21 @@
         const aEl = post.querySelector('h2 a, h3 a, h4 a, strong a, a[aria-label][role="link"]');
         author = txtOf(aEl).split("\n")[0].slice(0, 120);
 
-        // permalink — the post's own link (timestamp). Prefer a real post URL.
-        const hrefs = Array.prototype.map.call(post.querySelectorAll('a[href]'), function (x) { return x.href; });
-        url = hrefs.find(function (h) {
-          return /\/(posts|permalink|videos|photos|reel|watch|groups\/[^/]+\/(posts|permalink))\//.test(h) || /story_fbid=|[?&]fbid=/.test(h);
-        }) || location.href;
+        // permalink — the post's OWN link. Embedded/shared posts also carry
+        // permalink-shaped links, so prefer the header timestamp anchor (a
+        // permalink anchor with very short text like "5h"/"2d"); only then fall
+        // back to the first permalink. Avoids linking to the wrong post.
+        function isPerma(h) {
+          if (!h || /comment_id=|reply_comment_id=/.test(h)) return false;
+          return /\/(posts|permalink\.php|permalink|videos|watch|reel|photo\.php|photos|story\.php)\b/.test(h) || /story_fbid=|[?&]fbid=/.test(h);
+        }
+        const anchors = Array.prototype.slice.call(post.querySelectorAll("a[href]"));
+        let perma = "";
+        for (let i = 0; i < anchors.length; i++) {
+          if (isPerma(anchors[i].href) && (anchors[i].innerText || "").trim().length <= 14) { perma = anchors[i].href; break; }
+        }
+        if (!perma) { for (let j = 0; j < anchors.length; j++) { if (isPerma(anchors[j].href)) { perma = anchors[j].href; break; } } }
+        url = perma || location.href;
 
         // body text (strip the trailing reaction/comment chrome as best we can)
         text = (post.innerText || "").replace(/ /g, " ").trim().slice(0, 1200);

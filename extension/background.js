@@ -107,6 +107,7 @@ async function clipCurrentPage(tab, opts = {}) {
   // greyed-out page behind the still-open Save menu.
   let shot = "";
   if (!opts.noShot) {
+    if (opts.shotDelay) await new Promise((r) => setTimeout(r, opts.shotDelay));
     try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
     catch (e) { log("clip screenshot failed: " + e.message); }
   }
@@ -540,14 +541,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         const d = msg.data;
-        // save the ORIGINAL post photo (not a screenshot of the dimmed page).
+        // save the ORIGINAL post photo as a data URL (Facebook CDN URLs are
+        // signed and expire, so we must NOT store the raw URL — it would 404
+        // and the picture would vanish later). If the fetch fails, fall back to
+        // a slightly-delayed screenshot (so the Save menu has closed).
         const imgData = d.image ? await fetchAsDataUrl(d.image) : "";
         const res = await clipCurrentPage(tab, {
           url: d.url || d.pageUrl,
           title: d.title,
           desc: (d.text || d.author || "").trim() || undefined,
-          image: imgData || d.image || "",   // data URL preferred; raw URL as fallback
-          noShot: !!(imgData || d.image),    // have a real image → don't screenshot the greyed page
+          image: imgData,                 // data URL only (durable); never the expiring CDN URL
+          noShot: !!imgData,              // got the photo → skip the screenshot
+          shotDelay: imgData ? 0 : 700,   // no photo → let the menu close before the screenshot
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
