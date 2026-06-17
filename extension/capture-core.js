@@ -33,7 +33,13 @@
         if (area > bestArea) { bestArea = area; best = s; }
       });
     } catch (e) {}
-    return bestArea >= 40000 ? best : "";
+    if (bestArea >= 40000) return best;
+    // video posts have no still <img> — use the <video> poster thumbnail if any
+    try {
+      const v = (root || document).querySelector("video[poster]");
+      if (v && re.test(v.poster || "")) return v.poster;
+    } catch (e) {}
+    return "";
   }
   // some sites (Facebook) lazy-fill a timestamp link's permalink href on hover
   function hoverTimestamps(post) {
@@ -85,7 +91,7 @@
       const post = cfg.findPost ? cfg.findPost(trigger, U) : null;
       if (cfg.hoverTimestamps) U.hoverTimestamps(post);
 
-      setTimeout(function () {
+      const doCapture = function () {
         try {
           const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
           const author = (ex && ex.author) || "";
@@ -93,16 +99,22 @@
           const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
           const image = U.largestImg(post, cfg.imageCdn) || U.largestImg(document, cfg.imageCdn);
           // include the post rect for region OR photo strategies (photo uses it
-          // only as a fallback for text-only posts with no photo)
+          // only as a fallback for text/video posts with no still photo)
           const rect = (cfg.image !== "screenshot") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
           const title = cfg.title ? cfg.title(author) : (author || "Saved post");
           const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
           console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(author),
-            "| url=", url, "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+            "| url=", url, "| img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
           chrome.runtime.sendMessage({ action: "clipSocialPost", data: info }, function () {
             if (chrome.runtime.lastError) { /* SW asleep / reloading — ignore */ }
           });
         } catch (err) { /* never break the page */ }
+      };
+      setTimeout(function () {
+        // close any "Save To" collection dialog the site popped over the post,
+        // then give it a moment to vanish so the region crop is clean.
+        if (cfg.dismiss) { try { cfg.dismiss(U); } catch (e) {} setTimeout(doCapture, 450); }
+        else doCapture();
       }, cfg.preCaptureDelayMs || 300);
     } catch (err) { /* never break the page */ }
   }, true);

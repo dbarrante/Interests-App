@@ -64,6 +64,27 @@
       if (/(unsave|remove from saved)/.test(t)) return null;
       return (/^save$|^save post$|^save video$|^save reel$|^save link$|save to (your )?saved/.test(t)) ? item : null;
     },
+    // Saving opens a "Save To" collection dialog that floats over the post.
+    // Close it (Done keeps the default save) so the region crop sees the post.
+    dismiss: function (U) {
+      try {
+        const dlgs = document.querySelectorAll('[role="dialog"]');
+        for (let i = 0; i < dlgs.length; i++) {
+          const d = dlgs[i];
+          if (!/save to/i.test((d.textContent || "").slice(0, 200))) continue;
+          const btns = d.querySelectorAll('[role="button"], button, a[role="link"], [aria-label]');
+          let done = null, close = null;
+          for (let j = 0; j < btns.length; j++) {
+            const lab = ((btns[j].innerText || btns[j].getAttribute("aria-label") || "")).trim().toLowerCase();
+            if (/^done$/.test(lab)) { done = btns[j]; break; }
+            if (/^close$/.test(lab)) close = btns[j];
+          }
+          const btn = done || close;
+          if (btn) btn.click();
+          return;
+        }
+      } catch (e) {}
+    },
     findPost: function (item, U) { return fbGetPost(item, U); },
     isSpecificUrl: fbIsSpecific,
     findPermalink: function (post, U) {
