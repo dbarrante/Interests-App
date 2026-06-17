@@ -2557,7 +2557,8 @@ function drainCaptures(){
     if(cap.clip){
       // "Clip this page" from the extension — create/update a Saved card (not an
       // imported one). Handled entirely by addClip; consume the queue entry.
-      addClip(cap);
+      console.log("[clip] received clip for "+cap.url);
+      try{ addClip(cap); }catch(e){ console.error("[clip] addClip failed",e); }
       continue;
     }
     let viaActive=false;

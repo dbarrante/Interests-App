@@ -70,6 +70,80 @@ async function deliverToApp(capture) {
   return delivered;
 }
 
+// ---- "Clip this page" — save the current page to the Interests app as a new
+// Saved card. Used by the popup button and the right-click context menu.
+// opts: { url, desc, title } override the page defaults (e.g. a right-clicked
+// link's URL, or selected text as the description).
+async function clipCurrentPage(tab, opts = {}) {
+  if (!tab || !tab.url || /^(chrome|chrome-extension|about|edge|view-source):/.test(tab.url)) {
+    await setStatus("Cannot clip this page (browser page)", false);
+    return { ok: false, error: "Cannot clip this page" };
+  }
+  await setStatus("Clipping…", true);
+  setBadge("📎");
+  // page metadata (title / description / og image)
+  let meta = {};
+  try { const mr = await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] }); meta = mr?.[0]?.result || {}; }
+  catch (e) { log("clip meta failed: " + e.message); }
+  // screenshot of the page you're looking at (it's the active/foreground tab)
+  let shot = "";
+  try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
+  catch (e) { log("clip screenshot failed: " + e.message); }
+  const blocked = !!meta.blocked;
+  const payload = {
+    clip: true,
+    url: opts.url || tab.url,
+    title: opts.title || meta.title || tab.title || tab.url,
+    desc: opts.desc || (blocked ? "" : (meta.desc || "")),
+    ogImage: blocked ? "" : (meta.ogImage || ""),
+    contentImage: blocked ? "" : (meta.contentImage || ""),
+    screenshot: shot, ts: Date.now(),
+  };
+  const delivered = await deliverToApp(payload);
+  if (!delivered) {
+    // app tab isn't open — stash for the bridge to sync when it next loads
+    const stored = await chrome.storage.local.get("ia_capture_queue");
+    let queue = stored.ia_capture_queue || [];
+    queue.push(payload);
+    if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
+    await chrome.storage.local.set({ ia_capture_queue: queue });
+  }
+  setBadge(delivered ? "✓" : "…", 4000);
+  await setStatus(delivered ? "Clipped to Interests ✓" : "Saved — opens when the Interests app is open", delivered);
+  try {
+    chrome.notifications.create("clip-" + Date.now(), {
+      type: "basic", iconUrl: "icon128.png", title: "Interests",
+      message: (delivered ? "Clipped: " : "Saved (open the app): ") + (payload.title || payload.url).slice(0, 70),
+      silent: true,
+    });
+  } catch (e) {}
+  return { ok: true, delivered };
+}
+
+// Right-click → "Save to Interests" on any page/link/image/selection.
+function ensureContextMenu() {
+  try {
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: "saveToInterests",
+        title: "Save to Interests",
+        contexts: ["page", "selection", "link", "image"],
+      });
+    });
+  } catch (e) { log("contextMenu setup failed: " + e.message); }
+}
+chrome.runtime.onInstalled.addListener(ensureContextMenu);
+chrome.runtime.onStartup.addListener(ensureContextMenu);
+ensureContextMenu();   // also run when the service worker spins up
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== "saveToInterests") return;
+  // a right-clicked link saves that link; selected text becomes the description
+  clipCurrentPage(tab, {
+    url: info.linkUrl || info.pageUrl || (tab && tab.url),
+    desc: (info.selectionText || "").trim() || undefined,
+  });
+});
+
 async function captureTab(tab, delayMs, force, cardId) {
   const tabId = tab.id;
   const tabUrl = tab.url;
@@ -429,40 +503,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) {
-          await setStatus("Cannot clip this page (browser page)", false);
-          sendResponse({ ok: false, error: "Cannot clip this page" });
-          return;
-        }
-        await setStatus("Clipping…", true);
-        // page metadata (title / description / og image)
-        let meta = {};
-        try { const mr = await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] }); meta = mr?.[0]?.result || {}; }
-        catch (e) { log("clip meta failed: " + e.message); }
-        // screenshot of the page you're looking at (it's the active/foreground tab)
-        let shot = "";
-        try { shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 }); }
-        catch (e) { log("clip screenshot failed: " + e.message); }
-        const payload = {
-          clip: true, url: tab.url,
-          title: meta.title || tab.title || tab.url,
-          desc: meta.blocked ? "" : (meta.desc || ""),
-          ogImage: meta.blocked ? "" : (meta.ogImage || ""),
-          contentImage: meta.blocked ? "" : (meta.contentImage || ""),
-          screenshot: shot, ts: Date.now(),
-        };
-        const delivered = await deliverToApp(payload);
-        if (!delivered) {
-          // app tab isn't open — stash for the bridge to sync when it next loads
-          const stored = await chrome.storage.local.get("ia_capture_queue");
-          let queue = stored.ia_capture_queue || [];
-          queue.push(payload);
-          if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
-          await chrome.storage.local.set({ ia_capture_queue: queue });
-        }
-        setBadge(delivered ? "📎" : "…", 4000);
-        await setStatus(delivered ? "Clipped to Interests ✓" : "Saved — will appear when the Interests app is open", delivered);
-        sendResponse({ ok: true, delivered });
+        const res = await clipCurrentPage(tab);
+        sendResponse(res);
       } catch (e) {
         await setStatus("Clip failed: " + e.message, false);
         sendResponse({ ok: false, error: e.message });
