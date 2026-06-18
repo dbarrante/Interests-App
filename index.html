@@ -1860,6 +1860,51 @@ function allImportedTags(){
   imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
+/* ---- AutoTag learning: per-tag stats teach it what to suggest ---- */
+let tagStats = load("tagstats", {});   // { tagLower: {sug,acc,rej,rem} }
+function tsRec(tag, field){ const k=(tag||"").trim().toLowerCase(); if(!k) return; const s=tagStats[k]||(tagStats[k]={sug:0,acc:0,rej:0,rem:0}); s[field]=(s[field]||0)+1; }
+function tsSave(){ save("tagstats", tagStats); }
+// best-practice: years, dates, pure numbers, generic filler, over-long are poor tags
+function tagBadPattern(t){
+  t=(t||"").trim(); if(!t) return true;
+  if(/^(19|20)\d{2}$/.test(t)) return true;                 // a year
+  if(/^[\d\W]+$/.test(t)) return true;                      // numbers / punctuation only
+  if(/^(misc|other|stuff|general|various|etc|tbd|untitled|new|uncategorized)$/i.test(t)) return true;
+  if(t.length>28 || t.split(/\s+/).length>3) return true;   // too long / too many words
+  return false;
+}
+// has the user taught us to avoid this tag? (rejected/removed enough, rarely taken)
+function tagSuppressed(t){
+  if(tagBadPattern(t)) return true;
+  const s=tagStats[(t||"").trim().toLowerCase()]; if(!s) return false;
+  if(s.rem>=2 && s.acc===0) return true;                    // actively removed, never accepted
+  const decided=(s.acc||0)+(s.rej||0);
+  if(decided>=4 && (s.acc||0)/decided < 0.15) return true;  // offered & decided often, almost never taken
+  return false;
+}
+// the user's preferred vocabulary (existing tags ranked by use + acceptance,
+// minus suppressed ones) — drives cross-card consistency.
+function preferredVocab(n){
+  const c={}; imported.forEach(i=>(i.tags||[]).forEach(t=>{ const k=t.toLowerCase(); c[k]=(c[k]||0)+1; }));
+  const seen={}, list=[];
+  imported.forEach(i=>(i.tags||[]).forEach(t=>{ const k=t.toLowerCase(); if(seen[k]) return; seen[k]=1; if(!tagSuppressed(t)) list.push({t, score:c[k]+((tagStats[k]&&tagStats[k].acc)||0)}); }));
+  return list.sort((a,b)=>b.score-a.score).slice(0,n||30).map(x=>x.t);
+}
+// learned tags to explicitly tell the model to avoid (excludes the obvious patterns)
+function learnedAvoid(n){
+  return Object.keys(tagStats).filter(k=>!tagBadPattern(k) && tagSuppressed(k))
+    .sort((a,b)=>((tagStats[b].rej||0)+(tagStats[b].rem||0)*2)-((tagStats[a].rej||0)+(tagStats[a].rem||0)*2))
+    .slice(0,n||15);
+}
+// map a suggestion onto an existing tag when it's effectively the same (case /
+// simple plural) so cards converge on one spelling instead of near-duplicates.
+function canonicalTag(t){
+  const k=(t||"").toLowerCase();
+  for(const e of allImportedTags()){ const ek=e.toLowerCase();
+    if(ek===k || ek===k+"s" || ek+"s"===k || ek.replace(/s$/,"")===k.replace(/s$/,"")) return e;
+  }
+  return t;
+}
 // Persist + update ONLY the edited card's tag row in place (no full re-render),
 // so the page never jumps while tagging.
 function _afterTagEdit(idx){
@@ -1882,12 +1927,14 @@ function _afterTagEdit(idx){
 function impAddTag(idx, tag){
   const it=imported[idx]; tag=(tag||"").trim(); if(!it||!tag) return;
   if(!it.tags) it.tags=[];
-  if(!it.tags.some(t=>t.toLowerCase()===tag.toLowerCase())) it.tags.push(tag);
+  if(!it.tags.some(t=>t.toLowerCase()===tag.toLowerCase())){ it.tags.push(tag); tsRec(tag,"acc"); tsSave(); }   // learn: user wants this tag
   _afterTagEdit(idx);
 }
 function impRemoveTag(idx, tag){
   const it=imported[idx]; if(!it||!it.tags) return;
+  const had=it.tags.some(t=>t===tag);
   it.tags=it.tags.filter(t=>t!==tag);
+  if(had){ tsRec(tag,"rem"); tsSave(); }   // learn: user removed this tag (strong negative)
   _afterTagEdit(idx);
 }
 function impRemoveTagEl(idx, x){
@@ -1977,16 +2024,27 @@ document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e
 /* ---- AutoTag (AI tag suggestions) ---- */
 async function aiSuggestTags(it){
   const call={anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-  const existing=allImportedTags().slice(0,40).join(", ");
-  const prompt=`Suggest 4-7 short topic tags for this saved item.\nTitle: "${(it.title||"").slice(0,200)}"\nDescription: "${(it.desc||"").slice(0,300)}"\nURL: ${it.url||""}\n`+
-    (existing?`Prefer reusing these existing tags when they fit: ${existing}\n`:"")+
-    `Rules: 1-2 words each, lowercase, no '#'. Return ONLY a JSON array of strings, e.g. ["3d printing","arduino"].`;
+  const vocab=preferredVocab(30);
+  const avoid=learnedAvoid(15);
+  const prompt=`You curate tags for a personal interests library. Suggest 4-7 tags for this item.\n`+
+    `Title: "${(it.title||"").slice(0,200)}"\nDescription: "${(it.desc||"").slice(0,300)}"\nURL: ${it.url||""}\n`+
+    (vocab.length?`PREFER reusing these existing tags whenever one fits — reusing keeps the library consistent: ${vocab.join(", ")}\n`:"")+
+    (avoid.length?`Do NOT suggest these (the user keeps rejecting them): ${avoid.join(", ")}\n`:"")+
+    `Best-practice rules: lowercase; 1-2 words; reuse an existing tag instead of a near-synonym; NO years, dates, or numbers; no generic filler (misc, other, stuff); specific and durable. Return ONLY a JSON array of strings, e.g. ["3d printing","arduino"].`;
   const text=await call(prompt);
   const m=text.match(/\[[\s\S]*\]/); if(!m) throw new Error("No suggestions returned");
   let arr; try{ arr=JSON.parse(m[0]); }catch(e){ throw new Error("Could not parse suggestions"); }
   if(!Array.isArray(arr)) throw new Error("Unexpected response");
-  const seen=new Set(), out=[];
-  arr.forEach(t=>{ t=(""+t).replace(/^#/,"").trim(); if(!t||t.length>40) return; const k=t.toLowerCase(); if(seen.has(k)) return; seen.add(k); out.push(t); });
+  // clean -> canonicalize onto existing vocab -> drop learned/bad tags -> dedup
+  const seen=new Set(), cleaned=[], loose=[];
+  arr.forEach(t=>{ t=(""+t).replace(/^#/,"").trim(); if(!t||t.length>40) return; t=canonicalTag(t); const k=t.toLowerCase(); if(seen.has(k)) return; seen.add(k);
+    if(!tagBadPattern(t)) loose.push(t);          // keep as a fallback (ignores learned suppression)
+    if(!tagSuppressed(t)) cleaned.push(t);
+  });
+  let out = cleaned.length ? cleaned : loose;     // if learning nuked everything, fall back to non-junk
+  // existing-vocabulary tags first, so the user sees consistent tags on top
+  const vset=new Set(vocab.map(v=>v.toLowerCase()));
+  out.sort((a,b)=>(vset.has(b.toLowerCase())?1:0)-(vset.has(a.toLowerCase())?1:0));
   return out.slice(0,8);
 }
 function openAutoTag(idx, ev){
@@ -2000,6 +2058,7 @@ function openAutoTag(idx, ev){
     if(_tagPickIdx!==idx) return;   // picker was closed/changed meanwhile
     const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
     _autoSug = tags.filter(t=>!have.has(t.toLowerCase())).map(t=>({tag:t, sel:false}));
+    _autoSug.forEach(s=>tsRec(s.tag,"sug")); tsSave();   // learn: these were offered
     renderAutoTag(); positionPicker(ev);
   }).catch(e=>{ if(_tagPickIdx!==idx) return; _autoErr=e.message||"Try again"; renderAutoTag("error"); console.warn("AutoTag failed",e); });
 }
@@ -2016,13 +2075,16 @@ function renderAutoTag(state){
     `<div class="tp-actions"><button class="tp-accept" onclick="event.stopPropagation();autoAccept()">${anySel?"Accept selected":"Accept all"}</button><button class="tp-cancel" onclick="event.stopPropagation();closeTagPicker()">Cancel</button></div>`;
 }
 function autoToggleSel(i){ if(_autoSug[i]){ _autoSug[i].sel=!_autoSug[i].sel; renderAutoTag(); } }
-function autoRemoveSug(i){ _autoSug.splice(i,1); renderAutoTag(); }
+function autoRemoveSug(i){ const s=_autoSug[i]; if(s){ tsRec(s.tag,"rej"); tsSave(); } _autoSug.splice(i,1); renderAutoTag(); }
 function autoAccept(){
   if(_tagPickIdx<0) return;
   const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
   const anySel=_autoSug.some(s=>s.sel);
   const pick=_autoSug.filter(s=>anySel?s.sel:true).map(s=>s.tag);
   if(!pick.length){ toast("No tags selected"); return; }
+  // learn: accepted vs shown-but-not-accepted
+  const pickSet=new Set(pick.map(t=>t.toLowerCase()));
+  _autoSug.forEach(s=>tsRec(s.tag, pickSet.has(s.tag.toLowerCase())?"acc":"rej")); tsSave();
   if(!it.tags) it.tags=[];
   let added=0;
   pick.forEach(t=>{ if(!it.tags.some(x=>x.toLowerCase()===t.toLowerCase())){ it.tags.push(t); added++; } });
