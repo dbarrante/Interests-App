@@ -1860,22 +1860,35 @@ function allImportedTags(){
   imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
-function _afterTagEdit(){
-  const y=window.scrollY;
-  save("imported",imported); writeSavesFile(); updateCounts();
-  renderImported();
-  window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
+// Persist + update ONLY the edited card's tag row in place (no full re-render),
+// so the page never jumps while tagging.
+function _afterTagEdit(idx){
+  save("imported",imported); writeSavesFile();
+  const it=imported[idx];
+  if(it && it.id){
+    const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
+    const card=document.querySelector(sel);
+    if(card){
+      const tmp=document.createElement("div"); tmp.innerHTML=tagRow(it.tags, idx);
+      const fresh=tmp.firstElementChild;
+      const line=card.querySelector(".tagsline");
+      if(line && fresh){ line.replaceWith(fresh); return; }
+      if(fresh){ const acts=card.querySelector(".imp-acts"); if(acts) acts.parentNode.insertBefore(fresh, acts); return; }
+    }
+  }
+  // fallback only if the card isn't in the DOM: scroll-preserving full render
+  const y=window.scrollY; renderImported(); window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
 }
 function impAddTag(idx, tag){
   const it=imported[idx]; tag=(tag||"").trim(); if(!it||!tag) return;
   if(!it.tags) it.tags=[];
   if(!it.tags.some(t=>t.toLowerCase()===tag.toLowerCase())) it.tags.push(tag);
-  _afterTagEdit();
+  _afterTagEdit(idx);
 }
 function impRemoveTag(idx, tag){
   const it=imported[idx]; if(!it||!it.tags) return;
   it.tags=it.tags.filter(t=>t!==tag);
-  _afterTagEdit();
+  _afterTagEdit(idx);
 }
 function impRemoveTagEl(idx, x){
   const chip=x.closest(".tg"); if(!chip) return;
@@ -2013,7 +2026,7 @@ function autoAccept(){
   if(!it.tags) it.tags=[];
   let added=0;
   pick.forEach(t=>{ if(!it.tags.some(x=>x.toLowerCase()===t.toLowerCase())){ it.tags.push(t); added++; } });
-  _afterTagEdit();
+  _afterTagEdit(_tagPickIdx);
   closeTagPicker();
   toast(added?("Added "+added+" tag"+(added>1?"s":"")):"Already on the card");
 }
