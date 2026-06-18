@@ -1898,25 +1898,14 @@ function renderTagPicker(){
     `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
     `<div class="tp-list">${tagPickerRows("")}</div>`;
 }
-// live-filter the list as the user types; when nothing matches, highlight the
-// Add button and — once typing pauses — move focus to it, so Enter or a click
-// creates the typed text as a new tag (debounced so it never interrupts typing).
-let _tpFocusTimer=null;
+// live-filter the list as the user types; when nothing matches, just HIGHLIGHT
+// the Add button (never steal focus — that interrupts typing). The cursor stays
+// in the field; Enter or clicking the highlighted Add creates the typed tag.
 function filterTagPicker(q){
   const list=document.querySelector("#tagPicker .tp-list"); if(!list) return;
   list.innerHTML=tagPickerRows(q);
   const add=document.getElementById("tpAdd");
-  const noMatch=!!q.trim() && !list.querySelector(".tp-row");
-  clearTimeout(_tpFocusTimer);
-  if(add){
-    add.classList.toggle("ready", noMatch);
-    if(noMatch){
-      _tpFocusTimer=setTimeout(()=>{
-        const inp=document.getElementById("tpNew");
-        if(add.classList.contains("ready") && inp && inp.value.trim() && document.activeElement===inp) add.focus();
-      }, 500);
-    }
-  }
+  if(add) add.classList.toggle("ready", !!q.trim() && !list.querySelector(".tp-row"));
 }
 function impTagToggle(btn){
   if(_tagPickIdx<0) return;
