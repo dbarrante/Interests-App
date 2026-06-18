@@ -245,6 +245,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tp-list{display:flex;flex-direction:column}
 .tp-row{display:block;width:100%;text-align:left;border:0;background:transparent;padding:7px 10px;border-radius:7px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer}
 .tp-row:hover{background:var(--accent-soft)}
+.tp-row.hi{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .tp-row.on{color:var(--accent)}
 .tp-empty{padding:8px 10px;color:var(--muted);font-size:12px}
 .tagbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--card);border-radius:11px;box-shadow:var(--shadow)}
@@ -1838,7 +1839,8 @@ function tagRow(tags, idx){
 }
 /* ---- inline tag editing (1x1 imported view) ---- */
 let _tagPickIdx = -1;
-let _tagMulti = load("tagmulti", false);
+let _tagMulti = false;        // "Select multiple" is off by default each time the picker opens
+let _tpHi = -1;               // arrow-key highlighted row in the picker list
 function allImportedTags(){
   const s=new Set();
   imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
@@ -1867,6 +1869,7 @@ function impRemoveTagEl(idx, x){
 }
 function openTagPicker(idx, ev){
   _tagPickIdx=idx;
+  _tagMulti=false; _tpHi=-1;   // single-select + no highlight by default on each open
   renderTagPicker();
   const p=document.getElementById("tagPicker");
   p.classList.add("open");
@@ -1894,7 +1897,7 @@ function renderTagPicker(){
   const p=document.getElementById("tagPicker"); if(!p||_tagPickIdx<0) return;
   const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
   p.innerHTML =
-    `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();tagPickerNewTag();}"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
+    `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="tagPickerKey(event)"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
     `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
     `<div class="tp-list">${tagPickerRows("")}</div>`;
 }
@@ -1904,8 +1907,22 @@ function renderTagPicker(){
 function filterTagPicker(q){
   const list=document.querySelector("#tagPicker .tp-list"); if(!list) return;
   list.innerHTML=tagPickerRows(q);
+  _tpHi=-1;   // fresh list — no highlight until the user arrows
   const add=document.getElementById("tpAdd");
   if(add) add.classList.toggle("ready", !!q.trim() && !list.querySelector(".tp-row"));
+}
+// keyboard in the New-tag field: Up/Down highlight a row, Enter picks the
+// highlighted tag (or creates the typed text if none is highlighted), Esc closes.
+function tagPickerKey(e){
+  const rows=Array.prototype.slice.call(document.querySelectorAll("#tagPicker .tp-row"));
+  if(e.key==="ArrowDown"){ e.preventDefault(); if(!rows.length) return; _tpHi=(_tpHi+1>=rows.length)?0:_tpHi+1; tpHighlight(rows); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); if(!rows.length) return; _tpHi=(_tpHi<=0)?rows.length-1:_tpHi-1; tpHighlight(rows); }
+  else if(e.key==="Enter"){ e.preventDefault(); if(_tpHi>=0 && rows[_tpHi]) impTagToggle(rows[_tpHi]); else tagPickerNewTag(); }
+  else if(e.key==="Escape"){ e.preventDefault(); closeTagPicker(); }
+}
+function tpHighlight(rows){
+  rows.forEach((r,i)=>r.classList.toggle("hi", i===_tpHi));
+  if(rows[_tpHi] && rows[_tpHi].scrollIntoView) rows[_tpHi].scrollIntoView({block:"nearest"});
 }
 function impTagToggle(btn){
   if(_tagPickIdx<0) return;
@@ -1914,7 +1931,7 @@ function impTagToggle(btn){
   const has=(it.tags||[]).some(t=>t.toLowerCase()===tag.toLowerCase());
   if(has) impRemoveTag(_tagPickIdx, (it.tags||[]).find(t=>t.toLowerCase()===tag.toLowerCase()));
   else impAddTag(_tagPickIdx, tag);
-  if(_tagMulti){ renderTagPicker(); }   // keep open, refresh checkmarks
+  if(_tagMulti){ renderTagPicker(); const i=document.getElementById("tpNew"); if(i) i.focus(); }   // keep open + typing
   else closeTagPicker();
 }
 function tagPickerNewTag(){
@@ -1925,7 +1942,7 @@ function tagPickerNewTag(){
   if(_tagMulti){ renderTagPicker(); const i2=document.getElementById("tpNew"); if(i2) i2.focus(); }
   else closeTagPicker();
 }
-function toggleTagMulti(on){ _tagMulti=!!on; save("tagmulti", _tagMulti); }
+function toggleTagMulti(on){ _tagMulti=!!on; }   // session-only; resets to off on next open
 document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e.target.closest(".tg-add")) closeTagPicker(); });
 function renderImportedKeepFocus(){
   const scrollY=window.scrollY;
