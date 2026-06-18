@@ -240,6 +240,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tp-new{display:flex;gap:6px;margin-bottom:6px}
 .tp-new input{flex:1;min-width:0;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--bg);color:var(--ink)}
 .tp-new button{padding:6px 10px;border:0;background:var(--accent);color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px}
+.tp-new button.ready{outline:2px solid var(--accent);outline-offset:2px;box-shadow:0 0 0 3px var(--accent-soft)}
 .tp-multi{display:flex;align-items:center;gap:8px;padding:6px;font-size:13px;font-weight:700;color:var(--muted);border-bottom:1px solid var(--line);margin-bottom:4px;cursor:pointer}
 .tp-list{display:flex;flex-direction:column}
 .tp-row{display:block;width:100%;text-align:left;border:0;background:transparent;padding:7px 10px;border-radius:7px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer}
@@ -1878,18 +1879,44 @@ function openTagPicker(idx, ev){
   const inp=document.getElementById("tpNew"); if(inp) inp.focus();
 }
 function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; }
+// build the filtered tag rows (used on open and on every keystroke)
+function tagPickerRows(query){
+  const it=imported[_tagPickIdx]; if(!it) return "";
+  const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
+  const q=(query||"").trim().toLowerCase();
+  let all=allImportedTags();
+  if(q) all=all.filter(t=>t.toLowerCase().includes(q));
+  if(all.length) return all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();impTagToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("");
+  return q ? `<div class="tp-empty">No matches — Add to create &ldquo;${esc(query.trim())}&rdquo;</div>`
+           : `<div class="tp-empty">No tags yet — type one above.</div>`;
+}
 function renderTagPicker(){
   const p=document.getElementById("tagPicker"); if(!p||_tagPickIdx<0) return;
   const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
-  const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
-  const all=allImportedTags();
-  const rows = all.length
-    ? all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();impTagToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("")
-    : `<div class="tp-empty">No tags yet — type one above.</div>`;
   p.innerHTML =
-    `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();tagPickerNewTag();}"><button onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
+    `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();tagPickerNewTag();}"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
     `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
-    `<div class="tp-list">${rows}</div>`;
+    `<div class="tp-list">${tagPickerRows("")}</div>`;
+}
+// live-filter the list as the user types; when nothing matches, highlight the
+// Add button and — once typing pauses — move focus to it, so Enter or a click
+// creates the typed text as a new tag (debounced so it never interrupts typing).
+let _tpFocusTimer=null;
+function filterTagPicker(q){
+  const list=document.querySelector("#tagPicker .tp-list"); if(!list) return;
+  list.innerHTML=tagPickerRows(q);
+  const add=document.getElementById("tpAdd");
+  const noMatch=!!q.trim() && !list.querySelector(".tp-row");
+  clearTimeout(_tpFocusTimer);
+  if(add){
+    add.classList.toggle("ready", noMatch);
+    if(noMatch){
+      _tpFocusTimer=setTimeout(()=>{
+        const inp=document.getElementById("tpNew");
+        if(add.classList.contains("ready") && inp && inp.value.trim() && document.activeElement===inp) add.focus();
+      }, 500);
+    }
+  }
 }
 function impTagToggle(btn){
   if(_tagPickIdx<0) return;
