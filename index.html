@@ -230,6 +230,22 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tg:hover{color:var(--accent);border-color:var(--accent)}
 .tg.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .tg b{opacity:.6;font-weight:600}
+/* inline tag editing (1x1 imported view) */
+.tg .tgx{margin-left:7px;font-weight:800;opacity:.65;cursor:pointer;display:none}
+.tg .tgx:hover{opacity:1;color:var(--accent)}
+.tagsline.edit .tg:hover .tgx{display:inline}
+.tg-add{cursor:pointer;font-weight:800;color:var(--accent);border-style:dashed;background:transparent}
+#tagPicker{position:fixed;z-index:200;display:none;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);width:250px;max-height:340px;overflow:auto;padding:8px}
+#tagPicker.open{display:block}
+.tp-new{display:flex;gap:6px;margin-bottom:6px}
+.tp-new input{flex:1;min-width:0;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--bg);color:var(--ink)}
+.tp-new button{padding:6px 10px;border:0;background:var(--accent);color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px}
+.tp-multi{display:flex;align-items:center;gap:8px;padding:6px;font-size:13px;font-weight:700;color:var(--muted);border-bottom:1px solid var(--line);margin-bottom:4px;cursor:pointer}
+.tp-list{display:flex;flex-direction:column}
+.tp-row{display:block;width:100%;text-align:left;border:0;background:transparent;padding:7px 10px;border-radius:7px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer}
+.tp-row:hover{background:var(--accent-soft)}
+.tp-row.on{color:var(--accent)}
+.tp-empty{padding:8px 10px;color:var(--muted);font-size:12px}
 .tagbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--card);border-radius:11px;box-shadow:var(--shadow)}
 .tag-drop{position:relative;display:inline-block}
 .tag-menu{display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--card);border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow);z-index:60;min-width:180px;padding:4px 0}
@@ -408,6 +424,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 </main>
 
 <div id="toast"></div>
+<div id="tagPicker"></div>
 
 <div id="modal" onclick="if(event.target===this)closeGuide()">
   <div class="modal-box">
@@ -1808,11 +1825,92 @@ ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).jo
   if(curTab==="saved") renderSaved();
   renderImportedKeepFocus();
 }
-function tagRow(tags){
+function tagRow(tags, idx){
+  // Editable chips + a "+" picker in the 1x1 imported view; read-only elsewhere.
+  if(typeof idx==="number" && curTab==="imported" && viewMode==="g1"){
+    const chips=(tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}<span class="tgx" title="Remove tag" onclick="event.stopPropagation();impRemoveTagEl(${idx},this)">&times;</span></span>`).join("");
+    return `<div class="tagsline edit">${chips}<span class="tg tg-add" title="Add tag" onclick="event.stopPropagation();openTagPicker(${idx},event)">+</span></div>`;
+  }
   return tags && tags.length
     ? `<div class="tagsline">${tags.map(t=>`<span class="tg${impTag===t?" on":""}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}</span>`).join("")}</div>`
     : "";
 }
+/* ---- inline tag editing (1x1 imported view) ---- */
+let _tagPickIdx = -1;
+let _tagMulti = load("tagmulti", false);
+function allImportedTags(){
+  const s=new Set();
+  imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
+  return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+function _afterTagEdit(){
+  const y=window.scrollY;
+  save("imported",imported); writeSavesFile(); updateCounts();
+  renderImported();
+  window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
+}
+function impAddTag(idx, tag){
+  const it=imported[idx]; tag=(tag||"").trim(); if(!it||!tag) return;
+  if(!it.tags) it.tags=[];
+  if(!it.tags.some(t=>t.toLowerCase()===tag.toLowerCase())) it.tags.push(tag);
+  _afterTagEdit();
+}
+function impRemoveTag(idx, tag){
+  const it=imported[idx]; if(!it||!it.tags) return;
+  it.tags=it.tags.filter(t=>t!==tag);
+  _afterTagEdit();
+}
+function impRemoveTagEl(idx, x){
+  const chip=x.closest(".tg"); if(!chip) return;
+  impRemoveTag(idx, chip.getAttribute("data-tag"));
+}
+function openTagPicker(idx, ev){
+  _tagPickIdx=idx;
+  renderTagPicker();
+  const p=document.getElementById("tagPicker");
+  p.classList.add("open");
+  // position near the clicked +, kept within the viewport
+  const r=(ev&&ev.target&&ev.target.getBoundingClientRect)?ev.target.getBoundingClientRect():{left:100,bottom:100};
+  const w=p.offsetWidth||250, h=p.offsetHeight||320;
+  let left=Math.min(r.left, window.innerWidth-w-12);
+  let top=r.bottom+6; if(top+h>window.innerHeight-8) top=Math.max(8, r.top-h-6);
+  p.style.left=Math.max(8,left)+"px"; p.style.top=top+"px";
+  const inp=document.getElementById("tpNew"); if(inp) inp.focus();
+}
+function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; }
+function renderTagPicker(){
+  const p=document.getElementById("tagPicker"); if(!p||_tagPickIdx<0) return;
+  const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
+  const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
+  const all=allImportedTags();
+  const rows = all.length
+    ? all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();impTagToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("")
+    : `<div class="tp-empty">No tags yet — type one above.</div>`;
+  p.innerHTML =
+    `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();tagPickerNewTag();}"><button onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
+    `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
+    `<div class="tp-list">${rows}</div>`;
+}
+function impTagToggle(btn){
+  if(_tagPickIdx<0) return;
+  const tag=btn.getAttribute("data-tag");
+  const it=imported[_tagPickIdx]; if(!it) return;
+  const has=(it.tags||[]).some(t=>t.toLowerCase()===tag.toLowerCase());
+  if(has) impRemoveTag(_tagPickIdx, (it.tags||[]).find(t=>t.toLowerCase()===tag.toLowerCase()));
+  else impAddTag(_tagPickIdx, tag);
+  if(_tagMulti){ renderTagPicker(); }   // keep open, refresh checkmarks
+  else closeTagPicker();
+}
+function tagPickerNewTag(){
+  if(_tagPickIdx<0) return;
+  const inp=document.getElementById("tpNew"); const tag=inp?inp.value.trim():"";
+  if(!tag) return;
+  impAddTag(_tagPickIdx, tag);
+  if(_tagMulti){ renderTagPicker(); const i2=document.getElementById("tpNew"); if(i2) i2.focus(); }
+  else closeTagPicker();
+}
+function toggleTagMulti(on){ _tagMulti=!!on; save("tagmulti", _tagMulti); }
+document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e.target.closest(".tg-add")) closeTagPicker(); });
 function renderImportedKeepFocus(){
   const scrollY=window.scrollY;
   const pos=document.activeElement&&document.activeElement.selectionStart;
@@ -1904,7 +2002,7 @@ function impCardHTML(it,idx){
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
       <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.sdate)?" · &#128197; "+esc(fmtCardDate(it.sdate)):""}</div>
-      ${tagRow(it.tags)}
+      ${tagRow(it.tags, idx)}
       <div class="imp-acts">
         ${it.liked?"":`<button onclick="impLike(${idx})">&#128077; Like</button>`}
         ${it.url?`<button onclick="impSave(${idx})">&#128278; Save</button>`:""}
