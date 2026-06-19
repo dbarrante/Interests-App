@@ -493,9 +493,9 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, bg) {
   // does one instant DOM scan per message), so a throttled background tab's own
   // timers don't matter. Stop as soon as we have an image URL.
   let info = null;
-  const tries = bg ? 7 : 2;
+  const tries = bg ? 9 : 2;   // give a hidden tab time to actually load + decode the photo
   for (let attempt = 0; attempt < tries; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 2200));
+    if (attempt) await new Promise((r) => setTimeout(r, 2500));
     try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
     catch (e) { info = null; }
     if (info && info.image) break;

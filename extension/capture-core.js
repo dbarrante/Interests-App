@@ -169,39 +169,52 @@
       }
       return best || arts[0];
     };
-    // largest post CDN image by best-available dimension — returns the src even
-    // when the image hasn't decoded yet (a background tab may not paint it, but
-    // the worker can still fetch the URL). Skips avatars/reaction icons.
-    const bgImg = function (root) {
+    // A REAL post photo only — user content lives on scontent.*; reject UI assets
+    // and the loading spinner/placeholder (static.*fbcdn, rsrc.php, emoji, etc.).
+    const isPhoto = function (s) { return /scontent/i.test(s) || (/fbcdn/i.test(s) && !/static\.|rsrc\.php|\/emoji|safe_image|spinner|\/images\//i.test(s)); };
+    // Largest DECODED photo (naturalWidth>0 ⇒ actually loaded, not a placeholder).
+    // Requiring decode is what stops the spinner from being captured.
+    const realPhoto = function (root) {
       let best = "", bestA = 0;
       try {
         const ims = (root || document).querySelectorAll("img");
         for (let i = 0; i < ims.length; i++) {
           const im = ims[i], s = im.currentSrc || im.src || "";
-          if (!cfg.imageCdn.test(s)) continue;
-          const r = im.getBoundingClientRect ? im.getBoundingClientRect() : { width: 0, height: 0 };
-          const w = Math.max(im.naturalWidth || 0, im.width || 0, parseInt(im.getAttribute("width")) || 0, r.width || 0);
-          const h = Math.max(im.naturalHeight || 0, im.height || 0, parseInt(im.getAttribute("height")) || 0, r.height || 0);
-          if (Math.min(w, h) < 120) continue;
+          if (!isPhoto(s)) continue;
+          const w = im.naturalWidth || 0, h = im.naturalHeight || 0;   // DECODED size — 0 if still loading/placeholder
+          if (Math.min(w, h) < 200) continue;
           const a = w * h; if (a > bestA) { bestA = a; best = s; }
         }
       } catch (e) {}
       return best;
     };
-    // Instant scan, no internal poll — the worker (captureFbPost) drives the
-    // retry cadence so background-tab timer throttling can't stall us.
+    // Nudge the post's photos to actually load+decode (a background tab otherwise
+    // lazy-defers them, leaving only the spinner).
+    const forceLoad = function (post) {
+      try {
+        const ims = (post || document).querySelectorAll("img");
+        for (let i = 0; i < ims.length; i++) {
+          const im = ims[i], s = im.currentSrc || im.src || "";
+          if (!isPhoto(s)) continue;
+          try { im.loading = "eager"; im.decoding = "sync"; if (im.decode) im.decode().catch(function () {}); } catch (e) {}
+        }
+      } catch (e) {}
+    };
+    // Instant scan, no internal poll — the worker (captureFbPost) drives the retry
+    // cadence so background-tab timer throttling can't stall us. We only report a
+    // real, DECODED photo; if it isn't loaded yet the worker just asks again.
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
       try {
         let post = findMainPost();
-        if (post) { try { U.hoverTimestamps(post); } catch (e) {} }
+        if (post) { try { U.hoverTimestamps(post); } catch (e) {} forceLoad(post); }
         const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
         const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-        const image = (post ? (U.largestImg(post, cfg.imageCdn) || bgImg(post)) : "") || U.largestImg(document, cfg.imageCdn) || bgImg(document);
+        const image = (post ? realPhoto(post) : "") || realPhoto(document);
         const rect = post ? U.rectOf(post) : null;
-        console.log("[Interests] autoCaptureFB | img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+        console.log("[Interests] autoCaptureFB | decoded photo=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
         sendResponse({
-          ok: !!(image || (post && (post.innerText || "").length > 40)),
+          ok: !!image,                  // only "ready" when we have a real decoded photo (never a spinner)
           rect: rect, image: image,
           title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
           author: ex.author || "", text: (ex && ex.text) || "",
