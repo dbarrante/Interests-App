@@ -386,7 +386,7 @@ async function finishPending(tab) {
   if (capture) {
     // Facebook pages can't be screenshotted whole (chrome/login wall) — capture
     // the POST AREA via the in-page engine, exactly like the FB batch does.
-    if (/facebook\.com|fb\.watch/i.test(url || tab.url || "")) await captureFbPost(tab, url, delay, id, false);   // single open: foreground, crop fallback allowed
+    if (/facebook\.com|fb\.watch/i.test(url || tab.url || "")) await captureFbPost(tab, url, delay, id);
     else await captureTab(tab, delay, force, id);
   }
   else { setBadge("", 0); await setStatus("Page reached — nothing to capture", true); }
@@ -482,29 +482,27 @@ function settlePending(tabId, why) {
 // to find + measure the MAIN post, then build a durable card image from it (the
 // post's own photo, or a crop of the post area). Delivered tagged with the card
 // id so drainCaptures updates the existing imported card (not a new clip).
-async function captureFbPost(tab, cardUrl, delayMs, cardId, bg) {
+async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   const tabId = tab.id, tabUrl = tab.url || cardUrl;
-  // give the content script time to load + the post time to render before we ask
+  // foreground tab: give the content script + the post photo a moment to load/decode
   const delay = Math.max(typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS, 1200);
-  log("FB post capture: " + (cardUrl || tabUrl) + (bg ? " [bg]" : "") + " (delay " + delay + ")");
+  log("FB post capture: " + (cardUrl || tabUrl) + " (delay " + delay + ")");
   await setStatus("Capturing Facebook post…", true);
+  setBadge("...");
   await new Promise((r) => setTimeout(r, delay));
-  // Poll the in-page engine for the post photo. WORKER-driven (the content script
-  // does one instant DOM scan per message), so a throttled background tab's own
-  // timers don't matter. Stop as soon as we have an image URL.
+  // Poll the in-page engine until the post's REAL photo has decoded (never the
+  // spinner). The content script does one instant DOM scan per message.
   let info = null;
-  const tries = bg ? 9 : 2;   // give a hidden tab time to actually load + decode the photo
-  for (let attempt = 0; attempt < tries; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 2500));
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 2000));
     try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
     catch (e) { info = null; }
     if (info && info.image) break;
   }
   let imgData = "";
-  if (info && info.image) imgData = await fetchAsDataUrl(info.image);             // the post's own photo, full-res, durable (no screenshot → no focus steal)
-  // crop screenshots the VISIBLE tab — only valid for a FOREGROUND single-card
-  // open; never for a background batch tab (it would grab the app tab instead).
-  if (!imgData && !bg && info && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);
+  if (info && info.image) imgData = await fetchAsDataUrl(info.image);             // the post's own photo, full-res, durable
+  // text/video posts have no still photo — crop the visible post area instead
+  if (!imgData && info && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);
   if (!imgData) {
     await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
     await setStatus("Facebook post — no image (marked attempted; stay logged in / a group member)", false);
@@ -525,7 +523,7 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
   try {
     const t = await chrome.tabs.get(tabId);
     if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) {
-      if (/facebook\.com|fb\.watch/i.test(p.url || t.url || "")) await captureFbPost(t, p.url, p.delay, p.id, true);   // batch: background tab, photo-fetch only
+      if (/facebook\.com|fb\.watch/i.test(p.url || t.url || "")) await captureFbPost(t, p.url, p.delay, p.id);
       else await captureTab(t, p.delay, false, p.id);
     }
   } catch (e) {}
@@ -535,13 +533,11 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay) {
   let tab;
-  // Non-FB captures need a FOREGROUND tab: they screenshot via captureVisibleTab,
-  // and background tabs get throttled/discarded (no shot). FB is different — we
-  // read the post's photo URL via the content script and fetch it in the worker
-  // (no screenshot), so the FB tab can stay in the BACKGROUND and the app keeps
-  // focus. autoDiscardable:false keeps it alive while we poll it.
-  const fbBg = /facebook\.com|fb\.watch/i.test(url || "");
-  try { tab = await chrome.tabs.create({ url, active: !fbBg }); }
+  // FOREGROUND tab. Non-FB pages need it to screenshot; FB needs it too because
+  // Facebook only loads the post photo when the tab is visible (a hidden tab
+  // serves just the loading spinner). The app regains focus between captures /
+  // during the auto pause. autoDiscardable:false keeps it alive while we work.
+  try { tab = await chrome.tabs.create({ url, active: true }); }
   catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
   const tabId = tab.id;
   try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}  // belt & suspenders: never discard mid-capture
@@ -558,6 +554,15 @@ async function captureOneTab(url, id, delay) {
   try { await chrome.tabs.remove(tabId); batchTabs.delete(tabId); } catch (e) { /* removal failed — leave it for the end-of-run sweep */ }
   if (outcome === "watchdog") await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });  // never loaded → mark attempted
   return outcome;
+}
+// bring the Interests app tab back to the front (after a batch, so the user lands
+// on the app during the pause rather than on a leftover capture tab)
+async function focusAppTab() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    const app = tabs.find((t) => t.url && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url));
+    if (app) { try { await chrome.windows.update(app.windowId, { focused: true }); } catch (e) {} await chrome.tabs.update(app.id, { active: true }); }
+  } catch (e) {}
 }
 // close any tabs the batch opened but didn't manage to close (e.g. the worker
 // was suspended between capturing and removing a heavy page like YouTube)
@@ -594,7 +599,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === "cleanupBatch") {
-    (async () => { await sweepBatchTabs(); sendResponse({ ok: true }); })();
+    (async () => { await sweepBatchTabs(); await focusAppTab(); sendResponse({ ok: true }); })();   // land back on the app after the batch
     return true;
   }
 
