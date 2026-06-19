@@ -1608,6 +1608,28 @@ let impUnreviewed = load("iunrev", false);
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
 function clearBatchFilter(){ impBatchIds=null; setImpSrc("facebook"); }   // ✕ → back to all Facebook imports
+// Detect FB cards that captured a loading-spinner/placeholder instead of the post
+// photo: those all share the IDENTICAL image (real photos are unique). Returns the
+// groups of duplicate-image cards. Cheap content fingerprint from the cached data URL.
+function fbPlaceholderGroups(){
+  const byImg={};
+  for(const it of imported){
+    if(!it || !it.id || !/facebook\.com|fb\.watch/i.test(it.url||"")) continue;
+    const v=(it.img||"")+""; if(v.indexOf("idb:")!==0) continue;
+    const data=_imgCache[v.slice(4)]; if(!data) continue;
+    const key=data.length+"|"+data.slice(0,48)+"|"+data.slice(-48);
+    (byImg[key]=byImg[key]||[]).push(it);
+  }
+  return Object.values(byImg).filter(g=>g.length>1);
+}
+function fbPlaceholderCount(){ let n=0; for(const g of fbPlaceholderGroups()) n+=g.length; return n; }
+function clearFbPlaceholders(){
+  const groups=fbPlaceholderGroups();
+  let cleared=0;
+  for(const g of groups){ for(const it of g){ setCardImage(it,""); delete it.captured; delete it.lastUpdate; delete it.lastResult; cleared++; } }
+  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder image(s) — run capture again to re-fetch the real photos", 6000); }
+  else toast("No placeholder captures found");
+}
 const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
@@ -1659,6 +1681,8 @@ function renderImported(){
             ? `<button class="btn btn-primary" onclick="stopFbAuto()" title="Stop the automated run">&#9632; Stop auto-capture</button>`
             : `<button class="btn btn-ghost" onclick="toggleFbAuto()" title="Automatically capture ${FB_BATCH_CAP} Facebook posts at a time with a ~1 min (jittered) pause between, until done. Stop anytime.">&#9654; Auto-capture all (${fbmiss})</button>`;
         }
+        const ph=(typeof fbPlaceholderCount==="function")?fbPlaceholderCount():0;
+        if(ph) out+=`<button class="btn btn-ghost" onclick="clearFbPlaceholders()" title="Some Facebook cards captured a loading spinner/placeholder instead of the photo. Clear them so they re-capture the real image.">&#129529; Fix ${ph} placeholder${ph>1?"s":""}</button>`;
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
           <div class="tag-menu" id="retryMenu">
             ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
