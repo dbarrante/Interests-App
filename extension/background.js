@@ -484,28 +484,29 @@ function settlePending(tabId, why) {
 // id so drainCaptures updates the existing imported card (not a new clip).
 async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   const tabId = tab.id, tabUrl = tab.url || cardUrl;
-  // foreground tab: give the content script + the post photo a moment to load/decode
-  const delay = Math.max(typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS, 1200);
+  // give the in-page content script time to load + the post time to render before
+  // we message it (the engine then polls until the post is actually present)
+  const delay = Math.max(typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS, 1500);
   log("FB post capture: " + (cardUrl || tabUrl) + " (delay " + delay + ")");
   await setStatus("Capturing Facebook post…", true);
-  setBadge("...");
+  setBadge("⏳");
   await new Promise((r) => setTimeout(r, delay));
-  // Poll the in-page engine until the post's REAL photo has decoded (never the
-  // spinner). The content script does one instant DOM scan per message.
+  setBadge("...");
   let info = null;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 2000));
+  for (let attempt = 0; attempt < 2 && !(info && info.ok); attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1800));   // content script not ready yet — wait & retry once
     try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
-    catch (e) { info = null; }
-    if (info && info.image) break;
+    catch (e) { log("autoCaptureFB message failed (try " + (attempt + 1) + "): " + e.message); info = null; }
   }
   let imgData = "";
-  if (info && info.image) imgData = await fetchAsDataUrl(info.image);             // the post's own photo, full-res, durable
-  // text/video posts have no still photo — crop the visible post area instead
-  if (!imgData && info && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);
+  if (info && info.ok) {
+    if (info.image) imgData = await fetchAsDataUrl(info.image);                                  // the post's own photo (full-res, durable)
+    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);  // fallback: crop the post area
+  }
   if (!imgData) {
     await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
-    await setStatus("Facebook post — no image (marked attempted; stay logged in / a group member)", false);
+    setBadge("!", 4000);
+    await setStatus("Facebook post — no image found (marked attempted; stay logged in / a group member)", false);
     return false;
   }
   await deliverToApp({
@@ -513,6 +514,7 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
     title: (info && info.title) || "", desc: (info && (info.text || info.author)) || "",
     screenshot: imgData, ts: Date.now(), force: false,
   });
+  setBadge("✓", 4000);
   await setStatus("Facebook post captured ✓", true);
   return true;
 }

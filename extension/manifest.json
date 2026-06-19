@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "4.14",
+  "version": "4.15",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation", "webRequest", "contextMenus"],
   "host_permissions": ["<all_urls>"],
