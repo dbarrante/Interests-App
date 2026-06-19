@@ -5,3 +5,5 @@ pinterest-import.json
 youtube-import.json
 facebook-saves.txt
 *.zip
+_recovery/
+saves-*.json
