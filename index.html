@@ -1697,7 +1697,7 @@ function renderImported(){
         right=`<span onclick="clearBatchFilter()" title="Back to all Facebook imports" style="${pill}">&#10005; Show all Facebook</span>`;
       }
       return `<div style="margin:8px 0;padding:9px 13px;background:var(--accent);color:#fff;border-radius:9px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px;flex-wrap:wrap">
-        <span>&#128247; Capture batch — <b>${wp}/${list.length}</b> have pictures so far. They fill in here as captures land.</span>
+        <span>&#128247; Capture batch — <b>${wp}/${list.length}</b> in this batch${_fbSessCaptured?` · <b>${_fbSessCaptured}</b> captured this run`:""}. Pictures fill in here as captures land.</span>
         <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${right}</span>
       </div>`;
     })() : ""}
@@ -2579,8 +2579,10 @@ const FB_BATCH_CAP = 25;   // conservative per-run cap for Facebook (auth-walled
 // runs (each run advances past already-attempted posts).
 function startFbCapture(){
   if(batchUI.active){ toast("A capture run is already going"); return; }
-  const need = imported.filter(needsFbCapture);
+  const need = imported.filter(needsFbCapture)
+    .sort((a,b)=>{ const av=a.sdate||a.ts||0, bv=b.sdate||b.ts||0; return impSort==="oldest" ? av-bv : bv-av; });   // top of the list down, matching the displayed order
   if(!need.length){ toast("No Facebook posts left to capture"); return; }
+  if(!fbAuto) _fbSessCaptured=0;   // a manual run resets the counter (an auto run resets once, at toggle)
   const seen=new Set();
   const uniq=need.filter(i=>{ const k=normalizeUrl(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
   const isTest = !localStorage.getItem("ia_fbtested");
@@ -2618,12 +2620,14 @@ let fbAuto = false;
 let _fbAutoTimer = null;     // pause-before-next-batch timeout
 let _fbAutoCdTimer = null;   // 1s countdown ticker for the banner
 let _fbAutoNextAt = 0;       // when the next batch fires (drives the countdown)
+let _fbSessCaptured = 0;     // FB pictures captured this run (manual batch or auto session)
 function fbAutoPauseMs(){ return 60000 + Math.round(Math.random()*30000) - 15000; }   // ~45–75s, jittered (less robotic than a fixed 60s)
 function toggleFbAuto(){
   if(fbAuto){ stopFbAuto(); return; }
   if(!imported.some(needsFbCapture)){ toast("No Facebook posts left to capture"); return; }
   fbAuto = true;
-  toast("Auto-capture ON — "+FB_BATCH_CAP+" posts, then a ~1 min pause, repeating until done. Stop anytime; keep this tab open and stay logged into Facebook.", 9000);
+  _fbSessCaptured = 0;   // fresh counter for this auto session
+  toast("Auto-capture ON — "+FB_BATCH_CAP+" posts, then a ~1 min pause, repeating until done. The app stays in front; pictures fill in as they land. Stop anytime; stay logged into Facebook.", 9000);
   if(!batchUI.active) startFbCapture(); else renderImported();
 }
 function stopFbAuto(){
@@ -3058,7 +3062,7 @@ function drainCaptures(){
     const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
                        : (cap.ogImage || cap.contentImage || cap.screenshot);
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
-    if(best && (force || isBadImg(match.img))){ setCardImage(match, best); changed=true; }
+    if(best && (force || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
     // a subpage capture only sets the image — don't overwrite the card's
     // title/description with the unrelated subpage's metadata
     if(!viaActive){

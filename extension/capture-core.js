@@ -169,34 +169,46 @@
       }
       return best || arts[0];
     };
+    // largest post CDN image by best-available dimension — returns the src even
+    // when the image hasn't decoded yet (a background tab may not paint it, but
+    // the worker can still fetch the URL). Skips avatars/reaction icons.
+    const bgImg = function (root) {
+      let best = "", bestA = 0;
+      try {
+        const ims = (root || document).querySelectorAll("img");
+        for (let i = 0; i < ims.length; i++) {
+          const im = ims[i], s = im.currentSrc || im.src || "";
+          if (!cfg.imageCdn.test(s)) continue;
+          const r = im.getBoundingClientRect ? im.getBoundingClientRect() : { width: 0, height: 0 };
+          const w = Math.max(im.naturalWidth || 0, im.width || 0, parseInt(im.getAttribute("width")) || 0, r.width || 0);
+          const h = Math.max(im.naturalHeight || 0, im.height || 0, parseInt(im.getAttribute("height")) || 0, r.height || 0);
+          if (Math.min(w, h) < 120) continue;
+          const a = w * h; if (a > bestA) { bestA = a; best = s; }
+        }
+      } catch (e) {}
+      return best;
+    };
+    // Instant scan, no internal poll — the worker (captureFbPost) drives the
+    // retry cadence so background-tab timer throttling can't stall us.
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
-      let waited = 0;
-      (function loop() {
+      try {
         let post = findMainPost();
-        const img = post ? U.largestImg(post, cfg.imageCdn) : "";
-        const ready = post && (img || ((post.innerText || "").length > 60));
-        if (ready || waited >= 7000) {
-          try { U.hoverTimestamps(post); } catch (e) {}
-          setTimeout(function () {
-            try {
-              if (post && post.isConnected === false) post = findMainPost();
-              const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
-              const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-              const image = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
-              const rect = U.rectOf(post);
-              console.log("[Interests] autoCaptureFB | img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
-              sendResponse({
-                ok: true, rect: rect, image: image,
-                title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
-                author: ex.author || "", text: (ex && ex.text) || "",
-                permalink: perma || location.href,
-              });
-            } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
-          }, 450);
-        } else { waited += 250; setTimeout(loop, 250); }
-      })();
-      return true;   // keep the message channel open for the async sendResponse
+        if (post) { try { U.hoverTimestamps(post); } catch (e) {} }
+        const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
+        const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
+        const image = (post ? (U.largestImg(post, cfg.imageCdn) || bgImg(post)) : "") || U.largestImg(document, cfg.imageCdn) || bgImg(document);
+        const rect = post ? U.rectOf(post) : null;
+        console.log("[Interests] autoCaptureFB | img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+        sendResponse({
+          ok: !!(image || (post && (post.innerText || "").length > 40)),
+          rect: rect, image: image,
+          title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
+          author: ex.author || "", text: (ex && ex.text) || "",
+          permalink: perma || location.href,
+        });
+      } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
+      return true;   // async sendResponse
     });
   }
 
