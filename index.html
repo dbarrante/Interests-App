@@ -1648,13 +1648,17 @@ function renderImported(){
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
       ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
       ${(function(){
-        if(batchUI.active) return `<button class="btn btn-primary" id="batchBtn" onclick="cancelBatchCapture()">&#9632; Stop capture (${batchUI.done}/${batchUI.total})</button>`;
+        if(batchUI.active) return `<button class="btn btn-primary" id="batchBtn" onclick="${fbAuto?'stopFbAuto()':'cancelBatchCapture()'}">&#9632; ${fbAuto?'Stop auto-capture':'Stop capture'} (${batchUI.done}/${batchUI.total})</button>`;
         const miss=imported.filter(needsCapture).length;
         const fail=imported.filter(needsRetry).length;
         var out="";
         if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
         const fbmiss=imported.filter(needsFbCapture).length;
-        if(fbmiss){ const fbcap=localStorage.getItem("ia_fbtested")?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Open each Facebook post one at a time and capture the post photo via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`; }
+        if(fbmiss){ const fbcap=localStorage.getItem("ia_fbtested")?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Capture ONE batch of Facebook posts via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`;
+          out+= fbAuto
+            ? `<button class="btn btn-primary" onclick="stopFbAuto()" title="Stop the automated run">&#9632; Stop auto-capture</button>`
+            : `<button class="btn btn-ghost" onclick="toggleFbAuto()" title="Automatically capture ${FB_BATCH_CAP} Facebook posts at a time with a ~1 min (jittered) pause between, until done. Stop anytime.">&#9654; Auto-capture all (${fbmiss})</button>`;
+        }
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
           <div class="tag-menu" id="retryMenu">
             ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
@@ -1678,10 +1682,25 @@ function renderImported(){
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
     </div>
     ${tagBarHTML()}
-    ${impBatchIds ? (function(){ const wp=list.filter(r=>!isBadImg(r.it.img)).length; return `<div style="margin:8px 0;padding:9px 13px;background:var(--accent);color:#fff;border-radius:9px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px">
-      <span>&#128247; Capture batch — <b>${wp}/${list.length}</b> have pictures so far. They fill in here as captures land.</span>
-      <span onclick="clearBatchFilter()" title="Back to all Facebook imports" style="margin-left:auto;cursor:pointer;background:rgba(255,255,255,.22);padding:4px 11px;border-radius:7px;white-space:nowrap">&#10005; Show all Facebook</span>
-    </div>`; })() : ""}
+    ${impBatchIds ? (function(){
+      const wp=list.filter(r=>!isBadImg(r.it.img)).length;
+      const pill="cursor:pointer;background:rgba(255,255,255,.22);padding:4px 10px;border-radius:7px;white-space:nowrap";
+      let right;
+      if(fbAuto && _fbAutoNextAt>Date.now()){
+        const left=imported.filter(needsFbCapture).length;
+        right=`<span>Auto ON · next batch in <b id="fbAutoCd">${Math.max(0,Math.round((_fbAutoNextAt-Date.now())/1000))}s</b> · ${left} left</span>
+          <span onclick="runFbNow()" style="${pill}">Run now</span><span onclick="stopFbAuto()" style="${pill}">&#9632; Stop auto</span>`;
+      } else if(fbAuto){
+        const left=imported.filter(needsFbCapture).length;
+        right=`<span>Auto ON · ${left} left</span><span onclick="stopFbAuto()" style="${pill}">&#9632; Stop auto</span>`;
+      } else {
+        right=`<span onclick="clearBatchFilter()" title="Back to all Facebook imports" style="${pill}">&#10005; Show all Facebook</span>`;
+      }
+      return `<div style="margin:8px 0;padding:9px 13px;background:var(--accent);color:#fff;border-radius:9px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px;flex-wrap:wrap">
+        <span>&#128247; Capture batch — <b>${wp}/${list.length}</b> have pictures so far. They fill in here as captures land.</span>
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${right}</span>
+      </div>`;
+    })() : ""}
     <div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`;
 }
 function tagBarHTML(){
@@ -2592,6 +2611,47 @@ function startFbCapture(){
     + " Leave this app tab open and stay logged into Facebook.", 8000);
   renderCatBar(); renderImported();
 }
+/* ---- Auto-capture: run FB batches of 25 back-to-back with a ~1 min jittered
+   pause between, until every Facebook post is processed or you stop. Session-only
+   (a reload stops it) so it never resumes opening FB tabs unexpectedly. ---- */
+let fbAuto = false;
+let _fbAutoTimer = null;     // pause-before-next-batch timeout
+let _fbAutoCdTimer = null;   // 1s countdown ticker for the banner
+let _fbAutoNextAt = 0;       // when the next batch fires (drives the countdown)
+function fbAutoPauseMs(){ return 60000 + Math.round(Math.random()*30000) - 15000; }   // ~45–75s, jittered (less robotic than a fixed 60s)
+function toggleFbAuto(){
+  if(fbAuto){ stopFbAuto(); return; }
+  if(!imported.some(needsFbCapture)){ toast("No Facebook posts left to capture"); return; }
+  fbAuto = true;
+  toast("Auto-capture ON — "+FB_BATCH_CAP+" posts, then a ~1 min pause, repeating until done. Stop anytime; keep this tab open and stay logged into Facebook.", 9000);
+  if(!batchUI.active) startFbCapture(); else renderImported();
+}
+function stopFbAuto(){
+  fbAuto = false;
+  if(_fbAutoTimer){ clearTimeout(_fbAutoTimer); _fbAutoTimer=null; }
+  if(_fbAutoCdTimer){ clearInterval(_fbAutoCdTimer); _fbAutoCdTimer=null; }
+  _fbAutoNextAt = 0;
+  if(batchUI.active) cancelBatchCapture(); else renderImportedKeepFocus();
+  toast("Auto-capture stopped");
+}
+function runFbNow(){   // skip the rest of the pause and start the next batch now
+  if(_fbAutoTimer){ clearTimeout(_fbAutoTimer); _fbAutoTimer=null; }
+  if(_fbAutoCdTimer){ clearInterval(_fbAutoCdTimer); _fbAutoCdTimer=null; }
+  _fbAutoNextAt = 0;
+  if(fbAuto && !batchUI.active) startFbCapture();
+}
+// called when a batch finishes (from pollBatchProgress) while auto is on
+function scheduleFbAutoNext(){
+  if(!fbAuto) return;
+  if(!imported.some(needsFbCapture)){ fbAuto=false; toast("Auto-capture complete — all Facebook posts processed.", 8000); if(curTab==="imported") renderImported(); return; }
+  const pause = fbAutoPauseMs();
+  _fbAutoNextAt = Date.now() + pause;
+  if(_fbAutoTimer) clearTimeout(_fbAutoTimer);
+  _fbAutoTimer = setTimeout(()=>{ _fbAutoTimer=null; _fbAutoNextAt=0; if(_fbAutoCdTimer){ clearInterval(_fbAutoCdTimer); _fbAutoCdTimer=null; } if(fbAuto && !batchUI.active) startFbCapture(); }, pause);
+  if(_fbAutoCdTimer) clearInterval(_fbAutoCdTimer);
+  _fbAutoCdTimer = setInterval(()=>{ const el=document.getElementById("fbAutoCd"); if(el) el.textContent = Math.max(0, Math.round((_fbAutoNextAt-Date.now())/1000))+"s"; }, 1000);
+  if(curTab==="imported") renderImported();
+}
 function cancelBatchCapture(){
   // tell the driver to stop, clear state/progress, and revert the button now
   try{ localStorage.setItem("ia_batch_cancel","1"); localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_state"); }catch(e){}
@@ -2614,6 +2674,7 @@ function pollBatchProgress(){
   if(was && !batchUI.active){
     try{ localStorage.removeItem("ia_batch_progress"); }catch(e){}
     toast("Capture run finished — "+batchUI.done+"/"+batchUI.total+" processed");
+    if(fbAuto) scheduleFbAutoNext();   // auto mode: pause, then run the next batch
     if(curTab==="imported") renderImported();
   }
 }
