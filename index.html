@@ -1606,6 +1606,8 @@ let impSrc = load("isrc","");
 let impSort = load("isort","newest");
 let impUnreviewed = load("iunrev", false);
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
+let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
+function clearBatchFilter(){ impBatchIds=null; setImpSrc("facebook"); }   // ✕ → back to all Facebook imports
 const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
@@ -1633,7 +1635,8 @@ function renderImported(){
             && (!impSrc || platformOf(r.it)===impSrc)
             && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
             && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url))))
-            && (!impFailed || needsRetry(r.it)))
+            && (!impFailed || needsRetry(r.it))
+            && (!impBatchIds || impBatchIds.has(r.it.id)))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
   v.innerHTML = `
@@ -1675,6 +1678,10 @@ function renderImported(){
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
     </div>
     ${tagBarHTML()}
+    ${impBatchIds ? (function(){ const wp=list.filter(r=>!isBadImg(r.it.img)).length; return `<div style="margin:8px 0;padding:9px 13px;background:var(--accent);color:#fff;border-radius:9px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px">
+      <span>&#128247; Capture batch — <b>${wp}/${list.length}</b> have pictures so far. They fill in here as captures land.</span>
+      <span onclick="clearBatchFilter()" title="Back to all Facebook imports" style="margin-left:auto;cursor:pointer;background:rgba(255,255,255,.22);padding:4px 11px;border-radius:7px;white-space:nowrap">&#10005; Show all Facebook</span>
+    </div>`; })() : ""}
     <div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`;
 }
 function tagBarHTML(){
@@ -2574,11 +2581,16 @@ function startFbCapture(){
     if(isTest) localStorage.setItem("ia_fbtested","1");
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
+  // Filter the imported view to ONLY this batch so you can watch the pictures
+  // import; clear other filters that might hide a batch card. ✕ in the banner
+  // (clearBatchFilter) returns to all Facebook imports.
+  impBatchIds = new Set(items.map(it=>it.id));
+  impQuery=""; impTag=""; impUnreviewed=false; impFailed=false; impSrc="facebook"; save("isrc","facebook");
   toast((isTest
     ? "Test run: capturing 10 Facebook posts. Check the results, then click again to do "+FB_BATCH_CAP+" at a time."
     : "Capturing "+items.length+" Facebook posts — one tab at a time.")
     + " Leave this app tab open and stay logged into Facebook.", 8000);
-  renderImportedKeepFocus();
+  renderCatBar(); renderImported();
 }
 function cancelBatchCapture(){
   // tell the driver to stop, clear state/progress, and revert the button now
