@@ -381,9 +381,14 @@ async function handleCaptureRequest(req) {
 async function finishPending(tab) {
   if (!pendingRequest) return;
   clearTimeout(pendingTimer);
-  const { delay, id, force, capture, closeAfter } = pendingRequest;
+  const { url, delay, id, force, capture, closeAfter } = pendingRequest;
   pendingRequest = null;
-  if (capture) await captureTab(tab, delay, force, id);
+  if (capture) {
+    // Facebook pages can't be screenshotted whole (chrome/login wall) — capture
+    // the POST AREA via the in-page engine, exactly like the FB batch does.
+    if (/facebook\.com|fb\.watch/i.test(url || tab.url || "")) await captureFbPost(tab, url, delay, id);
+    else await captureTab(tab, delay, force, id);
+  }
   else { setBadge("", 0); await setStatus("Page reached — nothing to capture", true); }
   // refresh requests ask us to close the page once we're done with it (the app
   // opened it via window.open, but chrome.tabs.remove is far more reliable than
@@ -479,14 +484,20 @@ function settlePending(tabId, why) {
 // id so drainCaptures updates the existing imported card (not a new clip).
 async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   const tabId = tab.id, tabUrl = tab.url || cardUrl;
-  const delay = typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS;
+  // give the in-page content script time to load + the post time to render before
+  // we message it (the engine then polls until the post is actually present)
+  const delay = Math.max(typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS, 1500);
   log("FB post capture: " + (cardUrl || tabUrl) + " (delay " + delay + ")");
   await setStatus("Capturing Facebook post…", true);
-  if (delay > 0) { setBadge("⏳"); await new Promise((r) => setTimeout(r, delay)); }
+  setBadge("⏳");
+  await new Promise((r) => setTimeout(r, delay));
   setBadge("...");
   let info = null;
-  try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
-  catch (e) { log("autoCaptureFB message failed: " + e.message); }
+  for (let attempt = 0; attempt < 2 && !(info && info.ok); attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1800));   // content script not ready yet — wait & retry once
+    try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
+    catch (e) { log("autoCaptureFB message failed (try " + (attempt + 1) + "): " + e.message); info = null; }
+  }
   let imgData = "";
   if (info && info.ok) {
     if (info.image) imgData = await fetchAsDataUrl(info.image);                                  // the post's own photo (full-res, durable)

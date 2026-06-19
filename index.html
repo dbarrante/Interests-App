@@ -2910,8 +2910,30 @@ function drainCaptures(){
       continue;
     }
     if(cap.clip){
-      // "Clip this page" from the extension — create/update a Saved card (not an
-      // imported one). Handled entirely by addClip; consume the queue entry.
+      // If this saved/clipped post is ALREADY one of your imported cards (same
+      // link, or the imported card you just opened on the same site), fill THAT
+      // card's picture instead of creating a duplicate Saved clip — this is how a
+      // manual "Save to Interests" on an imported Facebook post lands on its card.
+      const cimg = (cap.clipImage && (cap.clipImage+"").indexOf("data:")===0) ? cap.clipImage
+                 : ((cap.screenshot && (cap.screenshot+"").indexOf("data:")===0) ? cap.screenshot : "");
+      let imp = cap.url ? imported.find(it=>it.url && (it.url===cap.url || normalizeUrl(it.url)===normalizeUrl(cap.url) || clipKey(it.url)===clipKey(cap.url))) : null;
+      if(!imp){
+        let lo=null; try{ lo=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
+        if(lo && lo.id && now-(lo.ts||0) < ACTIVE_WINDOW){
+          const c=imported.find(it=>it.id===lo.id);
+          if(c && c.url && cap.url && domain(c.url)===domain(cap.url)) imp=c;   // same-site safety
+        }
+      }
+      if(imp){
+        if(cimg){ setCardImage(imp, cimg); changed=true; }
+        if(cap.desc && (!imp.desc || /^saved\b|^from your\b/i.test(imp.desc||""))){ imp.desc=cap.desc; changed=true; }
+        if(cap.title && /^(saved|facebook)\b|^from your\b/i.test(imp.title||"")){ imp.title=cap.title; changed=true; }
+        imp.captured=now; delete imp.blocked; imp.lastUpdate=now; imp.lastResult="ok"; persisted=true; matched++;
+        console.log("[clip] filled imported card from save: "+(imp.title||cap.url));
+        closeRefreshTab(imp.id);
+        continue;
+      }
+      // Otherwise it's a genuinely new page — create/update a Saved card via addClip.
       console.log("[clip] received clip for "+cap.url);
       try{ addClip(cap); }catch(e){ console.error("[clip] addClip failed",e); }
       continue;
