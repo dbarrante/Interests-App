@@ -540,6 +540,9 @@ function imgDB(){
 async function idbPutImg(id,dataUrl){ try{ const db=await imgDB(); await new Promise((res,rej)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").put(dataUrl,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); return true; }catch(e){ console.warn("idbPutImg failed",e); return false; } }
 async function idbDelImg(id){ try{ const db=await imgDB(); await new Promise((res)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
 async function idbAllImgs(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const out={}; const tx=db.transaction("imgs","readonly"); const st=tx.objectStore("imgs"); const cur=st.openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
+// just the stored image ids (cheap) — used to recover/verify refs without
+// loading the (possibly hundreds of MB) image values into memory.
+async function idbAllKeys(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const tx=db.transaction("imgs","readonly"); const r=tx.objectStore("imgs").getAllKeys(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>res([]); }); }catch(e){ return []; } }
 // assign an image to a card: data URLs go to IndexedDB (ref kept in it.img),
 // http(s) URLs are stored inline. Updates the in-memory cache immediately.
 function setCardImage(it, src){
@@ -561,6 +564,8 @@ async function initImageStore(){
   // our IndexedDB images under disk pressure (the cause of vanishing pictures).
   try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().then(p=>console.log("[storage] persistent:",p)); } }catch(e){}
   _imgCache = await idbAllImgs();
+  const imgKeys = new Set(await idbAllKeys());             // image ids that exist in IndexedDB (cheap, reliable)
+  const cacheLoaded = imgKeys.size > 0;                    // blobs exist in the store?
   let migrated=0;
   for(const it of imported){
     if(it.img && it.img.indexOf("data:")===0 && it.id){
@@ -571,23 +576,33 @@ async function initImageStore(){
     }
   }
   if(migrated){ save("imported",imported); console.log("[img] migrated "+migrated+" inline images to IndexedDB"); }
-  // Favicon sweep: a card shows the favicon/initials placeholder whenever it has
-  // no usable picture — an empty image, a stored proxy/favicon URL, a now-dead
-  // IndexedDB reference (image was lost), or a "blocked" flag. Reset those so
-  // they re-enter "Capture missing" and the extension fetches a real screenshot.
-  // Idempotent: after a reset there's nothing left to match, so it won't churn.
+  // RE-LINK recovery: image blobs are keyed by card id. If a card lost its image
+  // reference (e.g. an earlier over-eager sweep cleared it) but the blob is still
+  // in IndexedDB, restore the link. Only touches cards that currently have NO
+  // image, so it never overwrites a good one.
+  let relinked=0;
+  if(cacheLoaded){
+    for(const it of imported){ if(it && it.id && !it.img && imgKeys.has(it.id)){ it.img="idb:"+it.id; relinked++; } }
+    for(const it of saved){ if(it && it.id && !it.image && imgKeys.has(it.id)){ it.image="idb:"+it.id; relinked++; } }
+    if(relinked){ save("imported",imported); save("saved",saved); console.log("[img] re-linked "+relinked+" recovered image(s)"); setTimeout(()=>toast("Recovered "+relinked+" card image"+(relinked===1?"":"s"),5000),600); }
+  }
+  // Favicon sweep: flag cards with no usable picture for re-capture. CRITICAL:
+  // only treat an idb: ref as dead when the cache actually loaded AND the id is
+  // genuinely absent — never wipe image refs just because the cache failed to
+  // load (that destroyed images on a slow/failed load).
   let favReset=0;
   for(const it of imported){
-    const resolved = resolveImg(it.img);                          // "" if empty OR dead idb ref
-    const deadOrBad = it.img && (!resolved || isBadImg(resolved)); // stored image is unusable
-    if(deadOrBad || it.blocked){
-      setCardImage(it, "");                                        // drop the dead ref / bad URL
-      delete it.blocked; delete it.captured;                       // treat as never-captured…
-      delete it.lastUpdate; delete it.lastResult;                  // …so it enters "Capture missing"
+    const isIdb = it.img && (it.img+"").indexOf("idb:")===0;
+    let bad;
+    if(isIdb){ bad = cacheLoaded && !imgKeys.has((it.img+"").slice(4)); }   // dead only if confirmed missing
+    else { const resolved=resolveImg(it.img); bad = it.img && (!resolved || isBadImg(resolved)); }
+    if(bad || it.blocked){
+      setCardImage(it, "");
+      delete it.blocked; delete it.captured; delete it.lastUpdate; delete it.lastResult;
       favReset++;
     }
   }
-  if(favReset){ save("imported",imported); console.log("[img] flagged "+favReset+" placeholder/favicon card(s) for re-capture"); setTimeout(()=>toast(favReset+" placeholder card"+(favReset===1?"":"s")+" flagged for re-capture",5000),800); }
+  if(favReset){ save("imported",imported); console.log("[img] flagged "+favReset+" placeholder/favicon card(s) for re-capture"); }
 }
 
 /* ============ ui helpers ============ */
