@@ -1650,6 +1650,8 @@ function renderImported(){
         const fail=imported.filter(needsRetry).length;
         var out="";
         if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
+        const fbmiss=imported.filter(needsFbCapture).length;
+        if(fbmiss){ const fbcap=localStorage.getItem("ia_fbtested")?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Open each Facebook post one at a time and capture the post photo via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`; }
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
           <div class="tag-menu" id="retryMenu">
             ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
@@ -2515,6 +2517,10 @@ let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress brief
 function captureable(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
 function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }   // never tried
 function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }      // tried but still no image (fail/blocked-cleared/lost result)
+// Facebook posts can't be captured by web proxies (login wall) — they're grabbed
+// via the extension on the real, logged-in page. Mirror of needsCapture, FB-only.
+function captureableFb(i){ return i.url && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
+function needsFbCapture(i){ return captureableFb(i) && !i.lastUpdate && !i.captured; }
 function startBatchCapture(mode){
   if(batchUI.active){ toast("A capture run is already going"); return; }
   const need = imported.filter(mode==="retry" ? needsRetry : needsCapture);
@@ -2538,6 +2544,40 @@ function startBatchCapture(mode){
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this tab open.", 6000);
+  renderImportedKeepFocus();
+}
+const FB_BATCH_CAP = 25;   // conservative per-run cap for Facebook (auth-walled / rate-limited)
+// Batch-capture Facebook posts via the extension: opens each permalink one at a
+// time, the in-page engine grabs the post photo, the result fills the card. First
+// run is a 10-post test; later runs do FB_BATCH_CAP at a time. Resumable across
+// runs (each run advances past already-attempted posts).
+function startFbCapture(){
+  if(batchUI.active){ toast("A capture run is already going"); return; }
+  const need = imported.filter(needsFbCapture);
+  if(!need.length){ toast("No Facebook posts left to capture"); return; }
+  const seen=new Set();
+  const uniq=need.filter(i=>{ const k=normalizeUrl(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
+  const isTest = !localStorage.getItem("ia_fbtested");
+  const cap = isTest ? 10 : FB_BATCH_CAP;
+  const items = uniq.slice(0, cap).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
+  // mark dispatched cards (and any url-duplicates) attempted now so each run moves
+  // on to fresh posts even if a result is lost; drainCaptures refines to ok/fail.
+  const dispatched=new Set(items.map(it=>normalizeUrl(it.url)));
+  const at=Date.now();
+  imported.forEach(c=>{ if(c.url && dispatched.has(normalizeUrl(c.url)) && captureableFb(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
+  save("imported", imported);
+  _batchIgnoreUntil = 0;
+  try{
+    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    // concurrency 1 + a 4s settle delay keeps Facebook from rate-limiting/flagging
+    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1}));
+    if(isTest) localStorage.setItem("ia_fbtested","1");
+  }catch(e){}
+  batchUI = {active:true, done:0, total:items.length};
+  toast((isTest
+    ? "Test run: capturing 10 Facebook posts. Check the results, then click again to do "+FB_BATCH_CAP+" at a time."
+    : "Capturing "+items.length+" Facebook posts — one tab at a time.")
+    + " Leave this app tab open and stay logged into Facebook.", 8000);
   renderImportedKeepFocus();
 }
 function cancelBatchCapture(){

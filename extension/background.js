@@ -472,11 +472,52 @@ function settlePending(tabId, why) {
   p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd); delete pendings[tabId];
   p.resolve(why);
 }
+// Batch capture for a Facebook post: the page's own screenshot would grab FB's
+// chrome/sidebars (or a login wall), so instead ask the in-page capture engine
+// to find + measure the MAIN post, then build a durable card image from it (the
+// post's own photo, or a crop of the post area). Delivered tagged with the card
+// id so drainCaptures updates the existing imported card (not a new clip).
+async function captureFbPost(tab, cardUrl, delayMs, cardId) {
+  const tabId = tab.id, tabUrl = tab.url || cardUrl;
+  const delay = typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS;
+  log("FB post capture: " + (cardUrl || tabUrl) + " (delay " + delay + ")");
+  await setStatus("Capturing Facebook post…", true);
+  if (delay > 0) { setBadge("⏳"); await new Promise((r) => setTimeout(r, delay)); }
+  setBadge("...");
+  let info = null;
+  try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
+  catch (e) { log("autoCaptureFB message failed: " + e.message); }
+  let imgData = "";
+  if (info && info.ok) {
+    if (info.image) imgData = await fetchAsDataUrl(info.image);                                  // the post's own photo (full-res, durable)
+    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);  // fallback: crop the post area
+  }
+  if (!imgData) {
+    await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
+    setBadge("!", 4000);
+    await setStatus("Facebook post — no image found (marked attempted; stay logged in / a group member)", false);
+    return false;
+  }
+  await deliverToApp({
+    url: cardUrl || tabUrl, id: cardId || "",
+    title: (info && info.title) || "", desc: (info && (info.text || info.author)) || "",
+    screenshot: imgData, ts: Date.now(), force: false,
+  });
+  setBadge("✓", 4000);
+  await setStatus("Facebook post captured ✓", true);
+  return true;
+}
 async function capturePending(tabId) {   // capture whatever's loaded, then settle
   const p = pendings[tabId];
   if (!p || p.settled) return;
   p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd);
-  try { const t = await chrome.tabs.get(tabId); if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) await captureTab(t, p.delay, false, p.id); } catch (e) {}
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) {
+      if (/facebook\.com|fb\.watch/i.test(p.url || t.url || "")) await captureFbPost(t, p.url, p.delay, p.id);
+      else await captureTab(t, p.delay, false, p.id);
+    }
+  } catch (e) {}
   delete pendings[tabId];
   p.resolve("captured");
 }

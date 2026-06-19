@@ -148,5 +148,57 @@
     } catch (err) { /* never break the page */ }
   }, true);
 
+  // ---- Batch auto-capture (Facebook) ----
+  // The app's "Capture Facebook posts" batch opens each permalink for a card that
+  // has no picture; the background worker then asks us (no click) to find and
+  // measure the MAIN post on this page and hand back its photo + rect. Mirrors the
+  // click-driven doCapture flow, but resolves the post itself.
+  if (cfg.id === "facebook") {
+    const findMainPost = function () {
+      const arts = Array.prototype.slice.call(document.querySelectorAll('[role="article"]'));
+      if (!arts.length) return null;
+      let best = null, bestScore = -1;
+      for (let i = 0; i < arts.length; i++) {
+        const a = arts[i];
+        const r = a.getBoundingClientRect();
+        if (r.width < 180 || r.height < 100) continue;
+        const hasImg = !!U.largestImg(a, cfg.imageCdn);
+        const topBias = Math.max(0.05, 1 - Math.max(0, r.top) / 2500);   // prefer the post nearest the top
+        const score = (hasImg ? 5e9 : 0) + (r.width * r.height) * topBias;
+        if (score > bestScore) { bestScore = score; best = a; }
+      }
+      return best || arts[0];
+    };
+    chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+      if (!msg || msg.action !== "autoCaptureFB") return;
+      let waited = 0;
+      (function loop() {
+        let post = findMainPost();
+        const img = post ? U.largestImg(post, cfg.imageCdn) : "";
+        const ready = post && (img || ((post.innerText || "").length > 60));
+        if (ready || waited >= 7000) {
+          try { U.hoverTimestamps(post); } catch (e) {}
+          setTimeout(function () {
+            try {
+              if (post && post.isConnected === false) post = findMainPost();
+              const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
+              const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
+              const image = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              const rect = U.rectOf(post);
+              console.log("[Interests] autoCaptureFB | img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              sendResponse({
+                ok: true, rect: rect, image: image,
+                title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
+                author: ex.author || "", text: (ex && ex.text) || "",
+                permalink: perma || location.href,
+              });
+            } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
+          }, 450);
+        } else { waited += 250; setTimeout(loop, 250); }
+      })();
+      return true;   // keep the message channel open for the async sendResponse
+    });
+  }
+
   console.log("[Interests] capture engine active (" + cfg.id + ")");
 })();
