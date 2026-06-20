@@ -489,6 +489,12 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   const delay = Math.max(typeof delayMs === "number" ? delayMs : DEFAULT_DELAY_MS, 1500);
   log("FB post capture: " + (cardUrl || tabUrl) + " (delay " + delay + ")");
   await setStatus("Capturing Facebook post…", true);
+  // Make the tab genuinely VISIBLE + its window FOCUSED before we wait. Facebook
+  // lazy-loads the post photo only when the tab is actually being viewed; an
+  // unfocused/background tab serves just the loading spinner (the auto-capture
+  // bug — manual works because YOU have the post focused when you click Save).
+  try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+  try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
   setBadge("⏳");
   await new Promise((r) => setTimeout(r, delay));
   setBadge("...");
@@ -512,7 +518,7 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   await deliverToApp({
     url: cardUrl || tabUrl, id: cardId || "",
     title: (info && info.title) || "", desc: (info && (info.text || info.author)) || "",
-    screenshot: imgData, ts: Date.now(), force: false,
+    screenshot: imgData, ts: Date.now(), force: false, recap: 1,   // deliberate re-capture: overwrite even a non-"bad" stored image (e.g. an old spinner)
   });
   setBadge("✓", 4000);
   await setStatus("Facebook post captured ✓", true);
