@@ -29,7 +29,12 @@
       Array.prototype.forEach.call((root || document).querySelectorAll("img"), function (im) {
         const s = im.currentSrc || im.src || "";
         if (!re.test(s)) return;
-        const area = (im.naturalWidth || im.width || 0) * (im.naturalHeight || im.height || 0);
+        // ONLY a fully DECODED image — never the display-sized but still-loading
+        // placeholder/spinner (the old `im.width` fallback let that through, which
+        // is exactly what auto-capture grabbed). Manual works because by click
+        // time the real photo has decoded and replaced the placeholder.
+        if (!im.complete || !im.naturalWidth) return;
+        const area = im.naturalWidth * im.naturalHeight;
         if (area > bestArea) { bestArea = area; best = s; }
       });
     } catch (e) {}
@@ -171,25 +176,28 @@
     };
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
-      let waited = 0;
+      let waited = 0, lastImg = "";
       (function loop() {
         let post = findMainPost();
-        const img = post ? U.largestImg(post, cfg.imageCdn) : "";
-        // WAIT for the post's real photo to actually load+decode — NOT just for its
-        // text. Triggering on text grabbed the loading spinner that was still
-        // showing (the auto-capture bug: manual works because the photo is already
-        // loaded when you click). Only time out → crop for genuine text/video posts.
-        const ready = !!img;
-        if (ready || waited >= 12000) {
+        const img = post ? U.largestImg(post, cfg.imageCdn) : "";   // largestImg now returns only a DECODED photo
+        // Require the SAME decoded photo two ticks (500ms) running — a settled real
+        // image, not a transient the engine briefly sees while FB swaps placeholder
+        // → photo. largestImg already rejects the undecoded placeholder/spinner.
+        const ready = !!img && img === lastImg;
+        lastImg = img;
+        const timedOut = waited >= 12000;
+        if (ready || timedOut) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
             try {
               if (post && post.isConnected === false) post = findMainPost();
               const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
               const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-              const image = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              // On timeout suppress the image so captureFbPost crops the (now focused
+              // + loaded) post instead of ever returning a placeholder.
+              const image = timedOut ? "" : ((post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn));
               const rect = U.rectOf(post);
-              console.log("[Interests] autoCaptureFB | img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              console.log("[Interests] autoCaptureFB | photo=", image ? "yes" : (timedOut ? "timeout→crop" : "no"), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
               sendResponse({
                 ok: true, rect: rect, image: image,
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),

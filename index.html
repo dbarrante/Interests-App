@@ -1611,7 +1611,8 @@ function clearBatchFilter(){ impBatchIds=null; setImpSrc("facebook"); }   // ✕
 // Detect FB cards that captured a loading-spinner/placeholder instead of the post
 // photo: those all share the IDENTICAL image (real photos are unique). Returns the
 // groups of duplicate-image cards. Cheap content fingerprint from the cached data URL.
-function fbPlaceholderGroups(){
+function fbPlaceholderGroups(minCount){
+  minCount = minCount || 2;
   const byImg={};
   for(const it of imported){
     if(!it || !it.id || !/facebook\.com|fb\.watch/i.test(it.url||"")) continue;
@@ -1620,15 +1621,19 @@ function fbPlaceholderGroups(){
     const key=data.length+"|"+data.slice(0,48)+"|"+data.slice(-48);
     (byImg[key]=byImg[key]||[]).push(it);
   }
-  return Object.values(byImg).filter(g=>g.length>1);
+  return Object.values(byImg).filter(g=>g.length>=minCount);
 }
-function fbPlaceholderCount(){ let n=0; for(const g of fbPlaceholderGroups()) n+=g.length; return n; }
-function clearFbPlaceholders(){
-  const groups=fbPlaceholderGroups();
+function fbPlaceholderCount(){ let n=0; for(const g of fbPlaceholderGroups(2)) n+=g.length; return n; }
+function clearFbPlaceholders(silent){
+  // A spinner/placeholder is byte-identical across many cards (real photos are
+  // unique). silent=auto (from startFbCapture): only BIG groups (>=5) so we never
+  // clear+re-capture coincidental 2–4x reposts in a loop. Manual button: aggressive (>=2).
+  const groups=fbPlaceholderGroups(silent?5:2);
   let cleared=0;
   for(const g of groups){ for(const it of g){ setCardImage(it,""); delete it.captured; delete it.lastUpdate; delete it.lastResult; cleared++; } }
-  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder image(s) — run capture again to re-fetch the real photos", 6000); }
-  else toast("No placeholder captures found");
+  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder image(s) — run capture again to re-fetch the real photos", 6000); } }
+  else if(!silent) toast("No placeholder captures found");
+  return cleared;
 }
 const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
@@ -2603,6 +2608,7 @@ const FB_BATCH_CAP = 25;   // conservative per-run cap for Facebook (auth-walled
 // runs (each run advances past already-attempted posts).
 function startFbCapture(){
   if(batchUI.active){ toast("A capture run is already going"); return; }
+  clearFbPlaceholders(true);   // self-heal: re-enroll any cards stuck on a duplicate placeholder/spinner so they re-capture
   const need = imported.filter(needsFbCapture)
     .sort((a,b)=>{ const av=a.sdate||a.ts||0, bv=b.sdate||b.ts||0; return impSort==="oldest" ? av-bv : bv-av; });   // top of the list down, matching the displayed order
   if(!need.length){ toast("No Facebook posts left to capture"); return; }
@@ -3099,7 +3105,7 @@ function drainCaptures(){
     // fill any DUPLICATE cards sharing this URL so they aren't re-fetched later
     if(best && match.url){
       const nu=normalizeUrl(match.url);
-      imported.forEach(o=>{ if(o!==match && o.url && normalizeUrl(o.url)===nu && isBadImg(o.img||"") && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
+      imported.forEach(o=>{ if(o!==match && o.url && normalizeUrl(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
     closeRefreshTab(match.id);   // a manual refresh opened this page — close it now the capture landed
   }
