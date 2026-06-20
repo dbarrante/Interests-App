@@ -175,8 +175,12 @@
       (function loop() {
         let post = findMainPost();
         const img = post ? U.largestImg(post, cfg.imageCdn) : "";
-        const ready = post && (img || ((post.innerText || "").length > 60));
-        if (ready || waited >= 7000) {
+        // WAIT for the post's real photo to actually load+decode — NOT just for its
+        // text. Triggering on text grabbed the loading spinner that was still
+        // showing (the auto-capture bug: manual works because the photo is already
+        // loaded when you click). Only time out → crop for genuine text/video posts.
+        const ready = !!img;
+        if (ready || waited >= 12000) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
             try {
