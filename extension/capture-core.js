@@ -171,6 +171,21 @@
       if (withPhoto.length) return withPhoto[0];          // topmost article that actually has its photo = the post
       return arts.slice().sort(byTop)[0];                 // none decoded yet → topmost large article (the post sits above comments)
     };
+    // The post's photo URL straight from Facebook's page metadata. This is present
+    // even when the visible <img> is still a loading spinner (a cold-opened deep
+    // permalink often never renders the photo) — so the worker can fetch the REAL
+    // photo by URL without it ever decoding on screen.
+    const metaPhoto = function () {
+      try {
+        const sels = ['meta[property="og:image"]', 'meta[name="og:image"]', 'meta[property="og:image:url"]', 'link[rel="image_src"]'];
+        for (let i = 0; i < sels.length; i++) {
+          const m = document.querySelector(sels[i]);
+          const u = m && (m.content || m.getAttribute("content") || m.getAttribute("href"));
+          if (u && /scontent|fbcdn/i.test(u) && !/static\.|rsrc\.php|\/images\//i.test(u)) return u;
+        }
+      } catch (e) {}
+      return "";
+    };
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
       // bring the top of the page (the post + its photo) into view so FB lazy-loads
@@ -179,19 +194,21 @@
       let waited = 0;
       (function loop() {
         let post = findMainPost();
-        // a real DECODED photo anywhere (post first, else whole doc). The decode
-        // gate in largestImg already rejects the loading spinner/placeholder.
-        const img = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
-        if (img || waited >= 12000) {
+        // a real DECODED photo (post first, else whole doc), else FB's og:image URL
+        // (which doesn't require the on-screen <img> to render).
+        const img = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn) || metaPhoto();
+        if (img || waited >= 8000) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
             try {
               if (post && post.isConnected === false) post = findMainPost();
               const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
               const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-              const image = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
-              const rect = U.rectOf(post);   // crop fallback (text/video posts) frames the post, now scrolled to top
-              console.log("[Interests] autoCaptureFB | photo=", image ? "yes" : "no(crop)", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              const decoded = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              const og = metaPhoto();
+              const image = decoded || og;
+              const rect = U.rectOf(post);   // crop fallback (no photo at all) frames the post, scrolled to top
+              console.log("[Interests] autoCaptureFB | decoded:", !!decoded, "| og:image:", !!og, "| using:", (image || "(crop)").slice(0, 80), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
               sendResponse({
                 ok: true, rect: rect, image: image,
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
