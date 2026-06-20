@@ -159,45 +159,39 @@
   // measure the MAIN post on this page and hand back its photo + rect. Mirrors the
   // click-driven doCapture flow, but resolves the post itself.
   if (cfg.id === "facebook") {
+    // The MAIN post is the highest article on the page that owns a real photo;
+    // comments are also role="article" but sit BELOW it (and a big comment must
+    // never win). Fall back to the topmost large article when no photo yet.
     const findMainPost = function () {
-      const arts = Array.prototype.slice.call(document.querySelectorAll('[role="article"]'));
+      const arts = Array.prototype.slice.call(document.querySelectorAll('[role="article"]'))
+        .filter(function (a) { const r = a.getBoundingClientRect(); return r.width >= 180 && r.height >= 100; });
       if (!arts.length) return null;
-      let best = null, bestScore = -1;
-      for (let i = 0; i < arts.length; i++) {
-        const a = arts[i];
-        const r = a.getBoundingClientRect();
-        if (r.width < 180 || r.height < 100) continue;
-        const hasImg = !!U.largestImg(a, cfg.imageCdn);
-        const topBias = Math.max(0.05, 1 - Math.max(0, r.top) / 2500);   // prefer the post nearest the top
-        const score = (hasImg ? 5e9 : 0) + (r.width * r.height) * topBias;
-        if (score > bestScore) { bestScore = score; best = a; }
-      }
-      return best || arts[0];
+      const byTop = function (a, b) { return a.getBoundingClientRect().top - b.getBoundingClientRect().top; };
+      const withPhoto = arts.filter(function (a) { return !!U.largestImg(a, cfg.imageCdn); }).sort(byTop);
+      if (withPhoto.length) return withPhoto[0];          // topmost article that actually has its photo = the post
+      return arts.slice().sort(byTop)[0];                 // none decoded yet → topmost large article (the post sits above comments)
     };
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
-      let waited = 0, lastImg = "";
+      // bring the top of the page (the post + its photo) into view so FB lazy-loads
+      // the photo and a crop fallback frames the POST, not the comments below it
+      try { window.scrollTo(0, 0); } catch (e) {}
+      let waited = 0;
       (function loop() {
         let post = findMainPost();
-        const img = post ? U.largestImg(post, cfg.imageCdn) : "";   // largestImg now returns only a DECODED photo
-        // Require the SAME decoded photo two ticks (500ms) running — a settled real
-        // image, not a transient the engine briefly sees while FB swaps placeholder
-        // → photo. largestImg already rejects the undecoded placeholder/spinner.
-        const ready = !!img && img === lastImg;
-        lastImg = img;
-        const timedOut = waited >= 12000;
-        if (ready || timedOut) {
+        // a real DECODED photo anywhere (post first, else whole doc). The decode
+        // gate in largestImg already rejects the loading spinner/placeholder.
+        const img = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+        if (img || waited >= 12000) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
             try {
               if (post && post.isConnected === false) post = findMainPost();
               const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
               const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-              // On timeout suppress the image so captureFbPost crops the (now focused
-              // + loaded) post instead of ever returning a placeholder.
-              const image = timedOut ? "" : ((post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn));
-              const rect = U.rectOf(post);
-              console.log("[Interests] autoCaptureFB | photo=", image ? "yes" : (timedOut ? "timeout→crop" : "no"), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              const image = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              const rect = U.rectOf(post);   // crop fallback (text/video posts) frames the post, now scrolled to top
+              console.log("[Interests] autoCaptureFB | photo=", image ? "yes" : "no(crop)", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
               sendResponse({
                 ok: true, rect: rect, image: image,
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
@@ -205,7 +199,7 @@
                 permalink: perma || location.href,
               });
             } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
-          }, 450);
+          }, 350);
         } else { waited += 250; setTimeout(loop, 250); }
       })();
       return true;   // keep the message channel open for the async sendResponse
