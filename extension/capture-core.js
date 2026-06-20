@@ -177,7 +177,7 @@
     // photo by URL without it ever decoding on screen.
     const metaPhoto = function () {
       try {
-        const sels = ['meta[property="og:image"]', 'meta[name="og:image"]', 'meta[property="og:image:url"]', 'link[rel="image_src"]'];
+        const sels = ['meta[property="og:image"]', 'meta[name="og:image"]', 'meta[property="og:image:url"]', 'meta[property="og:image:secure_url"]', 'link[rel="image_src"]'];
         for (let i = 0; i < sels.length; i++) {
           const m = document.querySelector(sels[i]);
           const u = m && (m.content || m.getAttribute("content") || m.getAttribute("href"));
@@ -210,7 +210,7 @@
               const rect = U.rectOf(post);   // crop fallback (no photo at all) frames the post, scrolled to top
               console.log("[Interests] autoCaptureFB | decoded:", !!decoded, "| og:image:", !!og, "| using:", (image || "(crop)").slice(0, 80), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
               sendResponse({
-                ok: true, rect: rect, image: image,
+                ok: true, rect: rect, image: image, imgSrc: decoded ? "decoded" : (og ? "og" : ""),
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
                 author: ex.author || "", text: (ex && ex.text) || "",
                 permalink: perma || location.href,

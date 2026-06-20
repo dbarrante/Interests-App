@@ -200,11 +200,12 @@ async function clipCurrentPage(tab, opts = {}) {
 function ensureContextMenu() {
   try {
     chrome.contextMenus.removeAll(() => {
+      void chrome.runtime.lastError;
       chrome.contextMenus.create({
         id: "saveToInterests",
         title: "Save to Interests",
         contexts: ["page", "selection", "link", "image"],
-      });
+      }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
     });
   } catch (e) { log("contextMenu setup failed: " + e.message); }
 }
@@ -504,11 +505,12 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
     try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
     catch (e) { log("autoCaptureFB message failed (try " + (attempt + 1) + "): " + e.message); info = null; }
   }
-  let imgData = "";
+  let imgData = "", capsrc = "none";
   if (info && info.ok) {
-    if (info.image) imgData = await fetchAsDataUrl(info.image);                                  // the post's own photo (full-res, durable)
-    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) imgData = await cropScreenshot(tab, info.rect);  // fallback: crop the post area
+    if (info.image) { imgData = await fetchAsDataUrl(info.image); if (imgData) capsrc = info.imgSrc || "photo"; }   // post photo / video thumbnail (og:image), full-res, durable
+    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) { imgData = await cropScreenshot(tab, info.rect); if (imgData) capsrc = "crop"; }  // fallback: crop the post area
   }
+  log("FB capture: " + (cardUrl || tabUrl) + " -> src=" + capsrc + " size=" + (imgData ? Math.round(imgData.length / 1024) + "KB" : "0"));
   if (!imgData) {
     await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
     setBadge("!", 4000);
@@ -518,7 +520,7 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   await deliverToApp({
     url: cardUrl || tabUrl, id: cardId || "",
     title: (info && info.title) || "", desc: (info && (info.text || info.author)) || "",
-    screenshot: imgData, ts: Date.now(), force: false, recap: 1,   // deliberate re-capture: overwrite even a non-"bad" stored image (e.g. an old spinner)
+    screenshot: imgData, ts: Date.now(), force: false, recap: 1, capsrc: capsrc,   // deliberate re-capture: overwrite even a non-"bad" stored image (e.g. an old spinner)
   });
   setBadge("✓", 4000);
   await setStatus("Facebook post captured ✓", true);
