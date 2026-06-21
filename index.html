@@ -143,7 +143,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 
 /* ============ misc components ============ */
 .note{background:var(--accent-soft);border:1px solid #f5d0b5;border-radius:11px;padding:12px 16px;font-size:13.5px;line-height:1.55;margin-bottom:18px}
-.catbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.catbar{display:flex;gap:8px;flex-wrap:wrap;position:sticky;top:var(--hdrH,56px);z-index:42;background:var(--bg);margin:0 -20px;padding:10px 20px 8px}
+/* the Imported search + filter row + tags, stuck just below the source bar */
+.imp-sticky{position:sticky;top:var(--catBottom,104px);z-index:41;background:var(--bg);margin:0 -20px;padding:4px 20px 8px;box-shadow:0 10px 12px -12px rgba(0,0,0,.35)}
+.imp-sticky .tagbar{margin-bottom:0;max-height:92px;overflow:auto}
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
@@ -660,6 +663,7 @@ function renderCatBar(){
     + VIEWS.map(([v,label])=>
     `<button class="catpill${viewMode===v?" on":""}" style="${viewMode===v?"background:var(--ink)":""}" title="View"
       onclick="setView('${v}')">${label}</button>`).join("");
+  requestAnimationFrame(setStickyOffsets);
 }
 function setFilter(k){
   filterCat = k;
@@ -1645,6 +1649,19 @@ function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; save("iunrev",impUnre
 let impFbMiss = false;
 function fbMiss(it){ return it && it.url && /facebook\.com|fb\.watch/i.test(it.url) && isBadImg(it.img||"") && (it.lastResult==="fail" || it.lastUpdate || it.captured); }
 function toggleFbMiss(){ impFbMiss=!impFbMiss; if(impFbMiss) impBatchIds=null; renderImported(); }
+// keep the sticky source bar (#catBar) + imported toolbar (.imp-sticky) parked
+// right below the sticky header, accounting for their live heights.
+function setStickyOffsets(){
+  try{
+    const hdr=document.querySelector("header");
+    const hH=hdr?Math.round(hdr.getBoundingClientRect().height):56;
+    document.documentElement.style.setProperty("--hdrH", hH+"px");
+    const cb=document.getElementById("catBar");
+    const cbH=(cb && cb.offsetParent!==null)?Math.round(cb.getBoundingClientRect().height):0;
+    document.documentElement.style.setProperty("--catBottom", (hH+cbH)+"px");
+  }catch(e){}
+}
+window.addEventListener("resize", setStickyOffsets);
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -1674,6 +1691,7 @@ function renderImported(){
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
   v.innerHTML = `
+    <div class="imp-sticky">
     <div class="imp-head">
       <input type="text" placeholder="Search ${imported.length} imported items…" value="${esc(impQuery)}"
         oninput="impQuery=this.value.toLowerCase();renderImportedKeepFocus()">
@@ -1738,7 +1756,9 @@ function renderImported(){
         <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${right}</span>
       </div>`;
     })() : ""}
+    </div>
     <div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`;
+  requestAnimationFrame(setStickyOffsets);
 }
 function tagBarHTML(){
   const counts={};
