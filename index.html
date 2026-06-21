@@ -331,6 +331,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <input type="checkbox" id="datesToggle" style="width:auto"> Show date saved on each card
         </label>
         <div class="hint" style="margin-top:6px">Displays when each imported item was saved/added.</div>
+        <label style="display:block;margin-top:8px">
+          <input type="checkbox" id="tagSideToggle" style="width:auto"> Tags in a left sidebar (Imported view)
+        </label>
       </div>
 
       <div class="sec">
@@ -937,6 +940,8 @@ function renderSettings(){
   document.getElementById("darkToggle").onchange = e=>{ setTheme(e.target.checked?"dark":"light"); };
   document.getElementById("datesToggle").checked = !!S.showDates;
   document.getElementById("datesToggle").onchange = e=>{ S.showDates=e.target.checked; save("settings",S); if(curTab==="imported") renderImported(); };
+  document.getElementById("tagSideToggle").checked = !!S.tagSidebar;
+  document.getElementById("tagSideToggle").onchange = e=>{ S.tagSidebar = e.target.checked; save("settings", S); if(curTab==="imported") renderImported(); };
   document.getElementById("autoBackup").value = String(S.autoBackup||0);
   document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
   renderImportStatus();
