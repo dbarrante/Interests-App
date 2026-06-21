@@ -3042,6 +3042,32 @@ function dupePrimary(members){
   }
   return best;
 }
+// Find duplicate groups across imported + saved. Two cards match on the same
+// normalized link OR the same fuzzy normTitle (empty normTitle never matches).
+function scanDuplicates(){
+  const members = [];
+  imported.forEach((c,idx)=>{ if(c) members.push({card:c, scope:"imported", idx}); });
+  saved.forEach((c,idx)=>{ if(c) members.push({card:c, scope:"saved", idx}); });
+  // union-find over members keyed by url + title
+  const parent = members.map((_,i)=>i);
+  const find = (x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+  const union = (a,b)=>{ const ra=find(a), rb=find(b); if(ra!==rb) parent[ra]=rb; };
+  const byUrl = {}, byTitle = {};
+  members.forEach((m,i)=>{
+    const it = m.card;
+    if (it.url){ const k="u:"+normalizeUrl(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
+    const t = normTitle(it.title);
+    if (t){ const k="t:"+t; if(byTitle[k]!=null) union(byTitle[k], i); else byTitle[k]=i; }
+  });
+  const groups = {};
+  members.forEach((m,i)=>{ const r=find(i); (groups[r]=groups[r]||[]).push(m); });
+  const out = [];
+  Object.values(groups).forEach(mem=>{
+    if (mem.length < 2) return;
+    out.push({ members: mem, keepId: dupePrimary(mem).card.id });
+  });
+  return out;
+}
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
