@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.28";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.29";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -648,31 +648,32 @@ function waitTabComplete(tabId, timeoutMs) {
 // tagged with the card id, then close the window. og:image is tried first so a
 // post that DOES unfurl never opens a window. Serialized by fbRenderBusy.
 let fbRenderBusy = false;
-const renderWins = new Set();   // popup window ids opened for render-capture — closed in finally + swept at end of run
 async function renderCaptureFb(url, id, delayMs) {
-  if (await captureFbByOg(url, id)) return "captured";   // cheap no-window path first
+  if (await captureFbByOg(url, id)) return "captured";   // cheap no-tab path first (og:image)
   // a render is already in flight (e.g. a single ↻ racing the batch) — leave the
   // card untouched (still pending / in the retry set), never mark it failed.
   if (fbRenderBusy) return "busy";
   fbRenderBusy = true;
-  let win = null;
+  let tabId = null;
   try {
-    try { win = await chrome.windows.create({ url, focused: true, type: "popup", width: 1040, height: 920, top: 36, left: 36 }); }
+    let tab;
+    // Open the permalink in a real foreground TAB (the proven path — matches what
+    // you do manually). captureFbPost focuses+activates it; FB only renders the post
+    // photo in a visible tab.
+    try { tab = await chrome.tabs.create({ url, active: true }); }
     catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
-    if (win && win.id != null) renderWins.add(win.id);
-    const tab = win && win.tabs && win.tabs[0];
-    if (!tab || tab.id == null) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
-    const tabId = tab.id;
+    tabId = tab.id;
     batchTabs.add(tabId);   // safety-net sweep at end of run
     try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
+    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}   // load it VISIBLY from the start so the photo lazy-loads
     await waitTabComplete(tabId, (delayMs || 0) + 30000);
-    let outcome = "captured";
+    // captureFbPost waits + polls up to 18s for the REAL photo and marks the card
+    // attempted if none loads — it never crops a spinner.
     try { const t = await chrome.tabs.get(tabId); await captureFbPost(t, url, delayMs, id); }
-    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); outcome = "error"; }
-    batchTabs.delete(tabId);
-    return outcome;
+    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); }
+    return "done";
   } finally {
-    if (win) { try { await chrome.windows.remove(win.id); } catch (e) {} renderWins.delete(win.id); }
+    if (tabId != null) { try { await chrome.tabs.remove(tabId); } catch (e) {} batchTabs.delete(tabId); }
     fbRenderBusy = false;
     await focusAppTab();   // hand focus back to the app between captures
   }
@@ -744,7 +745,6 @@ async function focusAppTab() {
 // was suspended between capturing and removing a heavy page like YouTube)
 async function sweepBatchTabs() {
   for (const tid of [...batchTabs]) { try { await chrome.tabs.remove(tid); } catch (e) {} batchTabs.delete(tid); }
-  for (const wid of [...renderWins]) { try { await chrome.windows.remove(wid); } catch (e) {} renderWins.delete(wid); }   // reap any leftover render-capture popup window
 }
 
 // network-level failure (DNS, connection refused/reset/timeout, cert)

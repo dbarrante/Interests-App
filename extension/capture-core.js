@@ -192,14 +192,20 @@
       // the photo and a crop fallback frames the POST, not the comments below it
       try { window.scrollTo(0, 0); } catch (e) {}
       let waited = 0;
+      // Wait up to 18s for the REAL post photo to actually load + decode. A cold
+      // permalink shows a loading SPINNER first; the manual Save works only because
+      // YOU wait until the photo is on screen before clicking. 8s wasn't enough, and
+      // (critically) on timeout we used to CROP the post rect — which captured the
+      // spinner. Now we capture ONLY a real photo, and if none loads we give up
+      // cleanly (no crop) so the card stays a favicon for a true manual Save.
+      const MAX_WAIT = 18000;
       (function loop() {
         let post = findMainPost();
-        // PREFER FB's og:image (the post photo / video thumbnail from metadata) over
-        // the on-page <img>: on a cold-opened video/permalink the largest decoded
-        // <img> is often FB's loading PLACEHOLDER, which passes the decode gate and
-        // would be captured as the "spinner". og:image is never a spinner.
+        // og:image (post photo / video thumbnail) is preferred and is never a spinner;
+        // a decoded scontent <img> is the fallback. largestImg already rejects the
+        // spinner (it's not an scontent image), so "" here means "not loaded yet".
         const img = metaPhoto() || (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
-        if (img || waited >= 8000) {
+        if (img) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
             try {
@@ -209,16 +215,26 @@
               const og = metaPhoto();
               const decoded = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
               const image = og || decoded;   // og:image wins (real photo/thumbnail); decoded only when no metadata
-              const rect = U.rectOf(post);   // crop fallback (no photo at all) frames the post, scrolled to top
-              console.log("[Interests] autoCaptureFB | og:image:", !!og, "| decoded:", !!decoded, "| using:", (image || "(crop)").slice(0, 80), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              console.log("[Interests] autoCaptureFB | og:image:", !!og, "| decoded:", !!decoded, "| using:", (image || "(none)").slice(0, 80));
               sendResponse({
-                ok: true, rect: rect, image: image, imgSrc: og ? "og" : (decoded ? "decoded" : ""),
+                ok: true, rect: null, image: image, imgSrc: og ? "og" : (decoded ? "decoded" : ""),   // rect:null → captureFbPost never crops (no spinner)
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
                 author: ex.author || "", text: (ex && ex.text) || "",
                 permalink: perma || location.href,
               });
             } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
           }, 350);
+        } else if (waited >= MAX_WAIT) {
+          // No real photo after the full wait — DON'T crop (that's the spinner). Skip.
+          console.log("[Interests] autoCaptureFB | no real photo after " + MAX_WAIT + "ms — skipping (no spinner crop)");
+          try {
+            const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
+            sendResponse({
+              ok: true, rect: null, image: "", imgSrc: "",
+              title: cfg.title ? cfg.title(ex.author) : "", author: ex.author || "", text: (ex && ex.text) || "",
+              permalink: (post && cfg.findPermalink ? cfg.findPermalink(post, U) : "") || location.href,
+            });
+          } catch (e) { try { sendResponse({ ok: true, image: "", rect: null }); } catch (e2) {} }
         } else { waited += 250; setTimeout(loop, 250); }
       })();
       return true;   // keep the message channel open for the async sendResponse
