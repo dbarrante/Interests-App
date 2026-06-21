@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.25";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.26";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -143,7 +143,8 @@ async function fetchFbOgImage(url) {
 // path. Returns true on success.
 async function captureFbByOg(url, id) {
   try {
-    const og = await fetchFbOgImage(url);
+    let og = await fetchFbOgImage(url);
+    if (!og) { await new Promise((r) => setTimeout(r, 2500)); og = await fetchFbOgImage(url); }   // FB sometimes serves a degraded page — retry once
     if (!og) return false;
     const data = await fetchAsDataUrl(og);
     if (!data) return false;
@@ -409,11 +410,14 @@ async function handleCaptureRequest(req) {
   if (req.capture !== false && /facebook\.com|fb\.watch/i.test(req.url || "")) {
     if (await captureFbByOg(req.url, req.id)) {
       setBadge("✓", 3000); await setStatus("Facebook captured ✓ (no render needed)", true);
-      try { const ts = await chrome.tabs.query({}); const t = ts.find(x => x.url && normalizeUrl(x.url) === normalizeUrl(req.url)); if (t) await closeTabSafe(t.id); } catch (e) {}
-      return;
+    } else {
+      // no og:image (restricted) → mark attempted; never fall back to a tab/spinner
+      await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
+      setBadge("!", 3000); await setStatus("Facebook: no og:image (restricted post) — left for manual", false);
     }
-    log("FB og-capture miss — falling back to tab capture for " + (req.url || "").slice(0, 70));
-    // fall through to the normal tab-based flow (private posts / no og:image)
+    // close the tab only if this was a ↻ refresh (closeAfter) — not a card you opened to read
+    if (req.closeAfter) { try { const ts = await chrome.tabs.query({}); const t = ts.find(x => x.url && normalizeUrl(x.url) === normalizeUrl(req.url)); if (t) await closeTabSafe(t.id); } catch (e) {} }
+    return;
   }
 
   log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
@@ -613,7 +617,11 @@ async function captureOneTab(url, id, delay) {
   // to opening a tab only if there's no og:image (e.g. a private post).
   if (/facebook\.com|fb\.watch/i.test(url || "")) {
     if (await captureFbByOg(url, id)) return "captured";   // no tab — fetch og:image directly
-    // no og:image → fall through to the tab-based capture below
+    // No og:image (restricted/login-gated post) → mark attempted and STOP. Never
+    // open a tab for FB: the rendered page only shows a spinner placeholder, which
+    // is worse than leaving the card clean for a manual save.
+    await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });
+    return "captured";
   }
   let tab;
   // FOREGROUND tab. Non-FB pages need it to screenshot; FB needs it too because
