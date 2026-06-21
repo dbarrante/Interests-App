@@ -84,7 +84,7 @@
   function writeProg(done, total, active) {
     try { localStorage.setItem("ia_batch_progress", JSON.stringify({ done: done, total: total, active: active, ts: Date.now() })); } catch (e) {}
   }
-  function saveState() { if (B) try { localStorage.setItem("ia_batch_state", JSON.stringify({ items: B.items, next: B.next, done: B.done, total: B.total, delay: B.delay, concurrency: B.conc, active: true })); } catch (e) {} }
+  function saveState() { if (B) try { localStorage.setItem("ia_batch_state", JSON.stringify({ items: B.items, next: B.next, done: B.done, total: B.total, delay: B.delay, concurrency: B.conc, render: B.render, active: true })); } catch (e) {} }
   function endBatch() {
     var done = B ? B.done : 0, total = B ? B.total : 0;
     B = null; inFlight = 0;
@@ -100,7 +100,7 @@
       if (!st || !st.items || !st.items.length) return;
       var startAt = (typeof st.next === "number") ? st.next : (st.done || 0);
       if (startAt >= st.items.length) { try { localStorage.removeItem("ia_batch_state"); } catch (e) {} return; }
-      B = { items: st.items, next: startAt, done: st.done || 0, total: st.items.length, delay: st.delay || 0, conc: Math.max(1, Math.min(10, st.concurrency || 1)) };
+      B = { items: st.items, next: startAt, done: st.done || 0, total: st.items.length, delay: st.delay || 0, conc: Math.max(1, Math.min(10, st.concurrency || 1)), render: !!st.render };
       log("Batch start: " + B.total + " items, concurrency " + B.conc);
     }
     pump();
@@ -118,7 +118,7 @@
     }
   }
   function dispatch(item) {
-    chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: B ? B.delay : 0 } }, function (resp) {
+    chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: B ? B.delay : 0, render: B ? B.render : false } }, function (resp) {
       if (chrome.runtime.lastError && /invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); B = null; inFlight = 0; return; }
       // Either way, advance. Do NOT retry on a lost response: the worker already
       // opened the tab and reported the capture's result independently (via

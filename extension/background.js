@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.27";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.28";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -439,6 +439,9 @@ async function handleCaptureRequest(req) {
   // Facebook: capture via og:image fetch — no rendered page needed. If it works
   // we're done; close the tab the app opened for this URL (if any).
   if (req.capture !== false && /facebook\.com|fb\.watch/i.test(req.url || "")) {
+    // render mode (single ↻ on a restricted post): open a focused popup window and
+    // render-capture it like a manual Save. og is tried first inside renderCaptureFb.
+    if (req.render) { await renderCaptureFb(req.url, req.id, req.delay); return; }
     if (await captureFbByOg(req.url, req.id)) {
       setBadge("✓", 3000); await setStatus("Facebook captured ✓ (no render needed)", true);
     } else {
@@ -626,6 +629,54 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   await setStatus("Facebook post captured ✓", true);
   return true;
 }
+// resolve once a tab finishes loading (or after a timeout — captureFbPost then
+// waits + polls on its own, so a slow tab still gets a fair shot)
+function waitTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} resolve(); };
+    function onUpd(tid, info) { if (tid === tabId && info.status === "complete") finish(); }
+    try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
+    chrome.tabs.get(tabId).then((t) => { if (t && t.status === "complete") finish(); }).catch(() => {});
+    setTimeout(finish, timeoutMs || 30000);
+  });
+}
+// Automated version of the manual "Refresh → Save to Interests" flow for a
+// restricted Facebook post: open the permalink in a FOCUSED POPUP WINDOW (FB only
+// renders the post photo into a visible tab — a background tab serves the
+// spinner), run the in-page capture engine (captureFbPost), deliver the image
+// tagged with the card id, then close the window. og:image is tried first so a
+// post that DOES unfurl never opens a window. Serialized by fbRenderBusy.
+let fbRenderBusy = false;
+const renderWins = new Set();   // popup window ids opened for render-capture — closed in finally + swept at end of run
+async function renderCaptureFb(url, id, delayMs) {
+  if (await captureFbByOg(url, id)) return "captured";   // cheap no-window path first
+  // a render is already in flight (e.g. a single ↻ racing the batch) — leave the
+  // card untouched (still pending / in the retry set), never mark it failed.
+  if (fbRenderBusy) return "busy";
+  fbRenderBusy = true;
+  let win = null;
+  try {
+    try { win = await chrome.windows.create({ url, focused: true, type: "popup", width: 1040, height: 920, top: 36, left: 36 }); }
+    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
+    if (win && win.id != null) renderWins.add(win.id);
+    const tab = win && win.tabs && win.tabs[0];
+    if (!tab || tab.id == null) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
+    const tabId = tab.id;
+    batchTabs.add(tabId);   // safety-net sweep at end of run
+    try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
+    await waitTabComplete(tabId, (delayMs || 0) + 30000);
+    let outcome = "captured";
+    try { const t = await chrome.tabs.get(tabId); await captureFbPost(t, url, delayMs, id); }
+    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); outcome = "error"; }
+    batchTabs.delete(tabId);
+    return outcome;
+  } finally {
+    if (win) { try { await chrome.windows.remove(win.id); } catch (e) {} renderWins.delete(win.id); }
+    fbRenderBusy = false;
+    await focusAppTab();   // hand focus back to the app between captures
+  }
+}
 async function capturePending(tabId) {   // capture whatever's loaded, then settle
   const p = pendings[tabId];
   if (!p || p.settled) return;
@@ -641,12 +692,15 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
   p.resolve("captured");
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
-async function captureOneTab(url, id, delay) {
+async function captureOneTab(url, id, delay, render) {
   // Facebook FIRST: pull og:image from the raw server HTML and fetch it — NO tab.
   // This avoids the cold-render spinner entirely (the rendered page never paints
   // the photo, esp. for videos), keeps the app focused, and is fast. Falls through
   // to opening a tab only if there's no og:image (e.g. a private post).
   if (/facebook\.com|fb\.watch/i.test(url || "")) {
+    // render mode (Couldn't-capture retry): og first, then a focused popup window
+    // render-capture for the restricted posts og can't reach.
+    if (render) return await renderCaptureFb(url, id, delay);
     if (await captureFbByOg(url, id)) return "captured";   // no tab — fetch og:image directly
     // No og:image (restricted/login-gated post) → mark attempted and STOP. Never
     // open a tab for FB: the rendered page only shows a spinner placeholder, which
@@ -690,6 +744,7 @@ async function focusAppTab() {
 // was suspended between capturing and removing a heavy page like YouTube)
 async function sweepBatchTabs() {
   for (const tid of [...batchTabs]) { try { await chrome.tabs.remove(tid); } catch (e) {} batchTabs.delete(tid); }
+  for (const wid of [...renderWins]) { try { await chrome.windows.remove(wid); } catch (e) {} renderWins.delete(wid); }   // reap any leftover render-capture popup window
 }
 
 // network-level failure (DNS, connection refused/reset/timeout, cert)
@@ -714,7 +769,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === "captureOneTab" && msg.data) {
     (async () => {
-      try { const outcome = await captureOneTab(msg.data.url, msg.data.id, msg.data.delay); sendResponse({ ok: true, outcome }); }
+      try { const outcome = await captureOneTab(msg.data.url, msg.data.id, msg.data.delay, msg.data.render); sendResponse({ ok: true, outcome }); }
       catch (e) { sendResponse({ ok: false, error: e.message }); }
     })();
     return true;
