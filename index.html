@@ -3024,7 +3024,7 @@ function normalizeUrl(url){
 // Fuzzy title key for duplicate detection. Returns "" for titles too short/generic
 // to group on safely (callers then fall back to link-only matching for that card).
 function normTitle(t){
-  let s = (t==null?"":String(t)).toLowerCase().replace(/ /g," ");
+  let s = (t==null?"":String(t)).toLowerCase().replace(/ /g," ");
   s = s.replace(/\bfrom your\b.*?\bcollection\b/g, " ");        // "From your 'Food' Facebook collection"
   s = s.replace(/^\s*saved\b/g, " ");                            // leading "Saved ..."
   s = s.replace(/[…]|\.\.\.\s*(see more|more)?\s*$/g, " "); // trailing …/... / "see more"
@@ -3156,6 +3156,8 @@ function applyDupeRemoval(){
       if (!k.sdate && mem.card.sdate) k.sdate = mem.card.sdate;
       if (mem.card.tags && mem.card.tags.length) k.tags = [...new Set([...(k.tags||[]), ...mem.card.tags])];
       if (mem.card.liked) k.liked = true;
+      if (mem.card.captured && (!k.captured || mem.card.captured < k.captured)) k.captured = mem.card.captured;
+      if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
       // delete the removed card's own (now orphaned) image
       const ref = mem.scope==="saved" ? mem.card.image : mem.card.img;
       if (ref && (ref+"").indexOf("idb:")===0){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; }
