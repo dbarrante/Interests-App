@@ -101,6 +101,37 @@ async function fetchAsDataUrl(url) {
   } catch (e) { log("fetchAsDataUrl failed: " + e.message); return ""; }
 }
 
+// Fetch a Facebook permalink's RAW server HTML and pull out the og:image URL.
+// The rendered SPA leaves og:image out of the live DOM (so the in-page engine
+// can't see it), but the server HTML — the same thing that powers link previews —
+// includes it, even for video posts that only show a spinner on screen. The
+// worker has <all_urls> + the user's cookies, so this works for content they can see.
+async function fetchFbOgImage(url) {
+  try {
+    if (!/^https?:/.test(url || "")) return "";
+    const ctl = new AbortController();
+    const tm = setTimeout(() => ctl.abort(), 8000);
+    let r;
+    try { r = await fetch(url, { credentials: "include", signal: ctl.signal }); }
+    finally { clearTimeout(tm); }
+    if (!r.ok) { log("fetchFbOgImage HTTP " + r.status); return ""; }
+    const html = await r.text();
+    const pats = [
+      /<meta[^>]+(?:property|name)=["']og:image(?::secure_url|:url)?["'][^>]*content=["']([^"']+)["']/i,
+      /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image/i,
+    ];
+    for (let i = 0; i < pats.length; i++) {
+      const m = html.match(pats[i]);
+      if (m && m[1]) {
+        const u = m[1].replace(/&amp;/g, "&").replace(/\\\//g, "/").replace(/\\u0025/gi, "%").replace(/\\u003D/gi, "=");
+        if (/scontent|fbcdn/i.test(u) && !/rsrc\.php|\/images\/|\/emoji/i.test(u)) return u;
+      }
+    }
+    log("fetchFbOgImage: no og:image in HTML for " + url.slice(0, 70));
+    return "";
+  } catch (e) { log("fetchFbOgImage failed: " + e.message); return ""; }
+}
+
 // helper: Uint8Array/blob -> data URL (no FileReader in the SW)
 async function blobToDataUrl(blob) {
   const buf = new Uint8Array(await blob.arrayBuffer());
@@ -542,6 +573,24 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay) {
+  // Facebook FIRST: pull og:image from the raw server HTML and fetch it — NO tab.
+  // This avoids the cold-render spinner entirely (the rendered page never paints
+  // the photo, esp. for videos), keeps the app focused, and is fast. Falls through
+  // to opening a tab only if there's no og:image (e.g. a private post).
+  if (/facebook\.com|fb\.watch/i.test(url || "")) {
+    try {
+      const og = await fetchFbOgImage(url);
+      if (og) {
+        const data = await fetchAsDataUrl(og);
+        if (data) {
+          log("FB og-fetch (no tab): " + url.slice(0, 70) + " -> " + Math.round(data.length / 1024) + "KB");
+          await deliverToApp({ url, id, screenshot: data, ts: Date.now(), force: false, recap: 1, capsrc: "og-fetch" });
+          return "captured";
+        }
+      }
+    } catch (e) { log("FB og-fetch error: " + e.message); }
+    // no og:image → fall through to the tab-based capture below
+  }
   let tab;
   // FOREGROUND tab. Non-FB pages need it to screenshot; FB needs it too because
   // Facebook only loads the post photo when the tab is visible (a hidden tab
