@@ -1630,7 +1630,8 @@ function renderImportStatus(){
 let impQuery = "";
 let selMode = false;
 let selPicks = new Set();
-function toggleSelMode(){ selMode=!selMode; if(!selMode) selPicks.clear(); renderImported(); }
+let _openedSel = new Set();  // normalized URLs already opened via "Open" this Select session — avoids duplicate tabs on a pop-up retry
+function toggleSelMode(){ selMode=!selMode; if(!selMode) selPicks.clear(); _openedSel.clear(); renderImported(); }
 function togglePick(idx){ selPicks.has(idx)?selPicks.delete(idx):selPicks.add(idx); renderImported(); }
 let impTag = load("itag","");
 function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); renderImported(); }
@@ -1763,6 +1764,7 @@ function renderImported(){
       ${selMode
         ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Capture the selected cards via the extension — Facebook posts fetch instantly, other sites open &amp; close a tab. Use this to retry the 'Couldn't capture' ones.">&#128247; Capture selected (${selPicks.size})</button>
            <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
+           <button class="btn btn-ghost" id="openSelBtn" onclick="openSelected()" ${selPicks.size?"":"disabled"} title="Open each selected card's link in its own browser tab. Your browser may ask to allow pop-ups the first time — allow them for this site.">&#128279; Open (${selPicks.size})</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
@@ -2334,6 +2336,39 @@ function captureSelected(){
   selMode=false; selPicks.clear();
   toast("Capturing "+items.length+" selected card"+(items.length===1?"":"s")+"… Facebook posts fetch instantly; other sites open & close a tab. Stay logged into Facebook."+(uniq.length>100?" (100 max per run)":""), 8000);
   renderImportedKeepFocus();
+}
+function openSelected(){
+  const picks=[...selPicks].map(i=>imported[i]).filter(it=>it && it.url);
+  if(!picks.length){ toast("Select some cards with a link first"); return; }
+  // one tab per distinct link — don't open the same article five times
+  const seen=new Set(), urls=[];
+  for(const it of picks){ const k=normalizeUrl(it.url); if(seen.has(k)) continue; seen.add(k); urls.push(it.url); }
+  // only ever hand http(s) to window.open — never javascript:/data:/etc. from a
+  // restored backup or parsed import (mirrors the og-image guard used on import)
+  const httpUrls = urls.filter(u=>/^https?:\/\//i.test(u));
+  const unsafe = urls.length - httpUrls.length;
+  // skip links already opened this Select session, so a retry after allowing
+  // pop-ups opens ONLY the rest (no duplicate tabs); reset on Select on/off
+  const toOpen = httpUrls.filter(u=>!_openedSel.has(normalizeUrl(u)));
+  const note = unsafe ? " ("+unsafe+" non-web link"+(unsafe===1?"":"s")+" skipped)" : "";
+  if(!toOpen.length){
+    if(unsafe && !httpUrls.length) toast("Those links can't be opened in a tab (not http/https).");
+    else toast("Already opened the selected link"+(httpUrls.length===1?"":"s")+" this session — click Done, then Select again to reopen."+note, 7000);
+    return;
+  }
+  // opening a lot of tabs at once can choke the browser / trip the pop-up blocker — confirm past a sane number
+  if(toOpen.length>25 && !confirm("Open all "+toOpen.length+" links in new tabs?\n\nYour browser may block the pop-ups or slow down. If they don't all appear, allow pop-ups for this site and try again.")) return;
+  // open synchronously inside this click so the browser treats them as ONE user
+  // gesture — opening on a timer/await gets every tab after the first blocked.
+  let opened=0, blocked=0;
+  for(const u of toOpen){ let w=null; try{ w=window.open(u,"_blank"); }catch(e){} if(w){ try{ w.opener=null; }catch(e){} _openedSel.add(normalizeUrl(u)); opened++; } else blocked++; }
+  if(blocked && !opened){
+    toast("Your browser blocked the pop-ups. Click the blocked-pop-up icon in the address bar, allow pop-ups for this site, then click Open again."+note, 9000);
+  } else if(blocked){
+    toast("Opened "+opened+" tab"+(opened===1?"":"s")+", but "+blocked+" still blocked — allow pop-ups for this site and click Open again to open the rest."+note, 9000);
+  } else {
+    toast("Opened "+opened+" tab"+(opened===1?"":"s")+"."+note);
+  }
 }
 function fmtCardDate(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }catch(e){ return ""; } }
 function impCardHTML(it,idx){
