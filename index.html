@@ -1642,6 +1642,14 @@ let impFailed = false;   // when on, show only cards whose capture failed/didn't
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
 let _refreshPins = new Set();  // ids currently being refreshed/captured — kept visible in status filters (Couldn't capture / Failed) so you SEE the picture land instead of the card vanishing
 function clearBatchFilter(){ impBatchIds=null; setImpSrc("facebook"); }   // ✕ → back to all Facebook imports
+// Cheap content fingerprint of an image data URL (length + head + tail) — identical
+// for byte-identical images (a spinner/placeholder captured across many cards).
+function imgFp(d){ d=(d||"")+""; return d ? (d.length+"|"+d.slice(0,48)+"|"+d.slice(-48)) : ""; }
+// Fingerprints of junk placeholder images we've cleared via "Fix placeholders". Any
+// future capture that reproduces one is rejected in drainCaptures, so gated posts
+// can't re-loop back into the placeholder pile. Persisted across reloads.
+let _phFps = new Set((function(){ try{ return JSON.parse(localStorage.getItem("ia_ph_fps")||"[]"); }catch(e){ return []; } })());
+function rememberPhFp(fp){ if(fp && !_phFps.has(fp)){ _phFps.add(fp); try{ localStorage.setItem("ia_ph_fps", JSON.stringify([..._phFps].slice(-200))); }catch(e){} } }
 // Detect FB cards that captured a loading-spinner/placeholder instead of the post
 // photo: those all share the IDENTICAL image (real photos are unique). Returns the
 // groups of duplicate-image cards. Cheap content fingerprint from the cached data URL.
@@ -1652,7 +1660,7 @@ function fbPlaceholderGroups(minCount){
     if(!it || !it.id || !/facebook\.com|fb\.watch/i.test(it.url||"")) continue;
     const v=(it.img||"")+""; if(v.indexOf("idb:")!==0) continue;
     const data=_imgCache[v.slice(4)]; if(!data) continue;
-    const key=data.length+"|"+data.slice(0,48)+"|"+data.slice(-48);
+    const key=imgFp(data);
     (byImg[key]=byImg[key]||[]).push(it);
   }
   return Object.values(byImg).filter(g=>g.length>=minCount);
@@ -1664,8 +1672,20 @@ function clearFbPlaceholders(silent){
   // clear+re-capture coincidental 2–4x reposts in a loop. Manual button: aggressive (>=2).
   const groups=fbPlaceholderGroups(silent?5:2);
   let cleared=0;
-  for(const g of groups){ for(const it of g){ setCardImage(it,""); delete it.captured; delete it.lastUpdate; delete it.lastResult; cleared++; } }
-  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder image(s) — run capture again to re-fetch the real photos", 6000); } }
+  for(const g of groups){
+    // Remember this junk image's fingerprint so any future capture that reproduces
+    // it is rejected (drainCaptures) — this is what breaks the clear→recapture→same
+    // junk loop for gated posts.
+    const data = (g[0] && (g[0].img+"").indexOf("idb:")===0) ? (_imgCache[(g[0].img+"").slice(4)]||"") : "";
+    rememberPhFp(imgFp(data));
+    for(const it of g){
+      setCardImage(it,"");
+      if(silent){ delete it.captured; delete it.lastUpdate; delete it.lastResult; }   // pre-batch auto-clear: re-enroll to retry (a re-placeholder is now rejected by fingerprint)
+      else { it.captured=Date.now(); it.lastUpdate=Date.now(); it.lastResult="fail"; }  // manual Fix: move to "Couldn't capture" (favicon) so they stop re-looping
+      cleared++;
+    }
+  }
+  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
   else if(!silent) toast("No placeholder captures found");
   return cleared;
 }
@@ -3411,6 +3431,15 @@ function drainCaptures(){
     // manual: prefer the actual screenshot (what you see); auto: prefer clean OG image
     const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
                        : (cap.ogImage || cap.contentImage || cap.screenshot);
+    // Reject a capture that reproduced a KNOWN junk placeholder (recorded when you
+    // clicked "Fix placeholders"): don't store it — mark the card couldn't-capture.
+    // This is what stops gated posts from re-looping into the placeholder pile.
+    if(best && (best+"").indexOf("data:")===0 && _phFps.has(imgFp(best))){
+      console.log("[drainCaptures] rejected known placeholder image for "+cap.url);
+      match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
+      closeRefreshTab(match.id);
+      continue;
+    }
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
     if(best && (force || cap.recap || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
     if(cap.capsrc && /facebook\.com|fb\.watch/i.test(match.url||"")) console.log("[fb-cap] "+((match.title||"").slice(0,34))+" → src="+cap.capsrc+" (ext v"+(cap.extv||"OLD/stale")+")");
