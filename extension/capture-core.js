@@ -194,9 +194,11 @@
       let waited = 0;
       (function loop() {
         let post = findMainPost();
-        // a real DECODED photo (post first, else whole doc), else FB's og:image URL
-        // (which doesn't require the on-screen <img> to render).
-        const img = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn) || metaPhoto();
+        // PREFER FB's og:image (the post photo / video thumbnail from metadata) over
+        // the on-page <img>: on a cold-opened video/permalink the largest decoded
+        // <img> is often FB's loading PLACEHOLDER, which passes the decode gate and
+        // would be captured as the "spinner". og:image is never a spinner.
+        const img = metaPhoto() || (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
         if (img || waited >= 8000) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
@@ -204,13 +206,13 @@
               if (post && post.isConnected === false) post = findMainPost();
               const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
               const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-              const decoded = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
               const og = metaPhoto();
-              const image = decoded || og;
+              const decoded = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              const image = og || decoded;   // og:image wins (real photo/thumbnail); decoded only when no metadata
               const rect = U.rectOf(post);   // crop fallback (no photo at all) frames the post, scrolled to top
-              console.log("[Interests] autoCaptureFB | decoded:", !!decoded, "| og:image:", !!og, "| using:", (image || "(crop)").slice(0, 80), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+              console.log("[Interests] autoCaptureFB | og:image:", !!og, "| decoded:", !!decoded, "| using:", (image || "(crop)").slice(0, 80), "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
               sendResponse({
-                ok: true, rect: rect, image: image, imgSrc: decoded ? "decoded" : (og ? "og" : ""),
+                ok: true, rect: rect, image: image, imgSrc: og ? "og" : (decoded ? "decoded" : ""),
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
                 author: ex.author || "", text: (ex && ex.text) || "",
                 permalink: perma || location.href,
