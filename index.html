@@ -175,6 +175,20 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
 #modal.open{display:flex}
+#dupeModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+#dupeModal.open{display:flex}
+.dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
+.dupe-list{overflow:auto;padding:8px 16px}
+.dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
+.dupe-group{border:1px solid var(--line);border-radius:11px;padding:10px;margin:12px 0}
+.dupe-row{display:flex;align-items:center;gap:12px;padding:6px 4px}
+.dupe-row img,.dupe-row .ph{width:64px;height:48px;object-fit:cover;border-radius:7px;background:#e8e4de;flex-shrink:0}
+.dupe-row .meta{flex:1;min-width:0}
+.dupe-row .meta .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dupe-row .meta .s{font-size:12px;opacity:.7}
+.dupe-row.keep{background:rgba(34,139,69,.12);border-radius:8px}
+.dupe-badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--line)}
 .modal-box{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);max-width:560px;width:100%;padding:26px 28px;position:relative;max-height:85vh;overflow:auto}
 .mclose{position:absolute;top:12px;right:14px;border:0;background:transparent;font-size:17px;cursor:pointer;color:var(--muted)}
 .modal-box h2{font-size:18px;margin-bottom:12px}
@@ -449,6 +463,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
     <div id="modalBody"></div>
   </div>
 </div>
+<div id="dupeModal"><div class="dupe-box"><div id="dupeBody"></div></div></div>
 
 <script>
 "use strict";
