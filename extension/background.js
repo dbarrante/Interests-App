@@ -1,3 +1,4 @@
+const FB_CAP_VERSION = "4.25";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -137,6 +138,21 @@ async function fetchFbOgImage(url) {
   return "";
 }
 
+// One place that turns a Facebook permalink into a delivered card image via
+// og:image (no tab, no rendering). Used by BOTH the batch and the single-card
+// path. Returns true on success.
+async function captureFbByOg(url, id) {
+  try {
+    const og = await fetchFbOgImage(url);
+    if (!og) return false;
+    const data = await fetchAsDataUrl(og);
+    if (!data) return false;
+    await deliverToApp({ url, id: id || "", screenshot: data, ts: Date.now(), force: false, recap: 1, capsrc: "og-fetch", extv: FB_CAP_VERSION });
+    log("FB og-capture v" + FB_CAP_VERSION + ": " + url.slice(0, 70) + " -> " + Math.round(data.length / 1024) + "KB");
+    return true;
+  } catch (e) { log("captureFbByOg error: " + e.message); return false; }
+}
+
 // helper: Uint8Array/blob -> data URL (no FileReader in the SW)
 async function blobToDataUrl(blob) {
   const buf = new Uint8Array(await blob.arrayBuffer());
@@ -248,6 +264,7 @@ function ensureContextMenu() {
 chrome.runtime.onInstalled.addListener(ensureContextMenu);
 chrome.runtime.onStartup.addListener(ensureContextMenu);
 ensureContextMenu();   // also run when the service worker spins up
+log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "saveToInterests") return;
   // a right-clicked link saves that link; selected text becomes the description
@@ -385,6 +402,18 @@ async function handleCaptureRequest(req) {
   if (pendingRequest) {
     log("Already have a pending request, ignoring");
     return;
+  }
+
+  // Facebook: capture via og:image fetch — no rendered page needed. If it works
+  // we're done; close the tab the app opened for this URL (if any).
+  if (req.capture !== false && /facebook\.com|fb\.watch/i.test(req.url || "")) {
+    if (await captureFbByOg(req.url, req.id)) {
+      setBadge("✓", 3000); await setStatus("Facebook captured ✓ (no render needed)", true);
+      try { const ts = await chrome.tabs.query({}); const t = ts.find(x => x.url && normalizeUrl(x.url) === normalizeUrl(req.url)); if (t) await closeTabSafe(t.id); } catch (e) {}
+      return;
+    }
+    log("FB og-capture miss — falling back to tab capture for " + (req.url || "").slice(0, 70));
+    // fall through to the normal tab-based flow (private posts / no og:image)
   }
 
   log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
@@ -556,7 +585,7 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   await deliverToApp({
     url: cardUrl || tabUrl, id: cardId || "",
     title: (info && info.title) || "", desc: (info && (info.text || info.author)) || "",
-    screenshot: imgData, ts: Date.now(), force: false, recap: 1, capsrc: capsrc,   // deliberate re-capture: overwrite even a non-"bad" stored image (e.g. an old spinner)
+    screenshot: imgData, ts: Date.now(), force: false, recap: 1, capsrc: capsrc, extv: FB_CAP_VERSION,   // deliberate re-capture: overwrite even a non-"bad" stored image (e.g. an old spinner)
   });
   setBadge("✓", 4000);
   await setStatus("Facebook post captured ✓", true);
@@ -583,17 +612,7 @@ async function captureOneTab(url, id, delay) {
   // the photo, esp. for videos), keeps the app focused, and is fast. Falls through
   // to opening a tab only if there's no og:image (e.g. a private post).
   if (/facebook\.com|fb\.watch/i.test(url || "")) {
-    try {
-      const og = await fetchFbOgImage(url);
-      if (og) {
-        const data = await fetchAsDataUrl(og);
-        if (data) {
-          log("FB og-fetch (no tab): " + url.slice(0, 70) + " -> " + Math.round(data.length / 1024) + "KB");
-          await deliverToApp({ url, id, screenshot: data, ts: Date.now(), force: false, recap: 1, capsrc: "og-fetch" });
-          return "captured";
-        }
-      }
-    } catch (e) { log("FB og-fetch error: " + e.message); }
+    if (await captureFbByOg(url, id)) return "captured";   // no tab — fetch og:image directly
     // no og:image → fall through to the tab-based capture below
   }
   let tab;

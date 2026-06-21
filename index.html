@@ -3093,7 +3093,7 @@ function drainCaptures(){
                        : (cap.ogImage || cap.contentImage || cap.screenshot);
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
     if(best && (force || cap.recap || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
-    if(cap.capsrc && /facebook\.com|fb\.watch/i.test(match.url||"")) console.log("[fb-cap] "+((match.title||"").slice(0,34))+" → src="+cap.capsrc);
+    if(cap.capsrc && /facebook\.com|fb\.watch/i.test(match.url||"")) console.log("[fb-cap] "+((match.title||"").slice(0,34))+" → src="+cap.capsrc+" (ext v"+(cap.extv||"OLD/stale")+")");
     // a subpage capture only sets the image — don't overwrite the card's
     // title/description with the unrelated subpage's metadata
     if(!viaActive){
