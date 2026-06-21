@@ -518,6 +518,7 @@ const DEFAULTS = {
   recaptureMonths:0,
   showDates:false,
   autoBackup:0,
+  tagSidebar:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -1687,7 +1688,8 @@ function setStickyOffsets(){
     document.documentElement.style.setProperty("--catBottom", (hH+cbH)+"px");
   }catch(e){}
 }
-window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported") renderImported(); });
+let _impResizeTimer;
+window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } });
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -1805,7 +1807,7 @@ function tagBarHTML(){
 }
 function tagSideHTML(){
   const { top, untagged } = tagListData();
-  if(!top.length && !untagged) return `<aside class="tag-side"></aside>`;
+  if(!top.length && !untagged) return "";
   return `<aside class="tag-side">
     <div class="tag-side-h">Tags</div>
     ${impTag?`<span class="tg on" onclick="setImpTag('${esc(impTag)}')">&#10005; ${esc(impTag==="__none"?"untagged":impTag)}</span>`:""}
