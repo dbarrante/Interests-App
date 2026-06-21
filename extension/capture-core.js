@@ -177,6 +177,16 @@
     // path is "/" rather than /<user>/posts/, /permalink.php, /photo.php, /watch, /reel…
     const onHomeFeed = function () { const p = location.pathname || "/"; return p === "/" || p === "" || /^\/home(\.php)?\/?$/.test(p); };
     const dialogPostPresent = function () { return !!document.querySelector('[role="dialog"] [role="article"]'); };
+    // FB's "This content isn't available right now" / deleted / broken-link interstitial
+    // — the post is gone or restricted, so the card should be REMOVED. Scoped to the
+    // post (then dialog/body) + apostrophe-normalized; require an exact FB phrase so a
+    // real post is never falsely removed.
+    const isUnavailable = function (post) {
+      let t = (post && post.innerText) || "";
+      if (!t) { const dlg = document.querySelector('[role="dialog"]'); t = (dlg && dlg.innerText) || (document.body && document.body.innerText) || ""; }
+      t = t.slice(0, 4000).toLowerCase().replace(/[‘’']/g, "");
+      return /this content isnt available|this page isnt available|the link you followed may be broken|sorry,? (this|that) content isnt available|content isnt available right now/.test(t);
+    };
     // The post's photo URL from page metadata (og:image) — never a spinner. (Usually
     // absent in the rendered SPA; captureFbByOg already tried the raw-HTML og first.)
     const metaPhoto = function () {
@@ -204,6 +214,13 @@
           return;
         }
         let post = findMainPost();
+        // Deleted / restricted post → tell the worker to REMOVE the card (and the
+        // batch moves on). Wait a beat so the interstitial has actually rendered.
+        if (waited >= 1200 && isUnavailable(post)) {
+          console.log("[Interests] autoCaptureFB | content unavailable/deleted — flagging dead for removal");
+          try { sendResponse({ ok: false, dead: true, permalink: location.href }); } catch (e) {}
+          return;
+        }
         // Look for the photo ONLY within the post (never document-wide — that grabbed
         // feed photos). og:image preferred; a decoded scontent <img> is the fallback.
         const img = metaPhoto() || (post ? U.largestImg(post, cfg.imageCdn) : "");

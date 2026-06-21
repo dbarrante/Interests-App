@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.31";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.32";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -603,10 +603,18 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   await new Promise((r) => setTimeout(r, delay));
   setBadge("...");
   let info = null;
-  for (let attempt = 0; attempt < 2 && !(info && info.ok); attempt++) {
+  for (let attempt = 0; attempt < 2 && !(info && (info.ok || info.dead)); attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 1800));   // content script not ready yet — wait & retry once
     try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
     catch (e) { log("autoCaptureFB message failed (try " + (attempt + 1) + "): " + e.message); info = null; }
+  }
+  // Deleted / restricted post ("This content isn't available") → REMOVE the card
+  // (drainCaptures handles cap.dead); the batch then moves on to the next.
+  if (info && info.dead) {
+    await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", dead: true, error: "content unavailable", ts: Date.now() });
+    setBadge("✕", 4000);
+    await setStatus("Facebook post unavailable/deleted — removed the card", false);
+    return "dead";
   }
   let imgData = "", capsrc = "none";
   if (info && info.ok) {
