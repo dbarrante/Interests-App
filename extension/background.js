@@ -107,29 +107,34 @@ async function fetchAsDataUrl(url) {
 // includes it, even for video posts that only show a spinner on screen. The
 // worker has <all_urls> + the user's cookies, so this works for content they can see.
 async function fetchFbOgImage(url) {
-  try {
-    if (!/^https?:/.test(url || "")) return "";
-    const ctl = new AbortController();
-    const tm = setTimeout(() => ctl.abort(), 8000);
-    let r;
-    try { r = await fetch(url, { credentials: "include", signal: ctl.signal }); }
-    finally { clearTimeout(tm); }
-    if (!r.ok) { log("fetchFbOgImage HTTP " + r.status); return ""; }
-    const html = await r.text();
-    const pats = [
-      /<meta[^>]+(?:property|name)=["']og:image(?::secure_url|:url)?["'][^>]*content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image/i,
-    ];
-    for (let i = 0; i < pats.length; i++) {
-      const m = html.match(pats[i]);
-      if (m && m[1]) {
-        const u = m[1].replace(/&amp;/g, "&").replace(/\\\//g, "/").replace(/\\u0025/gi, "%").replace(/\\u003D/gi, "=");
-        if (/scontent|fbcdn/i.test(u) && !/rsrc\.php|\/images\/|\/emoji/i.test(u)) return u;
+  if (!/^https?:/.test(url || "")) return "";
+  const pats = [
+    /<meta[^>]+(?:property|name)=["']og:image(?::secure_url|:url)?["'][^>]*content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image/i,
+  ];
+  // LOGGED-OUT first: Facebook's public unfurl HTML carries og:image; the
+  // logged-in (credentials:include) response is the app shell that omits it.
+  const modes = ["omit", "include"];
+  for (let i = 0; i < modes.length; i++) {
+    try {
+      const ctl = new AbortController();
+      const tm = setTimeout(() => ctl.abort(), 8000);
+      let r;
+      try { r = await fetch(url, { credentials: modes[i], signal: ctl.signal, redirect: "follow" }); }
+      finally { clearTimeout(tm); }
+      if (!r || !r.ok) continue;
+      const html = await r.text();
+      for (let j = 0; j < pats.length; j++) {
+        const m = html.match(pats[j]);
+        if (m && m[1]) {
+          const u = m[1].replace(/&amp;/g, "&").replace(/\\\//g, "/").replace(/\\u0025/gi, "%").replace(/\\u003D/gi, "=");
+          if (/scontent|fbcdn/i.test(u) && !/rsrc\.php|\/images\/|\/emoji/i.test(u)) { log("fetchFbOgImage ok via " + modes[i]); return u; }
+        }
       }
-    }
-    log("fetchFbOgImage: no og:image in HTML for " + url.slice(0, 70));
-    return "";
-  } catch (e) { log("fetchFbOgImage failed: " + e.message); return ""; }
+    } catch (e) { /* try next mode */ }
+  }
+  log("fetchFbOgImage: no og:image for " + (url || "").slice(0, 70));
+  return "";
 }
 
 // helper: Uint8Array/blob -> data URL (no FileReader in the SW)
