@@ -1738,7 +1738,7 @@ function renderImported(){
         return out;
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
-      ${(function(){const d=dupeCount(); return d?`<button class="btn btn-ghost" onclick="groomDupes()" title="Merge & remove cards that share the same link">&#128203; Remove ${d} duplicate${d>1?"s":""}</button>`:"";})()}
+      <button class="btn btn-ghost" onclick="openDupeReview(scanDuplicates())" title="Scan Imported + Saved for duplicate links and near-identical titles, then review before removing">&#128270; Scan duplicates</button>
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -3132,6 +3132,44 @@ function openDupeReview(groups){
   document.getElementById("dupeModal").classList.add("open");
 }
 function closeDupeReview(){ document.getElementById("dupeModal").classList.remove("open"); _dupeGroups = []; }
+function applyDupeRemoval(){
+  const checked = new Set(Array.prototype.map.call(
+    document.querySelectorAll('#dupeBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
+  if (!checked.size){ toast("Nothing selected to remove"); return; }
+  const rmImported = new Set(), rmSaved = new Set();
+  let removed = 0;
+  for (const g of _dupeGroups){
+    const keep = g.members.find(m=>m.card.id===g.keepId) || g.members[0];
+    const keepIsSaved = keep.scope==="saved";
+    for (const mem of g.members){
+      if (mem===keep) continue;
+      if (!checked.has(mem.scope+":"+mem.card.id)) continue;   // user spared it
+      const src = mem.scope==="saved" ? mem.card.image : mem.card.img;
+      const k = keep.card;
+      // merge best fields into the kept card
+      const keepImg = keepIsSaved ? k.image : k.img;
+      if (isBadImg(resolveImg(keepImg)) && !isBadImg(resolveImg(src))){
+        const data = resolveImg(src);
+        if (data){ keepIsSaved ? setSavedImage(k, data) : setCardImage(k, data); }
+      }
+      if (!k.desc && mem.card.desc) k.desc = mem.card.desc;
+      if (!k.sdate && mem.card.sdate) k.sdate = mem.card.sdate;
+      if (mem.card.tags && mem.card.tags.length) k.tags = [...new Set([...(k.tags||[]), ...mem.card.tags])];
+      if (mem.card.liked) k.liked = true;
+      // delete the removed card's own (now orphaned) image
+      const ref = mem.scope==="saved" ? mem.card.image : mem.card.img;
+      if (ref && (ref+"").indexOf("idb:")===0){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; }
+      (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
+      removed++;
+    }
+  }
+  if (rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
+  if (rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
+  save("imported", imported); save("saved", saved); writeSavesFile(); updateCounts();
+  closeDupeReview();
+  if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
+  toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
+}
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
