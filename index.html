@@ -1764,7 +1764,7 @@ function renderImported(){
             : `<button class="btn btn-ghost" onclick="toggleFbAuto()" title="Automatically capture ${FB_BATCH_CAP} Facebook posts at a time with a ~1 min (jittered) pause between, until done. Stop anytime.">&#9654; Auto-capture all (${fbmiss})</button>`;
         }
         const fbcant=imported.filter(fbMiss).length;
-        if(fbcant && !fbAuto){ const rcap=localStorage.getItem("ia_fbrender_tested")?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 4× (reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
+        if(fbcant && !fbAuto){ const rcap=localStorage.getItem("ia_fbrender_tested")?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 3× (5s apart, reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
         const ph=(typeof fbPlaceholderCount==="function")?fbPlaceholderCount():0;
         if(ph) out+=`<button class="btn btn-ghost" onclick="clearFbPlaceholders()" title="Some Facebook cards captured a loading spinner/placeholder instead of the photo. Clear them so they re-capture the real image.">&#129529; Fix ${ph} placeholder${ph>1?"s":""}</button>`;
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
@@ -2649,7 +2649,7 @@ function impOpen(idx){
   const needs = isBadImg(it.img) || !it.desc;
   const recaptureMs = (S.recaptureMonths||0) * 2592000000; // months × 30 days
   const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
-  const alreadyGood = it.captured && !stale;   // already successfully captured — skip
+  const alreadyGood = it.captured && !stale && !isBadImg(it.img);   // already captured AND has a real picture — skip (a captured-but-bad/placeholder image still needs a re-capture, not "nothing to capture")
   const doCapture = !alreadyGood && (needs || stale);
   if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; save("imported",imported); }
   // always send a request so the extension can watch for an unreachable site

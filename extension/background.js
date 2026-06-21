@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.32";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.33";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -669,9 +669,10 @@ function waitTabComplete(tabId, timeoutMs) {
 // renders the post photo into a visible tab — a hidden tab serves the spinner),
 // run the in-page capture engine (captureFbPost), deliver the image tagged with
 // the card id, then close the tab. og:image is tried first so a post that DOES
-// unfurl never opens a tab. Retries up to 4× (reload between) until it lands an
-// image. Serialized by fbRenderBusy.
-const RENDER_MAX_TRIES = 4;
+// unfurl never opens a tab. Retries up to 3× (wait 5s + reload between tries) until
+// it lands an image, then moves on. Serialized by fbRenderBusy.
+const RENDER_MAX_TRIES = 3;
+const RENDER_RETRY_WAIT_MS = 5000;
 let fbRenderBusy = false;
 async function renderCaptureFb(url, id, delayMs) {
   if (await captureFbByOg(url, id)) return "captured";   // cheap no-tab path first (og:image)
@@ -698,6 +699,7 @@ async function renderCaptureFb(url, id, delayMs) {
     let ok = false;
     for (let attempt = 1; attempt <= RENDER_MAX_TRIES && !ok; attempt++) {
       if (attempt > 1) {
+        await new Promise((r) => setTimeout(r, RENDER_RETRY_WAIT_MS));   // wait 5s before re-attempting (per request)
         try { await chrome.tabs.reload(tabId); } catch (e) {}
         await new Promise((r) => setTimeout(r, 1500));   // let the reload flip to "loading" before we wait for the fresh "complete"
         await waitTabComplete(tabId, (delayMs || 0) + 30000);
