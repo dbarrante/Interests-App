@@ -663,6 +663,7 @@ function setView(v){
 function gridClass(){ return "masonry m-"+viewMode; }
 function showTab(t){
   curTab = t;
+  _refreshPins.clear();
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
   ["feed","stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
@@ -1638,6 +1639,7 @@ let impSort = load("isort","newest");
 let impUnreviewed = load("iunrev", false);
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
+let _refreshPins = new Set();  // ids currently being refreshed/captured — kept visible in status filters (Couldn't capture / Failed) so you SEE the picture land instead of the card vanishing
 function clearBatchFilter(){ impBatchIds=null; setImpSrc("facebook"); }   // ✕ → back to all Facebook imports
 // Detect FB cards that captured a loading-spinner/placeholder instead of the post
 // photo: those all share the IDENTICAL image (real photos are unique). Returns the
@@ -1669,13 +1671,13 @@ function clearFbPlaceholders(silent){
 const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
-function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; save("iunrev",impUnreviewed); renderImportedKeepFocus(); }
+function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; _refreshPins.clear(); save("iunrev",impUnreviewed); renderImportedKeepFocus(); }
 // Facebook cards that were captured/attempted but still have no usable picture —
 // the ones automated og-fetch couldn't get (restricted/login-gated). Open each and
 // use the extension's "Save to Interests" to grab it manually.
 let impFbMiss = false;
 function fbMiss(it){ return it && it.url && /facebook\.com|fb\.watch/i.test(it.url) && isBadImg(it.img||"") && (it.lastResult==="fail" || it.lastUpdate || it.captured); }
-function toggleFbMiss(){ impFbMiss=!impFbMiss; if(impFbMiss) impBatchIds=null; renderImported(); }
+function toggleFbMiss(){ impFbMiss=!impFbMiss; if(impFbMiss) impBatchIds=null; _refreshPins.clear(); renderImported(); }
 // keep the sticky source bar (#catBar) + imported toolbar (.imp-sticky) parked
 // right below the sticky header, accounting for their live heights.
 function setStickyOffsets(){
@@ -1713,8 +1715,8 @@ function renderImported(){
             && (!impSrc || platformOf(r.it)===impSrc)
             && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
             && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url))))
-            && (!impFailed || needsRetry(r.it))
-            && (!impFbMiss || fbMiss(r.it))
+            && (!impFailed || needsRetry(r.it) || _refreshPins.has(r.it.id))
+            && (!impFbMiss || fbMiss(r.it) || _refreshPins.has(r.it.id))
             && (!impBatchIds || impBatchIds.has(r.it.id)))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
@@ -2317,6 +2319,7 @@ function captureSelected(){
   const seen=new Set();
   const uniq=picks.filter(it=>{ const k=normalizeUrl(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
   const items=uniq.slice(0,100).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
+  items.forEach(x=>_refreshPins.add(x.id));  // keep these visible in the current filter so the picture lands in place instead of the card vanishing
   // stamp dispatched cards (and any url-duplicates) attempted so progress/filters update
   const dispatched=new Set(items.map(it=>normalizeUrl(it.url)));
   const at=Date.now();
@@ -2576,6 +2579,7 @@ function impRefresh(idx){
   const it=imported[idx]; if(!it) return;
   if(!it.url){ toast("No link to refresh this card from"); return; }
   if(!it.id){ it.id=newId(); }
+  _refreshPins.add(it.id);   // keep this card in the current filter so its picture shows up in place instead of dropping off
   _impScrollY = window.scrollY; _impAnchorId = it.id;
   const _ael = document.querySelector('.imp-card[data-id="'+it.id+'"]');
   _impAnchorTop = _ael ? _ael.getBoundingClientRect().top : 0;
