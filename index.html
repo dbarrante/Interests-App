@@ -3006,6 +3006,21 @@ function normalizeUrl(url){
   }
   catch(e){ return url.toLowerCase(); }
 }
+// Fuzzy title key for duplicate detection. Returns "" for titles too short/generic
+// to group on safely (callers then fall back to link-only matching for that card).
+function normTitle(t){
+  let s = (t==null?"":String(t)).toLowerCase().replace(/ /g," ");
+  s = s.replace(/\bfrom your\b.*?\bcollection\b/g, " ");        // "From your 'Food' Facebook collection"
+  s = s.replace(/^\s*saved\b/g, " ");                            // leading "Saved ..."
+  s = s.replace(/[…]|\.\.\.\s*(see more|more)?\s*$/g, " "); // trailing …/... / "see more"
+  s = s.replace(/\bsee more\b\s*$/g, " ");
+  s = s.replace(/[^a-z0-9 ]+/g, " ");                            // drop emoji/punctuation
+  s = s.replace(/\s+/g, " ").trim();
+  // generic platform titles ("facebook post", "saved video", "reel", …) must NOT group
+  if (/^(facebook|fb|instagram|ig|pinterest|saved)?\s?(post|video|reel|photo|photos|story|link|watch|pin|item)s?$/.test(s)) return "";
+  if (s.length < 10 || s.split(" ").length < 2) return "";       // too short to group on safely
+  return s;
+}
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
