@@ -3021,6 +3021,27 @@ function normTitle(t){
   if (s.length < 10 || s.split(" ").length < 2) return "";       // too short to group on safely
   return s;
 }
+// Pick the member to KEEP from a duplicate group. Higher score wins.
+function dupePrimary(members){
+  const score = (mem)=>{
+    const it = mem.card;
+    const img = mem.scope==="saved" ? it.image : it.img;
+    let s = 0;
+    if (img && !isBadImg(resolveImg(img))) s += 16;       // has a real picture
+    if (it.desc && it.desc.length > 8) s += 8;             // has a description
+    if (it.tags && it.tags.length) s += 4;                 // has tags
+    if (it.sdate) s += 2;                                  // has a real saved date
+    if (mem.scope==="saved") s += 1;                       // a deliberate Saved clip
+    return s;
+  };
+  let best = members[0], bestScore = score(members[0]);
+  for (let k=1; k<members.length; k++){
+    const sc = score(members[k]);
+    const older = (members[k].card.sdate||members[k].card.ts||0) < (best.card.sdate||best.card.ts||Infinity);
+    if (sc > bestScore || (sc === bestScore && older)) { best = members[k]; bestScore = sc; }
+  }
+  return best;
+}
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
