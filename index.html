@@ -1815,7 +1815,27 @@ function renderImported(){
     ${impSidebarOn()
       ? `<div class="imp-body">${tagSideHTML()}<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div></div>`
       : `<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`}`;
+  attachCardImages();
   requestAnimationFrame(setStickyOffsets);
+}
+let _imgObserver=null;
+// Attach big idb image data URLs to their <img> AFTER render, and only as they near
+// the viewport — keeps the data URLs out of the giant HTML string (avoids JS's
+// max-string-length crash) and avoids decoding thousands of images at once.
+function attachCardImages(){
+  try{
+    const grid=document.querySelector("#view-imported .imp-grid");
+    if(!grid) return;
+    const imgs=grid.querySelectorAll("img.th[data-imgid]");
+    if(!imgs.length) return;
+    if(_imgObserver) _imgObserver.disconnect();
+    const load=im=>{ if(im.getAttribute("src")) return; const d=_imgCache[im.getAttribute("data-imgid")]; if(d) im.src=d; };
+    if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
+    _imgObserver=new IntersectionObserver((entries,obs)=>{
+      for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } }
+    },{root:null,rootMargin:"800px 0px"});
+    imgs.forEach(im=>_imgObserver.observe(im));
+  }catch(e){ console.warn("attachCardImages failed",e); }
 }
 function tagListData(){
   const counts = {}; let untagged = 0;
@@ -2403,8 +2423,15 @@ function impCardHTML(it,idx){
   const fvFallback = dom
     ? `this.className='fv';this.src='https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64';this.onerror=function(){this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'}`
     : `this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'`;
+  // idb-backed images are big base64 data URLs — DON'T inline them into the grid's
+  // HTML string (thousands of them overflow JS's max string length → render crash).
+  // Emit a placeholder <img data-imgid> and attach the src after render, lazily
+  // (attachCardImages, via IntersectionObserver). http(s) thumbs stay inline (tiny).
+  const isIdbImg = thumb && it.img && String(it.img).indexOf("idb:")===0;
   const icon = thumb
-    ? `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+    ? (isIdbImg
+      ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+      : `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`)
     : (dom
       ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
       : `<div class="ic">${yt?"YT":"IM"}</div>`);
