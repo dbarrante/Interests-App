@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.30";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.31";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -586,7 +586,7 @@ function settlePending(tabId, why) {
 // to find + measure the MAIN post, then build a durable card image from it (the
 // post's own photo, or a crop of the post area). Delivered tagged with the card
 // id so drainCaptures updates the existing imported card (not a new clip).
-async function captureFbPost(tab, cardUrl, delayMs, cardId) {
+async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   const tabId = tab.id, tabUrl = tab.url || cardUrl;
   // give the in-page content script time to load + the post time to render before
   // we message it (the engine then polls until the post is actually present)
@@ -626,9 +626,13 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   }
   log("FB capture: " + (cardUrl || tabUrl) + " -> src=" + capsrc + " size=" + (imgData ? Math.round(imgData.length / 1024) + "KB" : "0"));
   if (!imgData) {
-    await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
-    setBadge("!", 4000);
-    await setStatus("Facebook post — no image found (marked attempted; stay logged in / a group member)", false);
+    // suppressFail: caller will retry — don't mark the card attempted yet (that's
+    // delivered once, after the final try, by renderCaptureFb).
+    if (!suppressFail) {
+      await deliverToApp({ url: cardUrl || tabUrl, id: cardId || "", attempt: true, ok: false, ts: Date.now() });
+      setBadge("!", 4000);
+      await setStatus("Facebook post — no image found (marked attempted; stay logged in / a group member)", false);
+    }
     return false;
   }
   await deliverToApp({
@@ -653,11 +657,13 @@ function waitTabComplete(tabId, timeoutMs) {
   });
 }
 // Automated version of the manual "Refresh → Save to Interests" flow for a
-// restricted Facebook post: open the permalink in a FOCUSED POPUP WINDOW (FB only
-// renders the post photo into a visible tab — a background tab serves the
-// spinner), run the in-page capture engine (captureFbPost), deliver the image
-// tagged with the card id, then close the window. og:image is tried first so a
-// post that DOES unfurl never opens a window. Serialized by fbRenderBusy.
+// restricted Facebook post: open the permalink in a real foreground TAB (FB only
+// renders the post photo into a visible tab — a hidden tab serves the spinner),
+// run the in-page capture engine (captureFbPost), deliver the image tagged with
+// the card id, then close the tab. og:image is tried first so a post that DOES
+// unfurl never opens a tab. Retries up to 4× (reload between) until it lands an
+// image. Serialized by fbRenderBusy.
+const RENDER_MAX_TRIES = 4;
 let fbRenderBusy = false;
 async function renderCaptureFb(url, id, delayMs) {
   if (await captureFbByOg(url, id)) return "captured";   // cheap no-tab path first (og:image)
@@ -678,11 +684,22 @@ async function renderCaptureFb(url, id, delayMs) {
     try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
     try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}   // load it VISIBLY from the start so the photo lazy-loads
     await waitTabComplete(tabId, (delayMs || 0) + 30000);
-    // captureFbPost waits + polls up to 18s for the REAL photo and marks the card
-    // attempted if none loads — it never crops a spinner.
-    try { const t = await chrome.tabs.get(tabId); await captureFbPost(t, url, delayMs, id); }
-    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); }
-    return "done";
+    // Try up to RENDER_MAX_TRIES times to land a real image; RELOAD between tries so
+    // Facebook gets a fresh chance to render the photo. Stop the moment one succeeds.
+    // captureFbPost waits + polls up to 18s each try and never crops a spinner.
+    let ok = false;
+    for (let attempt = 1; attempt <= RENDER_MAX_TRIES && !ok; attempt++) {
+      if (attempt > 1) {
+        try { await chrome.tabs.reload(tabId); } catch (e) {}
+        await new Promise((r) => setTimeout(r, 1500));   // let the reload flip to "loading" before we wait for the fresh "complete"
+        await waitTabComplete(tabId, (delayMs || 0) + 30000);
+      }
+      try { const t = await chrome.tabs.get(tabId); ok = await captureFbPost(t, url, delayMs, id, true); }   // suppressFail: don't mark attempted between tries
+      catch (e) { ok = false; }
+      if (!ok) log("FB render try " + attempt + "/" + RENDER_MAX_TRIES + " — no image yet: " + url);
+    }
+    if (!ok) await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });   // all tries missed → leave the card for a manual Save
+    return ok ? "captured" : "done";
   } finally {
     if (tabId != null) { try { await chrome.tabs.remove(tabId); } catch (e) {} batchTabs.delete(tabId); }
     fbRenderBusy = false;
