@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -2765,36 +2765,7 @@ function groomNoLink(){
   if(curTab==="imported") renderImported();
   toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
 }
-function dupeCount(){
-  const seen=new Set(); let d=0;
-  imported.forEach(i=>{ if(!i.url) return; const k=normalizeUrl(i.url); if(seen.has(k)) d++; else seen.add(k); });
-  return d;
-}
-function groomDupes(){
-  const d=dupeCount();
-  if(!d){ toast("No duplicate links found"); return; }
-  if(!confirm("Remove "+d+" duplicate card"+(d>1?"s":"")+" (same link)?\n\nOne copy of each is kept and the best image/description/date/tags merged into it. This can't be undone.")) return;
-  const byUrl=new Map(); const keep=[]; const removed=[];
-  for(const it of imported){
-    if(!it.url){ keep.push(it); continue; }      // link-less stay (use Groom for those)
-    const k=normalizeUrl(it.url);
-    if(!byUrl.has(k)){ byUrl.set(k,it); keep.push(it); continue; }
-    const m=byUrl.get(k);                          // merge this duplicate into the kept copy
-    if(isBadImg(m.img||"") && !isBadImg(it.img||"")){ const src=resolveImg(it.img); if(src) setCardImage(m, src); }
-    if(!m.desc && it.desc) m.desc=it.desc;
-    if(!m.sdate && it.sdate) m.sdate=it.sdate;
-    if(it.liked) m.liked=true;
-    if(it.tags && it.tags.length) m.tags=[...new Set([...(m.tags||[]), ...it.tags])];
-    if(it.captured && (!m.captured || it.captured<m.captured)) m.captured=it.captured;
-    if(it.blocked && !m.blocked) m.blocked=it.blocked;
-    removed.push(it);
-  }
-  removed.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ idbDelImg(it.id); delete _imgCache[it.id]; } });
-  imported = keep;
-  save("imported",imported); writeSavesFile(); updateCounts();
-  if(curTab==="imported") renderImported();
-  toast("Removed "+removed.length+" duplicate"+(removed.length>1?"s":"")+" — kept the best copy of each");
-}
+
 function impLike(idx){
   const it=imported[idx]; if(!it) return;
   it.liked=true;
@@ -3022,7 +2993,7 @@ function normalizeUrl(url){
   catch(e){ return url.toLowerCase(); }
 }
 // Fuzzy title key for duplicate detection. Returns "" for titles too short/generic
-// to group on safely (callers then fall back to link-only matching for that card).
+// to group on safely (such a card can still match by link, just not by title).
 function normTitle(t){
   let s = (t==null?"":String(t)).toLowerCase().replace(/ /g," ");
   s = s.replace(/\bfrom your\b.*?\bcollection\b/g, " ");        // "From your 'Food' Facebook collection"
@@ -3057,6 +3028,17 @@ function dupePrimary(members){
   }
   return best;
 }
+// Duplicate URL key: normalized host+path PLUS the identifying query param when the
+// id lives in the query (YouTube ?v=, FB ?v=/?story_fbid=/?fbid=, generic ?id=) —
+// otherwise normalizeUrl would collapse e.g. all youtube.com/watch?v=… into one group.
+function dupeUrlKey(url){
+  try{
+    const u = new URL(url);
+    const base = (u.hostname.replace(/^www\./,"") + u.pathname).replace(/\/$/,"").toLowerCase();
+    const id = u.searchParams.get("v") || u.searchParams.get("story_fbid") || u.searchParams.get("fbid") || u.searchParams.get("id") || "";
+    return id ? base + "?" + id : base;
+  }catch(e){ return (url||"").toLowerCase(); }
+}
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
 function scanDuplicates(){
@@ -3070,7 +3052,7 @@ function scanDuplicates(){
   const byUrl = {}, byTitle = {};
   members.forEach((m,i)=>{
     const it = m.card;
-    if (it.url){ const k="u:"+normalizeUrl(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
+    if (it.url){ const k="u:"+dupeUrlKey(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
     const t = normTitle(it.title);
     if (t){ const k="t:"+t; if(byTitle[k]!=null) union(byTitle[k], i); else byTitle[k]=i; }
   });
@@ -3159,8 +3141,7 @@ function applyDupeRemoval(){
       if (mem.card.captured && (!k.captured || mem.card.captured < k.captured)) k.captured = mem.card.captured;
       if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
       // delete the removed card's own (now orphaned) image
-      const ref = mem.scope==="saved" ? mem.card.image : mem.card.img;
-      if (ref && (ref+"").indexOf("idb:")===0){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; }
+      if (src && (src+"").indexOf("idb:")===0){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; }
       (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
       removed++;
     }
