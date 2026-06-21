@@ -147,6 +147,12 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* the Imported search + filter row + tags, stuck just below the source bar */
 .imp-sticky{position:sticky;top:var(--catBottom,104px);z-index:41;background:var(--bg);margin:0 -20px;padding:4px 20px 8px;box-shadow:0 10px 12px -12px rgba(0,0,0,.35)}
 .imp-sticky .tagbar{margin-bottom:0;max-height:92px;overflow:auto}
+.imp-body{display:flex;align-items:flex-start;gap:16px}
+.imp-body .imp-grid{flex:1;min-width:0}
+.tag-side{flex:0 0 210px;position:sticky;top:var(--catBottom,104px);max-height:calc(100vh - var(--catBottom,104px) - 16px);overflow:auto;display:flex;flex-direction:column;gap:6px;padding:4px 2px}
+.tag-side .tag-side-h{font-size:12px;font-weight:700;opacity:.6;text-transform:uppercase;letter-spacing:.04em;margin:2px 4px 4px}
+.tag-side .tg{display:block;width:100%;box-sizing:border-box}
+@media(max-width:760px){.tag-side{display:none}.imp-body{display:block}}
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
@@ -1681,7 +1687,7 @@ function setStickyOffsets(){
     document.documentElement.style.setProperty("--catBottom", (hH+cbH)+"px");
   }catch(e){}
 }
-window.addEventListener("resize", setStickyOffsets);
+window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported") renderImported(); });
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -1756,7 +1762,7 @@ function renderImported(){
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
     </div>
-    ${tagBarHTML()}
+    ${impSidebarOn()?"":tagBarHTML()}
     ${impBatchIds ? (function(){
       const wp=list.filter(r=>!isBadImg(r.it.img)).length;
       const pill="cursor:pointer;background:rgba(255,255,255,.22);padding:4px 10px;border-radius:7px;white-space:nowrap";
@@ -1777,7 +1783,9 @@ function renderImported(){
       </div>`;
     })() : ""}
     </div>
-    <div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`;
+    ${impSidebarOn()
+      ? `<div class="imp-body">${tagSideHTML()}<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div></div>`
+      : `<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`}`;
   requestAnimationFrame(setStickyOffsets);
 }
 function tagListData(){
@@ -1795,6 +1803,17 @@ function tagBarHTML(){
     ${untagged && impTag!=="__none" ? `<span class="tg" style="opacity:.65" onclick="setImpTag('__none')">untagged <b>${untagged}</b></span>`:""}
   </div>`;
 }
+function tagSideHTML(){
+  const { top, untagged } = tagListData();
+  if(!top.length && !untagged) return `<aside class="tag-side"></aside>`;
+  return `<aside class="tag-side">
+    <div class="tag-side-h">Tags</div>
+    ${impTag?`<span class="tg on" onclick="setImpTag('${esc(impTag)}')">&#10005; ${esc(impTag==="__none"?"untagged":impTag)}</span>`:""}
+    ${top.map(([t,n])=>impTag===t?"":`<span class="tg" onclick="setImpTag('${esc(t)}')">${esc(t)} <b>${n}</b></span>`).join("")}
+    ${untagged && impTag!=="__none" ? `<span class="tg" style="opacity:.65" onclick="setImpTag('__none')">untagged <b>${untagged}</b></span>`:""}
+  </aside>`;
+}
+function impSidebarOn(){ return !!S.tagSidebar && window.innerWidth >= 760; }
 const PICONS = {
   youtube:  `<svg class="pic" width="13" height="13" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#f00"/><path d="M9.5 7.5v9l8-4.5z" fill="#fff"/></svg>`,
   facebook: `<svg class="pic" width="13" height="13" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#1877f2"/><text x="12" y="18.5" text-anchor="middle" font-size="17" font-weight="bold" fill="#fff" font-family="Arial">f</text></svg>`,
