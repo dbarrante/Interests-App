@@ -3083,6 +3083,55 @@ function scanDuplicates(){
   });
   return out;
 }
+let _dupeGroups = [];
+function dupeThumb(mem){
+  const it = mem.card;
+  const v = mem.scope==="saved" ? it.image : it.img;
+  const src = resolveImg(v);
+  if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy">`;
+  return `<div class="ph"></div>`;
+}
+function dupeRowHTML(mem, gi, keep){
+  const it = mem.card;
+  const dom = domain(it.url) || (mem.scope==="saved"?"saved":"");
+  const date = it.sdate ? new Date(it.sdate).toLocaleDateString() : "";
+  const tag = mem.scope==="saved" ? "Saved" : "Imported";
+  return `<div class="dupe-row${keep?" keep":""}">
+    ${dupeThumb(mem)}
+    <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
+      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
+    ${keep
+      ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
+      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" checked style="width:auto"> remove</label>
+         <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
+  </div>`;
+}
+function renderDupeModal(){
+  const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
+  const body = document.getElementById("dupeBody");
+  body.innerHTML = `
+    <div class="dupe-head"><span>&#128270; Duplicate review — ${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable</span>
+      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeDupeReview()">&#10005;</button></div>
+    <div class="dupe-list">
+      ${_dupeGroups.map((g,gi)=>`<div class="dupe-group">
+        ${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
+            .map(m=>dupeRowHTML(m, gi, m.card.id===g.keepId)).join("")}
+      </div>`).join("")}
+    </div>
+    <div class="dupe-foot"><button class="btn btn-ghost" onclick="closeDupeReview()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
+}
+function dupeSetKeep(gi, id){
+  if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
+  renderDupeModal();
+}
+function openDupeReview(groups){
+  _dupeGroups = groups || [];
+  if (!_dupeGroups.length){ toast("No duplicates found"); return; }
+  renderDupeModal();
+  document.getElementById("dupeModal").classList.add("open");
+}
+function closeDupeReview(){ document.getElementById("dupeModal").classList.remove("open"); _dupeGroups = []; }
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 function drainCaptures(){
   let raw;
