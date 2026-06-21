@@ -1775,18 +1775,18 @@ function renderImported(){
     <div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`;
   requestAnimationFrame(setStickyOffsets);
 }
+function tagListData(){
+  const counts = {}; let untagged = 0;
+  imported.forEach(i=>{ if(i.tags && i.tags.length) i.tags.forEach(t=>counts[t]=(counts[t]||0)+1); else untagged++; });
+  return { top: Object.entries(counts).sort((a,b)=>b[1]-a[1]), untagged };
+}
 function tagBarHTML(){
-  const counts={};
-  let untagged=0;
-  imported.forEach(i=>{
-    if(i.tags && i.tags.length) i.tags.forEach(t=>counts[t]=(counts[t]||0)+1);
-    else untagged++;
-  });
-  const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,24);
-  if(!top.length && !untagged) return "";
+  const { top, untagged } = tagListData();
+  const shown = top.slice(0,24);
+  if(!shown.length && !untagged) return "";
   return `<div class="tagbar">
     ${impTag?`<span class="tg on" onclick="setImpTag('${esc(impTag)}')">&#10005; ${esc(impTag==="__none"?"untagged":impTag)}</span>`:""}
-    ${top.map(([t,n])=>impTag===t?"":`<span class="tg" onclick="setImpTag('${esc(t)}')">${esc(t)} <b>${n}</b></span>`).join("")}
+    ${shown.map(([t,n])=>impTag===t?"":`<span class="tg" onclick="setImpTag('${esc(t)}')">${esc(t)} <b>${n}</b></span>`).join("")}
     ${untagged && impTag!=="__none" ? `<span class="tg" style="opacity:.65" onclick="setImpTag('__none')">untagged <b>${untagged}</b></span>`:""}
   </div>`;
 }
