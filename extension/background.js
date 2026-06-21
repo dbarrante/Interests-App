@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.26";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.27";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -138,17 +138,48 @@ async function fetchFbOgImage(url) {
   return "";
 }
 
+// Fallback for login-gated posts (profile /posts/pfbid…) that have NO og:image in
+// the public HTML: fetch LOGGED-IN and pull the largest real photo URL out of the
+// inline page data. Size-gated so it skips avatars/icons.
+async function fetchFbInlineImage(url) {
+  try {
+    if (!/^https?:/.test(url || "")) return "";
+    const ctl = new AbortController();
+    const tm = setTimeout(() => ctl.abort(), 9000);
+    let r;
+    try { r = await fetch(url, { credentials: "include", signal: ctl.signal, redirect: "follow" }); }
+    finally { clearTimeout(tm); }
+    if (!r || !r.ok) return "";
+    let text = (await r.text()).replace(/\\\//g, "/").replace(/\\u0025/gi, "%").replace(/\\u003[dD]/g, "=").replace(/&amp;/g, "&");
+    const re = /https:\/\/[a-z0-9.\-]*scontent[^"'\s)\\]+\.(?:jpg|jpeg|webp)[^"'\s)\\]*/gi;
+    let best = "", bestScore = 0, m;
+    while ((m = re.exec(text))) {
+      const u = m[0];
+      if (/static\.|rsrc\.php|\/emoji|safe_image|\/images\//i.test(u)) continue;
+      const sz = u.match(/[sp](\d{3,4})x(\d{3,4})/i);
+      let score = sz ? (+sz[1]) * (+sz[2]) : (/t39\.30808|t15\./.test(u) ? 90000 : 0);
+      if (/t39\.30808/.test(u)) score *= 2;        // prefer the post-photo CDN path
+      if (score < 40000) continue;                  // skip avatars/icons (< ~200x200)
+      if (score > bestScore) { bestScore = score; best = u; }
+    }
+    if (best) log("fetchFbInlineImage found a photo for " + url.slice(0, 60));
+    return best;
+  } catch (e) { return ""; }
+}
+
 // One place that turns a Facebook permalink into a delivered card image via
 // og:image (no tab, no rendering). Used by BOTH the batch and the single-card
 // path. Returns true on success.
 async function captureFbByOg(url, id) {
   try {
+    let src = "og-fetch";
     let og = await fetchFbOgImage(url);
     if (!og) { await new Promise((r) => setTimeout(r, 2500)); og = await fetchFbOgImage(url); }   // FB sometimes serves a degraded page — retry once
+    if (!og) { og = await fetchFbInlineImage(url); if (og) src = "inline"; }   // login-gated post: dig the photo out of the logged-in inline data
     if (!og) return false;
     const data = await fetchAsDataUrl(og);
     if (!data) return false;
-    await deliverToApp({ url, id: id || "", screenshot: data, ts: Date.now(), force: false, recap: 1, capsrc: "og-fetch", extv: FB_CAP_VERSION });
+    await deliverToApp({ url, id: id || "", screenshot: data, ts: Date.now(), force: false, recap: 1, capsrc: src, extv: FB_CAP_VERSION });
     log("FB og-capture v" + FB_CAP_VERSION + ": " + url.slice(0, 70) + " -> " + Math.round(data.length / 1024) + "KB");
     return true;
   } catch (e) { log("captureFbByOg error: " + e.message); return false; }
