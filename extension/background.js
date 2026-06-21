@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.33";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.34";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -668,48 +668,53 @@ function waitTabComplete(tabId, timeoutMs) {
 // restricted Facebook post: open the permalink in a real foreground TAB (FB only
 // renders the post photo into a visible tab — a hidden tab serves the spinner),
 // run the in-page capture engine (captureFbPost), deliver the image tagged with
-// the card id, then close the tab. og:image is tried first so a post that DOES
-// unfurl never opens a tab. Retries up to 3× (wait 5s + reload between tries) until
-// it lands an image, then moves on. Serialized by fbRenderBusy.
+// the card id, then close the tab. Renders FIRST so deleted/unavailable posts are
+// detected + removed (og-fetch alone can't tell); og:image is only a fallback when
+// render finds no photo. Retries up to 3× (wait 5s + reload) then moves on. Serialized.
 const RENDER_MAX_TRIES = 3;
 const RENDER_RETRY_WAIT_MS = 5000;
 let fbRenderBusy = false;
 async function renderCaptureFb(url, id, delayMs) {
-  if (await captureFbByOg(url, id)) return "captured";   // cheap no-tab path first (og:image)
   // a render is already in flight (e.g. a single ↻ racing the batch) — leave the
   // card untouched (still pending / in the retry set), never mark it failed.
   if (fbRenderBusy) return "busy";
   fbRenderBusy = true;
   let tabId = null;
   try {
-    let tab;
-    // Open the permalink in a real foreground TAB (the proven path — matches what
-    // you do manually). captureFbPost focuses+activates it; FB only renders the post
-    // photo in a visible tab.
-    try { tab = await chrome.tabs.create({ url, active: true }); }
-    catch (e) { await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() }); return "tab-fail"; }
-    tabId = tab.id;
-    batchTabs.add(tabId);   // safety-net sweep at end of run
-    try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
-    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}   // load it VISIBLY from the start so the photo lazy-loads
-    await waitTabComplete(tabId, (delayMs || 0) + 30000);
-    // Try up to RENDER_MAX_TRIES times to land a real image; RELOAD between tries so
-    // Facebook gets a fresh chance to render the photo. Stop the moment one succeeds.
-    // captureFbPost waits + polls up to 18s each try and never crops a spinner.
-    let ok = false;
-    for (let attempt = 1; attempt <= RENDER_MAX_TRIES && !ok; attempt++) {
-      if (attempt > 1) {
-        await new Promise((r) => setTimeout(r, RENDER_RETRY_WAIT_MS));   // wait 5s before re-attempting (per request)
-        try { await chrome.tabs.reload(tabId); } catch (e) {}
-        await new Promise((r) => setTimeout(r, 1500));   // let the reload flip to "loading" before we wait for the fresh "complete"
-        await waitTabComplete(tabId, (delayMs || 0) + 30000);
+    // RENDER FIRST — do NOT trust og-fetch first. Only the rendered page reveals a
+    // deleted/unavailable post; og-fetch can return a stale/generic image and falsely
+    // "capture" a dead post (the "captured ✓ no render needed" bug). captureFbPost
+    // detects FB's "content isn't available" interstitial and returns "dead" → remove.
+    let tab = null;
+    try { tab = await chrome.tabs.create({ url, active: true }); } catch (e) { /* fall back to og below */ }
+    if (tab && tab.id != null) {
+      tabId = tab.id;
+      batchTabs.add(tabId);   // safety-net sweep at end of run
+      try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
+      try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}   // load it VISIBLY so the photo lazy-loads
+      await waitTabComplete(tabId, (delayMs || 0) + 30000);
+      // Up to RENDER_MAX_TRIES, RELOAD + wait 5s between tries; stop the moment one
+      // lands an image or the post is detected deleted. captureFbPost never crops a spinner.
+      for (let attempt = 1; attempt <= RENDER_MAX_TRIES; attempt++) {
+        if (attempt > 1) {
+          await new Promise((r) => setTimeout(r, RENDER_RETRY_WAIT_MS));   // wait 5s before re-attempting (per request)
+          try { await chrome.tabs.reload(tabId); } catch (e) {}
+          await new Promise((r) => setTimeout(r, 1500));   // let the reload flip to "loading" before we wait for "complete"
+          await waitTabComplete(tabId, (delayMs || 0) + 30000);
+        }
+        let res = false;
+        try { const t = await chrome.tabs.get(tabId); res = await captureFbPost(t, url, delayMs, id, true); }   // suppressFail: don't mark attempted between tries
+        catch (e) { res = false; }
+        if (res === "dead") return "dead";        // deleted/unavailable interstitial → card removed
+        if (res) return "captured";               // got a real image
+        log("FB render try " + attempt + "/" + RENDER_MAX_TRIES + " — no image yet: " + url);
       }
-      try { const t = await chrome.tabs.get(tabId); ok = await captureFbPost(t, url, delayMs, id, true); }   // suppressFail: don't mark attempted between tries
-      catch (e) { ok = false; }
-      if (!ok) log("FB render try " + attempt + "/" + RENDER_MAX_TRIES + " — no image yet: " + url);
     }
-    if (!ok) await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });   // all tries missed → leave the card for a manual Save
-    return ok ? "captured" : "done";
+    // Render found no image AND the post isn't a dead interstitial → try the fast
+    // og:image fetch as a last resort (covers live posts whose photo won't render).
+    if (await captureFbByOg(url, id)) return "captured";
+    await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });   // truly nothing → leave for a manual Save
+    return "done";
   } finally {
     if (tabId != null) { try { await chrome.tabs.remove(tabId); } catch (e) {} batchTabs.delete(tabId); }
     fbRenderBusy = false;
