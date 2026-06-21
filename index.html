@@ -1639,6 +1639,12 @@ const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinteres
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
 function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; save("iunrev",impUnreviewed); renderImportedKeepFocus(); }
+// Facebook cards that were captured/attempted but still have no usable picture —
+// the ones automated og-fetch couldn't get (restricted/login-gated). Open each and
+// use the extension's "Save to Interests" to grab it manually.
+let impFbMiss = false;
+function fbMiss(it){ return it && it.url && /facebook\.com|fb\.watch/i.test(it.url) && isBadImg(it.img||"") && (it.lastResult==="fail" || it.lastUpdate || it.captured); }
+function toggleFbMiss(){ impFbMiss=!impFbMiss; if(impFbMiss) impBatchIds=null; renderImported(); }
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -1663,6 +1669,7 @@ function renderImported(){
             && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
             && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url))))
             && (!impFailed || needsRetry(r.it))
+            && (!impFbMiss || fbMiss(r.it))
             && (!impBatchIds || impBatchIds.has(r.it.id)))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
@@ -1673,6 +1680,7 @@ function renderImported(){
       <span class="hint" title="Tip: hover a card and press Ctrl+V to paste a screenshot (e.g. from FireShot) as its image">${list.length} shown</span>
       <button class="btn btn-ghost" onclick="toggleImpSort()" title="Sort order">${impSort==="newest"?"&#9660; Newest":"&#9650; Oldest"}</button>
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
+      ${(function(){ const n=imported.filter(fbMiss).length; return (n||impFbMiss)?`<button class="btn btn-ghost${impFbMiss?" btn-primary":""}" onclick="toggleFbMiss()" title="Facebook cards that couldn't get a picture automatically (restricted/login-gated). Open each and use the extension's Save to grab it.">${impFbMiss?"&#10003; ":"&#128683; "}Couldn't capture${n?" ("+n+")":""}</button>`:""; })()}
       ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
       ${(function(){
         if(batchUI.active) return `<button class="btn btn-primary" id="batchBtn" onclick="${fbAuto?'stopFbAuto()':'cancelBatchCapture()'}">&#9632; ${fbAuto?'Stop auto-capture':'Stop capture'} (${batchUI.done}/${batchUI.total})</button>`;
