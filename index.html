@@ -1759,7 +1759,8 @@ function renderImported(){
             <button onclick="closeTagMenu();autoTag(0)">Tag all ${n}</button>
           </div></div>`:"";})()}
       ${selMode
-        ? `<button class="btn btn-primary" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"}>&#11015; Fetch pictures &amp; info (${selPicks.size})</button>
+        ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Capture the selected cards via the extension — Facebook posts fetch instantly, other sites open &amp; close a tab. Use this to retry the 'Couldn't capture' ones.">&#128247; Capture selected (${selPicks.size})</button>
+           <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
@@ -2303,6 +2304,33 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
   selPicks.clear();
   renderImported();
   toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
+}
+// Capture the SELECTED cards via the real extension pipeline (durable images):
+// Facebook posts resolve instantly via og-fetch (no tab); other sites open & close
+// a tab and get a screenshot + metadata. Routes the picked cards through the same
+// batch driver as Capture missing / Capture Facebook, but scoped to the selection
+// and bypassing the "already attempted" gate (the whole point is to retry them).
+function captureSelected(){
+  if(batchUI.active){ toast("A capture run is already going"); return; }
+  const picks=[...selPicks].map(i=>imported[i]).filter(it=>it && it.url && !it.blocked);
+  if(!picks.length){ toast("Select some cards with a link first"); return; }
+  const seen=new Set();
+  const uniq=picks.filter(it=>{ const k=normalizeUrl(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
+  const items=uniq.slice(0,100).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
+  // stamp dispatched cards (and any url-duplicates) attempted so progress/filters update
+  const dispatched=new Set(items.map(it=>normalizeUrl(it.url)));
+  const at=Date.now();
+  imported.forEach(c=>{ if(c.url && dispatched.has(normalizeUrl(c.url))){ c.lastUpdate=at; if(c.lastResult!=="ok") c.lastResult="pending"; } });
+  save("imported", imported);
+  _batchIgnoreUntil=0;
+  try{
+    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1}));
+  }catch(e){}
+  batchUI={active:true, done:0, total:items.length};
+  selMode=false; selPicks.clear();
+  toast("Capturing "+items.length+" selected card"+(items.length===1?"":"s")+"… Facebook posts fetch instantly; other sites open & close a tab. Stay logged into Facebook."+(uniq.length>100?" (100 max per run)":""), 8000);
+  renderImportedKeepFocus();
 }
 function fmtCardDate(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }catch(e){ return ""; } }
 function impCardHTML(it,idx){
