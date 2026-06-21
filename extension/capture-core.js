@@ -159,22 +159,26 @@
   // measure the MAIN post on this page and hand back its photo + rect. Mirrors the
   // click-driven doCapture flow, but resolves the post itself.
   if (cfg.id === "facebook") {
-    // The MAIN post is the highest article on the page that owns a real photo;
-    // comments are also role="article" but sit BELOW it (and a big comment must
-    // never win). Fall back to the topmost large article when no photo yet.
+    // The MAIN post is the topmost article IN SCOPE. If the permalink opened as a
+    // dialog/lightbox over the home feed, scope to that dialog so we never grab a
+    // feed post behind it (that was capturing random feed photos). Comments are also
+    // role="article" but sit BELOW the post, so topmost-in-scope = the post.
     const findMainPost = function () {
-      const arts = Array.prototype.slice.call(document.querySelectorAll('[role="article"]'))
-        .filter(function (a) { const r = a.getBoundingClientRect(); return r.width >= 180 && r.height >= 100; });
-      if (!arts.length) return null;
-      const byTop = function (a, b) { return a.getBoundingClientRect().top - b.getBoundingClientRect().top; };
-      const withPhoto = arts.filter(function (a) { return !!U.largestImg(a, cfg.imageCdn); }).sort(byTop);
-      if (withPhoto.length) return withPhoto[0];          // topmost article that actually has its photo = the post
-      return arts.slice().sort(byTop)[0];                 // none decoded yet → topmost large article (the post sits above comments)
+      const dlgs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"]'))
+        .filter(function (d) { const r = d.getBoundingClientRect(); return r.width >= 300 && r.height >= 300 && d.querySelector('[role="article"]'); })
+        .sort(function (a, b) { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return (rb.width * rb.height) - (ra.width * ra.height); });
+      const scope = dlgs[0] || document;
+      const arts = Array.prototype.slice.call(scope.querySelectorAll('[role="article"]'))
+        .filter(function (a) { const r = a.getBoundingClientRect(); return r.width >= 180 && r.height >= 100; })
+        .sort(function (a, b) { return a.getBoundingClientRect().top - b.getBoundingClientRect().top; });
+      return arts[0] || null;   // topmost large article in scope (do NOT prefer "with a photo" — that jumps to a feed/comment photo for text/quote posts)
     };
-    // The post's photo URL straight from Facebook's page metadata. This is present
-    // even when the visible <img> is still a loading spinner (a cold-opened deep
-    // permalink often never renders the photo) — so the worker can fetch the REAL
-    // photo by URL without it ever decoding on screen.
+    // true when FB redirected the permalink to the HOME FEED (post unavailable) — the
+    // path is "/" rather than /<user>/posts/, /permalink.php, /photo.php, /watch, /reel…
+    const onHomeFeed = function () { const p = location.pathname || "/"; return p === "/" || p === "" || /^\/home(\.php)?\/?$/.test(p); };
+    const dialogPostPresent = function () { return !!document.querySelector('[role="dialog"] [role="article"]'); };
+    // The post's photo URL from page metadata (og:image) — never a spinner. (Usually
+    // absent in the rendered SPA; captureFbByOg already tried the raw-HTML og first.)
     const metaPhoto = function () {
       try {
         const sels = ['meta[property="og:image"]', 'meta[name="og:image"]', 'meta[property="og:image:url"]', 'meta[property="og:image:secure_url"]', 'link[rel="image_src"]'];
@@ -188,23 +192,21 @@
     };
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
-      // bring the top of the page (the post + its photo) into view so FB lazy-loads
-      // the photo and a crop fallback frames the POST, not the comments below it
-      try { window.scrollTo(0, 0); } catch (e) {}
+      try { window.scrollTo(0, 0); } catch (e) {}   // bring the post into view so FB lazy-loads its photo
       let waited = 0;
-      // Wait up to 18s for the REAL post photo to actually load + decode. A cold
-      // permalink shows a loading SPINNER first; the manual Save works only because
-      // YOU wait until the photo is on screen before clicking. 8s wasn't enough, and
-      // (critically) on timeout we used to CROP the post rect — which captured the
-      // spinner. Now we capture ONLY a real photo, and if none loads we give up
-      // cleanly (no crop) so the card stays a favicon for a true manual Save.
-      const MAX_WAIT = 18000;
+      const MAX_WAIT = 18000;   // wait up to 18s for the REAL photo (a cold post shows a spinner first; manual Save works because you wait)
       (function loop() {
+        // FB sent us to the home feed (post gone) and there's no post dialog → never
+        // grab a feed post; give up cleanly.
+        if (!dialogPostPresent() && onHomeFeed() && waited >= 3000) {
+          console.log("[Interests] autoCaptureFB | home feed, no post dialog — skipping");
+          try { sendResponse({ ok: true, image: "", rect: null, title: "", author: "", text: "", permalink: location.href }); } catch (e) {}
+          return;
+        }
         let post = findMainPost();
-        // og:image (post photo / video thumbnail) is preferred and is never a spinner;
-        // a decoded scontent <img> is the fallback. largestImg already rejects the
-        // spinner (it's not an scontent image), so "" here means "not loaded yet".
-        const img = metaPhoto() || (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+        // Look for the photo ONLY within the post (never document-wide — that grabbed
+        // feed photos). og:image preferred; a decoded scontent <img> is the fallback.
+        const img = metaPhoto() || (post ? U.largestImg(post, cfg.imageCdn) : "");
         if (img) {
           try { U.hoverTimestamps(post); } catch (e) {}
           setTimeout(function () {
@@ -213,11 +215,11 @@
               const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
               const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
               const og = metaPhoto();
-              const decoded = (post ? U.largestImg(post, cfg.imageCdn) : "") || U.largestImg(document, cfg.imageCdn);
+              const decoded = post ? U.largestImg(post, cfg.imageCdn) : "";
               const image = og || decoded;   // og:image wins (real photo/thumbnail); decoded only when no metadata
               console.log("[Interests] autoCaptureFB | og:image:", !!og, "| decoded:", !!decoded, "| using:", (image || "(none)").slice(0, 80));
               sendResponse({
-                ok: true, rect: null, image: image, imgSrc: og ? "og" : (decoded ? "decoded" : ""),   // rect:null → captureFbPost never crops (no spinner)
+                ok: true, rect: null, image: image, imgSrc: og ? "og" : (decoded ? "decoded" : ""),   // real photo → no crop needed
                 title: cfg.title ? cfg.title(ex.author) : (ex.author || "Saved post"),
                 author: ex.author || "", text: (ex && ex.text) || "",
                 permalink: perma || location.href,
@@ -225,13 +227,17 @@
             } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
           }, 350);
         } else if (waited >= MAX_WAIT) {
-          // No real photo after the full wait — DON'T crop (that's the spinner). Skip.
-          console.log("[Interests] autoCaptureFB | no real photo after " + MAX_WAIT + "ms — skipping (no spinner crop)");
+          // No photo in the POST → it's a text/quote post (or the photo never loaded).
+          // Return the POST rect (scoped — no feed) for the worker's stability-crop:
+          // a static text post is kept, an animating spinner is rejected.
           try {
+            if (post && post.isConnected === false) post = findMainPost();
             const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
+            const rect = post ? U.rectOf(post) : null;
+            console.log("[Interests] autoCaptureFB | no photo — post rect for stability-crop:", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
             sendResponse({
-              ok: true, rect: null, image: "", imgSrc: "",
-              title: cfg.title ? cfg.title(ex.author) : "", author: ex.author || "", text: (ex && ex.text) || "",
+              ok: true, image: "", rect: rect, imgSrc: "",
+              title: cfg.title ? cfg.title(ex.author) : (ex.author || ""), author: ex.author || "", text: (ex && ex.text) || "",
               permalink: (post && cfg.findPermalink ? cfg.findPermalink(post, U) : "") || location.href,
             });
           } catch (e) { try { sendResponse({ ok: true, image: "", rect: null }); } catch (e2) {} }

@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.29";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.30";   // stamped into deliveries so the APP console shows which code is actually running
 const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
@@ -611,7 +611,18 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId) {
   let imgData = "", capsrc = "none";
   if (info && info.ok) {
     if (info.image) { imgData = await fetchAsDataUrl(info.image); if (imgData) capsrc = info.imgSrc || "photo"; }   // post photo / video thumbnail (og:image), full-res, durable
-    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) { imgData = await cropScreenshot(tab, info.rect); if (imgData) capsrc = "crop"; }  // fallback: crop the post area
+    if (!imgData && info.rect && info.rect.w > 40 && info.rect.h > 40) {
+      // No photo URL → crop the POST area (e.g. a text/quote post on a gradient). But
+      // a still-loading photo post shows an ANIMATED spinner; crop twice ~1.2s apart
+      // and keep it ONLY if byte-identical (static = a real text post; different =
+      // spinner → reject, leave the card for a manual Save). This is what stops the
+      // gradient-blob spinner from being captured.
+      const cropA = await cropScreenshot(tab, info.rect);
+      await new Promise((r) => setTimeout(r, 1200));
+      const cropB = await cropScreenshot(tab, info.rect);
+      if (cropA && cropB && cropA === cropB) { imgData = cropA; capsrc = "crop"; }
+      else { log("FB crop unstable (animating/spinner) — skipping: " + (cardUrl || tabUrl)); }
+    }
   }
   log("FB capture: " + (cardUrl || tabUrl) + " -> src=" + capsrc + " size=" + (imgData ? Math.round(imgData.length / 1024) + "KB" : "0"));
   if (!imgData) {
