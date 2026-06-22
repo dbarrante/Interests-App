@@ -1,6 +1,6 @@
 const assert = require("assert");
 const { loadFns } = require("./_extract");
-const { pickBackupsToDelete } = loadFns(["pickBackupsToDelete"]);
+const { pickBackupsToDelete, backupCountsMatch } = loadFns(["pickBackupsToDelete", "backupCountsMatch"]);
 
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + e.message); } }
@@ -26,6 +26,17 @@ t("ignores non-matching filenames", () => {
 t("empty / undefined input → []", () => {
   assert.deepStrictEqual(pickBackupsToDelete([], 3), []);
   assert.deepStrictEqual(pickBackupsToDelete(undefined, 3), []);
+});
+
+t("counts equal → true", () => {
+  assert.strictEqual(backupCountsMatch({ imported: 5500, saved: 18, images: 4301 }, { imported: 5500, saved: 18, images: 4301 }), true);
+});
+t("any count differs → false", () => {
+  assert.strictEqual(backupCountsMatch({ imported: 5500, saved: 18, images: 4301 }, { imported: 5500, saved: 18, images: 4300 }), false);
+});
+t("missing operand → false", () => {
+  assert.strictEqual(backupCountsMatch(null, { imported: 1, saved: 1, images: 1 }), false);
+  assert.strictEqual(backupCountsMatch({ imported: 1, saved: 1, images: 1 }, undefined), false);
 });
 
 console.log(pass + " passed, " + fail + " failed");

@@ -829,6 +829,12 @@ function pickBackupsToDelete(names, keep){
     .sort(function(a, b){ return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
   return dated.slice(Math.max(0, keep)).map(function(d){ return d.name; });
 }
+// True when two _counts objects agree on imported/saved/images. Used to verify a
+// freshly-written backup before older ones are rotated away.
+function backupCountsMatch(a, b){
+  if(!a || !b) return false;
+  return (a.imported|0) === (b.imported|0) && (a.saved|0) === (b.saved|0) && (a.images|0) === (b.images|0);
+}
 // keys that are transient extension/runtime state — no point backing these up
 const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
 async function collectBackup(){
