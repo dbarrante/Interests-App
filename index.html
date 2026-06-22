@@ -2695,13 +2695,16 @@ function impCardHTML(it,idx){
   // Emit a placeholder <img data-imgid> and attach the src after render, lazily
   // (attachCardImages, via IntersectionObserver). http(s) thumbs stay inline (tiny).
   const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;   // emit placeholder for any idb card (image is fetched on demand, may not be cached yet)
-  const icon = thumb
-    ? (isIdbImg
-      ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
-      : `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`)
-    : (dom
-      ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
-      : `<div class="ic">${yt?"YT":"IM"}</div>`);
+  // isIdbImg must be checked FIRST — when _imgCache is empty (normal at boot) impThumb
+  // returns null for idb-backed cards, so a thumb-first ternary would skip the placeholder
+  // and fall back to favicon/IM, leaving attachCardImages with no element to fill.
+  const icon = isIdbImg
+    ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+    : (thumb
+      ? `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+      : (dom
+        ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
+        : `<div class="ic">${yt?"YT":"IM"}</div>`));
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
