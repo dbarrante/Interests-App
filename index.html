@@ -625,9 +625,25 @@ async function initImageStore(){
   // Ask the browser to make this origin's storage persistent so it won't evict
   // our IndexedDB images under disk pressure (the cause of vanishing pictures).
   try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().then(p=>console.log("[storage] persistent:",p)); } }catch(e){}
-  _imgCache = await idbAllImgs();
+  // Do NOT load all images into memory — they're fetched on demand (idbGetImg) into
+  // the bounded LRU cache. Only the cheap key list is needed for relink/sweep below.
   const imgKeys = new Set(await idbAllKeys());             // image ids that exist in IndexedDB (cheap, reliable)
   const cacheLoaded = imgKeys.size > 0;                    // blobs exist in the store?
+  _fpMap = await fpAll();                                  // small id->fingerprint map for placeholder detection
+  // ONE-TIME migration: backfill fingerprints for images that predate _fpMap. Loads
+  // all images once (with the progress overlay), then never again.
+  try{
+    if(cacheLoaded && !localStorage.getItem("ia_fp_migrated")){
+      let need=false; for(const it of imported){ if((it.img||"").indexOf("idb:")===0 && !_fpMap[it.id]){ need=true; break; } }
+      if(need){
+        if(typeof showBusyOverlay==="function") showBusyOverlay("Optimizing image index (one time)…");
+        const all = await idbAllImgs();
+        for(const id of Object.keys(all)){ if(!_fpMap[id]){ const fp=imgFp(all[id]); _fpMap[id]=fp; await fpPut(id, fp); } }
+        if(typeof hideBusyOverlay==="function") hideBusyOverlay();
+      }
+      localStorage.setItem("ia_fp_migrated","1");
+    }
+  }catch(e){ console.warn("fp migration failed", e); if(typeof hideBusyOverlay==="function") hideBusyOverlay(); }
   let migrated=0;
   for(const it of imported){
     if(it.img && it.img.indexOf("data:")===0 && it.id){
