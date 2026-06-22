@@ -943,7 +943,8 @@ function renderDurabilityStatus(health){
     "<div>Backup folder: <b>" + folderTxt + "</b></div>" +
     "<div>Storage persistence: <b>" + persistTxt + "</b></div>" +
     (h.quota ? ("<div>Storage used: <b>" + mb(h.usage) + " / " + mb(h.quota) + " MB</b></div>") : "") +
-    "<div>Last full backup: <b>" + last + "</b></div>";
+    "<div>Last full backup: <b>" + last + "</b></div>" +
+    (h.folder !== "connected" ? "<button class=\"btn btn-primary\" style=\"margin-top:8px;padding:6px 14px\" onclick=\"connectFolder()\">&#128193; Connect backup folder</button>" : "");
 }
 // Ctrl+Shift+B = back up now
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
@@ -3247,6 +3248,7 @@ async function connectFolder(){
     if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel = document.getElementById("autoBackup"); if(sel) sel.value = "1"; }
     toast("Connected — saves.json syncing + daily backups on");
     doBackup();   // capture an initial full backup to the folder right away
+    try{ await storageHealthCheck(); }catch(e){}   // refresh the durability status block to "connected" right away
   }catch(e){ /* user cancelled */ }
 }
 async function restoreFolder(){
