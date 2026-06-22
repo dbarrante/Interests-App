@@ -647,7 +647,8 @@ async function initImageStore(){
   let migrated=0;
   for(const it of imported){
     if(it.img && it.img.indexOf("data:")===0 && it.id){
-      _imgCache[it.id]=it.img;
+      const fp=imgFp(it.img); _fpMap[it.id]=fp; fpPut(it.id, fp);
+      cachePut(it.id, it.img);
       await idbPutImg(it.id, it.img);
       it.img="idb:"+it.id;
       migrated++;
@@ -1941,8 +1942,7 @@ function clearFbPlaceholders(silent){
     // Remember this junk image's fingerprint so any future capture that reproduces
     // it is rejected (drainCaptures) — this is what breaks the clear→recapture→same
     // junk loop for gated posts.
-    const data = (g[0] && (g[0].img+"").indexOf("idb:")===0) ? (_imgCache[(g[0].img+"").slice(4)]||"") : "";
-    rememberPhFp(imgFp(data));
+    rememberPhFp((g[0] && g[0].id) ? (_fpMap[g[0].id] || "") : "");   // fp stored at capture time — don't depend on the bounded cache
     for(const it of g){
       setCardImage(it,"");
       if(silent){ delete it.captured; delete it.lastUpdate; delete it.lastResult; }   // pre-batch auto-clear: re-enroll to retry (a re-placeholder is now rejected by fingerprint)
@@ -3538,7 +3538,7 @@ function dupePrimary(members){
     const it = mem.card;
     const img = mem.scope==="saved" ? it.image : it.img;
     let s = 0;
-    if (img && !isBadImg(resolveImg(img))) s += 16;       // has a real picture
+    if (img && (String(img).indexOf("idb:")===0 || !isBadImg(resolveImg(img)))) s += 16;   // has a real picture (an idb capture counts even when not in the bounded cache)
     if (it.desc && it.desc.length > 8) s += 8;             // has a description
     if (it.tags && it.tags.length) s += 4;                 // has tags
     if (it.sdate) s += 2;                                  // has a real saved date
@@ -3594,6 +3594,7 @@ let _dupeGroups = [];
 function dupeThumb(mem){
   const it = mem.card;
   const v = mem.scope==="saved" ? it.image : it.img;
+  if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
   const src = resolveImg(v);
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy">`;
   return `<div class="ph"></div>`;
@@ -3627,6 +3628,7 @@ function renderDupeModal(){
     </div>
     <div class="dupe-foot"><button class="btn btn-ghost" onclick="closeDupeReview()">Cancel</button>
       <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
+  attachCardImages();   // lazy-load the idb thumbnails in the modal (bounded cache)
 }
 function dupeSetKeep(gi, id){
   if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
@@ -3639,7 +3641,7 @@ function openDupeReview(groups){
   document.getElementById("dupeModal").classList.add("open");
 }
 function closeDupeReview(){ document.getElementById("dupeModal").classList.remove("open"); _dupeGroups = []; }
-function applyDupeRemoval(){
+async function applyDupeRemoval(){
   snapshotBeforeDestructive();
   const checked = new Set(Array.prototype.map.call(
     document.querySelectorAll('#dupeBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
@@ -3656,8 +3658,13 @@ function applyDupeRemoval(){
       const k = keep.card;
       // merge best fields into the kept card
       const keepImg = keepIsSaved ? k.image : k.img;
-      if (isBadImg(resolveImg(keepImg)) && !isBadImg(resolveImg(src))){
-        const data = resolveImg(src);
+      const keepHasImg = keepImg && (String(keepImg).indexOf("idb:")===0 || !isBadImg(resolveImg(keepImg)));
+      const srcIsIdb = src && String(src).indexOf("idb:")===0;
+      const srcHasImg = src && (srcIsIdb || !isBadImg(resolveImg(src)));
+      if (!keepHasImg && srcHasImg){
+        // copy the good image into the kept card — fetch the bytes on demand for idb
+        // (the bounded cache may not hold it) so a good-but-uncached image is never lost
+        const data = srcIsIdb ? (_imgCache[mem.card.id] || await idbGetImg(mem.card.id)) : resolveImg(src);
         if (data){ keepIsSaved ? setSavedImage(k, data) : setCardImage(k, data); }
       }
       if (!k.desc && mem.card.desc) k.desc = mem.card.desc;
@@ -3666,8 +3673,8 @@ function applyDupeRemoval(){
       if (mem.card.liked) k.liked = true;
       if (mem.card.captured && (!k.captured || mem.card.captured < k.captured)) k.captured = mem.card.captured;
       if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
-      // delete the removed card's own (now orphaned) image
-      if (src && (src+"").indexOf("idb:")===0){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; }
+      // delete the removed card's own (now orphaned) image + its fingerprint
+      if (srcIsIdb){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; fpDel(mem.card.id); } }
       (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
       removed++;
     }
