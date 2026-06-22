@@ -2727,6 +2727,9 @@ function impEdit(idx){
   if(!it.id){ it.id=newId(); save("imported",imported); }
   _editIdx = idx;
   _editImg = resolveImg(it.img);
+  if(!_editImg && it.img && String(it.img).indexOf("idb:")===0){
+    idbGetImg(String(it.img).slice(4)).then(function(d){ if(d){ _editImg=d; const el=document.getElementById("editImgPreview"); if(el) el.src=d; edRenderPrev(); } });
+  }
   // suggest existing categories/tags to add with one click
   const counts={};
   imported.forEach(i=>(i.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));
