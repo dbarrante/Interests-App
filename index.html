@@ -2035,16 +2035,18 @@ let _imgObserver=null;
 // max-string-length crash) and avoids decoding thousands of images at once.
 function attachCardImages(){
   try{
-    const grid=document.querySelector("#view-imported .imp-grid");
-    if(!grid) return;
-    const imgs=grid.querySelectorAll("img.th[data-imgid]");
-    if(!imgs.length) return;
+    const imgs = document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
+    if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
     if(_imgObserver) _imgObserver.disconnect();
-    const load=im=>{ if(im.getAttribute("src")) return; const d=_imgCache[im.getAttribute("data-imgid")]; if(d) im.src=d; };
+    const load = im=>{
+      if(im.getAttribute("src")) return;
+      const idbId = im.getAttribute("data-imgid");      // Imported card: image keyed by card id
+      if(idbId){ const d=_imgCache[idbId]; if(d) im.src=d; return; }
+      const sid = im.getAttribute("data-imgsrc");        // Feed/Saved card: resolve the item's image
+      if(sid){ const it=findItem(sid); let s=it&&it.image; if(s && String(s).indexOf("idb:")===0) s=_imgCache[String(s).slice(4)]||""; if(s) im.src=s; else nextImg(im, sid); }
+    };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
-    _imgObserver=new IntersectionObserver((entries,obs)=>{
-      for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } }
-    },{root:null,rootMargin:"800px 0px"});
+    _imgObserver=new IntersectionObserver((entries,obs)=>{ for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } } },{root:null,rootMargin:"800px 0px"});
     imgs.forEach(im=>_imgObserver.observe(im));
   }catch(e){ console.warn("attachCardImages failed",e); }
 }
