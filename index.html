@@ -826,7 +826,7 @@ function resetLearning(){
 // by the embedded date). Pure — only touches the exact daily-backup name pattern,
 // so snapshots / saves.json / before-restore copies are never selected.
 function pickBackupsToDelete(names, keep){
-  var re = /^interests-backup-(\d{4}-\d{2}-\d{2})\.json$/;
+  var re = /^interests-backup-(\d{4}-\d{2}-\d{2})(\.json)?$/;   // matches a backup FOLDER (new) or a legacy single-file .json
   var dated = (names || [])
     .map(function(n){ var m = re.exec(n); return m ? { name: n, date: m[1] } : null; })
     .filter(Boolean)
@@ -841,17 +841,62 @@ function backupCountsMatch(a, b){
 }
 // keys that are transient extension/runtime state — no point backing these up
 const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
-async function collectBackup(){
+// NOTE: the old whole-archive collectBackup() (one object with all images, JSON
+// .stringify'd into a single string) was removed — it hit JS's ~512 MB string limit
+// on large libraries (RangeError). Backups now shard images to a folder; see
+// writeFullBackupDir. collectBackupMeta() is the small localStorage-only part.
+// Just the localStorage side (no images) — small, always JSON-stringifiable.
+function collectBackupMeta(){
   const keys={};
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);
     if(!k || !k.startsWith("ia_") || BACKUP_SKIP.includes(k)) continue;
-    keys[k]=localStorage.getItem(k);   // raw stored strings, preserved exactly
+    keys[k]=localStorage.getItem(k);
   }
-  const images = await idbAllImgs();   // card screenshots live in IndexedDB now
-  return { _app:"interests-app", _version:2, _exported:new Date().toISOString(),
-           _counts:{imported:imported.length, saved:saved.length, likes:likes.length, images:Object.keys(images).length},
-           keys, images };
+  return { _app:"interests-app", _version:3, _exported:new Date().toISOString(),
+           _counts:{imported:imported.length, saved:saved.length, likes:likes.length, images:0}, keys };
+}
+// ~250 MB of image data per shard so JSON.stringify stays well under JS's ~512 MB
+// single-string ceiling (the limit that made the old whole-archive backup fail).
+const SHARD_MAX = 250*1048576;
+// Write a FULL backup as a per-date FOLDER: data.json (settings/cards, small) + image
+// shards img-0.json…img-N.json (each a JSON map of id→dataURL, each under the limit).
+// Never builds one giant string, so it scales to any archive size. Returns {counts,shards}.
+async function writeFullBackupDir(dirName){
+  if(!(await folderReady())) return null;
+  const dir = await dirHandle.getDirectoryHandle(dirName, {create:true});
+  // clear any files from a prior same-day backup so stale shards can't linger
+  try{ for await (const [n,h] of dir.entries()){ if(h.kind==="file" && /^(data\.json|img-\d+\.json)$/.test(n)) await dir.removeEntry(n); } }catch(e){}
+  const imgs = await idbAllImgs();
+  const ids = Object.keys(imgs);
+  const meta = collectBackupMeta();
+  meta._counts.images = ids.length;
+  let shard={}, bytes=0, shardCount=0;
+  const flush = async ()=>{
+    if(!Object.keys(shard).length) return;
+    const fh = await dir.getFileHandle("img-"+shardCount+".json", {create:true});
+    const w = await fh.createWritable(); await w.write(JSON.stringify(shard)); await w.close();
+    shardCount++; shard={}; bytes=0;
+  };
+  for(const id of ids){ const v=imgs[id]||""; shard[id]=v; bytes += v.length + id.length + 8; if(bytes>=SHARD_MAX) await flush(); }
+  await flush();
+  meta.shards = shardCount;
+  // data.json LAST: its presence + matching shard count signals a complete write
+  const dfh = await dir.getFileHandle("data.json", {create:true});
+  const dw = await dfh.createWritable(); await dw.write(JSON.stringify(meta)); await dw.close();
+  return { counts: meta._counts, shards: shardCount };
+}
+// Verify a folder backup without parsing the whole thing: data.json reads, counts
+// match, and the expected number of shard files are present.
+async function verifyBackupDir(dirName, expectedCounts){
+  if(!(await folderReady())) return false;
+  try{
+    const dir = await dirHandle.getDirectoryHandle(dirName);
+    const meta = JSON.parse(await (await (await dir.getFileHandle("data.json")).getFile()).text());
+    if(!backupCountsMatch(meta._counts, expectedCounts)) return false;
+    let shardFiles=0; for await (const [n,h] of dir.entries()){ if(h.kind==="file" && /^img-\d+\.json$/.test(n)) shardFiles++; }
+    return shardFiles === (meta.shards||0);
+  }catch(e){ console.warn("verifyBackupDir failed", e); return false; }
 }
 function downloadJSON(obj, name){
   const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
@@ -870,24 +915,26 @@ function markBackupDone(counts, verified, where, name){
 // Shared backup core: write a full, image-bearing backup to the connected folder
 // (rotated + verified) if connected, else download it. Returns true on success.
 async function doBackup(){
-  let data;
-  try{ data = await collectBackup(); }catch(e){ console.warn("collectBackup failed", e); toast("Backup failed to assemble data"); return false; }
-  const name = "interests-backup-" + new Date().toISOString().slice(0,10) + ".json";
+  const dateName = "interests-backup-" + new Date().toISOString().slice(0,10);
   if(await folderReady()){
-    const wrote = await writeFileToFolder(name, JSON.stringify(data));
-    const ok = wrote && await verifyBackup(name, data._counts);
+    let res;
+    try{ res = await writeFullBackupDir(dateName); }catch(e){ console.warn("writeFullBackupDir failed", e); }
+    const ok = res && await verifyBackupDir(dateName, res.counts);
     if(ok){
       await rotateBackups(BACKUP_KEEP);
-      markBackupDone(data._counts, true, "folder", name);
-      toast("Backup saved + verified to your folder ("+data._counts.imported+" imported, "+data._counts.images+" images)", 6000);
+      markBackupDone(res.counts, true, "folder", dateName);
+      toast("Backup saved + verified to your folder ("+res.counts.imported+" imported, "+res.counts.images+" images, "+res.shards+" shard"+(res.shards===1?"":"s")+")", 6000);
       return true;
     }
-    toast("⚠ Backup write/verify failed — kept your older backups. Check the folder connection.", 8000);
+    toast("⚠ Backup write/verify failed — kept your older backups. Check the folder connection / disk space.", 8000);
     return false;
   }
-  try{ downloadJSON(data, name); }catch(e){ console.warn("download backup failed", e); return false; }
-  markBackupDone(data._counts, false, "download", name);
-  toast("Backup downloaded. Connect a folder (Settings → Backup) for automatic, rotated, offsite backups.", 8000);
+  // No folder: a single-file download of the images would exceed JS's ~512 MB string
+  // limit at large archives, so download a refs-only backup (no images) + nudge.
+  try{ const meta = collectBackupMeta(); meta._note = "refs only — connect a folder for a full image backup"; downloadJSON(meta, dateName + "-refs.json"); }
+  catch(e){ console.warn("refs download failed", e); return false; }
+  markBackupDone({imported:imported.length, saved:saved.length, images:0}, false, "download (refs only)", dateName);
+  toast("No folder connected — downloaded a refs-only backup (no images). Use ‘Connect backup folder’ for a full, image-bearing backup.", 9000);
   return true;
 }
 async function backupNow(){ return doBackup(); }   // manual: button + Ctrl+Shift+B (bypasses the interval)
@@ -951,33 +998,53 @@ document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKe
 // Restore core, shared by the file picker and the folder restore. Validates,
 // saves a safety copy (folder if connected, else download), wipes ia_*, writes
 // keys, restores IndexedDB images, reloads.
-async function applyRestore(data, sourceLabel){
-  const keys = data && data.keys;
-  if(!keys || typeof keys !== "object" || !Object.keys(keys).length){ toast("This file isn't an Interests backup"); return false; }
+// Restore core: validate → confirm → safety copy → wipe ia_* → write keys → restore
+// images via the supplied async provider (which differs for legacy file vs folder).
+async function doRestoreCore(keys, exported, counts, label, putAllImages){
+  if(!keys || typeof keys !== "object" || !Object.keys(keys).length){ toast("This isn't an Interests backup"); return false; }
   const n = Object.keys(keys).length;
-  const when = data._exported ? (" from " + data._exported.slice(0,10)) : "";
-  const cnt = data._counts ? (" (" + data._counts.imported + " imported, " + data._counts.saved + " saved)") : "";
-  if(!confirm("Restore this backup" + when + cnt + (sourceLabel ? ("\n[" + sourceLabel + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
-  // 1. safety copy of current state (folder if connected, else download)
+  const when = exported ? (" from " + exported.slice(0,10)) : "";
+  const cnt = counts ? (" (" + counts.imported + " imported, " + counts.saved + " saved)") : "";
+  if(!confirm("Restore this backup" + when + cnt + (label ? ("\n[" + label + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
+  // safety copy of current state (full folder backup if connected, else refs-only download)
   try{
-    const safety = await collectBackup();
-    const sname = "interests-backup-before-restore-" + Date.now() + ".json";
-    if(await folderReady()) await writeFileToFolder(sname, JSON.stringify(safety));
-    else downloadJSON(safety, sname);
+    if(await folderReady()) await writeFullBackupDir("interests-backup-before-restore-" + new Date().toISOString().slice(0,10));
+    else { const m = collectBackupMeta(); m._note = "refs only (pre-restore safety, no folder)"; downloadJSON(m, "interests-backup-before-restore-" + Date.now() + "-refs.json"); }
   }catch(e){}
-  // 2. wipe + 3. write keys back verbatim
+  // wipe + write keys back verbatim
   try{
     const existing = [];
     for(let i=0;i<localStorage.length;i++){ const k = localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
     existing.forEach(function(k){ localStorage.removeItem(k); });
     Object.keys(keys).forEach(function(k){ if(k.startsWith("ia_")){ const v = keys[k]; localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } });
   }catch(e){ toast("Restore failed: " + e.message + " — data may exceed this browser's storage limit"); return false; }
-  // 4. restore card images into IndexedDB
-  const images = data.images || {};
-  for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); }catch(e){} }
-  toast("Restored " + n + " data sets + " + Object.keys(images).length + " images — reloading…");
+  let imgCount = 0; try{ imgCount = await putAllImages(); }catch(e){ console.warn("image restore failed", e); }
+  toast("Restored " + n + " data sets + " + imgCount + " images — reloading…");
   setTimeout(function(){ location.reload(); }, 1000);
   return true;
+}
+// Legacy single-file backup (images inline under data.images).
+async function applyRestore(data, label){
+  return doRestoreCore(data && data.keys, data && data._exported, data && data._counts, label, async function(){
+    const images = (data && data.images) || {}; let c = 0;
+    for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); c++; }catch(e){} }
+    return c;
+  });
+}
+// New folder backup (data.json + img-N.json shards).
+async function restoreFromDir(name, label){
+  if(!(await folderReady())){ toast("Connect your backup folder first."); return false; }
+  let meta, dir;
+  try{ dir = await dirHandle.getDirectoryHandle(name); meta = JSON.parse(await (await (await dir.getFileHandle("data.json")).getFile()).text()); }
+  catch(e){ toast("Couldn't read backup " + name); return false; }
+  return doRestoreCore(meta.keys, meta._exported, meta._counts, label || name, async function(){
+    let c = 0; const shards = meta.shards || 0;
+    for(let i=0;i<shards;i++){
+      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await idbPutImg(id, obj[id]); c++; }catch(e){} } }
+      catch(e){ console.warn("shard "+i+" restore failed", e); }
+    }
+    return c;
+  });
 }
 function restoreData(ev){
   const file = ev.target.files && ev.target.files[0]; if(!file) return;
@@ -996,23 +1063,21 @@ async function restoreLatest(){
   const list = await listFolderBackups();
   if(!list.length){ toast("No backups found in the connected folder."); return; }
   const newest = list[0];
-  let data;
-  try{ const fh = await dirHandle.getFileHandle(newest.name); const f = await fh.getFile(); data = JSON.parse(await f.text()); }
-  catch(e){ toast("Couldn't read " + newest.name); return; }
-  await applyRestore(data, newest.name);
+  if(newest.dir){ await restoreFromDir(newest.name, newest.name); return; }
+  try{ const data = JSON.parse(await (await (await dirHandle.getFileHandle(newest.name)).getFile()).text()); await applyRestore(data, newest.name); }
+  catch(e){ toast("Couldn't read " + newest.name); }
 }
-async function restoreFromList(name){
-  let data;
-  try{ const fh = await dirHandle.getFileHandle(name); const f = await fh.getFile(); data = JSON.parse(await f.text()); }
-  catch(e){ toast("Couldn't read " + name); return; }
-  await applyRestore(data, name);
+async function restoreFromList(name, isDir){
+  if(isDir === "1"){ await restoreFromDir(name, name); return; }
+  try{ const data = JSON.parse(await (await (await dirHandle.getFileHandle(name)).getFile()).text()); await applyRestore(data, name); }
+  catch(e){ toast("Couldn't read " + name); }
 }
 async function renderBackupList(){
   const el = document.getElementById("backupList"); if(!el) return;
   const list = await listFolderBackups();
   if(!list.length){ el.innerHTML = ""; return; }
   el.innerHTML = "<div class=\"hint\" style=\"margin-top:10px\">Backups in your folder:</div>" +
-    list.map(function(b){ return "<div style=\"margin:4px 0\"><b>" + b.date + "</b> <button class=\"btn btn-ghost\" style=\"padding:3px 10px;margin-left:8px\" onclick=\"restoreFromList('" + b.name + "')\">Restore</button></div>"; }).join("");
+    list.map(function(b){ return "<div style=\"margin:4px 0\"><b>" + b.date + "</b> <button class=\"btn btn-ghost\" style=\"padding:3px 10px;margin-left:8px\" onclick=\"restoreFromList('" + b.name + "','" + (b.dir?"1":"0") + "')\">Restore</button></div>"; }).join("");
 }
 
 /* ============ settings ui ============ */
@@ -3312,8 +3377,8 @@ async function listFolderBackups(){
   const out = [];
   try{
     for await (const [name, h] of dirHandle.entries()){
-      if(h.kind === "file" && /^interests-backup-\d{4}-\d{2}-\d{2}\.json$/.test(name)){
-        out.push({ name: name, date: name.slice(17, 27) });   // "interests-backup-" is 17 chars
+      if(/^interests-backup-\d{4}-\d{2}-\d{2}(\.json)?$/.test(name)){
+        out.push({ name: name, date: name.slice(17, 27), dir: h.kind === "directory" });   // "interests-backup-" is 17 chars
       }
     }
   }catch(e){ console.warn("listFolderBackups failed", e); }
@@ -3324,9 +3389,9 @@ async function rotateBackups(keep){
   if(!(await folderReady())) return;
   keep = (keep == null) ? BACKUP_KEEP : keep;
   const names = [];
-  try{ for await (const [name, h] of dirHandle.entries()){ if(h.kind === "file") names.push(name); } }
+  try{ for await (const [name, h] of dirHandle.entries()){ names.push(name); } }   // folders (new) + legacy files
   catch(e){ return; }
-  for(const n of pickBackupsToDelete(names, keep)){ try{ await dirHandle.removeEntry(n); }catch(e){} }
+  for(const n of pickBackupsToDelete(names, keep)){ try{ await dirHandle.removeEntry(n, {recursive:true}); }catch(e){} }   // recursive: removes a backup folder + its shards
 }
 async function verifyBackup(name, expectedCounts){
   if(!(await folderReady())) return false;

@@ -23,6 +23,18 @@ t("ignores non-matching filenames", () => {
   const names = ["saves.json", "interests-snapshot-latest.json", "interests-backup-before-restore-123.json", "interests-backup-2026-06-21.json"];
   assert.deepStrictEqual(pickBackupsToDelete(names, 3), []);
 });
+t("matches backup FOLDERS (no .json) and mixes with legacy files", () => {
+  const names = [
+    "interests-backup-2026-06-22",        // new folder
+    "interests-backup-2026-06-21",        // new folder
+    "interests-backup-2026-06-20.json",   // legacy file
+    "interests-backup-2026-06-19",        // new folder
+    "interests-snapshot-latest.json",     // not a dated backup
+    "interests-backup-before-restore-2026-06-22", // pre-restore safety, not rotated
+  ];
+  const del = pickBackupsToDelete(names, 2).sort();
+  assert.deepStrictEqual(del, ["interests-backup-2026-06-19", "interests-backup-2026-06-20.json"]);
+});
 t("empty / undefined input → []", () => {
   assert.deepStrictEqual(pickBackupsToDelete([], 3), []);
   assert.deepStrictEqual(pickBackupsToDelete(undefined, 3), []);
