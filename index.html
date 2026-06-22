@@ -445,6 +445,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
         <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
         <span class="hint" id="backupInfo" style="margin-left:10px"></span>
+        <div id="durStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
         <label style="margin-top:16px;display:block">Auto-backup</label>
         <select id="autoBackup" style="width:auto">
           <option value="0">Off</option>
@@ -741,20 +742,10 @@ function cardHTML(item, mode){
   const chain = imageChain(item);
   imgChains[id] = chain.slice(1);
   const first = chain[0];
-  // Big base64 data: URLs (idb-resolved images, or inline saved-clip images) must NOT
-  // be inlined into the joined grid HTML — thousands of them overflow JS's max string
-  // length (RangeError: Invalid string length — same bug fixed in renderImported). Emit
-  // a src-less placeholder and fill it in after render, lazily (attachCardImages, via an
-  // IntersectionObserver, resolves the data URL from findItem(id).image). http(s) thumbs
-  // and screenshot proxies are tiny — keep them inline so the nextImg fallback is intact.
-  const bigData = first && first.indexOf("data:")===0;
-  const imgAttrs = `loading="lazy" data-grad="${grad}" data-fav="${esc(fav)}" data-dom="${esc(dom)}" onerror="nextImg(this,'${id}')" onload="mshotsRetry(this)"`;
-  const imgTag = bigData
-    ? `<img data-imgsrc="${id}" ${imgAttrs}>`
-    : `<img src="${esc(first)}" ${imgAttrs}>`;
   return `<div class="card" id="card-${id}">
     <a class="thumb" onclick="openItem('${id}','${mode}')" title="Open article">
-      ${first?imgTag
+      ${first?`<img src="${esc(first)}" loading="lazy" data-grad="${grad}" data-fav="${esc(fav)}" data-dom="${esc(dom)}"
+                onerror="nextImg(this,'${id}')" onload="mshotsRetry(this)">`
              :`<div class="ph" style="background:linear-gradient(135deg,${grad})">${fav?`<img src="${esc(fav)}">`:""}${esc(dom||"idea")}</div>`}
     </a>
     <div class="body">
@@ -777,7 +768,6 @@ function renderFeed(){
   grid.className = gridClass();
   const list = applyFilter(feed);
   grid.innerHTML = list.map(i=>cardHTML(i,"feed")).join("");
-  attachCardImages();
   const empty = document.getElementById("feedEmpty");
   if(feed.length && !list.length){ empty.innerHTML = `<div class="empty"><h2>Nothing here right now</h2><p>No current ideas in this category — hit <b>New ideas</b> or raise its importance in Settings.</p></div>`; }
   else if(feed.length){ empty.innerHTML=""; }
@@ -796,7 +786,6 @@ function renderSaved(){
   const g = document.getElementById("savedGrid");
   g.className = gridClass();
   g.innerHTML = list.map(i=>cardHTML(i,"saved")).join("");
-  attachCardImages();
   document.getElementById("savedEmpty").innerHTML = list.length?"":`<div class="empty"><h2>Nothing saved${filterCat?" in this category":" yet"}</h2><p>Save items from your feed and they collect here — and every save teaches the AI what to bring you next.</p></div>`;
 }
 
@@ -907,6 +896,54 @@ async function maybeAutoBackup(){
   let last = 0; try{ last = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
   if(Date.now() - last < days*86400000) return;
   await doBackup();
+}
+async function storageHealthCheck(){
+  let persisted = null, usage = 0, quota = 0;
+  try{
+    if(navigator.storage && navigator.storage.persisted){
+      persisted = await navigator.storage.persisted();
+      if(!persisted && navigator.storage.persist){ persisted = await navigator.storage.persist(); }
+    }
+  }catch(e){}
+  try{ if(navigator.storage && navigator.storage.estimate){ const est = await navigator.storage.estimate(); usage = est.usage || 0; quota = est.quota || 0; } }catch(e){}
+  let folder = "none";
+  if(dirHandle){ folder = (await folderReady()) ? "connected" : "lapsed"; }
+  let lastBackup = 0; try{ lastBackup = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
+  const health = { persisted: persisted, usage: usage, quota: quota, folder: folder, lastBackup: lastBackup, ts: Date.now() };
+  try{ localStorage.setItem("ia_health", JSON.stringify(health)); }catch(e){}
+  const days = +S.autoBackup || 0;
+  const stale = days && lastBackup && (Date.now() - lastBackup > (days + 1) * 86400000);
+  const atRisk = (folder === "lapsed") || (folder === "none" && days) || (persisted === false && (!lastBackup || stale));
+  if(atRisk) showDurabilityBanner(folder);
+  renderDurabilityStatus(health);
+  return health;
+}
+function showDurabilityBanner(folder){
+  if(document.getElementById("durBanner")) return;
+  const b = document.createElement("div");
+  b.className = "banner"; b.id = "durBanner";
+  const msg = folder === "lapsed"
+    ? "⚠ Automatic backups are paused — reconnect your backup folder."
+    : "⚠ No backup folder connected — your data lives only in this browser.";
+  b.innerHTML = "<span>" + msg + "</span><button class=\"btn btn-primary\" style=\"padding:6px 14px\">Connect folder</button>";
+  b.querySelector("button").onclick = function(){ connectFolder(); b.remove(); };
+  const main = document.querySelector("main"); if(main) main.prepend(b);
+}
+function renderDurabilityStatus(health){
+  const el = document.getElementById("durStatus"); if(!el) return;
+  let h = health;
+  if(!h){ try{ h = JSON.parse(localStorage.getItem("ia_health") || "null"); }catch(e){} }
+  h = h || { folder:"none", persisted:null, usage:0, quota:0 };
+  const mb = function(n){ return Math.round((n||0)/1048576); };
+  let last = "none yet";
+  try{ const lb = JSON.parse(localStorage.getItem("ia_backup_last") || "null"); if(lb) last = new Date(lb.ts).toLocaleString() + " · " + lb.counts.imported + " imported, " + lb.counts.images + " images" + (lb.verified ? " · ✓ verified" : "") + " (" + lb.where + ")"; }catch(e){}
+  const folderTxt = h.folder === "connected" ? "✓ connected" : (h.folder === "lapsed" ? "⚠ reconnect needed" : "not connected");
+  const persistTxt = h.persisted === true ? "✓ granted" : (h.persisted === false ? "⚠ not granted (eviction possible)" : "unknown");
+  el.innerHTML =
+    "<div>Backup folder: <b>" + folderTxt + "</b></div>" +
+    "<div>Storage persistence: <b>" + persistTxt + "</b></div>" +
+    (h.quota ? ("<div>Storage used: <b>" + mb(h.usage) + " / " + mb(h.quota) + " MB</b></div>") : "") +
+    "<div>Last full backup: <b>" + last + "</b></div>";
 }
 // Ctrl+Shift+B = back up now
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
@@ -1748,6 +1785,7 @@ function fbPlaceholderGroups(minCount){
 }
 function fbPlaceholderCount(){ let n=0; for(const g of fbPlaceholderGroups(2)) n+=g.length; return n; }
 function clearFbPlaceholders(silent){
+  if(!silent) snapshotBeforeDestructive();
   // A spinner/placeholder is byte-identical across many cards (real photos are
   // unique). silent=auto (from startFbCapture): only BIG groups (>=5) so we never
   // clear+re-capture coincidental 2–4x reposts in a loop. Manual button: aggressive (>=2).
@@ -1900,30 +1938,17 @@ function renderImported(){
   requestAnimationFrame(setStickyOffsets);
 }
 let _imgObserver=null;
-// Attach big image data URLs to their <img> AFTER render, and only as they near the
-// viewport — keeps the data URLs out of the giant joined HTML string (avoids JS's
-// max-string-length crash) and avoids decoding thousands of images at once. Serves both
-// grids: imported cards (img.th[data-imgid], resolved straight from _imgCache) and
-// feed/saved cards (img[data-imgsrc], resolved from findItem(id).image — which may be an
-// idb: ref or an inline data: URL). Scans the whole document so the single shared
-// observer covers every current placeholder regardless of which render last ran.
+// Attach big idb image data URLs to their <img> AFTER render, and only as they near
+// the viewport — keeps the data URLs out of the giant HTML string (avoids JS's
+// max-string-length crash) and avoids decoding thousands of images at once.
 function attachCardImages(){
   try{
-    const imgs=document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
-    if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
+    const grid=document.querySelector("#view-imported .imp-grid");
+    if(!grid) return;
+    const imgs=grid.querySelectorAll("img.th[data-imgid]");
+    if(!imgs.length) return;
     if(_imgObserver) _imgObserver.disconnect();
-    const load=im=>{
-      if(im.getAttribute("src")) return;
-      const idbKey=im.getAttribute("data-imgid");
-      let d="";
-      if(idbKey!=null){ d=_imgCache[idbKey]||""; }
-      else{
-        const it=findItem(im.getAttribute("data-imgsrc"));
-        const ref=it&&it.image;
-        d = ref ? (ref.indexOf("idb:")===0 ? (_imgCache[ref.slice(4)]||"") : ref) : "";
-      }
-      if(d) im.src=d;
-    };
+    const load=im=>{ if(im.getAttribute("src")) return; const d=_imgCache[im.getAttribute("data-imgid")]; if(d) im.src=d; };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
     _imgObserver=new IntersectionObserver((entries,obs)=>{
       for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } }
@@ -3042,6 +3067,7 @@ function pollBatchProgress(){
   }
 }
 function groomNoLink(){
+  snapshotBeforeDestructive();
   const nolink=imported.filter(i=>!i.url);
   if(!nolink.length){ toast("No link-less cards to remove"); return; }
   if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
@@ -3309,6 +3335,15 @@ async function verifyBackup(name, expectedCounts){
     return backupCountsMatch(data._counts, expectedCounts);
   }catch(e){ console.warn("verifyBackup failed", e); return false; }
 }
+// Capture the CURRENT card lists (refs-only, no images) to a rolling file BEFORE a
+// bulk-destructive op, so a mistaken removal is recoverable. Captures synchronously
+// (so the caller's mutation can't race it), writes async/fire-and-forget.
+function snapshotBeforeDestructive(){
+  let text;
+  try{ text = JSON.stringify({ updated:new Date().toISOString(), _snapshot:true, saved:saved, hidden:hidden, clicks:clicks, likes:likes, imported:imported, about:S.about, interests:S.interests, weights:S.weights }, null, 2); }
+  catch(e){ return; }
+  writeFileToFolder("interests-snapshot-latest.json", text);   // fire-and-forget; folderReady checked inside
+}
 
 /* ============ extension capture drain ============ */
 // images from external screenshot proxies are unreliable (blocked sites,
@@ -3450,6 +3485,7 @@ function openDupeReview(groups){
 }
 function closeDupeReview(){ document.getElementById("dupeModal").classList.remove("open"); _dupeGroups = []; }
 function applyDupeRemoval(){
+  snapshotBeforeDestructive();
   const checked = new Set(Array.prototype.map.call(
     document.querySelectorAll('#dupeBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
   if (!checked.size){ toast("Nothing selected to remove"); return; }
