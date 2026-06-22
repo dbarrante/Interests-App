@@ -912,14 +912,32 @@ function markBackupDone(counts, verified, where, name){
   if(info) info.textContent = "Last backup: "+counts.imported+" imported, "+counts.saved+" saved, "+counts.images+" images"+(verified?" ✓ verified":"")+" ("+where+")";
   if(typeof renderDurabilityStatus === "function"){ try{ renderDurabilityStatus(); }catch(e){} }
 }
+// Blocking progress overlay for long backup/restore work (so it never looks frozen).
+function showBusyOverlay(msg){
+  let o = document.getElementById("busyOverlay");
+  if(!o){
+    o = document.createElement("div"); o.id = "busyOverlay";
+    o.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center";
+    o.innerHTML = '<div style="background:var(--card,#26221f);color:#fff;padding:24px 30px;border-radius:12px;max-width:400px;text-align:center;font-size:15px;box-shadow:0 8px 30px rgba(0,0,0,.45)"><span class="spin" style="display:inline-block;width:26px;height:26px;border-color:rgba(255,255,255,.25);border-top-color:#fff;margin-bottom:12px"></span><div id="busyMsg"></div><div class="hint" style="margin-top:8px;opacity:.8">Please leave this tab open.</div></div>';
+    document.body.appendChild(o);
+  }
+  const m = o.querySelector("#busyMsg"); if(m) m.textContent = msg || "Working…";
+  o.style.display = "flex";
+}
+function updateBusyOverlay(msg){ const m = document.getElementById("busyMsg"); if(m) m.textContent = msg; }
+function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if(o) o.remove(); }
 // Shared backup core: write a full, image-bearing backup to the connected folder
 // (rotated + verified) if connected, else download it. Returns true on success.
-async function doBackup(){
+// manual=true shows the progress overlay (auto-backups stay silent/non-blocking).
+async function doBackup(manual){
   const dateName = "interests-backup-" + new Date().toISOString().slice(0,10);
   if(await folderReady()){
+    if(manual) showBusyOverlay("Backing up — writing image shards to your folder…");
     let res;
     try{ res = await writeFullBackupDir(dateName); }catch(e){ console.warn("writeFullBackupDir failed", e); }
+    if(manual) updateBusyOverlay("Verifying backup…");
     const ok = res && await verifyBackupDir(dateName, res.counts);
+    if(manual) hideBusyOverlay();
     if(ok){
       await rotateBackups(BACKUP_KEEP);
       markBackupDone(res.counts, true, "folder", dateName);
@@ -937,7 +955,7 @@ async function doBackup(){
   toast("No folder connected — downloaded a refs-only backup (no images). Use ‘Connect backup folder’ for a full, image-bearing backup.", 9000);
   return true;
 }
-async function backupNow(){ return doBackup(); }   // manual: button + Ctrl+Shift+B (bypasses the interval)
+async function backupNow(){ return doBackup(true); }   // manual: button + Ctrl+Shift+B (bypasses the interval; shows progress)
 async function maybeAutoBackup(){
   const days = +S.autoBackup; if(!days) return;
   let last = 0; try{ last = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
@@ -1006,28 +1024,35 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   const when = exported ? (" from " + exported.slice(0,10)) : "";
   const cnt = counts ? (" (" + counts.imported + " imported, " + counts.saved + " saved)") : "";
   if(!confirm("Restore this backup" + when + cnt + (label ? ("\n[" + label + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
+  showBusyOverlay("Saving a safety copy of your current data first…");
   // safety copy of current state (full folder backup if connected, else refs-only download)
   try{
     if(await folderReady()) await writeFullBackupDir("interests-backup-before-restore-" + new Date().toISOString().slice(0,10));
     else { const m = collectBackupMeta(); m._note = "refs only (pre-restore safety, no folder)"; downloadJSON(m, "interests-backup-before-restore-" + Date.now() + "-refs.json"); }
   }catch(e){}
   // wipe + write keys back verbatim
+  updateBusyOverlay("Writing your settings, cards & tags…");
   try{
     const existing = [];
     for(let i=0;i<localStorage.length;i++){ const k = localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
     existing.forEach(function(k){ localStorage.removeItem(k); });
     Object.keys(keys).forEach(function(k){ if(k.startsWith("ia_")){ const v = keys[k]; localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } });
-  }catch(e){ toast("Restore failed: " + e.message + " — data may exceed this browser's storage limit"); return false; }
-  let imgCount = 0; try{ imgCount = await putAllImages(); }catch(e){ console.warn("image restore failed", e); }
+  }catch(e){ hideBusyOverlay(); toast("Restore failed: " + e.message + " — data may exceed this browser's storage limit"); return false; }
+  updateBusyOverlay("Restoring images…");
+  let imgCount = 0;
+  try{ imgCount = await putAllImages(function(done, total){ updateBusyOverlay("Restoring images: " + done + (total ? (" / " + total) : "") + "…"); }); }
+  catch(e){ console.warn("image restore failed", e); }
+  updateBusyOverlay("Done — reloading…");
   toast("Restored " + n + " data sets + " + imgCount + " images — reloading…");
   setTimeout(function(){ location.reload(); }, 1000);
   return true;
 }
 // Legacy single-file backup (images inline under data.images).
 async function applyRestore(data, label){
-  return doRestoreCore(data && data.keys, data && data._exported, data && data._counts, label, async function(){
-    const images = (data && data.images) || {}; let c = 0;
-    for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); c++; }catch(e){} }
+  return doRestoreCore(data && data.keys, data && data._exported, data && data._counts, label, async function(report){
+    const images = (data && data.images) || {}; const ids = Object.keys(images); let c = 0;
+    for(const id of ids){ try{ await idbPutImg(id, images[id]); c++; if(report && c % 200 === 0) report(c, ids.length); }catch(e){} }
+    if(report) report(c, ids.length);
     return c;
   });
 }
@@ -1037,12 +1062,13 @@ async function restoreFromDir(name, label){
   let meta, dir;
   try{ dir = await dirHandle.getDirectoryHandle(name); meta = JSON.parse(await (await (await dir.getFileHandle("data.json")).getFile()).text()); }
   catch(e){ toast("Couldn't read backup " + name); return false; }
-  return doRestoreCore(meta.keys, meta._exported, meta._counts, label || name, async function(){
-    let c = 0; const shards = meta.shards || 0;
+  return doRestoreCore(meta.keys, meta._exported, meta._counts, label || name, async function(report){
+    let c = 0; const shards = meta.shards || 0; const total = (meta._counts && meta._counts.images) || 0;
     for(let i=0;i<shards;i++){
-      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await idbPutImg(id, obj[id]); c++; }catch(e){} } }
+      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await idbPutImg(id, obj[id]); c++; if(report && c % 200 === 0) report(c, total); }catch(e){} } }
       catch(e){ console.warn("shard "+i+" restore failed", e); }
     }
+    if(report) report(c, total);
     return c;
   });
 }
@@ -3312,7 +3338,7 @@ async function connectFolder(){
     await writeSavesFile();
     if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel = document.getElementById("autoBackup"); if(sel) sel.value = "1"; }
     toast("Connected — saves.json syncing + daily backups on");
-    doBackup();   // capture an initial full backup to the folder right away
+    doBackup(true);   // capture an initial full backup to the folder right away (with progress)
     try{ await storageHealthCheck(); }catch(e){}   // refresh the durability status block to "connected" right away
   }catch(e){ /* user cancelled */ }
 }
