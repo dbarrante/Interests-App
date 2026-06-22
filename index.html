@@ -3184,6 +3184,53 @@ function writeSavesFile(){
   },400);
 }
 
+const BACKUP_KEEP = 3;
+// Single permission gate for every folder read/write.
+async function folderReady(){
+  try{ return !!dirHandle && (await dirHandle.queryPermission({mode:"readwrite"})) === "granted"; }
+  catch(e){ return false; }
+}
+async function writeFileToFolder(name, text){
+  if(!(await folderReady())) return false;
+  try{
+    const fh = await dirHandle.getFileHandle(name, {create:true});
+    const w = await fh.createWritable();
+    await w.write(text);
+    await w.close();
+    return true;
+  }catch(e){ console.warn("writeFileToFolder failed ("+name+"):", e && e.message); return false; }
+}
+async function listFolderBackups(){
+  if(!(await folderReady())) return [];
+  const out = [];
+  try{
+    for await (const [name, h] of dirHandle.entries()){
+      if(h.kind === "file" && /^interests-backup-\d{4}-\d{2}-\d{2}\.json$/.test(name)){
+        out.push({ name: name, date: name.slice(17, 27) });   // "interests-backup-" is 17 chars
+      }
+    }
+  }catch(e){ console.warn("listFolderBackups failed", e); }
+  out.sort(function(a, b){ return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+  return out;
+}
+async function rotateBackups(keep){
+  if(!(await folderReady())) return;
+  keep = (keep == null) ? BACKUP_KEEP : keep;
+  const names = [];
+  try{ for await (const [name, h] of dirHandle.entries()){ if(h.kind === "file") names.push(name); } }
+  catch(e){ return; }
+  for(const n of pickBackupsToDelete(names, keep)){ try{ await dirHandle.removeEntry(n); }catch(e){} }
+}
+async function verifyBackup(name, expectedCounts){
+  if(!(await folderReady())) return false;
+  try{
+    const fh = await dirHandle.getFileHandle(name);
+    const file = await fh.getFile();
+    const data = JSON.parse(await file.text());
+    return backupCountsMatch(data._counts, expectedCounts);
+  }catch(e){ console.warn("verifyBackup failed", e); return false; }
+}
+
 /* ============ extension capture drain ============ */
 // images from external screenshot proxies are unreliable (blocked sites,
 // CAPTCHAs) — a real extension capture should always replace them.
