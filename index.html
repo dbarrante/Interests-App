@@ -443,7 +443,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <div class="sec">
         <h3>Backup &amp; restore</h3>
         <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
-        <button class="btn btn-primary" onclick="exportData()">&#11015; Download full backup</button>
+        <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
         <span class="hint" id="backupInfo" style="margin-left:10px"></span>
         <label style="margin-top:16px;display:block">Auto-backup</label>
         <select id="autoBackup" style="width:auto">
@@ -854,27 +854,47 @@ function downloadJSON(obj, name){
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
-async function exportData(){
-  const data=await collectBackup();
-  const stamp=new Date().toISOString().slice(0,10);
-  let size=JSON.stringify(data).length;
-  downloadJSON(data, "interests-backup-"+stamp+".json");
-  const mb=(size/1048576).toFixed(1);
-  const nImg=Object.keys(data.images||{}).length;
-  toast("Backup downloaded — "+Object.keys(data.keys).length+" data sets, "+nImg+" images, "+mb+" MB");
-  const info=document.getElementById("backupInfo");
-  if(info) info.textContent="Last backup: "+imported.length+" imported, "+saved.length+" saved, "+nImg+" images, "+mb+" MB";
-  try{ localStorage.setItem("ia_lastbackup", String(Date.now())); }catch(e){}
+function markBackupDone(counts, verified, where, name){
+  try{
+    localStorage.setItem("ia_lastbackup", String(Date.now()));
+    localStorage.setItem("ia_backup_last", JSON.stringify({ ts:Date.now(), counts:counts, verified:!!verified, where:where, name:name }));
+  }catch(e){}
+  const info = document.getElementById("backupInfo");
+  if(info) info.textContent = "Last backup: "+counts.imported+" imported, "+counts.saved+" saved, "+counts.images+" images"+(verified?" ✓ verified":"")+" ("+where+")";
+  if(typeof renderDurabilityStatus === "function"){ try{ renderDurabilityStatus(); }catch(e){} }
 }
-// auto-download a backup on load if the chosen interval has elapsed
+// Shared backup core: write a full, image-bearing backup to the connected folder
+// (rotated + verified) if connected, else download it. Returns true on success.
+async function doBackup(){
+  let data;
+  try{ data = await collectBackup(); }catch(e){ console.warn("collectBackup failed", e); toast("Backup failed to assemble data"); return false; }
+  const name = "interests-backup-" + new Date().toISOString().slice(0,10) + ".json";
+  if(await folderReady()){
+    const wrote = await writeFileToFolder(name, JSON.stringify(data));
+    const ok = wrote && await verifyBackup(name, data._counts);
+    if(ok){
+      await rotateBackups(BACKUP_KEEP);
+      markBackupDone(data._counts, true, "folder", name);
+      toast("Backup saved + verified to your folder ("+data._counts.imported+" imported, "+data._counts.images+" images)", 6000);
+      return true;
+    }
+    toast("⚠ Backup write/verify failed — kept your older backups. Check the folder connection.", 8000);
+    return false;
+  }
+  try{ downloadJSON(data, name); }catch(e){ console.warn("download backup failed", e); return false; }
+  markBackupDone(data._counts, false, "download", name);
+  toast("Backup downloaded. Connect a folder (Settings → Backup) for automatic, rotated, offsite backups.", 8000);
+  return true;
+}
+async function backupNow(){ return doBackup(); }   // manual: button + Ctrl+Shift+B (bypasses the interval)
 async function maybeAutoBackup(){
-  const days=+S.autoBackup||0; if(!days) return;
-  let last=0; try{ last=+localStorage.getItem("ia_lastbackup")||0; }catch(e){}
-  if(Date.now()-last < days*86400000) return;
-  try{ await exportData(); toast("Auto-backup downloaded"); }catch(e){ console.warn("auto-backup failed",e); }
+  const days = +S.autoBackup; if(!days) return;
+  let last = 0; try{ last = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
+  if(Date.now() - last < days*86400000) return;
+  await doBackup();
 }
 // Ctrl+Shift+B = back up now
-document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); exportData(); } });
+document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
 function restoreData(ev){
   const file=ev.target.files && ev.target.files[0];
   if(!file){ return; }
@@ -3141,7 +3161,9 @@ async function connectFolder(){
     await idbSet("dir", dirHandle);
     setFsStatus(true);
     await writeSavesFile();
-    toast("Connected — saves.json will stay in sync");
+    if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel = document.getElementById("autoBackup"); if(sel) sel.value = "1"; }
+    toast("Connected — saves.json syncing + daily backups on");
+    doBackup();   // capture an initial full backup to the folder right away
   }catch(e){ /* user cancelled */ }
 }
 async function restoreFolder(){
