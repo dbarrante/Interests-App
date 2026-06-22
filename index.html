@@ -453,7 +453,10 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <option value="30">Monthly</option>
         </select>
         <div class="hint">Automatically downloads a full backup when the app is opened and this much time has passed. (Also: press <b>Ctrl+Shift+B</b> anytime to back up now.)</div>
-        <label style="margin-top:16px;display:block">Restore from a backup file</label>
+        <label style="margin-top:16px;display:block">Restore</label>
+        <button class="btn btn-primary" onclick="restoreLatest()">&#8617; Restore latest backup</button>
+        <div id="backupList"></div>
+        <label style="margin-top:16px;display:block">Restore from a file instead</label>
         <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)">
         <div class="hint">Replaces everything currently in the app. A safety copy of your current data is downloaded automatically before the restore runs.</div>
       </div>
@@ -895,44 +898,71 @@ async function maybeAutoBackup(){
 }
 // Ctrl+Shift+B = back up now
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
+// Restore core, shared by the file picker and the folder restore. Validates,
+// saves a safety copy (folder if connected, else download), wipes ia_*, writes
+// keys, restores IndexedDB images, reloads.
+async function applyRestore(data, sourceLabel){
+  const keys = data && data.keys;
+  if(!keys || typeof keys !== "object" || !Object.keys(keys).length){ toast("This file isn't an Interests backup"); return false; }
+  const n = Object.keys(keys).length;
+  const when = data._exported ? (" from " + data._exported.slice(0,10)) : "";
+  const cnt = data._counts ? (" (" + data._counts.imported + " imported, " + data._counts.saved + " saved)") : "";
+  if(!confirm("Restore this backup" + when + cnt + (sourceLabel ? ("\n[" + sourceLabel + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
+  // 1. safety copy of current state (folder if connected, else download)
+  try{
+    const safety = await collectBackup();
+    const sname = "interests-backup-before-restore-" + Date.now() + ".json";
+    if(await folderReady()) await writeFileToFolder(sname, JSON.stringify(safety));
+    else downloadJSON(safety, sname);
+  }catch(e){}
+  // 2. wipe + 3. write keys back verbatim
+  try{
+    const existing = [];
+    for(let i=0;i<localStorage.length;i++){ const k = localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
+    existing.forEach(function(k){ localStorage.removeItem(k); });
+    Object.keys(keys).forEach(function(k){ if(k.startsWith("ia_")){ const v = keys[k]; localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } });
+  }catch(e){ toast("Restore failed: " + e.message + " — data may exceed this browser's storage limit"); return false; }
+  // 4. restore card images into IndexedDB
+  const images = data.images || {};
+  for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); }catch(e){} }
+  toast("Restored " + n + " data sets + " + Object.keys(images).length + " images — reloading…");
+  setTimeout(function(){ location.reload(); }, 1000);
+  return true;
+}
 function restoreData(ev){
-  const file=ev.target.files && ev.target.files[0];
-  if(!file){ return; }
-  const reset=()=>{ ev.target.value=""; };
-  const reader=new FileReader();
-  reader.onerror=()=>{ toast("Couldn't read that file"); reset(); };
-  reader.onload=()=>{
+  const file = ev.target.files && ev.target.files[0]; if(!file) return;
+  const reset = function(){ ev.target.value = ""; };
+  const reader = new FileReader();
+  reader.onerror = function(){ toast("Couldn't read that file"); reset(); };
+  reader.onload = function(){
     let data;
-    try{ data=JSON.parse(reader.result); }catch(e){ toast("Not a valid backup file (bad JSON)"); reset(); return; }
-    const keys = data && data.keys;
-    if(!keys || typeof keys!=="object" || !Object.keys(keys).length){
-      toast("This file isn't an Interests backup"); reset(); return;
-    }
-    const n=Object.keys(keys).length;
-    const when = data._exported ? (" from "+data._exported.slice(0,10)) : "";
-    const cnt = data._counts ? (" ("+data._counts.imported+" imported, "+data._counts.saved+" saved)") : "";
-    if(!confirm("Restore this backup"+when+cnt+"?\n\nThis REPLACES everything currently in the app. A safety copy of your current data will be downloaded first.")){ reset(); return; }
-    (async()=>{
-      // 1. safety backup of current state
-      try{ downloadJSON(await collectBackup(), "interests-backup-before-restore-"+Date.now()+".json"); }catch(e){}
-      // 2. wipe existing ia_ keys
-      const existing=[];
-      for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
-      existing.forEach(k=>localStorage.removeItem(k));
-      // 3. write backup values back verbatim
-      try{
-        Object.keys(keys).forEach(k=>{ if(k.startsWith("ia_")){ const v=keys[k]; localStorage.setItem(k, typeof v==="string"?v:JSON.stringify(v)); } });
-      }catch(e){
-        toast("Restore failed: "+e.message+" — data may exceed this browser's storage limit"); reset(); return;
-      }
-      // 4. restore card images into IndexedDB
-      const images = data.images || {};
-      for(const id of Object.keys(images)){ try{ await idbPutImg(id, images[id]); }catch(e){} }
-      toast("Restored "+n+" data sets + "+Object.keys(images).length+" images — reloading…");
-      setTimeout(()=>location.reload(), 1000);
-    })();
+    try{ data = JSON.parse(reader.result); }catch(e){ toast("Not a valid backup file (bad JSON)"); reset(); return; }
+    applyRestore(data, file.name).then(reset, reset);
   };
   reader.readAsText(file);
+}
+async function restoreLatest(){
+  if(!(await folderReady())){ toast("Connect your backup folder first, or use 'Restore from a file' below."); return; }
+  const list = await listFolderBackups();
+  if(!list.length){ toast("No backups found in the connected folder."); return; }
+  const newest = list[0];
+  let data;
+  try{ const fh = await dirHandle.getFileHandle(newest.name); const f = await fh.getFile(); data = JSON.parse(await f.text()); }
+  catch(e){ toast("Couldn't read " + newest.name); return; }
+  await applyRestore(data, newest.name);
+}
+async function restoreFromList(name){
+  let data;
+  try{ const fh = await dirHandle.getFileHandle(name); const f = await fh.getFile(); data = JSON.parse(await f.text()); }
+  catch(e){ toast("Couldn't read " + name); return; }
+  await applyRestore(data, name);
+}
+async function renderBackupList(){
+  const el = document.getElementById("backupList"); if(!el) return;
+  const list = await listFolderBackups();
+  if(!list.length){ el.innerHTML = ""; return; }
+  el.innerHTML = "<div class=\"hint\" style=\"margin-top:10px\">Backups in your folder:</div>" +
+    list.map(function(b){ return "<div style=\"margin:4px 0\"><b>" + b.date + "</b> <button class=\"btn btn-ghost\" style=\"padding:3px 10px;margin-left:8px\" onclick=\"restoreFromList('" + b.name + "')\">Restore</button></div>"; }).join("");
 }
 
 /* ============ settings ui ============ */
@@ -990,6 +1020,8 @@ function renderSettings(){
   document.getElementById("autoBackup").value = String(S.autoBackup||0);
   document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
   renderImportStatus();
+  if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
+  if(typeof renderBackupList === "function") renderBackupList();
 }
 function saveSettings(notify){
   S.about = document.getElementById("aboutMe").value;
