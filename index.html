@@ -560,6 +560,25 @@ function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hid
    small reference "idb:<cardId>" in localStorage and the actual data URL in
    IndexedDB. _imgCache mirrors them in memory so rendering stays synchronous. */
 let _imgDB=null, _imgCache={};
+const IMG_CACHE_MAX = 600;        // bound the in-memory image mirror (was: all ~630 MB)
+let _imgCacheKeys = [];           // cache ids in LRU order (oldest first)
+// Pure: return the new key order after touching `id` (move-to-end), trimmed to `max`.
+function lruPush(keys, id, max){
+  const out = (keys || []).filter(function(k){ return k !== id; });
+  out.push(id);
+  return out.length > max ? out.slice(out.length - max) : out;
+}
+// Put an image in the bounded cache, evicting whatever fell out of the LRU window.
+function cachePut(id, data){
+  if(id == null) return;
+  _imgCache[id] = data;
+  const next = lruPush(_imgCacheKeys, id, IMG_CACHE_MAX);
+  if(next.length < _imgCacheKeys.length + 1){
+    const keep = {}; for(const k of next) keep[k] = 1;
+    for(const k of _imgCacheKeys){ if(!keep[k]) delete _imgCache[k]; }
+  }
+  _imgCacheKeys = next;
+}
 function imgDB(){
   return new Promise((res,rej)=>{
     if(_imgDB) return res(_imgDB);
@@ -579,7 +598,7 @@ async function idbAllKeys(){ try{ const db=await imgDB(); return await new Promi
 // http(s) URLs are stored inline. Updates the in-memory cache immediately.
 function setCardImage(it, src){
   if(src && src.indexOf("data:")===0){
-    _imgCache[it.id]=src;
+    cachePut(it.id, src);
     it.img="idb:"+it.id;
     idbPutImg(it.id, src);   // persisted async; cache makes render immediate
   } else {
@@ -3786,7 +3805,7 @@ function drainCaptures(){
 // store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
-  if(src && src.indexOf("data:")===0){ _imgCache[item.id]=src; item.image="idb:"+item.id; idbPutImg(item.id, src); }
+  if(src && src.indexOf("data:")===0){ cachePut(item.id, src); item.image="idb:"+item.id; idbPutImg(item.id, src); }
   else { item.image=src||""; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
 }
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
