@@ -741,10 +741,20 @@ function cardHTML(item, mode){
   const chain = imageChain(item);
   imgChains[id] = chain.slice(1);
   const first = chain[0];
+  // Big base64 data: URLs (idb-resolved images, or inline saved-clip images) must NOT
+  // be inlined into the joined grid HTML — thousands of them overflow JS's max string
+  // length (RangeError: Invalid string length — same bug fixed in renderImported). Emit
+  // a src-less placeholder and fill it in after render, lazily (attachCardImages, via an
+  // IntersectionObserver, resolves the data URL from findItem(id).image). http(s) thumbs
+  // and screenshot proxies are tiny — keep them inline so the nextImg fallback is intact.
+  const bigData = first && first.indexOf("data:")===0;
+  const imgAttrs = `loading="lazy" data-grad="${grad}" data-fav="${esc(fav)}" data-dom="${esc(dom)}" onerror="nextImg(this,'${id}')" onload="mshotsRetry(this)"`;
+  const imgTag = bigData
+    ? `<img data-imgsrc="${id}" ${imgAttrs}>`
+    : `<img src="${esc(first)}" ${imgAttrs}>`;
   return `<div class="card" id="card-${id}">
     <a class="thumb" onclick="openItem('${id}','${mode}')" title="Open article">
-      ${first?`<img src="${esc(first)}" loading="lazy" data-grad="${grad}" data-fav="${esc(fav)}" data-dom="${esc(dom)}"
-                onerror="nextImg(this,'${id}')" onload="mshotsRetry(this)">`
+      ${first?imgTag
              :`<div class="ph" style="background:linear-gradient(135deg,${grad})">${fav?`<img src="${esc(fav)}">`:""}${esc(dom||"idea")}</div>`}
     </a>
     <div class="body">
@@ -767,6 +777,7 @@ function renderFeed(){
   grid.className = gridClass();
   const list = applyFilter(feed);
   grid.innerHTML = list.map(i=>cardHTML(i,"feed")).join("");
+  attachCardImages();
   const empty = document.getElementById("feedEmpty");
   if(feed.length && !list.length){ empty.innerHTML = `<div class="empty"><h2>Nothing here right now</h2><p>No current ideas in this category — hit <b>New ideas</b> or raise its importance in Settings.</p></div>`; }
   else if(feed.length){ empty.innerHTML=""; }
@@ -785,6 +796,7 @@ function renderSaved(){
   const g = document.getElementById("savedGrid");
   g.className = gridClass();
   g.innerHTML = list.map(i=>cardHTML(i,"saved")).join("");
+  attachCardImages();
   document.getElementById("savedEmpty").innerHTML = list.length?"":`<div class="empty"><h2>Nothing saved${filterCat?" in this category":" yet"}</h2><p>Save items from your feed and they collect here — and every save teaches the AI what to bring you next.</p></div>`;
 }
 
@@ -1888,17 +1900,30 @@ function renderImported(){
   requestAnimationFrame(setStickyOffsets);
 }
 let _imgObserver=null;
-// Attach big idb image data URLs to their <img> AFTER render, and only as they near
-// the viewport — keeps the data URLs out of the giant HTML string (avoids JS's
-// max-string-length crash) and avoids decoding thousands of images at once.
+// Attach big image data URLs to their <img> AFTER render, and only as they near the
+// viewport — keeps the data URLs out of the giant joined HTML string (avoids JS's
+// max-string-length crash) and avoids decoding thousands of images at once. Serves both
+// grids: imported cards (img.th[data-imgid], resolved straight from _imgCache) and
+// feed/saved cards (img[data-imgsrc], resolved from findItem(id).image — which may be an
+// idb: ref or an inline data: URL). Scans the whole document so the single shared
+// observer covers every current placeholder regardless of which render last ran.
 function attachCardImages(){
   try{
-    const grid=document.querySelector("#view-imported .imp-grid");
-    if(!grid) return;
-    const imgs=grid.querySelectorAll("img.th[data-imgid]");
-    if(!imgs.length) return;
+    const imgs=document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
+    if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
     if(_imgObserver) _imgObserver.disconnect();
-    const load=im=>{ if(im.getAttribute("src")) return; const d=_imgCache[im.getAttribute("data-imgid")]; if(d) im.src=d; };
+    const load=im=>{
+      if(im.getAttribute("src")) return;
+      const idbKey=im.getAttribute("data-imgid");
+      let d="";
+      if(idbKey!=null){ d=_imgCache[idbKey]||""; }
+      else{
+        const it=findItem(im.getAttribute("data-imgsrc"));
+        const ref=it&&it.image;
+        d = ref ? (ref.indexOf("idb:")===0 ? (_imgCache[ref.slice(4)]||"") : ref) : "";
+      }
+      if(d) im.src=d;
+    };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
     _imgObserver=new IntersectionObserver((entries,obs)=>{
       for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } }
@@ -3732,9 +3757,14 @@ function undoDead(){
 save("settings", S);
 updateCounts();
 showTab(load("tab","feed"));
-restoreFolder();
-// load card images from IndexedDB (+ migrate any legacy inline images), then refresh
-initImageStore().then(()=>{ if(curTab==="imported") renderImported(); maybeAutoBackup(); }).catch(e=>console.warn("image store init failed",e));
+(async()=>{
+  try{ await restoreFolder(); }catch(e){ console.warn("restoreFolder failed", e); }
+  try{ await initImageStore(); if(curTab==="imported") renderImported(); }
+  catch(e){ console.warn("image store init failed", e); }
+  try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
+  maybeAutoBackup();
+})();
+setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
 setInterval(pollBatchProgress, 1500);
 setupPasteToCard();
