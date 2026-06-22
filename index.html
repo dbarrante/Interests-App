@@ -2092,12 +2092,12 @@ function attachCardImages(){
     const imgs = document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
     if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
     if(_imgObserver) _imgObserver.disconnect();
-    const load = im=>{
+    const load = async im=>{
       if(im.getAttribute("src")) return;
-      const idbId = im.getAttribute("data-imgid");      // Imported card: image keyed by card id
-      if(idbId){ const d=_imgCache[idbId]; if(d) im.src=d; return; }
-      const sid = im.getAttribute("data-imgsrc");        // Feed/Saved card: resolve the item's image
-      if(sid){ const it=findItem(sid); let s=it&&it.image; if(s && String(s).indexOf("idb:")===0) s=_imgCache[String(s).slice(4)]||""; if(s) im.src=s; else nextImg(im, sid); }
+      const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
+      if(idbId){ let d=_imgCache[idbId]; if(!d){ d=await idbGetImg(idbId); if(d) cachePut(idbId,d); } if(d) im.src=d; return; }
+      const sid = im.getAttribute("data-imgsrc");          // Feed/Saved card: resolve the item's image
+      if(sid){ const it=findItem(sid); let s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ const k=String(s).slice(4); s=_imgCache[k]; if(!s){ s=await idbGetImg(k); if(s) cachePut(k,s); } } if(s) im.src=s; else nextImg(im, sid); }
     };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
     _imgObserver=new IntersectionObserver((entries,obs)=>{ for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } } },{root:null,rootMargin:"800px 0px"});
@@ -2694,7 +2694,7 @@ function impCardHTML(it,idx){
   // HTML string (thousands of them overflow JS's max string length → render crash).
   // Emit a placeholder <img data-imgid> and attach the src after render, lazily
   // (attachCardImages, via IntersectionObserver). http(s) thumbs stay inline (tiny).
-  const isIdbImg = thumb && it.img && String(it.img).indexOf("idb:")===0;
+  const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;   // emit placeholder for any idb card (image is fetched on demand, may not be cached yet)
   const icon = thumb
     ? (isIdbImg
       ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
