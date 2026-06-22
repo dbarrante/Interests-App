@@ -2728,7 +2728,7 @@ function impEdit(idx){
   _editIdx = idx;
   _editImg = resolveImg(it.img);
   if(!_editImg && it.img && String(it.img).indexOf("idb:")===0){
-    idbGetImg(String(it.img).slice(4)).then(function(d){ if(d){ _editImg=d; const el=document.getElementById("editImgPreview"); if(el) el.src=d; edRenderPrev(); } });
+    idbGetImg(String(it.img).slice(4)).then(function(d){ if(d){ _editImg=d; const el=document.getElementById("editImgPreview"); if(el) el.src=d; } });
   }
   // suggest existing categories/tags to add with one click
   const counts={};
@@ -2750,7 +2750,7 @@ function impEdit(idx){
     <label>Card image</label>
     ${it.lastUpdate?`<div class="hint" style="margin-bottom:6px">Last capture: <b style="color:${it.lastResult==="ok"?"var(--chip-life)":"#f87171"}">${it.lastResult||"done"}</b> on ${esc(fmtCardDate(it.lastUpdate))}</div>`:""}
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
-      <div id="edImgPrev" style="width:72px;height:54px;border-radius:7px;border:1px solid var(--line);background:#8883 center/cover no-repeat;flex-shrink:0;font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center"></div>
+      <img id="editImgPreview" src="" alt="" style="width:72px;height:54px;border-radius:7px;border:1px solid var(--line);object-fit:cover;flex-shrink:0;background:#8883">
       <div style="display:flex;flex-direction:column;gap:6px">
         <button type="button" class="btn btn-ghost" onclick="edRemoveImg()">Remove image</button>
         <button type="button" class="btn btn-ghost" onclick="document.getElementById('edImgFile').click()">Upload image…</button>
@@ -2779,9 +2779,9 @@ function edAddTag(t){
   if(!cur.some(x=>x.toLowerCase()===t.toLowerCase())){ cur.push(t); inp.value=cur.join(", "); }
 }
 function edRenderPrev(){
-  const p=document.getElementById("edImgPrev"); if(!p) return;
-  if(_editImg){ p.style.backgroundImage="url('"+_editImg.replace(/'/g,"%27")+"')"; p.textContent=""; }
-  else { p.style.backgroundImage=""; p.textContent="favicon"; }
+  const p=document.getElementById("editImgPreview"); if(!p) return;
+  if(_editImg){ p.src=_editImg; }
+  else { p.src=""; }
 }
 function edSetImg(v){ _editImg=(v||"").trim(); edRenderPrev(); }
 function edRemoveImg(){ _editImg=""; const u=document.getElementById("edImg"); if(u) u.value=""; edRenderPrev(); }
