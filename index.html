@@ -594,6 +594,15 @@ async function idbAllImgs(){ try{ const db=await imgDB(); return await new Promi
 // just the stored image ids (cheap) — used to recover/verify refs without
 // loading the (possibly hundreds of MB) image values into memory.
 async function idbAllKeys(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const tx=db.transaction("imgs","readonly"); const r=tx.objectStore("imgs").getAllKeys(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>res([]); }); }catch(e){ return []; } }
+// fetch ONE image by id (on-demand; replaces loading the whole store into memory)
+async function idbGetImg(id){ try{ const db=await imgDB(); return await new Promise((res)=>{ const rq=db.transaction("imgs","readonly").objectStore("imgs").get(id); rq.onsuccess=()=>res(rq.result||""); rq.onerror=()=>res(""); }); }catch(e){ return ""; } }
+// Tiny separate DB mapping card id -> image fingerprint, so FB placeholder detection
+// (fbPlaceholderGroups) never needs the image bytes in memory. Mirrored in _fpMap.
+let _fpDB=null, _fpMap={};
+function fpDB(){ return new Promise((res,rej)=>{ if(_fpDB) return res(_fpDB); let rq; try{ rq=indexedDB.open("ia_fp",1); }catch(e){ return rej(e); } rq.onupgradeneeded=()=>{ if(!rq.result.objectStoreNames.contains("fp")) rq.result.createObjectStore("fp"); }; rq.onsuccess=()=>{ _fpDB=rq.result; res(_fpDB); }; rq.onerror=()=>rej(rq.error); }); }
+async function fpPut(id, fp){ try{ const db=await fpDB(); await new Promise((res,rej)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").put(fp,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); }catch(e){} }
+async function fpDel(id){ try{ const db=await fpDB(); await new Promise((res)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
+async function fpAll(){ try{ const db=await fpDB(); return await new Promise((res)=>{ const out={}; const cur=db.transaction("fp","readonly").objectStore("fp").openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
 // assign an image to a card: data URLs go to IndexedDB (ref kept in it.img),
 // http(s) URLs are stored inline. Updates the in-memory cache immediately.
 function setCardImage(it, src){
@@ -601,9 +610,11 @@ function setCardImage(it, src){
     cachePut(it.id, src);
     it.img="idb:"+it.id;
     idbPutImg(it.id, src);   // persisted async; cache makes render immediate
+    const fp = imgFp(src); _fpMap[it.id]=fp; fpPut(it.id, fp);   // for placeholder detection without loading bytes
   } else {
     it.img=src||"";
     if(_imgCache[it.id]){ delete _imgCache[it.id]; idbDelImg(it.id); }
+    if(_fpMap[it.id]){ delete _fpMap[it.id]; fpDel(it.id); }
   }
 }
 // resolve a card's stored image to something usable in an <img src>
