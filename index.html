@@ -818,6 +818,17 @@ function resetLearning(){
   hidden=[]; clicks=[]; shown=[]; likes=[]; spool=[];
   persistAll(); toast("Learning history cleared");
 }
+// Given backup filenames, return the ones to delete (all but the newest `keep`
+// by the embedded date). Pure — only touches the exact daily-backup name pattern,
+// so snapshots / saves.json / before-restore copies are never selected.
+function pickBackupsToDelete(names, keep){
+  var re = /^interests-backup-(\d{4}-\d{2}-\d{2})\.json$/;
+  var dated = (names || [])
+    .map(function(n){ var m = re.exec(n); return m ? { name: n, date: m[1] } : null; })
+    .filter(Boolean)
+    .sort(function(a, b){ return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+  return dated.slice(Math.max(0, keep)).map(function(d){ return d.name; });
+}
 // keys that are transient extension/runtime state — no point backing these up
 const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
 async function collectBackup(){
