@@ -1907,9 +1907,8 @@ function fbPlaceholderGroups(minCount){
   const byImg={};
   for(const it of imported){
     if(!it || !it.id || !/facebook\.com|fb\.watch/i.test(it.url||"")) continue;
-    const v=(it.img||"")+""; if(v.indexOf("idb:")!==0) continue;
-    const data=_imgCache[v.slice(4)]; if(!data) continue;
-    const key=imgFp(data);
+    if((it.img||"").indexOf("idb:")!==0) continue;
+    const key=_fpMap[it.id]; if(!key) continue;   // fingerprint stored at capture time / migration — no image load
     (byImg[key]=byImg[key]||[]).push(it);
   }
   return Object.values(byImg).filter(g=>g.length>=minCount);
