@@ -1,6 +1,7 @@
 const path = require("path");
 const { app, BrowserWindow, dialog, shell, ipcMain } = require("electron");
 const config = require("./core/config");
+const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
 
 let mainWindow = null;
@@ -20,13 +21,9 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     const storeDir = config.getStorePath();
 
-    // ctx for the Core service. db is wired in a later phase (Phase 2).
-    const ctx = {
-      db: null,
-      storeDir,
-      getStorePath: config.getStorePath,
-      setStorePath: config.setStorePath,
-    };
+    // ctx for the Core service: opens the live DB at the resolved store path and
+    // provides reopen() for restore/move flows (core/appctx.buildContext).
+    const ctx = buildContext(storeDir);
 
     const { server, port } = await startServer(ctx, 3456);
     httpServer = server;
