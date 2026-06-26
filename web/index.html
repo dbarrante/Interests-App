@@ -445,6 +445,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <h3>Backup &amp; restore</h3>
         <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
         <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
+        <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
         <span class="hint" id="backupInfo" style="margin-left:10px"></span>
         <div id="durStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
         <label style="margin-top:16px;display:block">Auto-backup</label>
@@ -792,10 +793,9 @@ function backupCountsMatch(a, b){
 }
 // keys that are transient extension/runtime state — no point backing these up
 const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
-// NOTE: the old whole-archive collectBackup() (one object with all images, JSON
-// .stringify'd into a single string) was removed — it hit JS's ~512 MB string limit
-// on large libraries (RangeError). Backups now shard images to a folder; see
-// writeFullBackupDir. collectBackupMeta() is the small localStorage-only part.
+// NOTE: full image-bearing backups are now written + verified by the Core service
+// (Store.backupNow). collectBackupMeta() below is a small localStorage-only export
+// still used for refs-only downloads / diagnostics.
 // Just the localStorage side (no images) — small, always JSON-stringifiable.
 function collectBackupMeta(){
   const keys={};
@@ -807,48 +807,9 @@ function collectBackupMeta(){
   return { _app:"interests-app", _version:3, _exported:new Date().toISOString(),
            _counts:{imported:imported.length, saved:saved.length, likes:likes.length, images:0}, keys };
 }
-// ~250 MB of image data per shard so JSON.stringify stays well under JS's ~512 MB
-// single-string ceiling (the limit that made the old whole-archive backup fail).
-const SHARD_MAX = 250*1048576;
-// Write a FULL backup as a per-date FOLDER: data.json (settings/cards, small) + image
-// shards img-0.json…img-N.json (each a JSON map of id→dataURL, each under the limit).
-// Never builds one giant string, so it scales to any archive size. Returns {counts,shards}.
-async function writeFullBackupDir(dirName){
-  if(!(await folderReady())) return null;
-  const dir = await dirHandle.getDirectoryHandle(dirName, {create:true});
-  // clear any files from a prior same-day backup so stale shards can't linger
-  try{ for await (const [n,h] of dir.entries()){ if(h.kind==="file" && /^(data\.json|img-\d+\.json)$/.test(n)) await dir.removeEntry(n); } }catch(e){}
-  const imgs = {};   // image bytes are service files now (full backups go through Store.backupNow); this legacy folder writer is metadata-only until Phase 6 removes it
-  const ids = Object.keys(imgs);
-  const meta = collectBackupMeta();
-  meta._counts.images = ids.length;
-  let shard={}, bytes=0, shardCount=0;
-  const flush = async ()=>{
-    if(!Object.keys(shard).length) return;
-    const fh = await dir.getFileHandle("img-"+shardCount+".json", {create:true});
-    const w = await fh.createWritable(); await w.write(JSON.stringify(shard)); await w.close();
-    shardCount++; shard={}; bytes=0;
-  };
-  for(const id of ids){ const v=imgs[id]||""; shard[id]=v; bytes += v.length + id.length + 8; if(bytes>=SHARD_MAX) await flush(); }
-  await flush();
-  meta.shards = shardCount;
-  // data.json LAST: its presence + matching shard count signals a complete write
-  const dfh = await dir.getFileHandle("data.json", {create:true});
-  const dw = await dfh.createWritable(); await dw.write(JSON.stringify(meta)); await dw.close();
-  return { counts: meta._counts, shards: shardCount };
-}
-// Verify a folder backup without parsing the whole thing: data.json reads, counts
-// match, and the expected number of shard files are present.
-async function verifyBackupDir(dirName, expectedCounts){
-  if(!(await folderReady())) return false;
-  try{
-    const dir = await dirHandle.getDirectoryHandle(dirName);
-    const meta = JSON.parse(await (await (await dir.getFileHandle("data.json")).getFile()).text());
-    if(!backupCountsMatch(meta._counts, expectedCounts)) return false;
-    let shardFiles=0; for await (const [n,h] of dir.entries()){ if(h.kind==="file" && /^img-\d+\.json$/.test(n)) shardFiles++; }
-    return shardFiles === (meta.shards||0);
-  }catch(e){ console.warn("verifyBackupDir failed", e); return false; }
-}
+// Full image-bearing backups are now written + verified by the Core service
+// (Store.backupNow / Store.listBackups / Store.restore). The old folder-shard
+// writer/verifier (File System Access API) was removed in Phase 3.
 function downloadJSON(obj, name){
   const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
@@ -878,33 +839,18 @@ function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if
 // Shared backup core: write a full, image-bearing backup to the connected folder
 // (rotated + verified) if connected, else download it. Returns true on success.
 // manual=true shows the progress overlay (auto-backups stay silent/non-blocking).
+async function backupNow(){ return doBackup(true); }
 async function doBackup(manual){
-  const dateName = "interests-backup-" + new Date().toISOString().slice(0,10);
-  if(await folderReady()){
-    if(manual) showBusyOverlay("Backing up — writing image shards to your folder…");
-    let res;
-    try{ res = await writeFullBackupDir(dateName); }catch(e){ console.warn("writeFullBackupDir failed", e); }
-    if(manual) updateBusyOverlay("Verifying backup…");
-    const ok = res && await verifyBackupDir(dateName, res.counts);
-    if(manual) hideBusyOverlay();
-    if(ok){
-      await rotateBackups(BACKUP_KEEP);
-      markBackupDone(res.counts, true, "folder", dateName);
-      toast("Backup saved + verified to your folder ("+res.counts.imported+" imported, "+res.counts.images+" images, "+res.shards+" shard"+(res.shards===1?"":"s")+")", 6000);
-      return true;
-    }
-    toast("⚠ Backup write/verify failed — kept your older backups. Check the folder connection / disk space.", 8000);
-    return false;
-  }
-  // No folder: a single-file download of the images would exceed JS's ~512 MB string
-  // limit at large archives, so download a refs-only backup (no images) + nudge.
-  try{ const meta = collectBackupMeta(); meta._note = "refs only — connect a folder for a full image backup"; downloadJSON(meta, dateName + "-refs.json"); }
-  catch(e){ console.warn("refs download failed", e); return false; }
-  markBackupDone({imported:imported.length, saved:saved.length, images:0}, false, "download (refs only)", dateName);
-  toast("No folder connected — downloaded a refs-only backup (no images). Use ‘Connect backup folder’ for a full, image-bearing backup.", 9000);
-  return true;
+  try{
+    const res = await Store.backupNow();                 // {ok,name,counts}
+    const counts = res && res.counts ? res.counts : {imported:imported.length, saved:saved.length, images:0};
+    await Store.kvSet("ia_lastbackup", Date.now());
+    await Store.kvSet("ia_backup_last", { ts:Date.now(), counts:counts, verified:true, where:"Dropbox", name:(res&&res.name)||"" });
+    if(manual) toast("Backed up: "+(counts.imported||0)+" cards, "+(counts.images||0)+" images");
+    try{ await storageHealthCheck(); }catch(e){}
+    return res;
+  }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }
 }
-async function backupNow(){ return doBackup(true); }   // manual: button + Ctrl+Shift+B (bypasses the interval; shows progress)
 async function maybeAutoBackup(){
   const days = +S.autoBackup; if(!days) return;
   let last = 0; try{ last = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
@@ -920,10 +866,11 @@ async function storageHealthCheck(){
     }
   }catch(e){}
   try{ if(navigator.storage && navigator.storage.estimate){ const est = await navigator.storage.estimate(); usage = est.usage || 0; quota = est.quota || 0; } }catch(e){}
-  let folder = "none";
-  if(dirHandle){ folder = (await folderReady()) ? "connected" : "lapsed"; }
+  // The Core service owns the store now — "connected" means the service is reachable.
+  let folder = "none", storePath = "";
+  try{ const loc = await Store.storeLocation(); folder = "connected"; storePath = (loc && loc.path) || ""; }catch(e){ folder = "none"; }
   let lastBackup = 0; try{ lastBackup = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
-  const health = { persisted: persisted, usage: usage, quota: quota, folder: folder, lastBackup: lastBackup, ts: Date.now() };
+  const health = { persisted: persisted, usage: usage, quota: quota, folder: folder, storePath: storePath, lastBackup: lastBackup, ts: Date.now() };
   Store.kvSet("ia_health", health);
   const days = +S.autoBackup || 0;
   const stale = days && lastBackup && (Date.now() - lastBackup > (days + 1) * 86400000);
@@ -954,7 +901,8 @@ async function renderDurabilityStatus(health){
   const folderTxt = h.folder === "connected" ? "✓ connected" : (h.folder === "lapsed" ? "⚠ reconnect needed" : "not connected");
   const persistTxt = h.persisted === true ? "✓ granted" : (h.persisted === false ? "⚠ not granted (eviction possible)" : "unknown");
   el.innerHTML =
-    "<div>Backup folder: <b>" + folderTxt + "</b></div>" +
+    "<div>App service: <b>" + folderTxt + "</b></div>" +
+    (h.storePath ? ("<div>Data location: <b>" + esc(h.storePath) + "</b></div>") : "") +
     "<div>Storage persistence: <b>" + persistTxt + "</b></div>" +
     (h.quota ? ("<div>Storage used: <b>" + mb(h.usage) + " / " + mb(h.quota) + " MB</b></div>") : "") +
     "<div>Last full backup: <b>" + last + "</b></div>" +
@@ -974,11 +922,8 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   const cnt = counts ? (" (" + counts.imported + " imported, " + counts.saved + " saved)") : "";
   if(!confirm("Restore this backup" + when + cnt + (label ? ("\n[" + label + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
   showBusyOverlay("Saving a safety copy of your current data first…");
-  // safety copy of current state (full folder backup if connected, else refs-only download)
-  try{
-    if(await folderReady()) await writeFullBackupDir("interests-backup-before-restore-" + new Date().toISOString().slice(0,10));
-    else { const m = collectBackupMeta(); m._note = "refs only (pre-restore safety, no folder)"; downloadJSON(m, "interests-backup-before-restore-" + Date.now() + "-refs.json"); }
-  }catch(e){}
+  // safety copy of current state — the Core service writes a verified backup first
+  try{ await Store.backupNow(); }catch(e){}
   // wipe + write keys back verbatim
   updateBusyOverlay("Writing your settings, cards & tags…");
   try{
@@ -1005,22 +950,6 @@ async function applyRestore(data, label){
     return c;
   });
 }
-// New folder backup (data.json + img-N.json shards).
-async function restoreFromDir(name, label){
-  if(!(await folderReady())){ toast("Connect your backup folder first."); return false; }
-  let meta, dir;
-  try{ dir = await dirHandle.getDirectoryHandle(name); meta = JSON.parse(await (await (await dir.getFileHandle("data.json")).getFile()).text()); }
-  catch(e){ toast("Couldn't read backup " + name); return false; }
-  return doRestoreCore(meta.keys, meta._exported, meta._counts, label || name, async function(report){
-    let c = 0; const shards = meta.shards || 0; const total = (meta._counts && meta._counts.images) || 0;
-    for(let i=0;i<shards;i++){
-      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await Store.imgPut(id, obj[id]); c++; if(report && c % 200 === 0) report(c, total); }catch(e){} } }
-      catch(e){ console.warn("shard "+i+" restore failed", e); }
-    }
-    if(report) report(c, total);
-    return c;
-  });
-}
 function restoreData(ev){
   const file = ev.target.files && ev.target.files[0]; if(!file) return;
   const reset = function(){ ev.target.value = ""; };
@@ -1033,26 +962,45 @@ function restoreData(ev){
   };
   reader.readAsText(file);
 }
-async function restoreLatest(){
-  if(!(await folderReady())){ toast("Connect your backup folder first, or use 'Restore from a file' below."); return; }
-  const list = await listFolderBackups();
-  if(!list.length){ toast("No backups found in the connected folder."); return; }
-  const newest = list[0];
-  if(newest.dir){ await restoreFromDir(newest.name, newest.name); return; }
-  try{ const data = JSON.parse(await (await (await dirHandle.getFileHandle(newest.name)).getFile()).text()); await applyRestore(data, newest.name); }
-  catch(e){ toast("Couldn't read " + newest.name); }
+async function restoreFromList(name){
+  if(!name) return;
+  if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return;
+  try{
+    await Store.restore(name);
+    toast("Restored from "+name+" — reloading");
+    setTimeout(()=>location.reload(), 600);
+  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); }
 }
-async function restoreFromList(name, isDir){
-  if(isDir === "1"){ await restoreFromDir(name, name); return; }
-  try{ const data = JSON.parse(await (await (await dirHandle.getFileHandle(name)).getFile()).text()); await applyRestore(data, name); }
-  catch(e){ toast("Couldn't read " + name); }
+async function restoreFromDir(name){ return restoreFromList(name); }
+async function restoreLatest(){
+  const list = await Store.listBackups();
+  if(!list || !list.length){ toast("No backups found"); return; }
+  return restoreFromList(list[0].name);
 }
 async function renderBackupList(){
-  const el = document.getElementById("backupList"); if(!el) return;
-  const list = await listFolderBackups();
-  if(!list.length){ el.innerHTML = ""; return; }
-  el.innerHTML = "<div class=\"hint\" style=\"margin-top:10px\">Backups in your folder:</div>" +
-    list.map(function(b){ return "<div style=\"margin:4px 0\"><b>" + b.date + "</b> <button class=\"btn btn-ghost\" style=\"padding:3px 10px;margin-left:8px\" onclick=\"restoreFromList('" + b.name + "','" + (b.dir?"1":"0") + "')\">Restore</button></div>"; }).join("");
+  const host = document.getElementById("backupList");
+  if(!host) return;
+  let list = [];
+  try{ list = await Store.listBackups(); }catch(e){ host.innerHTML = "<div class='muted'>Couldn't load backups.</div>"; return; }
+  if(!list.length){ host.innerHTML = "<div class='muted'>No backups yet.</div>"; return; }
+  host.innerHTML = list.map(function(b){
+    const c = b.counts || {};
+    const label = (b.date||b.name) + " · " + (c.cards!=null?c.cards:(c.imported||0)) + " cards, " + (c.images||0) + " images";
+    return "<div class='backup-row'><span>"+label+"</span> " +
+           "<button class='btn btn-ghost' onclick=\"restoreFromList('"+b.name.replace(/'/g,"\\'")+"')\">Restore</button></div>";
+  }).join("");
+}
+async function moveDataLocation(){
+  let cur = {};
+  try{ cur = await Store.storeLocation(); }catch(e){}
+  const target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||"");
+  if(!target || target === cur.path) return;
+  toast("Moving data store… (the old copy is kept until the move verifies)");
+  try{
+    const res = await Store.moveStore(target);
+    toast("Data store moved to " + (res.path||target));
+    try{ await storageHealthCheck(); }catch(e){}
+  }catch(e){ toast("Move failed: " + (e&&e.message||e)); }
 }
 
 /* ============ settings ui ============ */
@@ -3273,121 +3221,28 @@ function addDiscovered(){
   toast(add.length+" interest"+(add.length>1?"s":"")+" added to your profile");
 }
 
-/* ============ saves.json bridge (File System Access API) ============ */
-let dirHandle = null;
-function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open("ia_fs",1);
-  r.onupgradeneeded=()=>r.result.createObjectStore("kv");
-  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
-async function idbSet(k,v){ const db=await idb(); return new Promise((res,rej)=>{ const tx=db.transaction("kv","readwrite"); tx.objectStore("kv").put(v,k); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); }
-async function idbGet(k){ const db=await idb(); return new Promise((res,rej)=>{ const rq=db.transaction("kv").objectStore("kv").get(k); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); }); }
-
+/* ============ backups / store (Core service) ============ */
+// Folder picking via the File System Access API is gone — the Core service owns
+// the store and backups. "Connect" now just confirms the service is reachable and
+// triggers an initial backup.
 async function connectFolder(){
-  if(!window.showDirectoryPicker){ toast("Your browser doesn't support this — use Chrome or Edge"); return; }
   try{
-    dirHandle = await window.showDirectoryPicker({mode:"readwrite"});
-    await idbSet("dir", dirHandle);
-    setFsStatus(true);
-    await writeSavesFile();
-    if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel = document.getElementById("autoBackup"); if(sel) sel.value = "1"; }
-    toast("Connected — saves.json syncing + daily backups on");
-    doBackup(true);   // capture an initial full backup to the folder right away (with progress)
-    try{ await storageHealthCheck(); }catch(e){}   // refresh the durability status block to "connected" right away
-  }catch(e){ /* user cancelled */ }
+    await Store.storeLocation();           // reachable?
+    if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel=document.getElementById("autoBackup"); if(sel) sel.value="1"; }
+    toast("Backups on — saving to Dropbox\\Interests App\\backups");
+    await doBackup(true);
+    try{ await storageHealthCheck(); }catch(e){}
+  }catch(e){ toast("Couldn't reach the app service"); }
 }
-async function restoreFolder(){
-  try{
-    const h = await idbGet("dir");
-    if(!h) return;
-    const p = await h.queryPermission({mode:"readwrite"});
-    if(p==="granted"){ dirHandle=h; setFsStatus(true); }
-    else{
-      const b=document.createElement("div");
-      b.className="banner";
-      b.innerHTML=`<span>&#128279; Reconnect <b>saves.json</b> sync for Notion &amp; your morning briefing</span>
-        <button class="btn btn-primary" style="padding:6px 14px">Reconnect</button>`;
-      b.querySelector("button").onclick=async()=>{
-        if(await h.requestPermission({mode:"readwrite"})==="granted"){ dirHandle=h; setFsStatus(true); writeSavesFile(); b.remove(); toast("Sync reconnected"); }
-      };
-      document.querySelector("main").prepend(b);
-    }
-  }catch(e){ console.warn(e); }
-}
-function setFsStatus(on){
-  const el=document.getElementById("fsStatus");
-  if(el) el.innerHTML = on?'<b style="color:var(--chip-life)">&#10003; Connected — saves.json syncing</b>':"Not connected";
-}
-let _wTimer=null;
-function writeSavesFile(){
-  if(!dirHandle) return;
-  clearTimeout(_wTimer);
-  _wTimer=setTimeout(async()=>{
-    try{
-      const fh = await dirHandle.getFileHandle("saves.json",{create:true});
-      const w = await fh.createWritable();
-      await w.write(JSON.stringify({
-        updated:new Date().toISOString(),
-        about:S.about, interests:S.interests, weights:S.weights,
-        saved, hidden, clicks, likes, imported
-      },null,2));
-      await w.close();
-    }catch(e){ console.warn("saves.json write failed",e); }
-  },400);
-}
+// no browser folder handle to reconnect anymore — the service is always the store.
+async function restoreFolder(){ /* no-op: Core service owns the store */ }
+// saves.json export is now handled by the service's backup; nothing to write here.
+function writeSavesFile(){ /* no-op: backups handled by the Core service */ }
 
-const BACKUP_KEEP = 3;
-// Single permission gate for every folder read/write.
-async function folderReady(){
-  try{ return !!dirHandle && (await dirHandle.queryPermission({mode:"readwrite"})) === "granted"; }
-  catch(e){ return false; }
-}
-async function writeFileToFolder(name, text){
-  if(!(await folderReady())) return false;
-  try{
-    const fh = await dirHandle.getFileHandle(name, {create:true});
-    const w = await fh.createWritable();
-    await w.write(text);
-    await w.close();
-    return true;
-  }catch(e){ console.warn("writeFileToFolder failed ("+name+"):", e && e.message); return false; }
-}
-async function listFolderBackups(){
-  if(!(await folderReady())) return [];
-  const out = [];
-  try{
-    for await (const [name, h] of dirHandle.entries()){
-      if(/^interests-backup-\d{4}-\d{2}-\d{2}(\.json)?$/.test(name)){
-        out.push({ name: name, date: name.slice(17, 27), dir: h.kind === "directory" });   // "interests-backup-" is 17 chars
-      }
-    }
-  }catch(e){ console.warn("listFolderBackups failed", e); }
-  out.sort(function(a, b){ return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
-  return out;
-}
-async function rotateBackups(keep){
-  if(!(await folderReady())) return;
-  keep = (keep == null) ? BACKUP_KEEP : keep;
-  const names = [];
-  try{ for await (const [name, h] of dirHandle.entries()){ names.push(name); } }   // folders (new) + legacy files
-  catch(e){ return; }
-  for(const n of pickBackupsToDelete(names, keep)){ try{ await dirHandle.removeEntry(n, {recursive:true}); }catch(e){} }   // recursive: removes a backup folder + its shards
-}
-async function verifyBackup(name, expectedCounts){
-  if(!(await folderReady())) return false;
-  try{
-    const fh = await dirHandle.getFileHandle(name);
-    const file = await fh.getFile();
-    const data = JSON.parse(await file.text());
-    return backupCountsMatch(data._counts, expectedCounts);
-  }catch(e){ console.warn("verifyBackup failed", e); return false; }
-}
-// Capture the CURRENT card lists (refs-only, no images) to a rolling file BEFORE a
-// bulk-destructive op, so a mistaken removal is recoverable. Captures synchronously
-// (so the caller's mutation can't race it), writes async/fire-and-forget.
+// Capture a safety backup BEFORE a bulk-destructive op (dedup/groom), so a mistaken
+// removal is recoverable. The Core service writes + verifies a full backup.
 function snapshotBeforeDestructive(){
-  let text;
-  try{ text = JSON.stringify({ updated:new Date().toISOString(), _snapshot:true, saved:saved, hidden:hidden, clicks:clicks, likes:likes, imported:imported, about:S.about, interests:S.interests, weights:S.weights }, null, 2); }
-  catch(e){ return; }
-  writeFileToFolder("interests-snapshot-latest.json", text);   // fire-and-forget; folderReady checked inside
+  try{ Store.backupNow(); }catch(e){}   // fire-and-forget
 }
 
 /* ============ extension capture drain ============ */
