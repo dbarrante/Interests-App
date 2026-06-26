@@ -24,6 +24,34 @@ Every task implicitly inherits these (copied from the spec/contract):
 
 An adversarial consistency review of the drafted phases found the following. These OVERRIDE the conflicting phase steps. Apply each as you reach the relevant task.
 
+- **[ENGINE — supersedes every `better-sqlite3` reference] Use Node's built-in `node:sqlite` (no native module).** `better-sqlite3` requires a C++ compiler that isn't available on the build machine; we use the built-in `node:sqlite` `DatabaseSync` instead — verified working in both Node v25 and Electron 42 (Node 24), with nothing to compile or rebuild. Apply everywhere:
+  - **package.json (Task 1.1)** — exactly this (no `better-sqlite3`, no `@electron/rebuild`, no `rebuild` script):
+    ```json
+    {
+      "name": "interests-app",
+      "version": "1.0.0",
+      "private": true,
+      "main": "main.js",
+      "scripts": { "start": "electron .", "test": "node tests/run.js", "dist": "electron-builder" },
+      "dependencies": { "express": "^4.21.2" },
+      "devDependencies": { "electron": "^42.5.0", "electron-builder": "^25.1.8" }
+    }
+    ```
+  - **No `electron-rebuild` / native-rebuild step anywhere** (Tasks 1.1, 7.x, 8.2): `node:sqlite` is part of the Electron runtime — nothing to compile, rebuild, or bundle for the DB. Delete those steps; `npm install` only fetches `express` (pure JS) + Electron/electron-builder (prebuilt downloads).
+  - **`core/db.js` `openDb(storeDir)` (Task 2.1):**
+    ```js
+    const path = require("path");
+    const { DatabaseSync } = require("node:sqlite");
+    function openDb(storeDir) {
+      const db = new DatabaseSync(path.join(storeDir, "interests.db"));
+      db.exec("PRAGMA journal_mode=WAL");
+      db.prepare("PRAGMA integrity_check").get(); // returns {integrity_check:'ok'} on a healthy DB
+      return db;
+    }
+    ```
+  - **API mapping for all of `core/db.js`** (node:sqlite vs better-sqlite3): `db.prepare(sql).get(...p)/.all(...p)/.run(...p)` are the same (`.run` returns `{ changes, lastInsertRowid }`); use `db.exec(sql)` for DDL/PRAGMA/multi-statement. **There is NO `db.transaction()` helper** — wrap bulk writes (`replaceCards`, `replaceSaved`) as `db.exec("BEGIN"); try { /* upserts */ db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }`. Bind only string/number/null/BigInt/Buffer (convert booleans to 0/1; never pass `undefined`); use positional `?` params; close with `db.close()`.
+  - `core/appctx.js`, `core/server.js`, and all tests are unaffected — they go through `core/db.js`.
+
 - **[RUNTIME-CRITICAL] DB wiring:** the phase drafts never make the live `main.js` open a real DB or provide `ctx.reopen`; every data route would crash on `ctx.db === null` even though unit tests pass (they build their own ctx). **Do Task 2.6 (below, inserted after Phase 2)** which adds `core/appctx.js` `buildContext()` and wires it into `main.js`. Phase 1 Task 1.5's placeholder `{db:null,...}` ctx is superseded by Task 2.6.
 - **[Phase 5] batch-progress body shape:** `extension/bridge.js` `writeProg()` must POST `{ progress: { done, total, active, ts } }` (wrapped), not a flat body — the server route reads `req.body.progress`. `saveState`/`endBatch` already correctly send `{ state }`.
 - **[Phase 3/6] no duplicate Store methods:** `Store.backupNow/listBackups/restore/storeLocation/moveStore/runImport` are defined ONCE, in Phase 3 Task 3.2 (using the shared `jsend`/`SE` helpers). Phase 6 Task 6.9 ADDS ONLY `Store.health`; it must not redefine the others. `tests/storage-adapter.test.js` is CREATED in Phase 6 (not Phase 3 — Phase 3 only creates `tests/storage-url.test.js`).
