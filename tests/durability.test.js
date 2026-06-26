@@ -1,6 +1,6 @@
 const assert = require("assert");
 const { loadFns } = require("./_extract");
-const { pickBackupsToDelete, backupCountsMatch, lruPush } = loadFns(["pickBackupsToDelete", "backupCountsMatch", "lruPush"]);
+const { pickBackupsToDelete, backupCountsMatch } = loadFns(["pickBackupsToDelete", "backupCountsMatch"]);
 
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + e.message); } }
@@ -49,19 +49,6 @@ t("any count differs → false", () => {
 t("missing operand → false", () => {
   assert.strictEqual(backupCountsMatch(null, { imported: 1, saved: 1, images: 1 }), false);
   assert.strictEqual(backupCountsMatch({ imported: 1, saved: 1, images: 1 }, undefined), false);
-});
-
-t("lruPush appends new id, trims to max (oldest dropped)", () => {
-  assert.deepStrictEqual(lruPush(["a","b","c"], "d", 3), ["b","c","d"]);
-});
-t("lruPush moves an existing id to the end", () => {
-  assert.deepStrictEqual(lruPush(["a","b","c"], "b", 3), ["a","c","b"]);
-});
-t("lruPush under max keeps all", () => {
-  assert.deepStrictEqual(lruPush(["a","b"], "c", 5), ["a","b","c"]);
-});
-t("lruPush max 0 → empty", () => {
-  assert.deepStrictEqual(lruPush(["a"], "b", 0), []);
 });
 
 console.log(pass + " passed, " + fail + " failed");

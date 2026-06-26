@@ -1,13 +1,24 @@
-// Validates every inline <script> block in index.html parses. Exit 1 on any error.
+// Validates every inline <script> block in web/index.html parses, and that
+// web/storage.js parses. Exit 1 on any error.
 const fs = require("fs");
 const path = require("path");
-const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+
+let total = 0, errors = 0;
 const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
-let m, i = 0, e = 0;
+
+const htmlPath = path.join(__dirname, "..", "web", "index.html");
+const html = fs.readFileSync(htmlPath, "utf8");
+let m, i = 0;
 while ((m = re.exec(html))) {
-  i++;
+  i++; total++;
   try { new Function(m[1]); }
-  catch (x) { e++; console.log("BLOCK " + i + ": " + x.message); }
+  catch (x) { errors++; console.log("web/index.html BLOCK " + i + ": " + x.message); }
 }
-console.log(i + " script block(s), " + e + " error(s)");
-process.exit(e ? 1 : 0);
+
+const storagePath = path.join(__dirname, "..", "web", "storage.js");
+total++;
+try { new Function(fs.readFileSync(storagePath, "utf8")); }
+catch (x) { errors++; console.log("web/storage.js: " + x.message); }
+
+console.log(i + " inline script block(s) + storage.js = " + total + " unit(s), " + errors + " error(s)");
+process.exit(errors ? 1 : 0);

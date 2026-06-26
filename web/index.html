@@ -299,6 +299,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 .imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
+<script src="storage.js"></script>
 </head>
 <body>
 <header>
@@ -555,47 +556,11 @@ function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} docu
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
 function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
 
-/* ============ image store (IndexedDB) ============
-   Card screenshots are large; localStorage (~5MB) can't hold many. We keep a
-   small reference "idb:<cardId>" in localStorage and the actual data URL in
-   IndexedDB. _imgCache mirrors them in memory so rendering stays synchronous. */
-let _imgDB=null, _imgCache={};
-const IMG_CACHE_MAX = 600;        // bound the in-memory image mirror (was: all ~630 MB)
-let _imgCacheKeys = [];           // cache ids in LRU order (oldest first)
-// Pure: return the new key order after touching `id` (move-to-end), trimmed to `max`.
-function lruPush(keys, id, max){
-  const out = (keys || []).filter(function(k){ return k !== id; });
-  out.push(id);
-  return out.length > max ? out.slice(out.length - max) : out;
-}
-// Put an image in the bounded cache, evicting whatever fell out of the LRU window.
-function cachePut(id, data){
-  if(id == null) return;
-  _imgCache[id] = data;
-  const next = lruPush(_imgCacheKeys, id, IMG_CACHE_MAX);
-  if(next.length < _imgCacheKeys.length + 1){
-    const keep = {}; for(const k of next) keep[k] = 1;
-    for(const k of _imgCacheKeys){ if(!keep[k]) delete _imgCache[k]; }
-  }
-  _imgCacheKeys = next;
-}
-function imgDB(){
-  return new Promise((res,rej)=>{
-    if(_imgDB) return res(_imgDB);
-    let rq; try{ rq=indexedDB.open("ia_img",1); }catch(e){ return rej(e); }
-    rq.onupgradeneeded=()=>{ if(!rq.result.objectStoreNames.contains("imgs")) rq.result.createObjectStore("imgs"); };
-    rq.onsuccess=()=>{ _imgDB=rq.result; res(_imgDB); };
-    rq.onerror=()=>rej(rq.error);
-  });
-}
-async function idbPutImg(id,dataUrl){ try{ const db=await imgDB(); await new Promise((res,rej)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").put(dataUrl,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); return true; }catch(e){ console.warn("idbPutImg failed",e); return false; } }
-async function idbDelImg(id){ try{ const db=await imgDB(); await new Promise((res)=>{ const tx=db.transaction("imgs","readwrite"); tx.objectStore("imgs").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
-async function idbAllImgs(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const out={}; const tx=db.transaction("imgs","readonly"); const st=tx.objectStore("imgs"); const cur=st.openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
-// just the stored image ids (cheap) — used to recover/verify refs without
-// loading the (possibly hundreds of MB) image values into memory.
-async function idbAllKeys(){ try{ const db=await imgDB(); return await new Promise((res)=>{ const tx=db.transaction("imgs","readonly"); const r=tx.objectStore("imgs").getAllKeys(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>res([]); }); }catch(e){ return []; } }
-// fetch ONE image by id (on-demand; replaces loading the whole store into memory)
-async function idbGetImg(id){ try{ const db=await imgDB(); return await new Promise((res)=>{ const rq=db.transaction("imgs","readonly").objectStore("imgs").get(id); rq.onsuccess=()=>res(rq.result||""); rq.onerror=()=>res(""); }); }catch(e){ return ""; } }
+/* ============ image store (Core service) ============
+   Card images are now plain files served by the Core service at /api/img/<id>.
+   The browser no longer caches image bytes — <img src> points straight at the URL,
+   so there is no 512 MB string ceiling and nothing to evict. resolveImg() turns an
+   "idb:<id>" reference into that URL; setCardImage() PUT/DELETEs the file. */
 // Tiny separate DB mapping card id -> image fingerprint, so FB placeholder detection
 // (fbPlaceholderGroups) never needs the image bytes in memory. Mirrored in _fpMap.
 let _fpDB=null, _fpMap={};
@@ -603,86 +568,24 @@ function fpDB(){ return new Promise((res,rej)=>{ if(_fpDB) return res(_fpDB); le
 async function fpPut(id, fp){ try{ const db=await fpDB(); await new Promise((res,rej)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").put(fp,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); }catch(e){} }
 async function fpDel(id){ try{ const db=await fpDB(); await new Promise((res)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
 async function fpAll(){ try{ const db=await fpDB(); return await new Promise((res)=>{ const out={}; const cur=db.transaction("fp","readonly").objectStore("fp").openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
-// assign an image to a card: data URLs go to IndexedDB (ref kept in it.img),
-// http(s) URLs are stored inline. Updates the in-memory cache immediately.
+// assign an image to a card: data URLs are written to the service (ref kept as
+// "idb:<id>"); http(s) URLs are stored inline; clearing removes the file.
 function setCardImage(it, src){
   if(src && src.indexOf("data:")===0){
-    cachePut(it.id, src);
     it.img="idb:"+it.id;
-    idbPutImg(it.id, src);   // persisted async; cache makes render immediate
-    const fp = imgFp(src); _fpMap[it.id]=fp; fpPut(it.id, fp);   // for placeholder detection without loading bytes
+    Store.imgPut(it.id, src);                                   // write the file
+    const fp = imgFp(src); _fpMap[it.id]=fp; Store.fpSet(it.id, fp);   // placeholder fp (no bytes kept)
   } else {
+    const wasIdb = (it.img && (""+it.img).indexOf("idb:")===0);
     it.img=src||"";
-    if(_imgCache[it.id]){ delete _imgCache[it.id]; idbDelImg(it.id); }
-    if(_fpMap[it.id]){ delete _fpMap[it.id]; fpDel(it.id); }
+    if(wasIdb){ Store.imgDel(it.id); if(_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); } }
   }
 }
 // resolve a card's stored image to something usable in an <img src>
-function resolveImg(v){ if(!v) return ""; return v.indexOf("idb:")===0 ? (_imgCache[v.slice(4)]||"") : v; }
-// load all IDB images into cache, and migrate any legacy inline data URLs out
-// of localStorage into IndexedDB (frees space). Returns when done.
-async function initImageStore(){
-  // Ask the browser to make this origin's storage persistent so it won't evict
-  // our IndexedDB images under disk pressure (the cause of vanishing pictures).
-  try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().then(p=>console.log("[storage] persistent:",p)); } }catch(e){}
-  // Do NOT load all images into memory — they're fetched on demand (idbGetImg) into
-  // the bounded LRU cache. Only the cheap key list is needed for relink/sweep below.
-  const imgKeys = new Set(await idbAllKeys());             // image ids that exist in IndexedDB (cheap, reliable)
-  const cacheLoaded = imgKeys.size > 0;                    // blobs exist in the store?
-  _fpMap = await fpAll();                                  // small id->fingerprint map for placeholder detection
-  // ONE-TIME migration: backfill fingerprints for images that predate _fpMap. Loads
-  // all images once (with the progress overlay), then never again.
-  try{
-    if(cacheLoaded && !localStorage.getItem("ia_fp_migrated")){
-      let need=false; for(const it of imported){ if((it.img||"").indexOf("idb:")===0 && !_fpMap[it.id]){ need=true; break; } }
-      if(need){
-        if(typeof showBusyOverlay==="function") showBusyOverlay("Optimizing image index (one time)…");
-        const all = await idbAllImgs();
-        for(const id of Object.keys(all)){ if(!_fpMap[id]){ const fp=imgFp(all[id]); _fpMap[id]=fp; await fpPut(id, fp); } }
-        if(typeof hideBusyOverlay==="function") hideBusyOverlay();
-      }
-      localStorage.setItem("ia_fp_migrated","1");
-    }
-  }catch(e){ console.warn("fp migration failed", e); if(typeof hideBusyOverlay==="function") hideBusyOverlay(); }
-  let migrated=0;
-  for(const it of imported){
-    if(it.img && it.img.indexOf("data:")===0 && it.id){
-      const fp=imgFp(it.img); _fpMap[it.id]=fp; fpPut(it.id, fp);
-      cachePut(it.id, it.img);
-      await idbPutImg(it.id, it.img);
-      it.img="idb:"+it.id;
-      migrated++;
-    }
-  }
-  if(migrated){ save("imported",imported); console.log("[img] migrated "+migrated+" inline images to IndexedDB"); }
-  // RE-LINK recovery: image blobs are keyed by card id. If a card lost its image
-  // reference (e.g. an earlier over-eager sweep cleared it) but the blob is still
-  // in IndexedDB, restore the link. Only touches cards that currently have NO
-  // image, so it never overwrites a good one.
-  let relinked=0;
-  if(cacheLoaded){
-    for(const it of imported){ if(it && it.id && !it.img && imgKeys.has(it.id)){ it.img="idb:"+it.id; relinked++; } }
-    for(const it of saved){ if(it && it.id && !it.image && imgKeys.has(it.id)){ it.image="idb:"+it.id; relinked++; } }
-    if(relinked){ save("imported",imported); save("saved",saved); console.log("[img] re-linked "+relinked+" recovered image(s)"); setTimeout(()=>toast("Recovered "+relinked+" card image"+(relinked===1?"":"s"),5000),600); }
-  }
-  // Favicon sweep: flag cards with no usable picture for re-capture. CRITICAL:
-  // only treat an idb: ref as dead when the cache actually loaded AND the id is
-  // genuinely absent — never wipe image refs just because the cache failed to
-  // load (that destroyed images on a slow/failed load).
-  let favReset=0;
-  for(const it of imported){
-    const isIdb = it.img && (it.img+"").indexOf("idb:")===0;
-    let bad;
-    if(isIdb){ bad = cacheLoaded && !imgKeys.has((it.img+"").slice(4)); }   // dead only if confirmed missing
-    else { const resolved=resolveImg(it.img); bad = it.img && (!resolved || isBadImg(resolved)); }
-    if(bad || it.blocked){
-      setCardImage(it, "");
-      delete it.blocked; delete it.captured; delete it.lastUpdate; delete it.lastResult;
-      favReset++;
-    }
-  }
-  if(favReset){ save("imported",imported); console.log("[img] flagged "+favReset+" placeholder/favicon card(s) for re-capture"); }
-}
+function resolveImg(v){ if(!v) return ""; return (""+v).indexOf("idb:")===0 ? Store.imgUrl((""+v).slice(4)) : v; }
+// image bytes are no longer preloaded; nothing to do at boot. Kept async so the
+// existing boot sequence (await initImageStore()) is unchanged.
+async function initImageStore(){ /* images are plain URLs now — no preload */ }
 
 /* ============ ui helpers ============ */
 function toast(msg, ms, onclick){
@@ -758,7 +661,7 @@ function applyFilter(list){
 const imgChains = {};
 function imageChain(item){
   const c = [];
-  if(item.image){ const r = item.image.indexOf("idb:")===0 ? (_imgCache[item.image.slice(4)]||"") : item.image; if(r) c.push(r); }
+  if(item.image){ const r = (""+item.image).indexOf("idb:")===0 ? Store.imgUrl((""+item.image).slice(4)) : item.image; if(r) c.push(r); }
   // public screenshot proxies can't see auth-walled sites — they'd return a
   // login wall / "content not available". Skip them for FB/IG (matches impThumb).
   if(item.url && !/facebook\.com|fb\.watch|instagram\.com/i.test(item.url)){
@@ -923,7 +826,7 @@ async function writeFullBackupDir(dirName){
   const dir = await dirHandle.getDirectoryHandle(dirName, {create:true});
   // clear any files from a prior same-day backup so stale shards can't linger
   try{ for await (const [n,h] of dir.entries()){ if(h.kind==="file" && /^(data\.json|img-\d+\.json)$/.test(n)) await dir.removeEntry(n); } }catch(e){}
-  const imgs = await idbAllImgs();
+  const imgs = {};   // image bytes are service files now (full backups go through Store.backupNow); this legacy folder writer is metadata-only until Phase 6 removes it
   const ids = Object.keys(imgs);
   const meta = collectBackupMeta();
   meta._counts.images = ids.length;
@@ -1107,7 +1010,7 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
 async function applyRestore(data, label){
   return doRestoreCore(data && data.keys, data && data._exported, data && data._counts, label, async function(report){
     const images = (data && data.images) || {}; const ids = Object.keys(images); let c = 0;
-    for(const id of ids){ try{ await idbPutImg(id, images[id]); c++; if(report && c % 200 === 0) report(c, ids.length); }catch(e){} }
+    for(const id of ids){ try{ await Store.imgPut(id, images[id]); c++; if(report && c % 200 === 0) report(c, ids.length); }catch(e){} }
     if(report) report(c, ids.length);
     return c;
   });
@@ -1121,7 +1024,7 @@ async function restoreFromDir(name, label){
   return doRestoreCore(meta.keys, meta._exported, meta._counts, label || name, async function(report){
     let c = 0; const shards = meta.shards || 0; const total = (meta._counts && meta._counts.images) || 0;
     for(let i=0;i<shards;i++){
-      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await idbPutImg(id, obj[id]); c++; if(report && c % 200 === 0) report(c, total); }catch(e){} } }
+      try{ const f = await (await dir.getFileHandle("img-"+i+".json")).getFile(); const obj = JSON.parse(await f.text()); for(const id in obj){ try{ await Store.imgPut(id, obj[id]); c++; if(report && c % 200 === 0) report(c, total); }catch(e){} } }
       catch(e){ console.warn("shard "+i+" restore failed", e); }
     }
     if(report) report(c, total);
@@ -2092,12 +1995,12 @@ function attachCardImages(){
     const imgs = document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
     if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
     if(_imgObserver) _imgObserver.disconnect();
-    const load = async im=>{
+    const load = im=>{
       if(im.getAttribute("src")) return;
       const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
-      if(idbId){ let d=_imgCache[idbId]; if(!d){ d=await idbGetImg(idbId); if(d) cachePut(idbId,d); } if(d) im.src=d; return; }
+      if(idbId){ im.loading="lazy"; im.src=Store.imgUrl(idbId); return; }
       const sid = im.getAttribute("data-imgsrc");          // Feed/Saved card: resolve the item's image
-      if(sid){ const it=findItem(sid); let s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ const k=String(s).slice(4); s=_imgCache[k]; if(!s){ s=await idbGetImg(k); if(s) cachePut(k,s); } } if(s) im.src=s; else nextImg(im, sid); }
+      if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; im.src=Store.imgUrl(String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
     };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
     _imgObserver=new IntersectionObserver((entries,obs)=>{ for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } } },{root:null,rootMargin:"800px 0px"});
@@ -2695,9 +2598,9 @@ function impCardHTML(it,idx){
   // Emit a placeholder <img data-imgid> and attach the src after render, lazily
   // (attachCardImages, via IntersectionObserver). http(s) thumbs stay inline (tiny).
   const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;   // emit placeholder for any idb card (image is fetched on demand, may not be cached yet)
-  // isIdbImg must be checked FIRST — when _imgCache is empty (normal at boot) impThumb
-  // returns null for idb-backed cards, so a thumb-first ternary would skip the placeholder
-  // and fall back to favicon/IM, leaving attachCardImages with no element to fill.
+  // isIdbImg must be checked FIRST so idb-backed cards always emit a placeholder
+  // <img data-imgid> for attachCardImages to fill from the service URL; a thumb-first
+  // ternary would otherwise fall back to favicon/IM and leave nothing to fill.
   const icon = isIdbImg
     ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
     : (thumb
@@ -2726,10 +2629,7 @@ function impEdit(idx){
   const it=imported[idx]; if(!it) return;
   if(!it.id){ it.id=newId(); save("imported",imported); }
   _editIdx = idx;
-  _editImg = resolveImg(it.img);
-  if(!_editImg && it.img && String(it.img).indexOf("idb:")===0){
-    idbGetImg(String(it.img).slice(4)).then(function(d){ if(d){ _editImg=d; const el=document.getElementById("editImgPreview"); if(el) el.src=d; } });
-  }
+  _editImg = resolveImg(it.img);   // idb images resolve to the service URL via Store.imgUrl
   // suggest existing categories/tags to add with one click
   const counts={};
   imported.forEach(i=>(i.tags||[]).forEach(t=>counts[t]=(counts[t]||0)+1));
@@ -3225,7 +3125,7 @@ function groomNoLink(){
   const nolink=imported.filter(i=>!i.url);
   if(!nolink.length){ toast("No link-less cards to remove"); return; }
   if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
-  nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ idbDelImg(it.id); delete _imgCache[it.id]; } });
+  nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ Store.imgDel(it.id); } });
   imported = imported.filter(i=>i.url);
   save("imported",imported); writeSavesFile(); updateCounts();
   if(curTab==="imported") renderImported();
@@ -3269,7 +3169,7 @@ function impDrop(idx){
     _impAnchorTop = anchorEl.getBoundingClientRect().top;
   }
   const gone=imported.splice(idx,1)[0];
-  if(gone && gone.img && gone.img.indexOf("idb:")===0){ idbDelImg(gone.id); delete _imgCache[gone.id]; } // free its IndexedDB image
+  if(gone && gone.img && (""+gone.img).indexOf("idb:")===0){ Store.imgDel(gone.id); } // free its stored image
   save("imported",imported); writeSavesFile();
   renderImported(); restoreImpScrollSettle();
   updateCounts();
@@ -3661,11 +3561,13 @@ async function applyDupeRemoval(){
       const keepHasImg = keepImg && (String(keepImg).indexOf("idb:")===0 || !isBadImg(resolveImg(keepImg)));
       const srcIsIdb = src && String(src).indexOf("idb:")===0;
       const srcHasImg = src && (srcIsIdb || !isBadImg(resolveImg(src)));
+      let keptSrcImg = false;
       if (!keepHasImg && srcHasImg){
-        // copy the good image into the kept card — fetch the bytes on demand for idb
-        // (the bounded cache may not hold it) so a good-but-uncached image is never lost
-        const data = srcIsIdb ? (_imgCache[mem.card.id] || await idbGetImg(mem.card.id)) : resolveImg(src);
-        if (data){ keepIsSaved ? setSavedImage(k, data) : setCardImage(k, data); }
+        // copy the good image into the kept card. Image bytes live in service files now;
+        // for an idb source just point the kept card at the SAME image ref (no byte copy),
+        // and don't delete that file below. For http(s)/data sources, store inline as before.
+        if (srcIsIdb){ if(keepIsSaved) k.image = src; else k.img = src; keptSrcImg = true; }
+        else { keepIsSaved ? setSavedImage(k, resolveImg(src)) : setCardImage(k, resolveImg(src)); }
       }
       if (!k.desc && mem.card.desc) k.desc = mem.card.desc;
       if (!k.sdate && mem.card.sdate) k.sdate = mem.card.sdate;
@@ -3673,8 +3575,9 @@ async function applyDupeRemoval(){
       if (mem.card.liked) k.liked = true;
       if (mem.card.captured && (!k.captured || mem.card.captured < k.captured)) k.captured = mem.card.captured;
       if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
-      // delete the removed card's own (now orphaned) image + its fingerprint
-      if (srcIsIdb){ idbDelImg(mem.card.id); delete _imgCache[mem.card.id]; if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; fpDel(mem.card.id); } }
+      // delete the removed card's own (now orphaned) image + its fingerprint — unless the
+      // kept card just adopted that same image ref (keptSrcImg), in which case keep the file.
+      if (srcIsIdb && !keptSrcImg){ Store.imgDel(mem.card.id); if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; fpDel(mem.card.id); } }
       (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
       removed++;
     }
@@ -3844,8 +3747,8 @@ function drainCaptures(){
 // store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
-  if(src && src.indexOf("data:")===0){ cachePut(item.id, src); item.image="idb:"+item.id; idbPutImg(item.id, src); }
-  else { item.image=src||""; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
+  if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
+  else { const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=src||""; if(wasIdb) Store.imgDel(item.id); }
 }
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
 // than in IndexedDB. Saved clips are a small, deliberate set, and inline data
@@ -3853,7 +3756,7 @@ function setSavedImage(item, src){
 // (which is what made clip pictures vanish on refresh). Shows full-res now,
 // then swaps in the small version once downscaled.
 function setClipImageInline(item, dataUrl){
-  if(item.image && (item.image+"").indexOf("idb:")===0 && _imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); }
+  if(item.image && (item.image+"").indexOf("idb:")===0){ Store.imgDel(item.id); }
   item.image = dataUrl;   // immediate render (full-res, in memory)
   downscaleDataUrl(dataUrl, function(small){
     item.image = small || dataUrl;
@@ -3892,7 +3795,7 @@ function addClip(cap){
   // wins, then the screenshot you saw, then the page's OG image.
   if(cap.clipImage){
     if((cap.clipImage+"").indexOf("data:")===0){ setClipImageInline(item, cap.clipImage); }
-    else if(/^https?:/.test(cap.clipImage)){ item.image=cap.clipImage; if(_imgCache[item.id]){ delete _imgCache[item.id]; idbDelImg(item.id); } }
+    else if(/^https?:/.test(cap.clipImage)){ const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=cap.clipImage; if(wasIdb) Store.imgDel(item.id); }
   }
   else if(cap.screenshot){ setClipImageInline(item, cap.screenshot); }
   else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
