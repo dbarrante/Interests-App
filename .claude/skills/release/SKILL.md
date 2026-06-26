@@ -9,14 +9,13 @@ disable-model-invocation: true
 Run this when the user asks to cut a build/installer. Execute the steps in order and stop on the first failure, reporting it plainly.
 
 ## Preconditions
-- `package.json` exists with the `test`, `rebuild`, and `dist` scripts and the electron-builder `build` config (NSIS assisted wizard: `oneClick:false`, `allowToChangeInstallationDirectory:true`, `perMachine:false`, custom `build/installer.nsh`).
-- Dependencies installed (`npm install`). If `node_modules` is missing, run `npm install` first.
+- `package.json` exists with the `test` and `dist` scripts and the electron-builder `build` config (NSIS assisted wizard: `oneClick:false`, `allowToChangeInstallationDirectory:true`, `perMachine:false`, custom `build/installer.nsh`).
+- Dependencies installed (`npm install`). If `node_modules` is missing, run `npm install` first. No native build step is needed — the DB uses Node's built-in `node:sqlite`, so there is nothing to compile or rebuild.
 
 ## Steps
 1. **Test gate** — `npm test` (runs `node tests/run.js`: the inline-`<script>` syntax gate plus every `tests/*.test.js`). If anything fails, STOP and report — do not build on red.
-2. **Native rebuild** — `npm run rebuild` (`electron-rebuild -f -w better-sqlite3`). `better-sqlite3` is a native module; the test run uses the Node ABI, but the packaged app needs it rebuilt for Electron's ABI. Skipping this yields an installer that crashes on launch with a NODE_MODULE_VERSION mismatch.
-3. **Package** — `npm run dist` (`electron-builder`). Produces the NSIS installer under `dist/`.
-4. **Report** — print the installer path (e.g. `dist/Interests App Setup <version>.exe`) and its size.
+2. **Package** — `npm run dist` (`electron-builder`). Produces the NSIS installer under `dist/`.
+3. **Report** — print the installer path (e.g. `dist/Interests App Setup <version>.exe`) and its size.
 
 ## Tell the user
 - The installer is **unsigned** (no paid certificate). On first run Windows SmartScreen shows *"Windows protected your PC / unknown publisher"* — they (and anyone they share it with) click **More info → Run anyway**. This is expected, not a failure.

@@ -14,14 +14,14 @@ Read this before changing code here. These are the rules that keep the project s
 - Images are files on disk (`data/images/<id>.jpg`); the DB stores a pointer, never the bytes. Never inline thousands of base64 images into one string — that hit JS's ~512 MB string limit and crashed render and backup before.
 
 ## Architecture (v1 target)
-- Electron shell + a bundled Node/Express **Core service** on `localhost:3456` + SQLite (`better-sqlite3`) for `cards`/`saved`/`kv`/`fp` + image files. The existing single-file UI (`web/index.html`) talks to the service through `web/storage.js`. The Chrome capture extension's engine is untouched; only its delivery is HTTP. See `docs/superpowers/specs/2026-06-26-interests-formal-app-design.md`.
+- Electron shell + a bundled Node/Express **Core service** on `localhost:3456` + SQLite via Node's built-in **`node:sqlite`** (`DatabaseSync`) for `cards`/`saved`/`kv`/`fp` + image files. The existing single-file UI (`web/index.html`) talks to the service through `web/storage.js`. The Chrome capture extension's engine is untouched; only its delivery is HTTP. See `docs/superpowers/specs/2026-06-26-interests-formal-app-design.md`.
 - Live store defaults to `<install>\data\` (relocatable in Settings; pointer in `%APPDATA%`). Backups go to `Dropbox\Interests App\backups\`.
 
 ## Code & test conventions
 - Backend code under `core/` is CommonJS, directly `require()`-able from tests.
 - Tests are **plain Node `assert` scripts** (no framework), run via `node tests/<name>.test.js`; `node tests/run.js` runs the syntax gate + all `*.test.js`. HTTP is tested by mounting `createServer()` on port 0 with global `fetch`; pure logic by requiring the module.
 - The single-file UI must keep parsing — every inline `<script>` passes `node tests/syntax-check.js`.
-- `better-sqlite3` is native: dev/tests use the Node ABI; packaging runs `electron-rebuild` for Electron's ABI.
+- The DB uses Node's built-in **`node:sqlite`** (`DatabaseSync`) — **no native module, no `electron-rebuild`**; it works in both system Node and Electron's runtime. Pragmas via `db.exec`; transactions via explicit `BEGIN`/`COMMIT`/`ROLLBACK` (no `.transaction()` helper).
 
 ## Environment quirks
 - The repo lives in a **Dropbox** folder: retry git on intermittent `.git` lock errors; CRLF/LF warnings on commit are expected and harmless.
