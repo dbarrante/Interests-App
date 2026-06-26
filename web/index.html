@@ -531,30 +531,25 @@ const DEFAULTS = {
 };
 
 /* ============ state ============ */
-let S = load("settings", DEFAULTS);
-S = Object.assign({}, DEFAULTS, S);
+let S = Object.assign({}, DEFAULTS);
 S.keys = Object.assign({}, DEFAULTS.keys, S.keys||{});
 S.models = Object.assign({}, DEFAULTS.models, S.models||{});
 S.weights = Object.assign({}, DEFAULTS.weights, S.weights||{});
 S.extraCats = S.extraCats||[];
 rebuildCats();
 
-let feed   = load("feed", []);
-let saved  = load("saved", []);
-let hidden = load("hidden", []);
-let clicks = load("clicks", []);
-let shown  = load("shown", []);
-let likes  = load("likes", []);
-let imported = load("imported", []);
-let spool  = load("spool", []);
-let stCur  = load("stcur", null);
+let feed=[], saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stCur=null;
 
-function load(k,d){ try{ const v=localStorage.getItem("ia_"+k); return v?JSON.parse(v):d; }catch(e){ return d; } }
-function save(k,v){ try{ localStorage.setItem("ia_"+k, JSON.stringify(v)); return true; }catch(e){ console.warn("save failed ("+k+"):", e && e.name); return false; } }
+// Persistent app state now lives in the Core service kv store (key "ia_<k>").
+// load() returns a Promise; the few synchronous-default call sites use loadKVSync's
+// cached value populated at boot. save() fires-and-forgets the PUT (the in-memory
+// array is the source of truth during a session; the service persists it).
+function load(k,d){ return Store.kvGet("ia_"+k).then(function(v){ return (v==null)?d:v; }); }
+function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
-function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) save("imported",imported); return n; }
-function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
+function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
+function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
 
 /* ============ image store (Core service) ============
    Card images are now plain files served by the Core service at /api/img/<id>.
@@ -601,8 +596,8 @@ function catByName(n){ return CATS.find(c=>c.name===n) || CATS.find(c=> n && n.t
 function userName(){ return (S.about.split(/[—\-,.;:]/)[0]||"").trim() || "there"; }
 
 let curTab = "feed";
-let filterCat = load("fcat","");
-let viewMode = load("view", "g4");
+let filterCat = "";        // hydrated from Store.kv in bootData()
+let viewMode = "g4";       // hydrated from Store.kv in bootData()
 const VIEWS = [["g1","&#9634; 1&times;1"],["g2","&#9635; 2&times;2"],["g4","&#9638; 4&times;4"],["detail","&#9645; Detail"],["list","&#9776; List"]];
 function setView(v){
   viewMode = v; save("view", v);
@@ -860,10 +855,8 @@ function downloadJSON(obj, name){
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
 function markBackupDone(counts, verified, where, name){
-  try{
-    localStorage.setItem("ia_lastbackup", String(Date.now()));
-    localStorage.setItem("ia_backup_last", JSON.stringify({ ts:Date.now(), counts:counts, verified:!!verified, where:where, name:name }));
-  }catch(e){}
+  Store.kvSet("ia_lastbackup", Date.now());
+  Store.kvSet("ia_backup_last", { ts:Date.now(), counts:counts, verified:!!verified, where:where, name:name });
   const info = document.getElementById("backupInfo");
   if(info) info.textContent = "Last backup: "+counts.imported+" imported, "+counts.saved+" saved, "+counts.images+" images"+(verified?" ✓ verified":"")+" ("+where+")";
   if(typeof renderDurabilityStatus === "function"){ try{ renderDurabilityStatus(); }catch(e){} }
@@ -914,7 +907,7 @@ async function doBackup(manual){
 async function backupNow(){ return doBackup(true); }   // manual: button + Ctrl+Shift+B (bypasses the interval; shows progress)
 async function maybeAutoBackup(){
   const days = +S.autoBackup; if(!days) return;
-  let last = 0; try{ last = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
+  let last = 0; try{ last = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
   if(Date.now() - last < days*86400000) return;
   await doBackup();
 }
@@ -929,9 +922,9 @@ async function storageHealthCheck(){
   try{ if(navigator.storage && navigator.storage.estimate){ const est = await navigator.storage.estimate(); usage = est.usage || 0; quota = est.quota || 0; } }catch(e){}
   let folder = "none";
   if(dirHandle){ folder = (await folderReady()) ? "connected" : "lapsed"; }
-  let lastBackup = 0; try{ lastBackup = +localStorage.getItem("ia_lastbackup") || 0; }catch(e){}
+  let lastBackup = 0; try{ lastBackup = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
   const health = { persisted: persisted, usage: usage, quota: quota, folder: folder, lastBackup: lastBackup, ts: Date.now() };
-  try{ localStorage.setItem("ia_health", JSON.stringify(health)); }catch(e){}
+  Store.kvSet("ia_health", health);
   const days = +S.autoBackup || 0;
   const stale = days && lastBackup && (Date.now() - lastBackup > (days + 1) * 86400000);
   const atRisk = (folder === "lapsed") || (folder === "none" && days) || (persisted === false && (!lastBackup || stale));
@@ -950,14 +943,14 @@ function showDurabilityBanner(folder){
   b.querySelector("button").onclick = function(){ connectFolder(); b.remove(); };
   const main = document.querySelector("main"); if(main) main.prepend(b);
 }
-function renderDurabilityStatus(health){
+async function renderDurabilityStatus(health){
   const el = document.getElementById("durStatus"); if(!el) return;
   let h = health;
-  if(!h){ try{ h = JSON.parse(localStorage.getItem("ia_health") || "null"); }catch(e){} }
+  if(!h){ try{ h = await Store.kvGet("ia_health"); }catch(e){} }
   h = h || { folder:"none", persisted:null, usage:0, quota:0 };
   const mb = function(n){ return Math.round((n||0)/1048576); };
   let last = "none yet";
-  try{ const lb = JSON.parse(localStorage.getItem("ia_backup_last") || "null"); if(lb) last = new Date(lb.ts).toLocaleString() + " · " + lb.counts.imported + " imported, " + lb.counts.images + " images" + (lb.verified ? " · ✓ verified" : "") + " (" + lb.where + ")"; }catch(e){}
+  try{ const lb = await Store.kvGet("ia_backup_last"); if(lb) last = new Date(lb.ts).toLocaleString() + " · " + lb.counts.imported + " imported, " + lb.counts.images + " images" + (lb.verified ? " · ✓ verified" : "") + " (" + lb.where + ")"; }catch(e){}
   const folderTxt = h.folder === "connected" ? "✓ connected" : (h.folder === "lapsed" ? "⚠ reconnect needed" : "not connected");
   const persistTxt = h.persisted === true ? "✓ granted" : (h.persisted === false ? "⚠ not granted (eviction possible)" : "unknown");
   el.innerHTML =
@@ -1777,7 +1770,7 @@ async function handleImport(ev){
     }
   });
   imported = imported.slice(-10000);
-  save("imported", imported); writeSavesFile(); renderImportStatus();
+  Store.putCards(imported); writeSavesFile(); renderImportStatus();
   const parts=[];
   if(added) parts.push(added+" new items imported");
   if(updated) parts.push(updated+" existing items enriched");
@@ -1799,11 +1792,11 @@ let selPicks = new Set();
 let _openedSel = new Set();  // normalized URLs already opened via "Open" this Select session — avoids duplicate tabs on a pop-up retry
 function toggleSelMode(){ selMode=!selMode; if(!selMode) selPicks.clear(); _openedSel.clear(); renderImported(); }
 function togglePick(idx){ selPicks.has(idx)?selPicks.delete(idx):selPicks.add(idx); renderImported(); }
-let impTag = load("itag","");
+let impTag = "";           // hydrated from Store.kv in bootData()
 function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); renderImported(); }
-let impSrc = load("isrc","");
-let impSort = load("isort","newest");
-let impUnreviewed = load("iunrev", false);
+let impSrc = "";           // hydrated from Store.kv in bootData()
+let impSort = "newest";    // hydrated from Store.kv in bootData()
+let impUnreviewed = false; // hydrated from Store.kv in bootData()
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
 let _refreshPins = new Set();  // ids currently being refreshed/captured — kept visible in status filters (Couldn't capture / Failed) so you SEE the picture land instead of the card vanishing
@@ -1814,8 +1807,8 @@ function imgFp(d){ d=(d||"")+""; return d ? (d.length+"|"+d.slice(0,48)+"|"+d.sl
 // Fingerprints of junk placeholder images we've cleared via "Fix placeholders". Any
 // future capture that reproduces one is rejected in drainCaptures, so gated posts
 // can't re-loop back into the placeholder pile. Persisted across reloads.
-let _phFps = new Set((function(){ try{ return JSON.parse(localStorage.getItem("ia_ph_fps")||"[]"); }catch(e){ return []; } })());
-function rememberPhFp(fp){ if(fp && !_phFps.has(fp)){ _phFps.add(fp); try{ localStorage.setItem("ia_ph_fps", JSON.stringify([..._phFps].slice(-200))); }catch(e){} } }
+let _phFps = new Set();
+function rememberPhFp(fp){ if(fp && !_phFps.has(fp)){ _phFps.add(fp); Store.kvSet("ia_ph_fps", [..._phFps].slice(-200)); } }
 // Detect FB cards that captured a loading-spinner/placeholder instead of the post
 // photo: those all share the IDENTICAL image (real photos are unique). Returns the
 // groups of duplicate-image cards. Cheap content fingerprint from the cached data URL.
@@ -1850,7 +1843,7 @@ function clearFbPlaceholders(silent){
       cleared++;
     }
   }
-  if(cleared){ save("imported",imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
+  if(cleared){ Store.putCards(imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
   else if(!silent) toast("No placeholder captures found");
   return cleared;
 }
@@ -2111,7 +2104,7 @@ async function enrichPins(){
   for(const p of pins.filter(x=>!x.img).slice(0,25)){
     p.pt=1; apply(p, await fetchMicrolink(p.url));
   }
-  save("imported",imported); writeSavesFile();
+  Store.putCards(imported); writeSavesFile();
   return got;
 }
 async function enrichImported(){
@@ -2138,7 +2131,7 @@ ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
       const arr = JSON.parse(t.slice(a,z+1));
       batch.forEach((b,i)=>{ if(typeof arr[i]==="string" && arr[i].trim()) b.desc=arr[i].trim().slice(0,220); });
       done += batch.length;
-      save("imported",imported); writeSavesFile();
+      Store.putCards(imported); writeSavesFile();
       toast(done+" described…");
     }
     const left = imported.filter(i=>!i.desc).length;
@@ -2185,7 +2178,7 @@ ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).jo
         else q.cat = cat;
       });
       done += queue.length;
-      save("imported",imported); persistAll();
+      Store.putCards(imported); persistAll();
       toast(done+" tagged…");
     }
     const left = imported.filter(i=>!i.tags).length + saved.filter(i=>!i.tags).length;
@@ -2216,7 +2209,7 @@ function allImportedTags(){
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 /* ---- AutoTag learning: per-tag stats teach it what to suggest ---- */
-let tagStats = load("tagstats", {});   // { tagLower: {sug,acc,rej,rem} }
+let tagStats = {};   // { tagLower: {sug,acc,rej,rem} } — hydrated from Store.kv in bootData()
 function tsRec(tag, field){ const k=(tag||"").trim().toLowerCase(); if(!k) return; const s=tagStats[k]||(tagStats[k]={sug:0,acc:0,rej:0,rem:0}); s[field]=(s[field]||0)+1; }
 function tsSave(){ save("tagstats", tagStats); }
 // best-practice: years, dates, pure numbers, generic filler, over-long are poor tags
@@ -2263,7 +2256,7 @@ function canonicalTag(t){
 // Persist + update ONLY the edited card's tag row in place (no full re-render),
 // so the page never jumps while tagging.
 function _afterTagEdit(idx){
-  save("imported",imported); writeSavesFile();
+  Store.putCards(imported); writeSavesFile();
   const it=imported[idx];
   if(it && it.id){
     const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
@@ -2513,7 +2506,7 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
         noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
     }catch(e){ console.warn(e); }
   }
-  save("imported",imported); writeSavesFile();
+  Store.putCards(imported); writeSavesFile();
   selPicks.clear();
   renderImported();
   toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
@@ -2535,7 +2528,7 @@ function captureSelected(){
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
   imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url))){ c.lastUpdate=at; if(c.lastResult!=="ok") c.lastResult="pending"; } });
-  save("imported", imported);
+  Store.putCards(imported);
   _batchIgnoreUntil=0;
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
@@ -2624,7 +2617,7 @@ function impCardHTML(it,idx){
 let _editIdx = -1, _editImg = "", _hoverCardId = "";
 function impEdit(idx){
   const it=imported[idx]; if(!it) return;
-  if(!it.id){ it.id=newId(); save("imported",imported); }
+  if(!it.id){ it.id=newId(); Store.putCards(imported); }
   _editIdx = idx;
   _editImg = resolveImg(it.img);   // idb images resolve to the service URL via Store.imgUrl
   // suggest existing categories/tags to add with one click
@@ -2744,7 +2737,7 @@ function pasteImageToCard(idx, file){
   downscaleImage(file, d=>{
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
-    if(!save("imported",imported)){
+    if(!Store.putCards(imported)){
       toast("Storage is full — but the image was stored. Try again or reload.", 6000);
       return;
     }
@@ -2767,7 +2760,7 @@ function impEditSave(){
   if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
-  if(!save("imported",imported)){
+  if(!Store.putCards(imported)){
     toast("Storage is full — text saved. Try removing some items to free space.", 8000);
   }
   writeSavesFile();
@@ -2804,7 +2797,7 @@ function impOpen(idx){
   clicks.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   _impScrollY = window.scrollY;
-  if(!it.id){ it.id=newId(); save("imported",imported); }
+  if(!it.id){ it.id=newId(); Store.putCards(imported); }
   // remember the opened card and its current viewport position as the anchor
   _impAnchorId = it.id;
   const _ael = document.querySelector('.imp-card[data-id="'+it.id+'"]');
@@ -2821,7 +2814,7 @@ function impOpen(idx){
   const stale = (S.recaptureMonths>0) && it.captured && (Date.now()-it.captured > recaptureMs);
   const alreadyGood = it.captured && !stale && !isBadImg(it.img);   // already captured AND has a real picture — skip (a captured-but-bad/placeholder image still needs a re-capture, not "nothing to capture")
   const doCapture = !alreadyGood && (needs || stale);
-  if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; save("imported",imported); }
+  if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; Store.putCards(imported); }
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
   try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture})); }catch(e){}
@@ -2845,7 +2838,7 @@ function impRefresh(idx){
   setCardImage(it,"");                 // clear so enrichOnOpen can refill + the capture overwrites
   delete it.blocked;                   // give a blocked page a fresh chance
   it.lastUpdate=Date.now(); it.lastResult="pending";
-  save("imported",imported);
+  Store.putCards(imported);
   try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
   // render:1 (FB only) → the extension opens its own focused tab, renders the post
   // the way a manual "Save to Interests" does, captures it, and closes the tab.
@@ -2918,7 +2911,7 @@ async function enrichOnOpen(it, idx){
       }catch(e){ console.warn("AI desc failed",e); }
     }
     if(changed){
-      save("imported",imported); writeSavesFile();
+      Store.putCards(imported); writeSavesFile();
       if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
       toast("Card updated with article info");
       const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } };
@@ -2954,7 +2947,7 @@ function startBatchCapture(mode){
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
   imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureable(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
-  save("imported", imported);   // persist ids + attempt stamps
+  Store.putCards(imported);   // persist ids + attempt stamps
   _batchIgnoreUntil = 0;
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
@@ -2987,7 +2980,7 @@ function startFbCapture(){
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
   imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureableFb(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
-  save("imported", imported);
+  Store.putCards(imported);
   _batchIgnoreUntil = 0;
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
@@ -3029,7 +3022,7 @@ function startFbMissRenderCapture(){
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
   imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && fbMiss(c)){ c.lastUpdate=at; c.lastResult="pending"; } });
-  save("imported", imported);
+  Store.putCards(imported);
   _batchIgnoreUntil = 0;
   try{
     localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
@@ -3124,7 +3117,7 @@ function groomNoLink(){
   if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
   nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ Store.imgDel(it.id); } });
   imported = imported.filter(i=>i.url);
-  save("imported",imported); writeSavesFile(); updateCounts();
+  Store.putCards(imported); writeSavesFile(); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
 }
@@ -3134,7 +3127,7 @@ function impLike(idx){
   it.liked=true;
   likes.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
-  save("imported",imported); persistAll(); renderImportedKeepFocus();
+  Store.putCards(imported); persistAll(); renderImportedKeepFocus();
   toast("Liked — more like this in your feed");
 }
 function impSave(idx){
@@ -3151,7 +3144,7 @@ function impSave(idx){
     });
   }
   imported.splice(idx,1);
-  save("imported",imported); persistAll(); renderImportedKeepFocus(); updateCounts();
+  Store.putCards(imported); persistAll(); renderImportedKeepFocus(); updateCounts();
   toast("Moved to Saved");
 }
 function impDrop(idx){
@@ -3167,7 +3160,7 @@ function impDrop(idx){
   }
   const gone=imported.splice(idx,1)[0];
   if(gone && gone.img && (""+gone.img).indexOf("idb:")===0){ Store.imgDel(gone.id); } // free its stored image
-  save("imported",imported); writeSavesFile();
+  Store.putCards(imported); writeSavesFile();
   renderImported(); restoreImpScrollSettle();
   updateCounts();
 }
@@ -3581,7 +3574,7 @@ async function applyDupeRemoval(){
   }
   if (rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
   if (rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  save("imported", imported); save("saved", saved); writeSavesFile(); updateCounts();
+  Store.putCards(imported); Store.putSaved(saved); writeSavesFile(); updateCounts();
   closeDupeReview();
   if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
@@ -3731,7 +3724,7 @@ function drainCaptures(){
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:lastOpened.id, ts:Date.now()})); }catch(e){} }
   if(unmatched && !matched && !removedDead){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
-  if(changed || persisted){ save("imported", imported); writeSavesFile(); updateCounts(); }
+  if(changed || persisted){ Store.putCards(imported); writeSavesFile(); updateCounts(); }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
     if(removedDead){
@@ -3757,9 +3750,9 @@ function setClipImageInline(item, dataUrl){
   item.image = dataUrl;   // immediate render (full-res, in memory)
   downscaleDataUrl(dataUrl, function(small){
     item.image = small || dataUrl;
-    if(!save("saved", saved)){
+    if(!Store.putSaved(saved)){
       // localStorage is full — keep the image in IndexedDB instead of losing it on reload
-      try{ setSavedImage(item, item.image); save("saved", saved); }catch(e){}
+      try{ setSavedImage(item, item.image); Store.putSaved(saved); }catch(e){}
     }
     if(curTab==="saved") renderSaved();
   });
@@ -3831,38 +3824,55 @@ let _deadUndo=null;
 function undoDead(){
   if(!_deadUndo) return;
   imported.unshift(_deadUndo); _deadUndo=null;
-  save("imported", imported); writeSavesFile(); updateCounts();
+  Store.putCards(imported); writeSavesFile(); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Card restored");
 }
 
 /* ============ init ============ */
-(function(){
+async function bootData(){
+  // pull all persistent state from the Core service before first render
+  imported = await Store.getCards();
+  saved    = await Store.getSaved();
+  feed   = (await load("feed",   [])) || [];
+  hidden = (await load("hidden", [])) || [];
+  clicks = (await load("clicks", [])) || [];
+  shown  = (await load("shown",  [])) || [];
+  likes  = (await load("likes",  [])) || [];
+  spool  = (await load("spool",  [])) || [];
+  stCur  = await load("stcur", null);
+  filterCat = (await load("fcat", "")) || "";
+  viewMode  = (await load("view", "g4")) || "g4";
+  impTag    = (await load("itag", "")) || "";
+  impSrc    = (await load("isrc", "")) || "";
+  impSort   = (await load("isort", "newest")) || "newest";
+  impUnreviewed = !!(await load("iunrev", false));
+  tagStats  = (await load("tagstats", {})) || {};
+  try{ const ph = await Store.kvGet("ia_ph_fps"); _phFps = new Set(Array.isArray(ph)?ph:[]); }catch(e){ _phFps = new Set(); }
+  const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
+
+  // one-time data hygiene (was a synchronous IIFE)
   feed = dropAlreadySaved(feed); save("feed", feed);
   const before=imported.length;
   imported = imported.filter(i=>!/^https?:\/\//i.test(i.title));
   imported = imported.filter(i=>!/^.{2,40}\bsaved\b.{0,80}\b(link|post|video|event)\b\.?$/i.test(i.title));
   let wiped=0;
-  imported.forEach(i=>{
-    if(i.desc && /\blikely\b/i.test(i.desc) && /\b(pin|post|video|image|idea|visual|interest)\b/i.test(i.desc)){ delete i.desc; wiped++; }
-  });
+  imported.forEach(i=>{ if(i.desc && /\blikely\b/i.test(i.desc) && /\b(pin|post|video|image|idea|visual|interest)\b/i.test(i.desc)){ delete i.desc; wiped++; } });
   if(imported.length!==before || wiped){
-    save("imported", imported);
+    await Store.putCards(imported);
     setTimeout(()=>toast("Cleaned up "+(before-imported.length)+" junk imports, reset "+wiped+" vague descriptions — re-import pinterest-import.json, then hit Enrich"), 800);
   }
   ensureIds();
-})();
-save("settings", S);
-updateCounts();
-showTab(load("tab","feed"));
-(async()=>{
-  try{ await restoreFolder(); }catch(e){ console.warn("restoreFolder failed", e); }
+  save("settings", S);
+  updateCounts();
+  showTab(await load("tab","feed"));
+
   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
-  try{ await initImageStore(); if(curTab==="imported") renderImported(); }
-  catch(e){ console.warn("image store init failed", e); }
+  try{ await initImageStore(); if(curTab==="imported") renderImported(); }catch(e){ console.warn("image store init failed", e); }
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
   maybeAutoBackup();
-})();
+}
+bootData();
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
 setInterval(pollBatchProgress, 1500);
