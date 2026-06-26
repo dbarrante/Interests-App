@@ -98,7 +98,7 @@ t("changedImageIds: nothing changed → []", () => {
 });
 
 /* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
-const { openDb, upsertCard, upsertSaved } = require("../core/db.js");
+const { openDb, upsertCard, upsertSaved, counts } = require("../core/db.js");
 const images = require("../core/images.js");
 const config = require("../core/config.js");
 
@@ -201,6 +201,52 @@ t("rotate keeps an older backup that itself fails verification (never delete a g
     // 06-18 is a rotation candidate but it doesn't verify → leave it (a bad backup is
     // not a safe thing to delete; only delete a backup that is provably complete)
     assert.deepStrictEqual(left, ["interests-backup-2026-06-18", "interests-backup-2026-06-19", "interests-backup-2026-06-20"]);
+  });
+});
+
+/* ---- restore (safety snapshot then swap) ---- */
+t("restore snapshots current store, swaps backup db+images in, keeps live store intact on missing backup", () => {
+  withBackupDir(function (bdir) {
+    // live store with ONE card + image
+    const store = newStore();
+    let db = openDb(store);
+    upsertCard(db, { id: "live", url: "https://x/live", platform: "fb", cat: "Saved", ts: 1, img: "idb:live" });
+    images.putImg(store, "live", TINY_JPG);
+
+    // a backup folder representing a DIFFERENT state (two cards, two images)
+    const bkStore = newStore();
+    let bdb = openDb(bkStore);
+    upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
+    upsertCard(bdb, { id: "b", url: "https://x/b", platform: "fb", cat: "Saved", ts: 2, img: "idb:b" });
+    images.putImg(bkStore, "a", TINY_JPG);
+    images.putImg(bkStore, "b", TINY_JPG);
+    bdb.close();
+    const res = backup.runBackup(openDb(bkStore), bkStore); // writes interests-backup-<today>
+    const backupName = res.name;
+
+    // ctx with a reopen closure
+    const ctx = {
+      db, storeDir: store,
+      getStorePath: function () { return store; },
+      setStorePath: function () {},
+      reopen: function () { return openDb(store); }
+    };
+
+    // missing-backup guard: live store untouched
+    assert.deepStrictEqual(backup.restore("interests-backup-2099-01-01", ctx), { ok: false });
+    assert.strictEqual(images.imageCount(store), 1, "live images untouched on bad restore");
+
+    // real restore
+    const out = backup.restore(backupName, ctx);
+    assert.strictEqual(out.ok, true);
+    // live db now has the backup's two cards
+    assert.strictEqual(counts(ctx.db).cards, 2);
+    assert.strictEqual(images.imageCount(store), 2, "backup images overlaid");
+    // safety snapshot exists and is NOT a rotatable dated name
+    const snaps = fs.readdirSync(bdir).filter(function (n) { return n.indexOf("interests-backup-before-restore-") === 0; });
+    assert.strictEqual(snaps.length, 1, "one pre-restore safety snapshot");
+    assert.strictEqual(backup.pickBackupsToDelete([snaps[0]], 0).length, 0, "snapshot never rotated");
+    ctx.db.close();
   });
 });
 

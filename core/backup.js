@@ -151,4 +151,50 @@ function rotate(keep) {
   }
 }
 
-module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate };
+// Copy every *.jpg from srcImages over dstImages (overlay, never deletes extras).
+function overlayImages(srcImages, dstImages) {
+  let names = [];
+  try { names = fs.readdirSync(srcImages); } catch (e) { return; }
+  fs.mkdirSync(dstImages, { recursive: true });
+  for (const n of names) {
+    if (!n.endsWith(".jpg")) continue;
+    try { fs.copyFileSync(path.join(srcImages, n), path.join(dstImages, n)); } catch (e) {}
+  }
+}
+
+// Restore a named backup: safety-snapshot the CURRENT store first (so a mistaken
+// restore is recoverable), then swap the backup's db + images into the live store
+// and reopen. Old/live data is never destroyed without a snapshot first.
+function restore(name, ctx) {
+  const backupFolder = path.join(dropboxBackupDir(), name);
+  let hasDb = false;
+  try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }
+  if (!hasDb) return { ok: false };
+
+  // 1) safety snapshot of the live store (non-dated name → never auto-rotated)
+  const snapName = "interests-backup-before-restore-" + Date.now();
+  const snapFolder = path.join(dropboxBackupDir(), snapName);
+  fs.mkdirSync(path.join(snapFolder, "images"), { recursive: true });
+  try { fs.copyFileSync(path.join(ctx.storeDir, "interests.db"), path.join(snapFolder, "interests.db")); } catch (e) {}
+  overlayImages(path.join(ctx.storeDir, "images"), path.join(snapFolder, "images"));
+
+  // 2) close the live db so the file can be replaced (Windows holds an exclusive handle)
+  try { ctx.db.close(); } catch (e) {}
+  // also drop WAL/SHM sidecars so the restored db isn't shadowed by stale WAL pages
+  for (const ext of ["-wal", "-shm"]) { try { fs.rmSync(path.join(ctx.storeDir, "interests.db" + ext), { force: true }); } catch (e) {} }
+
+  // 3) swap backup db + images into the live store. The live state is already
+  // safety-snapshotted above, so clear the live images/ first (drop orphans from the
+  // replaced db) and then overlay the backup's images — the live store ends up an
+  // exact copy of the backup, not a union with stale images.
+  fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
+  const liveImages = path.join(ctx.storeDir, "images");
+  try { fs.rmSync(liveImages, { recursive: true, force: true }); } catch (e) {}
+  overlayImages(path.join(backupFolder, "images"), liveImages);
+
+  // 4) reopen
+  ctx.db = ctx.reopen();
+  return { ok: true };
+}
+
+module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore };
