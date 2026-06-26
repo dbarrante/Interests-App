@@ -6,7 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
-const { counts } = require("./db.js");
+const { counts, openDb } = require("./db.js");
+const { setStorePath } = require("./config.js");
 
 // <userprofile>/Dropbox/Interests App/backups, overridable via config.backupDir.
 function dropboxBackupDir() {
@@ -201,4 +202,42 @@ function restore(name, ctx) {
   return { ok: true };
 }
 
-module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore };
+// Move the live store to `target`: copy db + images, VERIFY counts at the target,
+// and only then repoint the %APPDATA% pointer + reopen. The old copy is left intact
+// until (and after) verification, so an interrupted/failed move never loses data.
+function moveStore(target, ctx) {
+  const c = counts(ctx.db);
+  const srcCounts = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 };
+
+  // 1) copy db + images into target
+  let tdb = null;
+  try {
+    fs.mkdirSync(path.join(target, "images"), { recursive: true });
+    // Flush WAL pages into interests.db so the copied file captures the most recent
+    // committed writes (the on-disk file lags the -wal sidecar in WAL mode).
+    try { ctx.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) {}
+    fs.copyFileSync(path.join(ctx.storeDir, "interests.db"), path.join(target, "interests.db"));
+    const srcImages = imagesDir(ctx.storeDir);
+    for (const id of listImageIds(ctx.storeDir)) {
+      fs.copyFileSync(path.join(srcImages, id + ".jpg"), path.join(target, "images", id + ".jpg"));
+    }
+    // 2) verify at the target by opening its db + counting its images
+    tdb = openDb(target);
+    const tc = counts(tdb);
+    const targetCounts = { imported: tc.cards | 0, saved: tc.saved | 0, images: imageCount(target) | 0 };
+    tdb.close(); tdb = null;
+    if (!backupCountsMatch(srcCounts, targetCounts)) return { ok: false, path: ctx.storeDir };
+  } catch (e) {
+    if (tdb) { try { tdb.close(); } catch (e2) {} }
+    return { ok: false, path: ctx.storeDir };
+  }
+
+  // 3) verified → repoint + reopen; OLD store files are left on disk
+  try { ctx.db.close(); } catch (e) {}
+  setStorePath(target);
+  ctx.storeDir = target;
+  ctx.db = ctx.reopen();
+  return { ok: true, path: target };
+}
+
+module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore };
