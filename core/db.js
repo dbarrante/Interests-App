@@ -121,4 +121,94 @@ function deleteCard(db, id) {
   db.prepare("DELETE FROM cards WHERE id=?").run(id);
 }
 
-module.exports = { openDb, getKV, setKV, delKV, counts, rowToCard, cardToRow, allCards, replaceCards, upsertCard, deleteCard };
+// Saved column fields live in their own columns; everything else goes in `data` JSON.
+const SAVED_COLS = ["id", "url", "category", "clipped", "image"];
+
+function savedToRow(item) {
+  const image = item.image || "";
+  let img_file = null, img_url = null;
+  if (image.indexOf("idb:") === 0) img_file = item.id + ".jpg";
+  else if (image.indexOf("http") === 0) img_url = image;
+  const data = {};
+  for (const k of Object.keys(item)) {
+    if (SAVED_COLS.indexOf(k) === -1) data[k] = item[k];
+  }
+  return {
+    id: item.id,
+    url: item.url != null ? item.url : null,
+    category: item.category != null ? item.category : null,
+    clipped: item.clipped != null ? item.clipped : null,
+    img_file,
+    img_url,
+    data: JSON.stringify(data),
+  };
+}
+
+function rowToSaved(row) {
+  const base = row.data ? JSON.parse(row.data) : {};
+  base.id = row.id;
+  base.url = row.url;
+  base.category = row.category;
+  base.clipped = row.clipped;
+  base.image = row.img_file ? ("idb:" + row.id) : (row.img_url || "");
+  return base;
+}
+
+function allSaved(db) {
+  return db.prepare("SELECT * FROM saved").all().map(rowToSaved);
+}
+
+// node:sqlite has no named-param helper here; bind positional `?` params in column order.
+const _SAVED_INSERT_SQL =
+  "INSERT INTO saved(id,url,category,clipped,img_file,img_url,data) VALUES(?,?,?,?,?,?,?) " +
+  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,category=excluded.category,clipped=excluded.clipped,img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data";
+
+function _runSavedInsert(stmt, item) {
+  const r = savedToRow(item);
+  stmt.run(r.id, r.url, r.category, r.clipped, r.img_file, r.img_url, r.data);
+}
+
+function upsertSaved(db, item) {
+  _runSavedInsert(db.prepare(_SAVED_INSERT_SQL), item);
+}
+
+// node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
+function replaceSaved(db, arr) {
+  const ins = db.prepare(_SAVED_INSERT_SQL);
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM saved").run();
+    for (const it of (arr || [])) _runSavedInsert(ins, it);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function deleteSaved(db, id) {
+  db.prepare("DELETE FROM saved WHERE id=?").run(id);
+}
+
+function getFp(db, id) {
+  const row = db.prepare("SELECT fp FROM fp WHERE id=?").get(id);
+  return row ? row.fp : null;
+}
+function setFp(db, id, fp) {
+  db.prepare("INSERT INTO fp(id,fp) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET fp=excluded.fp").run(id, fp);
+}
+function delFp(db, id) {
+  db.prepare("DELETE FROM fp WHERE id=?").run(id);
+}
+function allFp(db) {
+  const out = {};
+  for (const row of db.prepare("SELECT id,fp FROM fp").all()) out[row.id] = row.fp;
+  return out;
+}
+
+module.exports = {
+  openDb, getKV, setKV, delKV, counts,
+  rowToCard, cardToRow, allCards, replaceCards, upsertCard, deleteCard,
+  rowToSaved, savedToRow, allSaved, replaceSaved, upsertSaved, deleteSaved,
+  getFp, setFp, delFp, allFp,
+};

@@ -145,5 +145,76 @@ t("upsertCard inserts then updates; deleteCard removes", () => {
   d.close();
 });
 
+t("savedToRow: image idb -> img_file; data excludes column fields", () => {
+  const item = { id: "s1", url: "u", category: "Tips", clipped: 1700000000000, image: "idb:s1", title: "T", benefit: "B", source: "src", tags: ["x"], sdate: "2026-06-01" };
+  const row = db.savedToRow(item);
+  assert.strictEqual(row.id, "s1");
+  assert.strictEqual(row.category, "Tips");
+  assert.strictEqual(row.clipped, 1700000000000);
+  assert.strictEqual(row.img_file, "s1.jpg");
+  assert.strictEqual(row.img_url, null);
+  const data = JSON.parse(row.data);
+  assert.deepStrictEqual(data, { title: "T", benefit: "B", source: "src", tags: ["x"], sdate: "2026-06-01" });
+  assert.ok(!("image" in data) && !("category" in data) && !("clipped" in data));
+});
+
+t("savedToRow: http image -> img_url; empty -> both null", () => {
+  assert.strictEqual(db.savedToRow({ id: "s2", url: "u", category: "c", clipped: 0, image: "https://h/s.jpg" }).img_url, "https://h/s.jpg");
+  const empty = db.savedToRow({ id: "s3", url: "u", category: "c", clipped: 0, image: "" });
+  assert.strictEqual(empty.img_file, null);
+  assert.strictEqual(empty.img_url, null);
+});
+
+t("saved round-trip through savedToRow -> rowToSaved is lossless (idb/http/empty)", () => {
+  const items = [
+    { id: "a", url: "ua", category: "Tips", clipped: 10, image: "idb:a", title: "A", benefit: "b" },
+    { id: "b", url: "ub", category: "News", clipped: 20, image: "https://h/b.jpg", title: "B" },
+    { id: "c", url: "uc", category: "Misc", clipped: 30, image: "", title: "C", tags: [] },
+  ];
+  for (const it of items) {
+    const back = db.rowToSaved(db.savedToRow(it));
+    assert.deepStrictEqual(back, it);
+  }
+});
+
+t("replaceSaved + allSaved + counts.saved", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceSaved(d, [
+    { id: "a", url: "ua", category: "Tips", clipped: 2, image: "idb:a", title: "A" },
+    { id: "b", url: "ub", category: "News", clipped: 1, image: "", title: "B" },
+  ]);
+  const all = db.allSaved(d).sort((x, y) => x.id.localeCompare(y.id));
+  assert.strictEqual(all.length, 2);
+  assert.strictEqual(all[0].image, "idb:a");
+  assert.strictEqual(db.counts(d).saved, 2);
+  d.close();
+});
+
+t("upsertSaved updates in place; deleteSaved removes", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertSaved(d, { id: "a", url: "u", category: "c", clipped: 1, image: "", title: "v1" });
+  db.upsertSaved(d, { id: "a", url: "u", category: "c", clipped: 1, image: "", title: "v2" });
+  assert.strictEqual(db.counts(d).saved, 1);
+  assert.strictEqual(db.allSaved(d)[0].title, "v2");
+  db.deleteSaved(d, "a");
+  assert.strictEqual(db.counts(d).saved, 0);
+  d.close();
+});
+
+t("fp: set/get/all/del", () => {
+  const d = db.openDb(tmpStore());
+  assert.strictEqual(db.getFp(d, "x"), null);
+  db.setFp(d, "x", "fpx");
+  db.setFp(d, "y", "fpy");
+  assert.strictEqual(db.getFp(d, "x"), "fpx");
+  assert.deepStrictEqual(db.allFp(d), { x: "fpx", y: "fpy" });
+  db.setFp(d, "x", "fpx2");
+  assert.strictEqual(db.getFp(d, "x"), "fpx2");
+  db.delFp(d, "x");
+  assert.strictEqual(db.getFp(d, "x"), null);
+  assert.deepStrictEqual(db.allFp(d), { y: "fpy" });
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
