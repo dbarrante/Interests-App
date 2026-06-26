@@ -59,5 +59,43 @@ t("missing operand → false", () => {
   assert.strictEqual(backup.backupCountsMatch({ imported: 1, saved: 1, images: 1 }, undefined), false);
 });
 
+/* ---- changedImageIds (incremental selection) ---- */
+function mkTmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
+function writeJpg(dir, id, bytes) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, id + ".jpg"), Buffer.alloc(bytes, 1));
+}
+
+t("changedImageIds: dest missing → all source ids", () => {
+  const store = mkTmp("ia-store-");
+  const imgs = path.join(store, "images");
+  writeJpg(imgs, "a", 10); writeJpg(imgs, "b", 20);
+  const dest = path.join(mkTmp("ia-dest-"), "images"); // does not exist yet
+  const got = backup.changedImageIds(store, dest).sort();
+  assert.deepStrictEqual(got, ["a", "b"]);
+});
+t("changedImageIds: only new + size-changed ids selected", () => {
+  const store = mkTmp("ia-store-");
+  const imgs = path.join(store, "images");
+  writeJpg(imgs, "a", 10);   // unchanged in dest
+  writeJpg(imgs, "b", 20);   // size-changed in dest
+  writeJpg(imgs, "c", 30);   // new (absent in dest)
+  const destRoot = mkTmp("ia-dest-");
+  const dest = path.join(destRoot, "images");
+  writeJpg(dest, "a", 10);   // identical size → skip
+  writeJpg(dest, "b", 5);    // different size → copy
+  const got = backup.changedImageIds(store, dest).sort();
+  assert.deepStrictEqual(got, ["b", "c"]);
+});
+t("changedImageIds: nothing changed → []", () => {
+  const store = mkTmp("ia-store-");
+  const imgs = path.join(store, "images");
+  writeJpg(imgs, "a", 10);
+  const destRoot = mkTmp("ia-dest-");
+  const dest = path.join(destRoot, "images");
+  writeJpg(dest, "a", 10);
+  assert.deepStrictEqual(backup.changedImageIds(store, dest), []);
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
