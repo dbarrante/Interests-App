@@ -8,6 +8,9 @@ const express = require("express");
 const dbm = require("./db");
 const images = require("./images");
 const { importLegacyBackup } = require("./importer");
+const backup = require("./backup.js");
+const { counts } = require("./db.js");
+const { imageCount } = require("./images.js");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -181,6 +184,43 @@ function createServer(ctx) {
     } catch (e) {
       res.status(400).json({ error: String(e && e.message ? e.message : e) });
     }
+  });
+
+  // ---- backup / restore / health ----
+  app.post("/api/backup", (req, res) => {
+    try {
+      const out = backup.runBackup(ctx.db, ctx.storeDir);
+      if (backup.verifyBackup(out.name, out.counts)) backup.rotate(3);
+      res.json({ ok: true, name: out.name, counts: out.counts });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e && e.message || e) });
+    }
+  });
+
+  app.get("/api/backups", (req, res) => {
+    res.json({ backups: backup.listBackups() });
+  });
+
+  app.post("/api/restore", (req, res) => {
+    const name = req.body && req.body.name;
+    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    try {
+      const out = backup.restore(name, ctx);   // restore rebinds ctx.db on success
+      res.json(out);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e && e.message || e) });
+    }
+  });
+
+  app.get("/api/health", (req, res) => {
+    const c = counts(ctx.db);
+    const list = backup.listBackups();
+    const lastBackup = list.length ? { name: list[0].name, counts: list[0].counts } : null;
+    res.json({
+      storePath: ctx.storeDir,
+      counts: { cards: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 },
+      lastBackup
+    });
   });
 
   // Serve the existing web app.

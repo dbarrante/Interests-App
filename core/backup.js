@@ -75,6 +75,10 @@ function runBackup(db, storeDir) {
   const destImages = path.join(destRoot, "images");
   fs.mkdirSync(destImages, { recursive: true });
 
+  // Flush WAL pages into interests.db so a backup taken while the live db is open
+  // captures the most recent committed writes (the on-disk file lags the -wal sidecar).
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) {}
+
   // db copy (overwrites a prior same-day backup so it can't go stale)
   copyFileSync(path.join(storeDir, "interests.db"), path.join(destRoot, "interests.db"));
 
