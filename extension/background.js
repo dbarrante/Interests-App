@@ -23,6 +23,56 @@ function normalizeUrl(url) {
   } catch { return url.toLowerCase(); }
 }
 
+// ---- HTTP delivery to the Interests app (replaces writing into a localhost tab) ----
+const IA_PORT_RANGE = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
+let iaCachedPort = null;
+
+async function pingPort(port) {
+  try {
+    const ctl = new AbortController();
+    const tm = setTimeout(() => ctl.abort(), 600);
+    let r;
+    try { r = await fetch("http://127.0.0.1:" + port + "/api/ping", { signal: ctl.signal }); }
+    finally { clearTimeout(tm); }
+    if (!r || !r.ok) return false;
+    const j = await r.json();
+    return !!(j && j.app === "interests");
+  } catch (e) { return false; }
+}
+
+// Find (and cache) the app's port. Revalidates the cached port; re-probes the
+// whole range if it has gone silent. Returns null when the app is unreachable.
+async function findAppPort() {
+  if (iaCachedPort != null && (await pingPort(iaCachedPort))) return iaCachedPort;
+  iaCachedPort = null;
+  for (const p of IA_PORT_RANGE) {
+    if (await pingPort(p)) { iaCachedPort = p; return p; }
+  }
+  return null;
+}
+
+// Push every queued capture (taken while the app was closed) once it's reachable.
+async function flushQueue() {
+  const port = await findAppPort();
+  if (port == null) return;
+  const stored = await chrome.storage.local.get("ia_capture_queue");
+  let q = stored.ia_capture_queue || [];
+  if (!Array.isArray(q) || !q.length) return;
+  const remaining = [];
+  for (const cap of q) {
+    let ok = false;
+    try {
+      const r = await fetch("http://127.0.0.1:" + port + "/api/captures", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ capture: cap }),
+      });
+      ok = !!(r && r.ok);
+    } catch (e) { ok = false; }
+    if (!ok) remaining.push(cap);
+  }
+  await chrome.storage.local.set({ ia_capture_queue: remaining });
+  if (q.length !== remaining.length) log("Flushed " + (q.length - remaining.length) + " queued capture(s) to the app");
+}
+
 function log(msg) {
   console.log("[Interests Capture]", msg);
 }
@@ -52,36 +102,32 @@ function notify(id, title, message) {
   } catch (e) {}
 }
 
-// Write the capture straight into the app tab's localStorage (we hold
-// <all_urls>, so this works on localhost/127.0.0.1). Returns true if at
-// least one app tab received it.
+// Deliver a capture to the app over HTTP (POST /api/captures). On failure (app
+// closed/unreachable) stash it in chrome.storage.local so it's flushed on
+// reconnect. Returns true if the app received it directly.
 async function deliverToApp(capture) {
-  const tabs = await chrome.tabs.query({});
-  let delivered = false;
-  for (const tab of tabs) {
-    if (!tab.url) continue;
-    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(tab.url)) continue;
+  const port = await findAppPort();
+  if (port != null) {
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (cap) => {
-          function norm(u){ try{ const p=new URL(u); return (p.hostname.replace(/^www\./,"")+p.pathname).replace(/\/$/,"").toLowerCase(); }catch(e){ return u.toLowerCase(); } }
-          let q = [];
-          try { const r = localStorage.getItem("ia_captures"); if (r) q = JSON.parse(r); } catch (e) {}
-          if (!Array.isArray(q)) q = [];
-          q = q.filter((c) => norm(c.url) !== norm(cap.url));
-          q.push(cap);
-          localStorage.setItem("ia_captures", JSON.stringify(q));
-        },
-        args: [capture],
+      await flushQueue();   // drain any backlog first so order is roughly preserved
+      const r = await fetch("http://127.0.0.1:" + port + "/api/captures", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ capture }),
       });
-      delivered = true;
-      log("Delivered capture to app tab " + tab.id);
-    } catch (e) {
-      log("Delivery to tab " + tab.id + " failed: " + e.message);
-    }
+      if (r && r.ok) { log("Delivered capture to app on port " + port); return true; }
+    } catch (e) { log("HTTP delivery failed: " + e.message); iaCachedPort = null; }
   }
-  return delivered;
+  // app unreachable — queue it (dedupe by URL, cap the size)
+  try {
+    const stored = await chrome.storage.local.get("ia_capture_queue");
+    let q = stored.ia_capture_queue || [];
+    if (!Array.isArray(q)) q = [];
+    if (capture && capture.url) q = q.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
+    q.push(capture);
+    if (q.length > MAX_QUEUE) q = q.slice(-MAX_QUEUE);
+    await chrome.storage.local.set({ ia_capture_queue: q });
+    log("App not reachable — queued capture (" + q.length + " pending)");
+  } catch (e) {}
+  return false;
 }
 
 // fetch a remote image and return it as a data URL. Extensions with host
@@ -266,14 +312,6 @@ async function clipCurrentPage(tab, opts = {}) {
     screenshot: shot, ts: Date.now(),
   };
   const delivered = await deliverToApp(payload);
-  if (!delivered) {
-    // app tab isn't open — stash for the bridge to sync when it next loads
-    const stored = await chrome.storage.local.get("ia_capture_queue");
-    let queue = stored.ia_capture_queue || [];
-    queue.push(payload);
-    if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
-    await chrome.storage.local.set({ ia_capture_queue: queue });
-  }
   setBadge(delivered ? "✓" : "…", 4000);
   await setStatus(delivered ? "Clipped to Interests ✓" : "Saved — opens when the Interests app is open", delivered);
   notify("clip-" + Date.now(), "Interests", (delivered ? "Clipped: " : "Saved (open the app): ") + (payload.title || payload.url).slice(0, 70));
@@ -295,6 +333,8 @@ function ensureContextMenu() {
 }
 chrome.runtime.onInstalled.addListener(ensureContextMenu);
 chrome.runtime.onStartup.addListener(ensureContextMenu);
+chrome.runtime.onStartup.addListener(() => { flushQueue().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => { flushQueue().catch(() => {}); });
 ensureContextMenu();   // also run when the service worker spins up
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -380,18 +420,8 @@ async function captureTab(tab, delayMs, force, cardId) {
       id: cardId || "",
     };
 
-    // Primary path: write straight into the open app tab's localStorage.
+    // Deliver over HTTP; deliverToApp owns the offline-queue fallback.
     const delivered = await deliverToApp(capture);
-    // Fallback: if the app isn't open, stash for the bridge to pick up later.
-    if (!delivered) {
-      const stored = await chrome.storage.local.get("ia_capture_queue");
-      let queue = stored.ia_capture_queue || [];
-      queue = queue.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
-      queue.push(capture);
-      if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
-      await chrome.storage.local.set({ ia_capture_queue: queue });
-      log("App not open — stashed capture (" + queue.length + " in queue)");
-    }
 
     setBadge(blocked ? "⚠" : "✓", 4000);
     const dest = delivered ? "sent to app" : "app closed — queued";
@@ -522,27 +552,10 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
 // and tell the app to remove that card. Only hard network errors — not 404s
 // (those "load" fine) and not user-side issues (offline, aborted).
 const HARD_ERR = /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_TIMED_OUT|ERR_ADDRESS_UNREACHABLE|ERR_SSL_PROTOCOL_ERROR|ERR_CERT_/i;
-async function deliverDead(dead){
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (!tab.url) continue;
-    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(tab.url)) continue;
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (d) => {
-          let q=[]; try{ const r=localStorage.getItem("ia_captures"); if(r) q=JSON.parse(r); }catch(e){}
-          if(!Array.isArray(q)) q=[];
-          q.push(d);
-          localStorage.setItem("ia_captures", JSON.stringify(q));
-        },
-        args: [dead],
-      });
-      return true;
-    } catch (e) {}
-  }
-  await chrome.storage.local.set({ pendingCapture: dead });
-  return false;
+// "Dead post" notices are ordinary capture objects (cap.dead) — deliver them the
+// same way, with the same HTTP + offline-queue fallback.
+async function deliverDead(dead) {
+  return await deliverToApp(dead);
 }
 // close a browser tab, but never the app tab (localhost) or a browser page
 async function closeTabSafe(tabId){
