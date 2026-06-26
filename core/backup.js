@@ -5,7 +5,8 @@
 const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./config.js");
-const { listImageIds, imagesDir } = require("./images.js");
+const { listImageIds, imagesDir, imageCount } = require("./images.js");
+const { counts } = require("./db.js");
 
 // <userprofile>/Dropbox/Interests App/backups, overridable via config.backupDir.
 function dropboxBackupDir() {
@@ -57,4 +58,76 @@ function backupCountsMatch(a, b) {
     && (a.images | 0) === (b.images | 0);
 }
 
-module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds };
+function dateStamp() { return new Date().toISOString().slice(0, 10); }
+
+function copyFileSync(src, dst) {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+}
+
+// Create dropboxBackupDir()/interests-backup-YYYY-MM-DD/, copy interests.db + new/
+// changed images, write meta.json LAST (presence signals a complete write).
+function runBackup(db, storeDir) {
+  const c = counts(db);
+  const cnt = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(storeDir) | 0 };
+  const name = "interests-backup-" + dateStamp();
+  const destRoot = path.join(dropboxBackupDir(), name);
+  const destImages = path.join(destRoot, "images");
+  fs.mkdirSync(destImages, { recursive: true });
+
+  // db copy (overwrites a prior same-day backup so it can't go stale)
+  copyFileSync(path.join(storeDir, "interests.db"), path.join(destRoot, "interests.db"));
+
+  // incremental image copy
+  const srcImages = imagesDir(storeDir);
+  for (const id of changedImageIds(storeDir, destImages)) {
+    copyFileSync(path.join(srcImages, id + ".jpg"), path.join(destImages, id + ".jpg"));
+  }
+
+  // meta.json LAST
+  fs.writeFileSync(path.join(destRoot, "meta.json"), JSON.stringify({ _counts: cnt, ts: Date.now() }));
+  return { name, counts: cnt };
+}
+
+function readMeta(folder) {
+  try { return JSON.parse(fs.readFileSync(path.join(folder, "meta.json"), "utf8")); }
+  catch (e) { return null; }
+}
+
+// Scan dropboxBackupDir() for dated backup folders, newest first.
+function listBackups() {
+  const root = dropboxBackupDir();
+  let names = [];
+  try { names = fs.readdirSync(root); } catch (e) { return []; }
+  const re = /^interests-backup-(\d{4}-\d{2}-\d{2})$/;
+  return names
+    .map(function (n) {
+      const m = re.exec(n);
+      if (!m) return null;
+      let isDir = false;
+      try { isDir = fs.statSync(path.join(root, n)).isDirectory(); } catch (e) { isDir = false; }
+      if (!isDir) return null;
+      const meta = readMeta(path.join(root, n));
+      return { name: n, date: m[1], counts: meta ? meta._counts : null };
+    })
+    .filter(Boolean)
+    .sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+}
+
+// True iff the named backup has interests.db, an images/ file count equal to
+// expectedCounts.images, and meta._counts matching expectedCounts.
+function verifyBackup(name, expectedCounts) {
+  const folder = path.join(dropboxBackupDir(), name);
+  try {
+    if (!fs.statSync(path.join(folder, "interests.db")).isFile()) return false;
+  } catch (e) { return false; }
+  let imgFiles = 0;
+  try {
+    imgFiles = fs.readdirSync(path.join(folder, "images")).filter(function (n) { return n.endsWith(".jpg"); }).length;
+  } catch (e) { imgFiles = 0; }
+  if (imgFiles !== (expectedCounts.images | 0)) return false;
+  const meta = readMeta(folder);
+  return !!meta && backupCountsMatch(meta._counts, expectedCounts);
+}
+
+module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup };

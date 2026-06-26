@@ -97,5 +97,66 @@ t("changedImageIds: nothing changed → []", () => {
   assert.deepStrictEqual(backup.changedImageIds(store, dest), []);
 });
 
+/* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
+const { openDb, upsertCard, upsertSaved } = require("../core/db.js");
+const images = require("../core/images.js");
+const config = require("../core/config.js");
+
+const TINY_JPG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAAAv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AvwAH/9k=";
+
+function newStore() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-bk-store-"));
+  fs.mkdirSync(path.join(dir, "images"), { recursive: true });
+  return dir;
+}
+function withBackupDir(fn) {
+  // point dropboxBackupDir() at a fresh tmp dir via a config override, restore after
+  const bdir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-bk-dest-"));
+  const orig = config.loadConfig();
+  config.saveConfig(Object.assign({}, orig, { backupDir: bdir }));
+  try { return fn(bdir); }
+  finally { config.saveConfig(orig || {}); }
+}
+
+t("runBackup copies db + images and verifyBackup confirms", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    upsertSaved(db, { id: "s1", url: "https://x/2", category: "Tips", clipped: 1, image: "idb:s1" });
+    images.putImg(store, "c1", TINY_JPG);
+    images.putImg(store, "s1", TINY_JPG);
+
+    const res = backup.runBackup(db, store);
+    assert.ok(/^interests-backup-\d{4}-\d{2}-\d{2}$/.test(res.name), "dated folder name");
+    assert.deepStrictEqual(res.counts, { imported: 1, saved: 1, images: 2 });
+
+    const bdir = backup.dropboxBackupDir();
+    assert.ok(fs.existsSync(path.join(bdir, res.name, "interests.db")), "db copied");
+    assert.strictEqual(fs.readdirSync(path.join(bdir, res.name, "images")).filter(function (n) { return n.endsWith(".jpg"); }).length, 2, "2 images copied");
+
+    assert.strictEqual(backup.verifyBackup(res.name, res.counts), true);
+    assert.strictEqual(backup.verifyBackup(res.name, { imported: 1, saved: 1, images: 999 }), false);
+    db.close();
+  });
+});
+
+t("listBackups lists dated folders newest-first with counts", () => {
+  withBackupDir(function (bdir) {
+    // hand-create two dated folders with meta.json
+    for (const d of ["2026-06-20", "2026-06-22"]) {
+      const f = path.join(bdir, "interests-backup-" + d);
+      fs.mkdirSync(path.join(f, "images"), { recursive: true });
+      fs.writeFileSync(path.join(f, "interests.db"), "x");
+      fs.writeFileSync(path.join(f, "meta.json"), JSON.stringify({ _counts: { imported: 2, saved: 0, images: 0 }, ts: 1 }));
+    }
+    const list = backup.listBackups();
+    assert.strictEqual(list.length, 2);
+    assert.strictEqual(list[0].name, "interests-backup-2026-06-22", "newest first");
+    assert.strictEqual(list[1].name, "interests-backup-2026-06-20");
+    assert.deepStrictEqual(list[0].counts, { imported: 2, saved: 0, images: 0 });
+  });
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
