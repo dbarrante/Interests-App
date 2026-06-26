@@ -53,7 +53,7 @@ function extractFn(html, name) {
 }
 
 function loadFns(names) {
-  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
   const out = {};
   for (const name of names) {
     const src = extractFn(html, name);
