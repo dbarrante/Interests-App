@@ -158,5 +158,51 @@ t("listBackups lists dated folders newest-first with counts", () => {
   });
 });
 
+/* ---- rotate (verify-before-delete) ---- */
+function mkBackupFolder(bdir, date, opts) {
+  // opts: {imgFiles, metaImages, db: bool} — build a backup folder we control
+  const folder = path.join(bdir, "interests-backup-" + date);
+  fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+  for (let i = 0; i < (opts.imgFiles || 0); i++) fs.writeFileSync(path.join(folder, "images", "img" + i + ".jpg"), Buffer.alloc(4, 1));
+  if (opts.db !== false) fs.writeFileSync(path.join(folder, "interests.db"), "x");
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: 1, saved: 0, images: opts.metaImages != null ? opts.metaImages : (opts.imgFiles || 0) }, ts: 1 }));
+  return folder;
+}
+
+t("rotate keeps newest `keep`, deletes verified older ones", () => {
+  withBackupDir(function (bdir) {
+    for (const d of ["2026-06-18", "2026-06-19", "2026-06-20", "2026-06-21"]) mkBackupFolder(bdir, d, { imgFiles: 1 });
+    backup.rotate(2);
+    const left = fs.readdirSync(bdir).filter(function (n) { return n.startsWith("interests-backup-"); }).sort();
+    assert.deepStrictEqual(left, ["interests-backup-2026-06-20", "interests-backup-2026-06-21"]);
+  });
+});
+
+t("rotate does NOT delete an older good backup when the newest is unverified", () => {
+  withBackupDir(function (bdir) {
+    // newest is BROKEN: meta claims 5 images but folder has 0 → verifyBackup false
+    mkBackupFolder(bdir, "2026-06-18", { imgFiles: 1 });           // good, older
+    mkBackupFolder(bdir, "2026-06-19", { imgFiles: 1 });           // good, older
+    mkBackupFolder(bdir, "2026-06-20", { imgFiles: 0, metaImages: 5 }); // BROKEN newest
+    backup.rotate(2);
+    const left = fs.readdirSync(bdir).filter(function (n) { return n.startsWith("interests-backup-"); }).sort();
+    // keep=2 would normally delete 06-18, but the newest is unverified → nothing deleted
+    assert.deepStrictEqual(left, ["interests-backup-2026-06-18", "interests-backup-2026-06-19", "interests-backup-2026-06-20"]);
+  });
+});
+
+t("rotate keeps an older backup that itself fails verification (never delete a good one for a bad one)", () => {
+  withBackupDir(function (bdir) {
+    mkBackupFolder(bdir, "2026-06-18", { imgFiles: 0, metaImages: 9 }); // BROKEN older — must NOT be deleted
+    mkBackupFolder(bdir, "2026-06-19", { imgFiles: 1 });               // good
+    mkBackupFolder(bdir, "2026-06-20", { imgFiles: 1 });               // good newest
+    backup.rotate(2);
+    const left = fs.readdirSync(bdir).filter(function (n) { return n.startsWith("interests-backup-"); }).sort();
+    // 06-18 is a rotation candidate but it doesn't verify → leave it (a bad backup is
+    // not a safe thing to delete; only delete a backup that is provably complete)
+    assert.deepStrictEqual(left, ["interests-backup-2026-06-18", "interests-backup-2026-06-19", "interests-backup-2026-06-20"]);
+  });
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

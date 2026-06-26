@@ -130,4 +130,25 @@ function verifyBackup(name, expectedCounts) {
   return !!meta && backupCountsMatch(meta._counts, expectedCounts);
 }
 
-module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup };
+// Keep the newest `keep` dated backups. A candidate is deleted ONLY when it itself
+// verifies (so we never delete an incomplete backup we can't trust) AND the NEWEST
+// backup also verifies (so an incomplete newest never causes a good older one to be
+// dropped). The sharded-backup lesson: never delete a good backup for a bad one.
+function rotate(keep) {
+  keep = (keep == null) ? 3 : keep;
+  const list = listBackups();                 // newest-first, each {name,date,counts}
+  if (!list.length) return;
+  const verified = list.map(function (b) {
+    return b.counts ? verifyBackup(b.name, b.counts) : false;
+  });
+  if (!verified[0]) return;                          // newest is unverified → rotate nothing
+  const candidates = pickBackupsToDelete(list.map(function (b) { return b.name; }), keep);
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    if (candidates.indexOf(b.name) < 0) continue;   // within the keep window
+    if (!verified[i]) continue;                      // don't delete an unverified backup
+    try { fs.rmSync(path.join(dropboxBackupDir(), b.name), { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
+module.exports = { pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate };
