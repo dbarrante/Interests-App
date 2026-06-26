@@ -30,6 +30,84 @@
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
   root.SE = SE;
 
+  // ---- Async adapter over the Core REST API (browser-only; uses fetch) ----
+  // Only attached when fetch exists (i.e. in the browser). Tests require() the
+  // module purely for SE and must NOT see Store.
+  if (typeof root.fetch === "function") {
+    var jget = function (url) {
+      return root.fetch(url).then(function (r) {
+        if (!r.ok) throw new Error("GET " + url + " -> " + r.status);
+        return r.json();
+      });
+    };
+    var jsend = function (method, url, body) {
+      return root.fetch(url, {
+        method: method,
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body)
+      }).then(function (r) {
+        if (!r.ok) throw new Error(method + " " + url + " -> " + r.status);
+        return r.json();
+      });
+    };
+
+    var Store = {
+      // --- kv (replaces persistent ia_* localStorage) ---
+      kvGet: function (key) {
+        return jget(SE.kv(key)).then(function (j) {
+          if (j == null || j.value == null) return null;
+          try { return JSON.parse(j.value); } catch (e) { return j.value; }
+        });
+      },
+      kvSet: function (key, val) {
+        return jsend("PUT", SE.kv(key), { value: JSON.stringify(val) }).then(function () {});
+      },
+
+      // --- cards ---
+      getCards: function () { return jget(SE.cards()).then(function (j) { return (j && j.cards) || []; }); },
+      putCards: function (arr) { return jsend("PUT", SE.cards(), { cards: arr || [] }); },
+      patchCard: function (card) { return jsend("PATCH", SE.card(card.id), { card: card }).then(function () {}); },
+      delCard: function (id) { return jsend("DELETE", SE.card(id)).then(function () {}); },
+
+      // --- saved ---
+      getSaved: function () { return jget(SE.saved()).then(function (j) { return (j && j.saved) || []; }); },
+      putSaved: function (arr) { return jsend("PUT", SE.saved(), { saved: arr || [] }); },
+      patchSaved: function (item) { return jsend("PATCH", SE.savedItem(item.id), { item: item }).then(function () {}); },
+      delSaved: function (id) { return jsend("DELETE", SE.savedItem(id)).then(function () {}); },
+
+      // --- images: plain URLs for <img src>; no blob fetch, no in-memory cache ---
+      imgUrl: function (id) { return SE.imgUrl(id); },
+      imgPut: function (id, dataUrl) { return jsend("PUT", SE.imgUrl(id), { data: dataUrl }).then(function () {}); },
+      imgDel: function (id) { return jsend("DELETE", SE.imgUrl(id)).then(function () {}); },
+      imgHas: function (id) {
+        return root.fetch(SE.imgUrl(id), { method: "GET" }).then(function (r) { return r.ok; }).catch(function () { return false; });
+      },
+
+      // --- fingerprints (placeholder detection; no image bytes) ---
+      fpGet: function (id) { return jget(SE.fp()).then(function (j) { return ((j && j.fp) || {})[id] || null; }); },
+      fpSet: function (id, fp) { return jsend("PUT", SE.fpItem(id), { value: fp }).then(function () {}); },
+      fpDel: function (id) { return jsend("DELETE", SE.fpItem(id)).then(function () {}); },
+      fpAll: function () { return jget(SE.fp()).then(function (j) { return (j && j.fp) || {}; }); },
+
+      // --- capture bridge ---
+      drainCaptures: function () { return jget(SE.captures()).then(function (j) { return (j && j.captures) || []; }); },
+      setCaptureRequest: function (req) { return jsend("POST", SE.captureRequest(), { request: req }).then(function () {}); },
+      getBatchState: function () { return jget(SE.batchState()).then(function (j) { return (j && j.state) || null; }); },
+      setBatchState: function (s) { return jsend("POST", SE.batchState(), { state: s }).then(function () {}); },
+      setBatchProgress: function (p) { return jsend("POST", SE.batchProgress(), { progress: p }).then(function () {}); },
+
+      // --- backup / restore / store location / import ---
+      backupNow: function () { return jsend("POST", SE.backup()); },
+      listBackups: function () { return jget(SE.backups()).then(function (j) { return (j && j.backups) || []; }); },
+      restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
+      storeLocation: function () { return jget(SE.storeLocation()); },
+      moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
+      runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); }
+    };
+
+    root.Store = Store;
+  }
+
   // CommonJS export for tests (no-op in the browser where module is undefined).
   if (typeof module !== "undefined" && module.exports) {
     module.exports = { SE: SE };

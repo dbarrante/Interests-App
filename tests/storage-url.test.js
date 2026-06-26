@@ -40,6 +40,11 @@ t("backup/restore/store/import endpoints", () => {
   assert.strictEqual(SE.storeMove(), "/api/store-location/move");
   assert.strictEqual(SE.import(), "/api/import");
 });
+t("Store is NOT exported to Node (browser-only); SE still is", () => {
+  const mod = require("../web/storage.js");
+  assert.ok(mod.SE, "SE must be exported for Node tests");
+  assert.strictEqual(mod.Store, undefined, "Store must remain browser-only (uses fetch)");
+});
 
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
