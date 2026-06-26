@@ -1864,13 +1864,13 @@ function renderImported(){
         var out="";
         if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
         const fbmiss=imported.filter(needsFbCapture).length;
-        if(fbmiss){ const fbcap=localStorage.getItem("ia_fbtested")?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Capture ONE batch of Facebook posts via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`;
+        if(fbmiss){ const fbcap=_fbTested?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Capture ONE batch of Facebook posts via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`;
           out+= fbAuto
             ? `<button class="btn btn-primary" onclick="stopFbAuto()" title="Stop the automated run">&#9632; Stop auto-capture</button>`
             : `<button class="btn btn-ghost" onclick="toggleFbAuto()" title="Automatically capture ${FB_BATCH_CAP} Facebook posts at a time with a ~1 min (jittered) pause between, until done. Stop anytime.">&#9654; Auto-capture all (${fbmiss})</button>`;
         }
         const fbcant=imported.filter(fbMiss).length;
-        if(fbcant && !fbAuto){ const rcap=localStorage.getItem("ia_fbrender_tested")?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 3× (5s apart, reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
+        if(fbcant && !fbAuto){ const rcap=_fbRenderTested?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 3× (5s apart, reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
         const ph=(typeof fbPlaceholderCount==="function")?fbPlaceholderCount():0;
         if(ph) out+=`<button class="btn btn-ghost" onclick="clearFbPlaceholders()" title="Some Facebook cards captured a loading spinner/placeholder instead of the photo. Clear them so they re-capture the real image.">&#129529; Fix ${ph} placeholder${ph>1?"s":""}</button>`;
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
@@ -2479,11 +2479,11 @@ function captureSelected(){
   Store.putCards(imported);
   _batchIgnoreUntil=0;
   try{
-    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    Store.setBatchProgress(null);
     // render:1 → restricted Facebook posts (no og:image) open briefly in a focused
     // tab to render-capture, like a manual Save; posts that unfurl still fetch
     // instantly with no tab, and non-FB sites open & close a tab.
-    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1}));
+    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1});
   }catch(e){}
   batchUI={active:true, done:0, total:items.length};
   selMode=false; selPicks.clear();
@@ -2753,7 +2753,7 @@ function impOpen(idx){
   persistAll();
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
-  try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
+  Store.kvSet("ia_last_opened", {id:it.id, ts:Date.now()});
   // Deliberately opening a card always captures if it still needs an image —
   // even if a batch attempt failed before (opening IS the explicit request).
   // The batch's no-repeat rule lives in needsCapture, not here.
@@ -2765,7 +2765,7 @@ function impOpen(idx){
   if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; Store.putCards(imported); }
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
-  try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture})); }catch(e){}
+  Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture});
   window.open(it.url,"_blank");
   if(doCapture) enrichOnOpen(it, idx);
 }
@@ -2787,11 +2787,11 @@ function impRefresh(idx){
   delete it.blocked;                   // give a blocked page a fresh chance
   it.lastUpdate=Date.now(); it.lastResult="pending";
   Store.putCards(imported);
-  try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:it.id, ts:Date.now()})); }catch(e){}
+  Store.kvSet("ia_last_opened", {id:it.id, ts:Date.now()});
   // render:1 (FB only) → the extension opens its own focused tab, renders the post
   // the way a manual "Save to Interests" does, captures it, and closes the tab.
   // The app doesn't open the tab itself (the extension owns + closes it).
-  try{ localStorage.setItem("ia_capture_request", JSON.stringify({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true, closeAfter:true, render: isFb?1:undefined})); }catch(e){}
+  Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true, closeAfter:true, render: isFb?1:undefined});
   closeRefreshTab(it.id);   // clear any prior pending refresh for this card
   if(!isFb){
     const win = window.open(it.url,"_blank");
@@ -2898,9 +2898,9 @@ function startBatchCapture(mode){
   Store.putCards(imported);   // persist ids + attempt stamps
   _batchIgnoreUntil = 0;
   try{
-    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    Store.setBatchProgress(null);
     // the page-side bridge drives this loop (survives the extension's service-worker sleep)
-    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:(S.captureDelay||0)*1000, concurrency:Math.max(1,Math.min(10,S.captureConcurrency||1)), active:true}));
+    Store.setBatchState({items, next:0, done:0, total:items.length, delay:(S.captureDelay||0)*1000, concurrency:Math.max(1,Math.min(10,S.captureConcurrency||1)), active:true});
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   toast("Capturing "+items.length+" card"+(items.length>1?"s":"")+"… tabs will open & close automatically. Leave this tab open.", 6000);
@@ -2911,7 +2911,7 @@ const FB_BATCH_CAP = 25;   // conservative per-run cap for Facebook (auth-walled
 // time, the in-page engine grabs the post photo, the result fills the card. First
 // run is a 10-post test; later runs do FB_BATCH_CAP at a time. Resumable across
 // runs (each run advances past already-attempted posts).
-function startFbCapture(){
+async function startFbCapture(){
   if(batchUI.active){ toast("A capture run is already going"); return; }
   clearFbPlaceholders(true);   // self-heal: re-enroll any cards stuck on a duplicate placeholder/spinner so they re-capture
   const need = imported.filter(needsFbCapture)
@@ -2920,7 +2920,7 @@ function startFbCapture(){
   if(!fbAuto) _fbSessCaptured=0;   // a manual run resets the counter (an auto run resets once, at toggle)
   const seen=new Set();
   const uniq=need.filter(i=>{ const k=clipKey(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
-  const isTest = !localStorage.getItem("ia_fbtested");
+  const isTest = !(await Store.kvGet("ia_fbtested"));
   const cap = isTest ? 10 : FB_BATCH_CAP;
   const items = uniq.slice(0, cap).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
   // mark dispatched cards (and any url-duplicates) attempted now so each run moves
@@ -2931,10 +2931,10 @@ function startFbCapture(){
   Store.putCards(imported);
   _batchIgnoreUntil = 0;
   try{
-    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    Store.setBatchProgress(null);
     // concurrency 1 + a 4s settle delay keeps Facebook from rate-limiting/flagging
-    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1}));
-    if(isTest) localStorage.setItem("ia_fbtested","1");
+    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1});
+    if(isTest){ Store.kvSet("ia_fbtested", 1); _fbTested = true; }
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   // Filter the imported view to ONLY this batch so you can watch the pictures
@@ -2954,7 +2954,7 @@ const FB_RENDER_CAP = 25;   // per-run cap for the slower render-capture (each p
 // photo (a background fetch only ever gets the spinner), the in-page engine grabs
 // it, then the window closes. One at a time; resumes across runs. First run is a
 // small 5-post test so you can confirm the flow before committing to a long run.
-function startFbMissRenderCapture(){
+async function startFbMissRenderCapture(){
   if(batchUI.active){ toast("A capture run is already going"); return; }
   clearFbPlaceholders(true);   // self-heal: re-enroll any stuck spinner placeholders
   _fbSessCaptured = 0;         // fresh "captured this run" tally for the banner
@@ -2963,7 +2963,7 @@ function startFbMissRenderCapture(){
   if(!need.length){ toast("No 'Couldn't capture' Facebook posts to retry"); return; }
   const seen=new Set();
   const uniq=need.filter(i=>{ const k=clipKey(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
-  const isTest = !localStorage.getItem("ia_fbrender_tested");
+  const isTest = !(await Store.kvGet("ia_fbrender_tested"));
   const cap = isTest ? 5 : FB_RENDER_CAP;
   const items = uniq.slice(0, cap).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
   // mark dispatched cards (+ url-duplicates) attempted now so each run advances
@@ -2973,11 +2973,11 @@ function startFbMissRenderCapture(){
   Store.putCards(imported);
   _batchIgnoreUntil = 0;
   try{
-    localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_cancel");
+    Store.setBatchProgress(null);
     // render:1 routes each FB post through a focused tab; concurrency 1 +
     // the inherent per-post render time keeps it slow & Facebook-safe.
-    localStorage.setItem("ia_batch_state", JSON.stringify({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1, render:1}));
-    if(isTest) localStorage.setItem("ia_fbrender_tested","1");
+    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1, render:1});
+    if(isTest){ Store.kvSet("ia_fbrender_tested", 1); _fbRenderTested = true; }
   }catch(e){}
   batchUI = {active:true, done:0, total:items.length};
   // restrict the view to this batch so you watch the pictures land (✕ in the banner clears it)
@@ -2993,6 +2993,9 @@ function startFbMissRenderCapture(){
    pause between, until every Facebook post is processed or you stop. Session-only
    (a reload stops it) so it never resumes opening FB tabs unexpectedly. ---- */
 let fbAuto = false;
+// synchronous render-time mirrors of the persisted ia_fbtested / ia_fbrender_tested
+// flags (hydrated in bootData); used only to pick the batch-cap shown on a button label
+let _fbTested = false, _fbRenderTested = false;
 let _fbAutoTimer = null;     // pause-before-next-batch timeout
 let _fbAutoCdTimer = null;   // 1s countdown ticker for the banner
 let _fbAutoNextAt = 0;       // when the next batch fires (drives the countdown)
@@ -3034,14 +3037,14 @@ function scheduleFbAutoNext(){
 }
 function cancelBatchCapture(){
   // tell the driver to stop, clear state/progress, and revert the button now
-  try{ localStorage.setItem("ia_batch_cancel","1"); localStorage.removeItem("ia_batch_progress"); localStorage.removeItem("ia_batch_state"); }catch(e){}
+  try{ Store.setBatchState({active:false, cancel:true}); Store.setBatchProgress(null); }catch(e){}
   _batchIgnoreUntil = Date.now()+8000;
   batchUI={active:false, done:batchUI.done, total:batchUI.total};
   toast("Capture run stopped"); renderImportedKeepFocus();
 }
-function pollBatchProgress(){
+async function pollBatchProgress(){
   if(Date.now() < _batchIgnoreUntil) return;          // just stopped — don't flip back to Stop
-  let p; try{ p=JSON.parse(localStorage.getItem("ia_batch_progress")||"null"); }catch(e){ return; }
+  let p; try{ const j = await fetch("/api/batch-progress").then(r=>r.json()); p = j && j.progress; }catch(e){ return; }
   if(!p) return;
   // stale progress (driver/tab gone) — treat as finished so the button never sticks
   if(p.active && p.ts && (Date.now()-p.ts > 90000)){ p.active=false; }
@@ -3052,7 +3055,7 @@ function pollBatchProgress(){
     ? ("■ Stop capture ("+batchUI.done+"/"+batchUI.total+")")
     : ("📷 Capture missing ("+imported.filter(needsCapture).length+")");
   if(was && !batchUI.active){
-    try{ localStorage.removeItem("ia_batch_progress"); }catch(e){}
+    try{ Store.setBatchProgress(null); }catch(e){}
     toast("Capture run finished — "+batchUI.done+"/"+batchUI.total+" processed");
     if(fbAuto) scheduleFbAutoNext();   // auto mode: pause, then run the next batch
     if(curTab==="imported") renderImported();
@@ -3435,12 +3438,9 @@ async function applyDupeRemoval(){
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
 }
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
-function drainCaptures(){
-  let raw;
-  try{ raw=localStorage.getItem("ia_captures"); }catch(e){ return; }
-  if(!raw) return;
+async function drainCaptures(){
   let queue;
-  try{ queue=JSON.parse(raw); }catch(e){ return; }
+  try{ queue = await Store.drainCaptures(); }catch(e){ return; }   // GET /api/captures returns AND clears the queue
   if(!Array.isArray(queue)||!queue.length) return;
   let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0;
   const remaining=[];
@@ -3451,7 +3451,7 @@ function drainCaptures(){
   // subpage on that site, and capture that page's screenshot for the card.
   const ACTIVE_WINDOW = 30*60*1000;
   let lastOpened=null, refreshActive=false, assignedTitle="";
-  try{ lastOpened=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
+  try{ lastOpened = await Store.kvGet("ia_last_opened"); }catch(e){}
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
@@ -3462,7 +3462,7 @@ function drainCaptures(){
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url===cap.url);
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
       if(di<0 && cap.removeActive){
-        let lo=null; try{ lo=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
+        let lo=null; try{ lo = await Store.kvGet("ia_last_opened"); }catch(e){}
         if(lo && lo.id) di = imported.findIndex(it=>it.id===lo.id);
       }
       if(di>=0){
@@ -3481,7 +3481,7 @@ function drainCaptures(){
                  : ((cap.screenshot && (cap.screenshot+"").indexOf("data:")===0) ? cap.screenshot : "");
       let imp = cap.url ? imported.find(it=>it.url && (it.url===cap.url || normalizeUrl(it.url)===normalizeUrl(cap.url) || clipKey(it.url)===clipKey(cap.url))) : null;
       if(!imp){
-        let lo=null; try{ lo=JSON.parse(localStorage.getItem("ia_last_opened")||"null"); }catch(e){}
+        let lo=null; try{ lo = await Store.kvGet("ia_last_opened"); }catch(e){}
         if(lo && lo.id && now-(lo.ts||0) < ACTIVE_WINDOW){
           const c=imported.find(it=>it.id===lo.id);
           if(c && c.url && cap.url && domain(c.url)===domain(cap.url)) imp=c;   // same-site safety
@@ -3575,11 +3575,12 @@ function drainCaptures(){
     }
     closeRefreshTab(match.id);   // a manual refresh opened this page — close it now the capture landed
   }
-  try{ localStorage.setItem("ia_captures", JSON.stringify(remaining)); }catch(e){}
+  // queue was drained server-side; re-enqueue anything we deliberately deferred
+  if(remaining.length){ try{ await Promise.all(remaining.map(function(c){ return fetch("/api/captures",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({capture:c})}); })); }catch(e){} }
   // keep the active card alive on a rolling window while you're working on it
-  if(refreshActive){ try{ localStorage.setItem("ia_last_opened", JSON.stringify({id:lastOpened.id, ts:Date.now()})); }catch(e){} }
+  if(refreshActive){ try{ await Store.kvSet("ia_last_opened", {id:lastOpened.id, ts:Date.now()}); }catch(e){} }
   if(unmatched && !matched && !removedDead){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
-  if(changed || persisted){ Store.putCards(imported); writeSavesFile(); updateCounts(); }
+  if(changed || persisted){ await Store.putCards(imported); writeSavesFile(); updateCounts(); }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
     if(removedDead){
@@ -3704,6 +3705,7 @@ async function bootData(){
   impUnreviewed = !!(await load("iunrev", false));
   tagStats  = (await load("tagstats", {})) || {};
   try{ const ph = await Store.kvGet("ia_ph_fps"); _phFps = new Set(Array.isArray(ph)?ph:[]); }catch(e){ _phFps = new Set(); }
+  try{ _fbTested = !!(await Store.kvGet("ia_fbtested")); _fbRenderTested = !!(await Store.kvGet("ia_fbrender_tested")); }catch(e){}
   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
 
   // one-time data hygiene (was a synchronous IIFE)
