@@ -24,6 +24,7 @@
     restore: function () { return "/api/restore"; },
     storeLocation: function () { return "/api/store-location"; },
     storeMove: function () { return "/api/store-location/move"; },
+    health: function () { return "/api/health"; },
     import: function () { return "/api/import"; }
   };
 
@@ -102,6 +103,7 @@
       restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
       storeLocation: function () { return jget(SE.storeLocation()); },
       moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
+      health: function () { return jget(SE.health()); },
       runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); }
     };
 
