@@ -18,19 +18,28 @@ This is the "formalization" phase that follows the resilience roadmap (Pillar 1 
 |---|---|---|
 | **Scope of v1** | Durable home, same app | Minimal change; identical UI/features; lowest risk. No redesign. |
 | **Capture** | Keep the Chrome extension | App exposes a localhost endpoint; capture *engine* untouched, delivery switched to HTTP. |
-| **Devices** | Single machine for now | One canonical local store; file backups to Dropbox. No live multi-machine sync in v1. |
+| **Devices** | Single machine in v1; **Dropbox snapshot sync in v2** | v1: one local store + file backups to Dropbox. v2 adds multi-machine sync (Approach A) — see Roadmap. |
 | **Audience** | Share with a few people | Need a packaged Windows installer (electron-builder). No code-signing/auto-update in v1. |
 | **Framework** | Electron | All-JavaScript (matches the existing codebase), trivial localhost server, mature installer tooling. |
 | **Live store location** | App install directory (`<install>\data\`), **relocatable in Settings** | Requires a **per-user** install so the directory is writable; a pointer in `%APPDATA%` records the real location and survives reinstalls. |
 | **Installer** | **Formalized assisted setup wizard** (electron-builder NSIS, `oneClick:false`) | Welcome → choose install folder → shortcuts → Finish; per-user (no admin); preserves the `data\` library across updates/uninstall. |
 
-## Non-Goals (explicitly later phases)
+## Roadmap split: v1 vs v2
 
-- Multi-machine **live sync** (Dropbox/server) of the data store.
+**v1 (this spec):** the durable desktop app + migration — same app, browser-independent local store, shareable installer. Build and ship this first.
+
+**v2 — Planned additions** (deferred; approaches chosen 2026-06-26; each gets its own follow-up spec/plan after v1 works). v1's file-based image store + small SQLite DB are deliberately **sync-ready** so these layer on cleanly:
+- **Multi-machine Dropbox sync — Approach A (snapshot sync):** the live DB stays **local** per machine; the `images/` folder syncs via Dropbox (write-once, conflict-free); the small DB **auto-exports** to Dropbox on change and **re-imports** on launch, guarded by a one-machine-at-a-time lock/heartbeat. No live SQLite file in Dropbox; offline-friendly; no server.
+- **Instagram import:** a new import source parallel to the existing Facebook/Pinterest/YouTube importers (source = the user's Instagram data-download export).
+- **Scheduled extraction from social saved lists (manual + optional daily; bounded & stoppable):** runs inside the **extension** (the only logged-in context); an on-demand button plus an optional once-a-day run that is capped per run, rate-limited, and has a visible **Stop**. Best-effort given platform rate limits/ToS.
+- **"Save to Interests" in the post ⋯ menu (FB-Purity-style):** the extension injects a menu item into the native post overflow menu on Facebook/Instagram/Pinterest, alongside the existing capture engine.
+
+## Non-Goals (not planned)
+
 - **In-app capture** (replacing the extension with an in-app browser view).
-- **Cloud hosting.**
+- **Cloud hosting** as the primary store.
 - **Auto-update** and **code-signing** (paid certificate).
-- Any **UI/UX redesign** or feature expansion.
+- Any **UI/UX redesign**.
 
 ---
 
