@@ -21,6 +21,8 @@ This is the "formalization" phase that follows the resilience roadmap (Pillar 1 
 | **Devices** | Single machine for now | One canonical local store; file backups to Dropbox. No live multi-machine sync in v1. |
 | **Audience** | Share with a few people | Need a packaged Windows installer (electron-builder). No code-signing/auto-update in v1. |
 | **Framework** | Electron | All-JavaScript (matches the existing codebase), trivial localhost server, mature installer tooling. |
+| **Live store location** | App install directory (`<install>\data\`), **relocatable in Settings** | Requires a **per-user** install so the directory is writable; a pointer in `%APPDATA%` records the real location and survives reinstalls. |
+| **Installer** | **Formalized assisted setup wizard** (electron-builder NSIS, `oneClick:false`) | Welcome → choose install folder → shortcuts → Finish; per-user (no admin); preserves the `data\` library across updates/uninstall. |
 
 ## Non-Goals (explicitly later phases)
 
@@ -62,8 +64,13 @@ Three parts, one source of truth.
 
 ### Where data lives
 
-- **Canonical (live) store:** a **local** folder (default `Documents\Interests App\`) containing `interests.db` + `images\`. Deliberately **not** inside Dropbox, because Dropbox syncing a database file the app holds open can corrupt it or create `.conflicted` copies.
+- **Canonical (live) store:** by default a **`data\` subfolder of the app's install directory** (`<install>\data\` → `interests.db` + `images\`). Because the install is **per-user** (`%LOCALAPPDATA%\Programs\Interests App\`), this folder is writable without admin elevation. The store is **relocatable from Settings** (see "Moving the data store"). Deliberately **not** inside Dropbox, because Dropbox syncing a database file the app holds open can corrupt it or create `.conflicted` copies.
+- **Store-location pointer:** the *path* to the live store is recorded in a tiny config at `%APPDATA%\Interests App\config.json`, kept **outside** the install directory so it survives reinstalls/updates and so the app always knows where the data is — even after it has been moved.
 - **Backups:** dated snapshots copied **into** `Dropbox\Interests App\backups\<date>\` (safe — written once, then closed). Dropbox version history is a free extra layer.
+
+### Moving the data store (Settings → Data location)
+
+Settings shows the current store path with a **"Move…"** action: pick a new folder → the app copies `interests.db` + `images\` to the target, **verifies counts**, updates the `%APPDATA%` pointer, then reopens from the new location and releases the old one. Safe-by-construction — the old copy is left intact until the move is verified, so an interrupted move never loses data.
 
 ---
 
@@ -74,6 +81,8 @@ Each unit has one clear job and a defined interface.
 | File / unit | Responsibility |
 |---|---|
 | `main.js` | Electron main process: start Core service, open the window, system tray, lifecycle, port handling. |
+| `core/config.js` | Read/write the store-location pointer (`%APPDATA%\Interests App\config.json`); resolve the live-store path on startup; default to `<install>\data\` on first run. |
+| `build/installer.nsh` | Custom NSIS include: assisted-wizard tweaks, **exclude `data\` from removal on update**, and uninstaller "also delete your library?" prompt (default No). |
 | `core/server.js` | Express app on `:3456`: serves the web UI + the REST API (storage, capture bridge, backup). |
 | `core/db.js` | SQLite open/migrate + CRUD for `cards`, `saved`, `kv`, `fp`. Opens in WAL mode; integrity check on start. |
 | `core/images.js` | Read/write/delete image files in `images/`; resolve a card id → file path; report counts. |
@@ -126,6 +135,9 @@ Backup/restore (consumed by the app UI):
 - `POST /api/backup` (manual) · backup status in `GET /api/health`.
 - `GET /api/backups` (list) · `POST /api/restore` (by name).
 
+Data location (consumed by Settings):
+- `GET /api/store-location` (current path + counts) · `POST /api/store-location/move` (target path → copy, verify, repoint, reopen).
+
 CORS: the service allows the `chrome-extension://<id>` origin and `localhost` for these endpoints.
 
 ---
@@ -172,6 +184,7 @@ Source: an existing **legacy backup folder** in Dropbox (`interests-backup-<date
 - **Missing image file for a card** → UI shows a placeholder (graceful degradation as today); card is re-pullable.
 - **Migration shortfall** → exact-count verification; safe to re-run; original backup untouched.
 - **Extension can't reach the service** → local queue holds captures and delivers when the service returns.
+- **Store folder missing/moved** (e.g. an update removed the install-dir data, or the pointer resolves to nothing) → on launch the app detects an absent/empty store and offers **Restore from a Dropbox backup** or **Locate an existing store folder**, rather than silently starting empty.
 
 ---
 
@@ -190,7 +203,9 @@ Reuse the existing `tests/` Node harness (syntax gate + pure-logic units), exten
 
 ## Distribution
 
-- **electron-builder** → Windows **NSIS `.exe` installer** (Start-menu entry; optional portable build). Bundles Node + SQLite so recipients install nothing else.
+- **electron-builder NSIS, assisted setup wizard** (`oneClick: false`): Welcome → optional license → **choose install directory** (`allowToChangeInstallationDirectory: true`) → desktop + Start-menu shortcuts → Finish (with launch option). Bundles Node + SQLite so recipients install nothing else.
+- **Per-user install** (`perMachine: false` → `%LOCALAPPDATA%\Programs\Interests App\`): no admin prompt, and the install directory is writable for the live `data\` store.
+- **Preserve the library across updates/uninstall:** a custom `build/installer.nsh` excludes the `data\` subfolder from removal during an update, and the **uninstaller prompts** "Also delete your saved library?" (default **No**). Combined with the `%APPDATA%` pointer and the Dropbox backups, the library is protected even through a reinstall.
 - **No code-signing in v1:** Windows SmartScreen shows a one-time "unknown publisher" prompt (More info → Run anyway). Document this for the few recipients. Signing is a later add-on if distribution widens.
 - **No auto-update in v1:** updates are a new installer sent manually.
 
@@ -207,17 +222,17 @@ Reuse the existing `tests/` Node harness (syntax gate + pure-logic units), exten
 
 ## Suggested implementation phases (for the plan)
 
-1. **Core service skeleton** — Electron shell + Express on :3456 serving the current `web/` UI unchanged (still using browser storage), proving the window + server + extension reach.
+1. **Core service skeleton** — Electron shell + `core/config.js` (resolve/persist the store path, default `<install>\data\`) + Express on :3456 serving the current `web/` UI unchanged (still using browser storage), proving the window + server + extension reach.
 2. **Data layer** — `db.js` (schema/migrations) + `images.js` + storage REST endpoints + unit tests.
 3. **Storage adapter** — `web/storage.js`; repoint the app's reads/writes; image references resolve via `/api/img`.
 4. **Importer** — migrate a legacy backup folder; verify; integration test.
 5. **Capture bridge** — switch extension delivery/polling to HTTP; keep the queue fallback.
-6. **Backup/restore** — scheduled + manual; rotation; verify; restore.
-7. **Packaging** — electron-builder installer; smoke checklist.
+6. **Backup/restore + data-location move** — scheduled + manual backup; rotation; verify; restore; Settings → Move store (copy/verify/repoint).
+7. **Packaging & setup wizard** — electron-builder assisted NSIS (`oneClick:false`, choose-dir, shortcuts, per-user) + `build/installer.nsh` (preserve `data\` on update, uninstall prompt); smoke checklist.
 8. **Final adversarial review** + user verification pass.
 
 ## Open assumptions
 
-- Canonical store default path `Documents\Interests App\`; backups to `Dropbox\Interests App\backups\` (confirm exact Dropbox path during planning).
+- Live store default = `<install>\data\` (per-user install at `%LOCALAPPDATA%\Programs\Interests App\`), relocatable in Settings; path pointer in `%APPDATA%\Interests App\config.json`. Backups to `Dropbox\Interests App\backups\` (confirmed).
 - Port stays **3456** to match the extension's existing expectation; alternate-port fallback handles conflicts.
 - The legacy backup folder is the migration source of record (not a live IndexedDB export).
