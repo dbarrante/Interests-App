@@ -103,6 +103,33 @@ function createServer(ctx) {
     res.json({ ok: true });
   });
 
+  // --- Capture queue (persisted in kv key ia_capture_queue) ---
+  // The app drains exactly like the old localStorage `ia_captures`: GET returns
+  // the queued captures AND clears them, so each capture is delivered once.
+  function readCaptureQueue() {
+    const raw = dbm.getKV(db, "ia_capture_queue");
+    if (!raw) return [];
+    try { const q = JSON.parse(raw); return Array.isArray(q) ? q : []; }
+    catch (e) { return []; }
+  }
+
+  app.post("/api/captures", (req, res) => {
+    const capture = req.body && req.body.capture;
+    if (!capture || typeof capture !== "object") {
+      return res.status(400).json({ ok: false, error: "missing capture" });
+    }
+    const q = readCaptureQueue();
+    q.push(capture);
+    dbm.setKV(db, "ia_capture_queue", JSON.stringify(q));
+    res.json({ ok: true });
+  });
+
+  app.get("/api/captures", (req, res) => {
+    const q = readCaptureQueue();
+    if (q.length) dbm.setKV(db, "ia_capture_queue", JSON.stringify([]));
+    res.json({ captures: q });
+  });
+
   // One-time legacy backup import. READ-ONLY on srcDir.
   app.post("/api/import", (req, res) => {
     const srcDir = req.body && req.body.srcDir;
