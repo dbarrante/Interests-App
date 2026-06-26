@@ -223,6 +223,26 @@ function createServer(ctx) {
     });
   });
 
+  // ---- data location ----
+  app.get("/api/store-location", (req, res) => {
+    const c = counts(ctx.db);
+    res.json({
+      path: ctx.storeDir,
+      counts: { cards: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 }
+    });
+  });
+
+  app.post("/api/store-location/move", (req, res) => {
+    const target = req.body && req.body.target;
+    if (!target) return res.status(400).json({ ok: false, error: "target required" });
+    try {
+      const out = backup.moveStore(target, ctx);   // repoints ctx.db/ctx.storeDir on success
+      res.json({ ok: out.ok, path: ctx.storeDir });
+    } catch (e) {
+      res.status(500).json({ ok: false, path: ctx.storeDir, error: String(e && e.message || e) });
+    }
+  });
+
   // Serve the existing web app.
   app.use(express.static(WEB_DIR));
 

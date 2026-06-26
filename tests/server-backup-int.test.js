@@ -91,6 +91,24 @@ function listen(app) {
       assert.strictEqual(counts(ctx.db).cards, 1, "ctx.db rebound to restored 1-card store");
     });
 
+    await run(t("GET /api/store-location reports path + counts"), async () => {
+      const r = await (await fetch(base + "/api/store-location")).json();
+      assert.strictEqual(r.path, ctx.storeDir);
+      assert.ok(r.counts && typeof r.counts.images === "number");
+    });
+
+    await run(t("POST /api/store-location/move relocates the store"), async () => {
+      const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvbk-mv-"));
+      const r = await (await fetch(base + "/api/store-location/move", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target })
+      })).json();
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.path, target);
+      assert.strictEqual(ctx.storeDir, target, "ctx repointed");
+      assert.ok(fs.existsSync(path.join(target, "interests.db")), "db at target");
+    });
+
     await new Promise(function (res) { srv.close(res); });
     try { ctx.db.close(); } catch (e) {}
   } finally {
