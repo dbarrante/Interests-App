@@ -446,6 +446,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
         <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
         <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
+        <button id="btnImportLegacy" class="btn btn-ghost" title="Import an old folder-style backup (contains data.json) from a previous version into this app. Reads only — your source folder is never modified.">Import legacy backup…</button>
+        <span id="importLegacyResult" class="hint" style="margin-left:6px"></span>
         <span class="hint" id="backupInfo" style="margin-left:10px"></span>
         <div id="durStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
         <label style="margin-top:16px;display:block">Auto-backup</label>
@@ -1002,6 +1004,35 @@ async function moveDataLocation(){
     try{ await storageHealthCheck(); }catch(e){}
   }catch(e){ toast("Move failed: " + (e&&e.message||e)); }
 }
+
+// Settings → "Import legacy backup…": pick a folder (native bridge if present,
+// else a path prompt) and call Store.runImport, then render a one-line result.
+(function bindImportLegacy(){
+  var btn = document.getElementById("btnImportLegacy");
+  if(!btn) return;
+  btn.addEventListener("click", async function(){
+    var out = document.getElementById("importLegacyResult");
+    var srcDir = null;
+    try {
+      if (window.app && typeof window.app.pickFolder === "function") {
+        srcDir = await window.app.pickFolder();
+      } else {
+        srcDir = window.prompt("Path to legacy backup folder (contains data.json):");
+      }
+    } catch(e) { srcDir = null; }
+    if(!srcDir){ return; }
+    if(out){ out.textContent = "Importing…"; }
+    try {
+      var res = await Store.runImport(srcDir);
+      if(out){
+        out.textContent = res.cards + " cards, " + res.saved + " saved, " +
+          res.images + " images — " + (res.missing ? res.missing.length : 0) + " missing";
+      }
+    } catch(e) {
+      if(out){ out.textContent = "Import failed: " + (e && e.message ? e.message : e); }
+    }
+  });
+})();
 
 /* ============ settings ui ============ */
 function renderSettings(){
