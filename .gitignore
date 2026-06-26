@@ -1,3 +1,7 @@
+node_modules/
+dist/
+data/
+
 saves.json
 *.tmp.*
 facebook-import.json
