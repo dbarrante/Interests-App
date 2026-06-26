@@ -129,6 +129,33 @@ function mount(storeDir) {
     } finally { await m.close(); }
   });
 
+  await t("queue persists across a new createServer() on the same store", async () => {
+    const storeDir = tmpStore();
+
+    // first server instance: enqueue one capture, then close everything
+    const m1 = await mount(storeDir);
+    const cap = { url: "https://example.com/persist", id: "card-persist", screenshot: "data:image/jpeg;base64,CCCC", ts: 9 };
+    let r = await fetch(m1.base + "/api/captures", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capture: cap }),
+    });
+    assert.deepStrictEqual(await r.json(), { ok: true });
+    await m1.close();   // closes the http server AND the sqlite db (flushes to disk)
+
+    // a fresh createServer() / openDb() on the same store sees the queued capture
+    const m2 = await mount(storeDir);
+    try {
+      r = await fetch(m2.base + "/api/captures");
+      const got = await r.json();
+      assert.strictEqual(got.captures.length, 1);
+      assert.strictEqual(got.captures[0].url, "https://example.com/persist");
+      assert.strictEqual(got.captures[0].id, "card-persist");
+      // drained — the second instance's queue is now empty
+      r = await fetch(m2.base + "/api/captures");
+      assert.deepStrictEqual(await r.json(), { captures: [] });
+    } finally { await m2.close(); }
+  });
+
   console.log(pass + " passed, " + fail + " failed");
   // On Node v25 / Windows, forcing process.exit() right after node:sqlite db.close()
   // can trip a libuv handle-teardown assertion (abort, exit 127) even though every
