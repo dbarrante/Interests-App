@@ -561,13 +561,10 @@ function persistAll(){ save("feed",feed); save("saved",saved); save("hidden",hid
    The browser no longer caches image bytes — <img src> points straight at the URL,
    so there is no 512 MB string ceiling and nothing to evict. resolveImg() turns an
    "idb:<id>" reference into that URL; setCardImage() PUT/DELETEs the file. */
-// Tiny separate DB mapping card id -> image fingerprint, so FB placeholder detection
-// (fbPlaceholderGroups) never needs the image bytes in memory. Mirrored in _fpMap.
-let _fpDB=null, _fpMap={};
-function fpDB(){ return new Promise((res,rej)=>{ if(_fpDB) return res(_fpDB); let rq; try{ rq=indexedDB.open("ia_fp",1); }catch(e){ return rej(e); } rq.onupgradeneeded=()=>{ if(!rq.result.objectStoreNames.contains("fp")) rq.result.createObjectStore("fp"); }; rq.onsuccess=()=>{ _fpDB=rq.result; res(_fpDB); }; rq.onerror=()=>rej(rq.error); }); }
-async function fpPut(id, fp){ try{ const db=await fpDB(); await new Promise((res,rej)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").put(fp,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); }catch(e){} }
-async function fpDel(id){ try{ const db=await fpDB(); await new Promise((res)=>{ const tx=db.transaction("fp","readwrite"); tx.objectStore("fp").delete(id); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
-async function fpAll(){ try{ const db=await fpDB(); return await new Promise((res)=>{ const out={}; const cur=db.transaction("fp","readonly").objectStore("fp").openCursor(); cur.onsuccess=e=>{ const c=e.target.result; if(c){ out[c.key]=c.value; c.continue(); } else res(out); }; cur.onerror=()=>res(out); }); }catch(e){ return {}; } }
+// Card id -> image fingerprint, so FB placeholder detection (fbPlaceholderGroups)
+// never needs the image bytes in memory. Persisted in the Core service (Store.fp*)
+// and loaded once into this in-memory mirror (_fpMap) at boot.
+let _fpMap={};
 // assign an image to a card: data URLs are written to the service (ref kept as
 // "idb:<id>"); http(s) URLs are stored inline; clearing removes the file.
 function setCardImage(it, src){
@@ -3577,7 +3574,7 @@ async function applyDupeRemoval(){
       if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
       // delete the removed card's own (now orphaned) image + its fingerprint — unless the
       // kept card just adopted that same image ref (keptSrcImg), in which case keep the file.
-      if (srcIsIdb && !keptSrcImg){ Store.imgDel(mem.card.id); if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; fpDel(mem.card.id); } }
+      if (srcIsIdb && !keptSrcImg){ Store.imgDel(mem.card.id); if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; Store.fpDel(mem.card.id); } }
       (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
       removed++;
     }
@@ -3860,6 +3857,7 @@ updateCounts();
 showTab(load("tab","feed"));
 (async()=>{
   try{ await restoreFolder(); }catch(e){ console.warn("restoreFolder failed", e); }
+  try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
   try{ await initImageStore(); if(curTab==="imported") renderImported(); }
   catch(e){ console.warn("image store init failed", e); }
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
