@@ -7,6 +7,7 @@ const http = require("http");
 const express = require("express");
 const dbm = require("./db");
 const images = require("./images");
+const { importLegacyBackup } = require("./importer");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -100,6 +101,20 @@ function createServer(ctx) {
   app.delete("/api/fp/:id", (req, res) => {
     dbm.delFp(db, req.params.id);
     res.json({ ok: true });
+  });
+
+  // One-time legacy backup import. READ-ONLY on srcDir.
+  app.post("/api/import", (req, res) => {
+    const srcDir = req.body && req.body.srcDir;
+    if (!srcDir || typeof srcDir !== "string") {
+      return res.status(400).json({ error: "srcDir required" });
+    }
+    try {
+      const out = importLegacyBackup(srcDir, { db: ctx.db, storeDir: ctx.storeDir });
+      res.json(out);
+    } catch (e) {
+      res.status(400).json({ error: String(e && e.message ? e.message : e) });
+    }
   });
 
   // Serve the existing web app.
