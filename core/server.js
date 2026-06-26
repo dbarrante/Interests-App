@@ -130,6 +130,45 @@ function createServer(ctx) {
     res.json({ captures: q });
   });
 
+  // --- Single capture request (kv ia_capture_request) ---
+  function readJsonKV(key) {
+    const raw = dbm.getKV(db, key);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+
+  app.get("/api/capture-request", (req, res) => {
+    res.json({ request: readJsonKV("ia_capture_request") });
+  });
+  app.post("/api/capture-request", (req, res) => {
+    const request = req.body && req.body.request;
+    if (request == null) dbm.setKV(db, "ia_capture_request", "");
+    else dbm.setKV(db, "ia_capture_request", JSON.stringify(request));
+    res.json({ ok: true });
+  });
+
+  // --- Batch driver state (kv ia_batch_state) ---
+  app.get("/api/batch-state", (req, res) => {
+    res.json({ state: readJsonKV("ia_batch_state") });
+  });
+  app.post("/api/batch-state", (req, res) => {
+    const state = req.body && req.body.state;
+    if (state == null) dbm.setKV(db, "ia_batch_state", "");
+    else dbm.setKV(db, "ia_batch_state", JSON.stringify(state));
+    res.json({ ok: true });
+  });
+
+  // --- Batch progress (kv ia_batch_progress) ---
+  app.get("/api/batch-progress", (req, res) => {
+    res.json({ progress: readJsonKV("ia_batch_progress") });
+  });
+  app.post("/api/batch-progress", (req, res) => {
+    const progress = req.body && req.body.progress;
+    if (progress == null) dbm.setKV(db, "ia_batch_progress", "");
+    else dbm.setKV(db, "ia_batch_progress", JSON.stringify(progress));
+    res.json({ ok: true });
+  });
+
   // One-time legacy backup import. READ-ONLY on srcDir.
   app.post("/api/import", (req, res) => {
     const srcDir = req.body && req.body.srcDir;

@@ -69,6 +69,66 @@ function mount(storeDir) {
     } finally { await m.close(); }
   });
 
+  await t("capture-request POST then GET returns it; POST null clears it", async () => {
+    const storeDir = tmpStore();
+    const m = await mount(storeDir);
+    try {
+      // empty store -> null
+      let r = await fetch(m.base + "/api/capture-request");
+      assert.deepStrictEqual(await r.json(), { request: null });
+
+      const reqObj = { url: "https://example.com/p", id: "card-p", delay: 3000, render: false };
+      r = await fetch(m.base + "/api/capture-request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request: reqObj }),
+      });
+      assert.deepStrictEqual(await r.json(), { ok: true });
+
+      r = await fetch(m.base + "/api/capture-request");
+      const got = await r.json();
+      assert.strictEqual(got.request.url, "https://example.com/p");
+      assert.strictEqual(got.request.id, "card-p");
+
+      // POST null clears it
+      r = await fetch(m.base + "/api/capture-request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request: null }),
+      });
+      assert.deepStrictEqual(await r.json(), { ok: true });
+      r = await fetch(m.base + "/api/capture-request");
+      assert.deepStrictEqual(await r.json(), { request: null });
+    } finally { await m.close(); }
+  });
+
+  await t("batch-state and batch-progress round-trip", async () => {
+    const storeDir = tmpStore();
+    const m = await mount(storeDir);
+    try {
+      let r = await fetch(m.base + "/api/batch-state");
+      assert.deepStrictEqual(await r.json(), { state: null });
+      r = await fetch(m.base + "/api/batch-progress");
+      assert.deepStrictEqual(await r.json(), { progress: null });
+
+      const state = { items: [{ url: "u1", id: "i1" }], next: 0, total: 1, concurrency: 2 };
+      r = await fetch(m.base + "/api/batch-state", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+      });
+      assert.deepStrictEqual(await r.json(), { ok: true });
+      r = await fetch(m.base + "/api/batch-state");
+      assert.deepStrictEqual((await r.json()).state.total, 1);
+
+      const progress = { done: 1, total: 1, active: false, ts: 123 };
+      r = await fetch(m.base + "/api/batch-progress", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ progress }),
+      });
+      assert.deepStrictEqual(await r.json(), { ok: true });
+      r = await fetch(m.base + "/api/batch-progress");
+      assert.deepStrictEqual((await r.json()).progress.done, 1);
+    } finally { await m.close(); }
+  });
+
   console.log(pass + " passed, " + fail + " failed");
   // On Node v25 / Windows, forcing process.exit() right after node:sqlite db.close()
   // can trip a libuv handle-teardown assertion (abort, exit 127) even though every
