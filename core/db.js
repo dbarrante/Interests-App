@@ -50,4 +50,75 @@ function counts(db) {
   return { cards: Number(cards), saved: Number(saved) };
 }
 
-module.exports = { openDb, getKV, setKV, delKV, counts };
+// Card column fields live in their own columns; everything else goes in `data` JSON.
+const CARD_COLS = ["id", "url", "platform", "cat", "ts", "img"];
+
+function cardToRow(card) {
+  const img = card.img || "";
+  let img_file = null, img_url = null;
+  if (img.indexOf("idb:") === 0) img_file = card.id + ".jpg";
+  else if (img.indexOf("http") === 0) img_url = img;
+  const data = {};
+  for (const k of Object.keys(card)) {
+    if (CARD_COLS.indexOf(k) === -1) data[k] = card[k];
+  }
+  return {
+    id: card.id,
+    url: card.url != null ? card.url : null,
+    platform: card.platform != null ? card.platform : null,
+    cat: card.cat != null ? card.cat : null,
+    ts: card.ts != null ? card.ts : null,
+    img_file,
+    img_url,
+    data: JSON.stringify(data),
+  };
+}
+
+function rowToCard(row) {
+  const base = row.data ? JSON.parse(row.data) : {};
+  base.id = row.id;
+  base.url = row.url;
+  base.platform = row.platform;
+  base.cat = row.cat;
+  base.ts = row.ts;
+  base.img = row.img_file ? ("idb:" + row.id) : (row.img_url || "");
+  return base;
+}
+
+function allCards(db) {
+  return db.prepare("SELECT * FROM cards").all().map(rowToCard);
+}
+
+// node:sqlite has no named-param helper here; bind positional `?` params in column order.
+const _CARD_INSERT_SQL =
+  "INSERT INTO cards(id,url,platform,cat,ts,img_file,img_url,data) VALUES(?,?,?,?,?,?,?,?) " +
+  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,platform=excluded.platform,cat=excluded.cat,ts=excluded.ts,img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data";
+
+function _runCardInsert(stmt, card) {
+  const r = cardToRow(card);
+  stmt.run(r.id, r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, r.data);
+}
+
+function upsertCard(db, card) {
+  _runCardInsert(db.prepare(_CARD_INSERT_SQL), card);
+}
+
+// node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
+function replaceCards(db, arr) {
+  const ins = db.prepare(_CARD_INSERT_SQL);
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM cards").run();
+    for (const c of (arr || [])) _runCardInsert(ins, c);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function deleteCard(db, id) {
+  db.prepare("DELETE FROM cards WHERE id=?").run(id);
+}
+
+module.exports = { openDb, getKV, setKV, delKV, counts, rowToCard, cardToRow, allCards, replaceCards, upsertCard, deleteCard };

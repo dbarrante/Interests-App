@@ -57,5 +57,93 @@ t("counts is {cards:0,saved:0} on a fresh db", () => {
   d.close();
 });
 
+t("cardToRow: idb img -> img_file, no img_url, data excludes column fields", () => {
+  const card = { id: "c1", url: "https://x.com/p", platform: "facebook", cat: "Saved", ts: 1700000000000, img: "idb:c1", title: "Hi", tags: ["a"], blocked: false };
+  const row = db.cardToRow(card);
+  assert.strictEqual(row.id, "c1");
+  assert.strictEqual(row.url, "https://x.com/p");
+  assert.strictEqual(row.platform, "facebook");
+  assert.strictEqual(row.cat, "Saved");
+  assert.strictEqual(row.ts, 1700000000000);
+  assert.strictEqual(row.img_file, "c1.jpg");
+  assert.strictEqual(row.img_url, null);
+  const data = JSON.parse(row.data);
+  assert.deepStrictEqual(data, { title: "Hi", tags: ["a"], blocked: false });
+  assert.ok(!("id" in data) && !("img" in data) && !("ts" in data), "column fields not duplicated in data");
+});
+
+t("cardToRow: http img -> img_url, no img_file", () => {
+  const row = db.cardToRow({ id: "c2", url: "u", platform: "pinterest", cat: "Feed", ts: 1, img: "https://i.pinimg.com/x.jpg", title: "P" });
+  assert.strictEqual(row.img_file, null);
+  assert.strictEqual(row.img_url, "https://i.pinimg.com/x.jpg");
+});
+
+t("cardToRow: empty img -> both null", () => {
+  const row = db.cardToRow({ id: "c3", url: "u", platform: "x", cat: "c", ts: 0, img: "" });
+  assert.strictEqual(row.img_file, null);
+  assert.strictEqual(row.img_url, null);
+});
+
+t("rowToCard: img_file -> idb:<id> ref, data merged", () => {
+  const row = { id: "c1", url: "u", platform: "facebook", cat: "Saved", ts: 5, img_file: "c1.jpg", img_url: null, data: JSON.stringify({ title: "Hi", tags: ["a"] }) };
+  const card = db.rowToCard(row);
+  assert.strictEqual(card.img, "idb:c1");
+  assert.strictEqual(card.title, "Hi");
+  assert.deepStrictEqual(card.tags, ["a"]);
+  assert.strictEqual(card.cat, "Saved");
+});
+
+t("rowToCard: img_url passes through; missing -> empty string", () => {
+  assert.strictEqual(db.rowToCard({ id: "c2", url: "u", platform: "p", cat: "c", ts: 1, img_file: null, img_url: "https://h/x.jpg", data: "{}" }).img, "https://h/x.jpg");
+  assert.strictEqual(db.rowToCard({ id: "c3", url: "u", platform: "p", cat: "c", ts: 1, img_file: null, img_url: null, data: "{}" }).img, "");
+});
+
+t("card round-trip through cardToRow -> rowToCard is lossless (idb/http/empty)", () => {
+  const cards = [
+    { id: "a", url: "ua", platform: "facebook", cat: "Saved", ts: 10, img: "idb:a", title: "A", desc: "d", liked: true },
+    { id: "b", url: "ub", platform: "pinterest", cat: "Feed", ts: 20, img: "https://h/b.jpg", title: "B", tags: [] },
+    { id: "c", url: "uc", platform: "youtube", cat: "Feed", ts: 30, img: "", title: "C" },
+  ];
+  for (const c of cards) {
+    const back = db.rowToCard(db.cardToRow(c));
+    assert.deepStrictEqual(back, c);
+  }
+});
+
+t("replaceCards inserts in a transaction; allCards reads them back", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [
+    { id: "a", url: "ua", platform: "fb", cat: "Saved", ts: 2, img: "idb:a", title: "A" },
+    { id: "b", url: "ub", platform: "pin", cat: "Feed", ts: 1, img: "", title: "B" },
+  ]);
+  const all = db.allCards(d).sort((x, y) => x.id.localeCompare(y.id));
+  assert.strictEqual(all.length, 2);
+  assert.strictEqual(all[0].id, "a");
+  assert.strictEqual(all[0].img, "idb:a");
+  assert.strictEqual(db.counts(d).cards, 2);
+  d.close();
+});
+
+t("replaceCards is atomic replace (old rows gone)", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "old", url: "u", platform: "p", cat: "c", ts: 1, img: "" }]);
+  db.replaceCards(d, [{ id: "new", url: "u", platform: "p", cat: "c", ts: 1, img: "" }]);
+  const ids = db.allCards(d).map(c => c.id);
+  assert.deepStrictEqual(ids, ["new"]);
+  d.close();
+});
+
+t("upsertCard inserts then updates; deleteCard removes", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "a", url: "u1", platform: "p", cat: "c", ts: 1, img: "", title: "v1" });
+  db.upsertCard(d, { id: "a", url: "u2", platform: "p", cat: "c", ts: 1, img: "", title: "v2" });
+  assert.strictEqual(db.counts(d).cards, 1);
+  assert.strictEqual(db.allCards(d)[0].title, "v2");
+  assert.strictEqual(db.allCards(d)[0].url, "u2");
+  db.deleteCard(d, "a");
+  assert.strictEqual(db.counts(d).cards, 0);
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
