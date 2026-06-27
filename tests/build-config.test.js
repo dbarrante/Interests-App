@@ -69,5 +69,21 @@ t("installer.nsh uninstaller prompts before deleting the library (default No)", 
   assert.ok(/RMDir\s+\/r\s+"\$INSTDIR\\data"/i.test(nsh), "library delete (RMDir /r data) missing");
 });
 
+const icoPath = path.join(__dirname, "..", "build", "icon.ico");
+t("build/icon.ico exists", () => {
+  assert.ok(fs.existsSync(icoPath), "build/icon.ico missing");
+});
+t("build/icon.ico is a valid ICO (header + non-trivial size)", () => {
+  const buf = fs.readFileSync(icoPath);
+  // ICO header: reserved=0x0000, type=0x0001 (icon)
+  assert.strictEqual(buf.readUInt16LE(0), 0, "ICO reserved field must be 0");
+  assert.strictEqual(buf.readUInt16LE(2), 1, "ICO type field must be 1 (icon)");
+  assert.ok(buf.readUInt16LE(4) >= 1, "ICO must declare at least one image");
+  assert.ok(buf.length > 1000, "ICO unexpectedly tiny");
+});
+t("package.json win.icon points at build/icon.ico", () => {
+  assert.strictEqual(pkg.build.win.icon, "build/icon.ico");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
