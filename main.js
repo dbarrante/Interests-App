@@ -50,6 +50,7 @@ if (!gotLock) {
 }
 
 function createWindow(port) {
+  const origin = "http://127.0.0.1:" + port;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -58,10 +59,30 @@ function createWindow(port) {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
-  mainWindow.loadURL("http://127.0.0.1:" + port + "/");
+  mainWindow.loadURL(origin + "/");
   mainWindow.on("closed", () => { mainWindow = null; });
+
+  // Open external article links (window.open / target=_blank) in the user's real
+  // browser, never an in-app window. Deny everything else.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) { shell.openExternal(url); }
+    return { action: "deny" };
+  });
+
+  // Keep the window pinned to the localhost app origin. In-app navigation away
+  // from it is blocked; http(s) destinations are routed to the external browser.
+  // Compare exact URL origins (not a string prefix) so a look-alike host like
+  // http://127.0.0.1:<port>.evil.com cannot masquerade as same-origin.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    let u = null;
+    try { u = new URL(url); } catch (e) { u = null; }
+    if (u && u.origin === origin) return;   // same-origin nav within the app is fine
+    event.preventDefault();
+    if (/^https?:/i.test(url)) { shell.openExternal(url); }
+  });
 }
 
 // Native-shell IPC: folder picker + open external link.
