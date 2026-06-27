@@ -49,5 +49,25 @@ t("packaging excludes the data folder (asar payload)", () => {
   assert.ok(excludesData, "build.files must contain an exclusion like '!data/**/*'");
 });
 
+const fs = require("fs");
+const nshPath = path.join(__dirname, "..", "build", "installer.nsh");
+t("build/installer.nsh exists", () => {
+  assert.ok(fs.existsSync(nshPath), "build/installer.nsh missing");
+});
+t("installer.nsh keeps data/ on update via customRemoveFiles", () => {
+  const nsh = fs.readFileSync(nshPath, "utf8");
+  assert.ok(/!macro\s+customRemoveFiles/i.test(nsh), "customRemoveFiles macro missing");
+  assert.ok(/\$INSTDIR\\data/i.test(nsh), "must reference $INSTDIR\\data");
+  assert.ok(/isUpdated/i.test(nsh), "must branch on the update flag (isUpdated)");
+});
+t("installer.nsh uninstaller prompts before deleting the library (default No)", () => {
+  const nsh = fs.readFileSync(nshPath, "utf8");
+  assert.ok(/!macro\s+customUnInstall/i.test(nsh), "customUnInstall macro missing");
+  assert.ok(/MB_YESNO/i.test(nsh), "uninstall MessageBox must be MB_YESNO");
+  assert.ok(/MB_DEFBUTTON2/i.test(nsh), "default button must be No (MB_DEFBUTTON2)");
+  assert.ok(/Also delete your saved library/i.test(nsh), "uninstall prompt text missing");
+  assert.ok(/RMDir\s+\/r\s+"\$INSTDIR\\data"/i.test(nsh), "library delete (RMDir /r data) missing");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
