@@ -4,6 +4,42 @@
   "private": true,
   "main": "main.js",
   "scripts": { "start": "electron .", "test": "node tests/run.js", "dist": "electron-builder" },
+  "build": {
+    "appId": "com.dbarrante.interestsapp",
+    "productName": "Interests App",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "core/**/*",
+      "web/**/*",
+      "extension/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "!data/**/*",
+      "!dist/**/*",
+      "!tests/**/*",
+      "!docs/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Interests-App-Setup-${version}.${ext}",
+      "include": "build/installer.nsh",
+      "deleteAppDataOnUninstall": false
+    }
+  },
   "dependencies": { "express": "^4.21.2" },
   "devDependencies": { "electron": "^42.5.0", "electron-builder": "^25.1.8" }
 }
