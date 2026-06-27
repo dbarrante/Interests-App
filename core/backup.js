@@ -176,11 +176,17 @@ function restore(name, ctx) {
   try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }
   if (!hasDb) return { ok: false };
 
-  // 1) safety snapshot of the live store (non-dated name → never auto-rotated)
+  // 1) safety snapshot of the live store (non-dated name → never auto-rotated).
+  // If snapshotting the live db FAILS, abort BEFORE overwriting the live store —
+  // a restore that can't first preserve current data must not destroy it.
   const snapName = "interests-backup-before-restore-" + Date.now();
   const snapFolder = path.join(dropboxBackupDir(), snapName);
   fs.mkdirSync(path.join(snapFolder, "images"), { recursive: true });
-  try { fs.copyFileSync(path.join(ctx.storeDir, "interests.db"), path.join(snapFolder, "interests.db")); } catch (e) {}
+  try {
+    fs.copyFileSync(path.join(ctx.storeDir, "interests.db"), path.join(snapFolder, "interests.db"));
+  } catch (e) {
+    return { ok: false, error: "safety snapshot failed" };
+  }
   overlayImages(path.join(ctx.storeDir, "images"), path.join(snapFolder, "images"));
 
   // 2) close the live db so the file can be replaced (Windows holds an exclusive handle)

@@ -250,5 +250,39 @@ t("restore snapshots current store, swaps backup db+images in, keeps live store 
   });
 });
 
+t("restore ABORTS before overwriting the live store if the safety snapshot fails", () => {
+  withBackupDir(function (bdir) {
+    // A valid backup folder to restore FROM (two cards/images).
+    const bkStore = newStore();
+    let bdb = openDb(bkStore);
+    upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
+    upsertCard(bdb, { id: "b", url: "https://x/b", platform: "fb", cat: "Saved", ts: 2, img: "idb:b" });
+    images.putImg(bkStore, "a", TINY_JPG);
+    images.putImg(bkStore, "b", TINY_JPG);
+    bdb.close();
+    const backupName = backup.runBackup(openDb(bkStore), bkStore).name;
+
+    // ctx whose storeDir has NO interests.db on disk → copying the live db for the
+    // safety snapshot throws ENOENT. restore must abort before swapping anything in.
+    const liveStore = newStore();  // images/ exists, but no interests.db file
+    fs.writeFileSync(path.join(liveStore, "images", "sentinel.jpg"), "keep");
+    const ctx = {
+      db: { close: function () {}, exec: function () {} },
+      storeDir: liveStore,
+      getStorePath: function () { return liveStore; },
+      setStorePath: function () {},
+      reopen: function () { throw new Error("reopen must NOT be called on aborted restore"); }
+    };
+
+    const out = backup.restore(backupName, ctx);
+    assert.deepStrictEqual(out, { ok: false, error: "safety snapshot failed" });
+    // live store NOT overwritten: no restored interests.db, sentinel image intact,
+    // backup's images NOT copied in.
+    assert.strictEqual(fs.existsSync(path.join(liveStore, "interests.db")), false, "live db not created by aborted restore");
+    assert.strictEqual(fs.existsSync(path.join(liveStore, "images", "sentinel.jpg")), true, "live images untouched");
+    assert.strictEqual(images.imageCount(liveStore), 1, "no backup images overlaid");
+  });
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
