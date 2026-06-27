@@ -844,11 +844,15 @@ function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if
 async function backupNow(){ return doBackup(true); }
 async function doBackup(manual){
   try{
-    const res = await Store.backupNow();                 // {ok,name,counts}
+    const res = await Store.backupNow();                 // {ok,verified,name,counts}
     const counts = res && res.counts ? res.counts : {imported:imported.length, saved:saved.length, images:0};
+    const verified = !!(res && res.verified);
     await Store.kvSet("ia_lastbackup", Date.now());
-    await Store.kvSet("ia_backup_last", { ts:Date.now(), counts:counts, verified:true, where:"Dropbox", name:(res&&res.name)||"" });
-    if(manual) toast("Backed up: "+(counts.imported||0)+" cards, "+(counts.images||0)+" images");
+    await Store.kvSet("ia_backup_last", { ts:Date.now(), counts:counts, verified:verified, where:"Dropbox", name:(res&&res.name)||"" });
+    if(manual){
+      if(verified===false){ toast("Backup written but NOT verified — check Dropbox\\Interests App\\backups"); }
+      else { toast("Backed up: "+(counts.imported||0)+" cards, "+(counts.images||0)+" images"); }
+    }
     try{ await storageHealthCheck(); }catch(e){}
     return res;
   }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }

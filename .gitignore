@@ -7,7 +7,10 @@ saves.json
 facebook-import.json
 pinterest-import.json
 youtube-import.json
+*-import.json
 facebook-saves.txt
 *.zip
 _recovery/
 saves-*.json
+interests-backup-*
+interests-snapshot-*
