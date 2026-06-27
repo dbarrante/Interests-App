@@ -18,8 +18,50 @@ const VERSION = require("../package.json").version;
 const PORT_MIN = 3456;
 const PORT_MAX = 3465;
 
+// Origins allowed to reach the local API. The app UI runs on the loopback
+// address (http://127.0.0.1:<port> / http://localhost:<port>) and the Chrome
+// extension sends an Origin of chrome-extension://<id>. Same-origin GETs the
+// browser makes for the page itself carry NO Origin header, which is also
+// allowed. A malicious web page the user visits would send its own (https://…)
+// Origin, which is rejected — this is the CSRF / drive-by-API guard.
+const ORIGIN_OK = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i;
+function originAllowed(origin) {
+  if (!origin) return true;                       // no Origin (navigation / same-origin) → allow
+  if (origin === "null") return true;             // file:// / sandboxed → treat as no web origin
+  if (origin.indexOf("chrome-extension://") === 0) return true;  // the capture extension
+  return ORIGIN_OK.test(origin);
+}
+
+// Content-Security-Policy for the served UI. The single-file web app relies on
+// inline <script>/<style>, so 'unsafe-inline' is required for script-src and
+// style-src — without it the app will not load. img-src allows data: URLs
+// (legacy inline thumbnails) and https: (remote thumbnails); connect-src allows
+// the loopback API ('self') and https: fetches the app makes.
+const CSP = [
+  "default-src 'self'",
+  "img-src 'self' data: https:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline'",
+  "connect-src 'self' https:"
+].join("; ");
+
 function createServer(ctx) {
   const app = express();
+
+  // Block cross-origin web pages from reaching the local API (before any route).
+  app.use((req, res, next) => {
+    if (!originAllowed(req.headers.origin)) {
+      return res.status(403).json({ ok: false, error: "forbidden origin" });
+    }
+    next();
+  });
+
+  // Apply the CSP to every response (covers the served HTML and its assets).
+  app.use((req, res, next) => {
+    res.setHeader("Content-Security-Policy", CSP);
+    next();
+  });
+
   app.use(express.json({ limit: "64mb" }));
 
   const { db, storeDir } = ctx;
@@ -79,18 +121,33 @@ function createServer(ctx) {
   });
 
   // --- Images ---
+  // An invalid id (path-traversal attempt — see core/images.safeImgId) throws
+  // INVALID_IMG_ID; map that to 400. A well-formed but absent image is 404.
+  function isInvalidImgId(e) { return e && e.code === "INVALID_IMG_ID"; }
   app.get("/api/img/:id", (req, res) => {
-    const buf = images.getImg(storeDir, req.params.id);
+    let buf;
+    try { buf = images.getImg(storeDir, req.params.id); }
+    catch (e) { if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" }); throw e; }
     if (!buf) { res.status(404).end(); return; }
     res.type("image/jpeg").send(buf);
   });
   app.put("/api/img/:id", (req, res) => {
-    const file = images.putImg(storeDir, req.params.id, String(req.body && req.body.data || ""));
-    res.json({ ok: true, file });
+    try {
+      const file = images.putImg(storeDir, req.params.id, String(req.body && req.body.data || ""));
+      res.json({ ok: true, file });
+    } catch (e) {
+      if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
+      throw e;
+    }
   });
   app.delete("/api/img/:id", (req, res) => {
-    images.delImg(storeDir, req.params.id);
-    res.json({ ok: true });
+    try {
+      images.delImg(storeDir, req.params.id);
+      res.json({ ok: true });
+    } catch (e) {
+      if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
+      throw e;
+    }
   });
 
   // --- Fingerprints ---
@@ -174,15 +231,17 @@ function createServer(ctx) {
 
   // One-time legacy backup import. READ-ONLY on srcDir.
   app.post("/api/import", (req, res) => {
-    const srcDir = req.body && req.body.srcDir;
-    if (!srcDir || typeof srcDir !== "string") {
-      return res.status(400).json({ error: "srcDir required" });
+    let srcDir = req.body && req.body.srcDir;
+    if (!srcDir || typeof srcDir !== "string" || !path.isAbsolute(srcDir)) {
+      return res.status(400).json({ error: "absolute srcDir required" });
     }
+    srcDir = path.resolve(srcDir);
     try {
       const out = importLegacyBackup(srcDir, { db: ctx.db, storeDir: ctx.storeDir });
       res.json(out);
     } catch (e) {
-      res.status(400).json({ error: String(e && e.message ? e.message : e) });
+      console.error("import failed:", e);
+      res.status(400).json({ error: "import failed" });
     }
   });
 
@@ -190,10 +249,12 @@ function createServer(ctx) {
   app.post("/api/backup", (req, res) => {
     try {
       const out = backup.runBackup(ctx.db, ctx.storeDir);
-      if (backup.verifyBackup(out.name, out.counts)) backup.rotate(3);
-      res.json({ ok: true, name: out.name, counts: out.counts });
+      const verified = backup.verifyBackup(out.name, out.counts);
+      if (verified) backup.rotate(3);            // only rotate older backups once this one verifies
+      res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
-      res.status(500).json({ ok: false, error: String(e && e.message || e) });
+      console.error("backup failed:", e);
+      res.status(500).json({ ok: false, error: "backup failed" });
     }
   });
 
@@ -201,14 +262,27 @@ function createServer(ctx) {
     res.json({ backups: backup.listBackups() });
   });
 
+  // A backup name must be a dated backup (interests-backup-YYYY-MM-DD) OR an
+  // existing entry from listBackups() — never an arbitrary path. This blocks a
+  // traversal name like '../../evil' from reaching backup.restore.
+  const DATED_BACKUP = /^interests-backup-\d{4}-\d{2}-\d{2}$/;
+  function isAllowedBackupName(name) {
+    if (typeof name !== "string" || !name) return false;
+    if (DATED_BACKUP.test(name)) return true;
+    return backup.listBackups().some((b) => b.name === name);
+  }
+
   app.post("/api/restore", (req, res) => {
     const name = req.body && req.body.name;
-    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    if (!isAllowedBackupName(name)) {
+      return res.status(400).json({ ok: false, error: "invalid backup name" });
+    }
     try {
       const out = backup.restore(name, ctx);   // restore rebinds ctx.db on success
       res.json(out);
     } catch (e) {
-      res.status(500).json({ ok: false, error: String(e && e.message || e) });
+      console.error("restore failed:", e);
+      res.status(500).json({ ok: false, error: "restore failed" });
     }
   });
 
@@ -233,13 +307,17 @@ function createServer(ctx) {
   });
 
   app.post("/api/store-location/move", (req, res) => {
-    const target = req.body && req.body.target;
-    if (!target) return res.status(400).json({ ok: false, error: "target required" });
+    let target = req.body && req.body.target;
+    if (!target || typeof target !== "string" || !path.isAbsolute(target)) {
+      return res.status(400).json({ ok: false, path: ctx.storeDir, error: "absolute target required" });
+    }
+    target = path.resolve(target);
     try {
       const out = backup.moveStore(target, ctx);   // repoints ctx.db/ctx.storeDir on success
       res.json({ ok: out.ok, path: ctx.storeDir });
     } catch (e) {
-      res.status(500).json({ ok: false, path: ctx.storeDir, error: String(e && e.message || e) });
+      console.error("store move failed:", e);
+      res.status(500).json({ ok: false, path: ctx.storeDir, error: "move failed" });
     }
   });
 
