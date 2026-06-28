@@ -300,6 +300,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="storage.js"></script>
+<script src="route-capture.js"></script>
 </head>
 <body>
 <header>
@@ -3498,75 +3499,39 @@ async function drainCaptures(){
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
-    if(cap.dead){
-      // extension reported this site as unreachable/gone, or the user clicked
-      // "Remove this card" — remove the matching (or last-opened) card
+    const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl, domain });
+    console.log("[route] " + cap.url + " -> " + decision.action + " (" + decision.reason + ")");
+
+    if(decision.action === "dead"){
+      // remove the matching (or last-opened) card — existing dead-removal logic
       let di = cap.id ? imported.findIndex(it=>it.id===cap.id) : -1;
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url===cap.url);
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
-      if(di<0 && cap.removeActive){
-        let lo=null; try{ lo = await Store.kvGet("ia_last_opened"); }catch(e){}
-        if(lo && lo.id) di = imported.findIndex(it=>it.id===lo.id);
-      }
-      if(di>=0){
-        const removed=imported.splice(di,1)[0];
-        _deadUndo=removed; removedDead++; changed=true;
-        console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")");
-      }
+      if(di<0 && cap.removeActive){ let lo=null; try{ lo=await Store.kvGet("ia_last_opened"); }catch(e){} if(lo&&lo.id) di=imported.findIndex(it=>it.id===lo.id); }
+      if(di>=0){ const removed=imported.splice(di,1)[0]; _deadUndo=removed; removedDead++; changed=true;
+        console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")"); }
       continue;
     }
-    if(cap.clip){
-      // If this saved/clipped post is ALREADY one of your imported cards (same
-      // link, or the imported card you just opened on the same site), fill THAT
-      // card's picture instead of creating a duplicate Saved clip — this is how a
-      // manual "Save to Interests" on an imported Facebook post lands on its card.
-      const cimg = (cap.clipImage && (cap.clipImage+"").indexOf("data:")===0) ? cap.clipImage
-                 : ((cap.screenshot && (cap.screenshot+"").indexOf("data:")===0) ? cap.screenshot : "");
-      let imp = cap.url ? imported.find(it=>it.url && (it.url===cap.url || normalizeUrl(it.url)===normalizeUrl(cap.url) || clipKey(it.url)===clipKey(cap.url))) : null;
-      if(!imp){
-        let lo=null; try{ lo = await Store.kvGet("ia_last_opened"); }catch(e){}
-        if(lo && lo.id && now-(lo.ts||0) < ACTIVE_WINDOW){
-          const c=imported.find(it=>it.id===lo.id);
-          if(c && c.url && cap.url && domain(c.url)===domain(cap.url)) imp=c;   // same-site safety
-        }
-      }
-      if(imp){
-        if(cimg){ setCardImage(imp, cimg); changed=true; }
-        if(cap.desc && (!imp.desc || /^saved\b|^from your\b/i.test(imp.desc||""))){ imp.desc=cap.desc; changed=true; }
-        if(cap.title && /^(saved|facebook)\b|^from your\b/i.test(imp.title||"")){ imp.title=cap.title; changed=true; }
-        imp.captured=now; delete imp.blocked; imp.lastUpdate=now; imp.lastResult="ok"; persisted=true; matched++;
-        console.log("[clip] filled imported card from save: "+(imp.title||cap.url));
-        closeRefreshTab(imp.id);
-        continue;
-      }
-      // Otherwise it's a genuinely new page — create/update a Saved card via addClip.
-      console.log("[clip] received clip for "+cap.url);
-      try{ addClip(cap); }catch(e){ console.error("[clip] addClip failed",e); }
+
+    if(decision.action === "saved"){
+      try{ addClip(cap); }catch(e){ console.error("[clip] addClip failed", e); }
       continue;
     }
-    let viaActive=false;
-    let match = cap.id ? imported.find(it=>it.id===cap.id) : null;          // 1. stable id (most reliable)
-    if(!match) match=imported.find(it=>it.url===cap.url);                    // 2. exact url
-    if(!match) match=imported.find(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url)); // 3. normalized url
-    if(!match && lastOpened && lastOpened.id && now-(lastOpened.ts||0) < ACTIVE_WINDOW){ // 4. active card (manual capture on a subpage)
-      match=imported.find(it=>it.id===lastOpened.id);
-      if(match){ viaActive=true; refreshActive=true; console.log("[drainCaptures] assigned to active card "+lastOpened.id); }
-    }
-    if(!match){
-      // A manual "Capture this page" (force, no card id) with nothing to attach
-      // to — no matching card and no recently-opened card — is saved as a new
-      // Saved card instead of being dropped, so the button always does something.
-      if(cap.force && !cap.id && !cap.blocked && (cap.screenshot || cap.ogImage || cap.contentImage)){
-        console.log("[clip] manual capture had no target card — saving as a new clip: "+cap.url);
-        try{ addClip(cap); }catch(e){ console.error("[clip] fallback addClip failed",e); }
-        continue;
-      }
+
+    if(decision.action === "unmatched" || decision.action === "skip"){
       unmatched++;
       console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normalizeUrl(cap.url)+")");
       // keep briefly in case the item shows up, then drop
       if(!cap.ts || now-cap.ts < CAP_TTL_MS) remaining.push(cap);
       continue;
     }
+
+    // decision.action === "card-image": set the picture on the CONFIDENT target only.
+    const match = decision.target;
+    // viaActive = matched only via the recently-opened "active card" window (a
+    // subpage capture), not by id/url — keep the existing subpage semantics.
+    const viaActive = decision.reason === "active card (same domain)";
+    if(viaActive){ refreshActive=true; console.log("[drainCaptures] assigned to active card "+(lastOpened&&lastOpened.id)); }
     matched++;
     if(cap.blocked){
       // active-card subpage being blocked says nothing about the card itself — ignore
