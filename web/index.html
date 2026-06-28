@@ -1828,9 +1828,14 @@ function ingestImported(found){
     if(!i || !i.title) return;
     const k=i.title.toLowerCase();
     if(junk.test(k) || /^https?:\/\//i.test(i.title)) return;
-    if(seenThis.has(k)) return;
-    seenThis.add(k);
-    const existIdx = byTitle.has(k) ? byTitle.get(k) : (i.url && byUrl.has(i.url) ? byUrl.get(i.url) : -1);
+    // Identity = the URL when the item has one (so two distinct posts that share a
+    // caption/title each survive), else the title. Prevents same-account/same-caption
+    // collapse (e.g. Instagram) while still deduping true repeats by URL.
+    const dk = i.url || ("t:"+k);
+    if(seenThis.has(dk)) return;
+    seenThis.add(dk);
+    const existIdx = i.url ? (byUrl.has(i.url) ? byUrl.get(i.url) : -1)
+                           : (byTitle.has(k) ? byTitle.get(k) : -1);
     if(existIdx>=0){
       const ex=imported[existIdx]; let changed=false;
       if(i.img && !ex.img){ ex.img=i.img; changed=true; }
