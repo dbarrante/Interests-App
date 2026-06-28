@@ -401,6 +401,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint" style="margin-bottom:10px">Drop the platform's export file here — the ZIP works as-is. Imported titles become taste signals the AI learns from (they don't clutter your Saved tab). YouTube playlist exports contain only video IDs; titles are fetched automatically.</div>
         <div style="margin-bottom:10px">How to export:
           <button class="catpill" onclick="showGuide('facebook')">Facebook</button>
+          <button class="catpill" onclick="showGuide('instagram')">Instagram</button>
           <button class="catpill" onclick="showGuide('pinterest')">Pinterest</button>
           <button class="catpill" onclick="showGuide('youtube')">YouTube</button>
         </div>
@@ -1498,6 +1499,14 @@ const GUIDES = {
     <li>Format: <b>JSON</b> (or HTML), date range: All time &rarr; <b>Request a download</b></li>
     <li>You'll get a notification within ~24h — download the ZIP and drop it here as-is</li></ol>
     <p>Facebook keeps the file available for only a few days, so grab it promptly.</p>`,
+  instagram: `<h2>Export your Instagram saves</h2><ol>
+    <li>Instagram &rarr; <b>Settings and privacy</b> &rarr; <b>Accounts Center</b> (or go to <b>accountscenter.instagram.com</b>)</li>
+    <li><b>Your information and permissions</b> &rarr; <b>Download your information</b></li>
+    <li><b>Download or transfer information</b> &rarr; select your Instagram profile &rarr; <b>Some of your information</b></li>
+    <li>Check only <b>Saved</b> (your saved posts)</li>
+    <li>Format: <b>JSON</b>, date range: All time &rarr; <b>Request a download</b></li>
+    <li>Instagram emails a download link when it's ready (can take a while) — download the ZIP and drop it here as-is</li></ol>
+    <p>Only your <b>saved</b> posts import (not likes). Instagram's export has no photos — just the account and post link — so card images fill in when you open them.</p>`,
   pinterest: `<h2>Export your Pinterest data</h2><ol>
     <li>Pinterest &rarr; <b>Settings</b> &rarr; <b>Privacy and data</b></li>
     <li><b>Request your data</b> &rarr; confirm</li>
