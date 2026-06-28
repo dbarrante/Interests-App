@@ -76,5 +76,10 @@ test("device A merges in device B's card + image", () => {
   dA.close();
 });
 
+test("defaultSyncDir() resolves without throwing (returns string or null)", () => {
+  const d = sync.defaultSyncDir();
+  assert.ok(d === null || typeof d === "string", "defaultSyncDir returns string|null, never throws");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);
