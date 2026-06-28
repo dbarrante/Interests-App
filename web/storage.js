@@ -30,7 +30,9 @@
     syncEnable: function () { return "/api/sync/enable"; },
     syncFolder: function () { return "/api/sync/folder"; },
     syncDeviceLabel: function () { return "/api/sync/device-label"; },
-    syncNow: function () { return "/api/sync/now"; }
+    syncNow: function () { return "/api/sync/now"; },
+    bookmarkSources: function () { return "/api/bookmark-sources"; },
+    bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -116,7 +118,11 @@
       setSyncEnabled: function (b) { return jsend("POST", SE.syncEnable(), { enabled: !!b }); },
       setSyncFolder: function (p) { return jsend("POST", SE.syncFolder(), { folder: p }); },
       setDeviceLabel: function (s) { return jsend("POST", SE.syncDeviceLabel(), { label: s }); },
-      syncNow: function () { return jsend("POST", SE.syncNow()); }
+      syncNow: function () { return jsend("POST", SE.syncNow()); },
+
+      // --- browser bookmarks (read-only import source) ---
+      bookmarkSources: function () { return jget(SE.bookmarkSources()).then(function (j) { return (j && j.sources) || []; }); },
+      bookmarks: function (browser, profile) { return jget(SE.bookmarks(browser, profile)).then(function (j) { return (j && j.bookmarks) || []; }); }
     };
 
     root.Store = Store;

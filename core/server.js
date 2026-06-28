@@ -13,6 +13,7 @@ const { counts } = require("./db.js");
 const { imageCount } = require("./images.js");
 const config = require("./config");
 const sync = require("./sync");
+const bookmarks = require("./bookmarks");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -382,6 +383,23 @@ function createServer(ctx) {
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
       res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
+  });
+
+  // ---- browser bookmarks (read-only; reads ONLY the fixed Bookmarks file for a
+  // validated, discovered Chrome/Edge profile — never a client-supplied path) ----
+  app.get("/api/bookmark-sources", (req, res) => {
+    try { res.json({ sources: bookmarks.listBrowserProfiles() }); }
+    catch (e) { console.error("bookmark-sources failed:", e); res.status(500).json({ error: "failed" }); }
+  });
+  app.get("/api/bookmarks", (req, res) => {
+    const browser = req.query.browser, profile = req.query.profile;
+    try {
+      res.json({ bookmarks: bookmarks.readProfileBookmarks(browser, profile) });
+    } catch (e) {
+      if (e && e.code === "BAD_PROFILE") return res.status(400).json({ error: "invalid browser/profile" });
+      console.error("bookmarks read failed:", e);
+      res.status(404).json({ error: "could not read bookmarks" });
+    }
   });
 
   // Serve the existing web app.
