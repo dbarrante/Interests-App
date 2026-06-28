@@ -552,7 +552,7 @@ function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
-function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); }
+function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); updateCounts(); }
 
 /* ============ image store (Core service) ============
    Card images are now plain files served by the Core service at /api/img/<id>.
@@ -1033,9 +1033,13 @@ async function moveDataLocation(){
     try {
       var res = await Store.runImport(srcDir);
       if(out){
-        out.textContent = res.cards + " cards, " + res.saved + " saved, " +
-          res.images + " images — " + (res.missing ? res.missing.length : 0) + " missing";
+        out.textContent = "Imported " + res.cards + " cards, " + res.saved + " saved, " +
+          res.images + " images — " + (res.missing ? res.missing.length : 0) + " missing. Refreshing…";
       }
+      // The DB now holds the imported rows, but in-memory state was loaded at
+      // startup. Reload so the library appears without an app restart (same
+      // approach the restore-from-backup path uses).
+      setTimeout(function(){ location.reload(); }, 1500);
     } catch(e) {
       if(out){ out.textContent = "Import failed: " + (e && e.message ? e.message : e); }
     }
