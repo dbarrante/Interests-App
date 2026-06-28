@@ -171,5 +171,19 @@ test("replaceSaved writes a tombstone for a removed item and clears it on re-add
   d.close();
 });
 
+// A4: serializeLibrary
+test("serializeLibrary returns cards, saved, fp, tombstones", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  db.upsertCard(d, { id: "c_1", url: "https://a.com" });
+  db.upsertSaved(d, { id: "s_1", url: "https://s.com" });
+  db.setFp(d, "c_1", "fp123");
+  db.deleteSaved(d, "s_1");
+  const lib = db.serializeLibrary(d);
+  assert.ok(Array.isArray(lib.cards) && lib.cards[0].updatedAt > 0);
+  assert.ok(lib.fp.c_1 === "fp123");
+  assert.ok(lib.tombstones.some(t => t.id === "s_1" && t.kind === "saved"));
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

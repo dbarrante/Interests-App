@@ -314,10 +314,15 @@ function allFp(db) {
   return out;
 }
 
+function serializeLibrary(db) {
+  return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db) };
+}
+
 module.exports = {
   openDb, SCHEMA_VERSION, getKV, setKV, delKV, counts,
   rowToCard, cardToRow, cardSig, allCards, replaceCards, upsertCard, upsertCardSynced, deleteCard,
   rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   getFp, setFp, delFp, allFp,
   addTombstone, allTombstones, delTombstone, pruneTombstones,
+  serializeLibrary,
 };
