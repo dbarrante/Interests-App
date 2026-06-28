@@ -126,5 +126,50 @@ test("addTombstone preserves epoch-ms deletedAt without 32-bit truncation", () =
   d.close();
 });
 
+// A3: replaceCards/replaceSaved — content-diff stamping + tombstone diff
+test("replaceCards bumps updatedAt only for changed rows", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com", cat: "x" }, { id: "c_2", url: "https://b.com" }]);
+  const u1 = db.allCards(d).find(c => c.id === "c_1").updatedAt;
+  // Re-persist the full array with c_1 unchanged, c_2 edited:
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com", cat: "x" }, { id: "c_2", url: "https://b-EDITED.com" }]);
+  const after = db.allCards(d);
+  assert.strictEqual(after.find(c => c.id === "c_1").updatedAt, u1, "unchanged card keeps updatedAt");
+  assert.ok(after.find(c => c.id === "c_2").updatedAt > u1, "edited card bumps updatedAt");
+  d.close();
+});
+
+test("replaceCards writes a tombstone for a removed card and clears it on re-add", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }, { id: "c_2", url: "https://b.com" }]);
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }]);                       // c_2 removed
+  assert.ok(db.allTombstones(d).some(t => t.id === "c_2"), "removed card tombstoned");
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }, { id: "c_2", url: "https://b.com" }]); // re-added
+  assert.ok(!db.allTombstones(d).some(t => t.id === "c_2"), "re-added card clears tombstone");
+  d.close();
+});
+
+test("replaceSaved bumps updatedAt only for changed rows", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com", category: "x" }, { id: "s_2", url: "https://b.com" }]);
+  const u1 = db.allSaved(d).find(s => s.id === "s_1").updatedAt;
+  // Re-persist the full array with s_1 unchanged, s_2 edited:
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com", category: "x" }, { id: "s_2", url: "https://b-EDITED.com" }]);
+  const after = db.allSaved(d);
+  assert.strictEqual(after.find(s => s.id === "s_1").updatedAt, u1, "unchanged saved keeps updatedAt");
+  assert.ok(after.find(s => s.id === "s_2").updatedAt > u1, "edited saved bumps updatedAt");
+  d.close();
+});
+
+test("replaceSaved writes a tombstone for a removed item and clears it on re-add", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com" }, { id: "s_2", url: "https://b.com" }]);
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com" }]);                       // s_2 removed
+  assert.ok(db.allTombstones(d).some(t => t.id === "s_2" && t.kind === "saved"), "removed saved tombstoned");
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com" }, { id: "s_2", url: "https://b.com" }]); // re-added
+  assert.ok(!db.allTombstones(d).some(t => t.id === "s_2" && t.kind === "saved"), "re-added saved clears tombstone");
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

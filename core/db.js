@@ -147,15 +147,29 @@ function upsertCardSynced(db, card, updatedAt) {
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
+// The renderer persists by FULL-ARRAY replace, so removed/edited rows are observable
+// ONLY by diffing here: keep updatedAt for unchanged rows, bump it for changed/new rows,
+// tombstone every id present-before-but-absent-now, and clear tombstones for ids present now.
 function replaceCards(db, arr) {
+  const existing = {};
+  for (const row of db.prepare("SELECT id,url,platform,cat,ts,img_file,img_url,data,updatedAt FROM cards").all()) {
+    existing[row.id] = row;
+  }
+  const now = Date.now();
+  const incoming = new Set();
   const ins = db.prepare(_CARD_INSERT_SQL);
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM cards").run();
     for (const c of (arr || [])) {
       const r = cardToRow(c);
-      _insertCardRow(ins, r, Date.now());   // interim: Task A3 replaces with diff logic
+      incoming.add(r.id);
+      const ex = existing[r.id];
+      const updatedAt = (ex && cardSig(ex) === cardSig(r)) ? ex.updatedAt : now;
+      _insertCardRow(ins, r, updatedAt);
     }
+    for (const id of Object.keys(existing)) if (!incoming.has(id)) addTombstone(db, id, "card", now);
+    for (const id of incoming) delTombstone(db, id, "card");
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -251,15 +265,27 @@ function upsertSavedSynced(db, item, updatedAt) {
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
+// Symmetric to replaceCards: content-diff stamping + tombstone diff (kind "saved").
 function replaceSaved(db, arr) {
+  const existing = {};
+  for (const row of db.prepare("SELECT id,url,category,clipped,img_file,img_url,data,updatedAt FROM saved").all()) {
+    existing[row.id] = row;
+  }
+  const now = Date.now();
+  const incoming = new Set();
   const ins = db.prepare(_SAVED_INSERT_SQL);
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM saved").run();
     for (const it of (arr || [])) {
       const r = savedToRow(it);
-      _insertSavedRow(ins, r, Date.now());   // interim: Task A3 replaces with diff logic
+      incoming.add(r.id);
+      const ex = existing[r.id];
+      const updatedAt = (ex && savedSig(ex) === savedSig(r)) ? ex.updatedAt : now;
+      _insertSavedRow(ins, r, updatedAt);
     }
+    for (const id of Object.keys(existing)) if (!incoming.has(id)) addTombstone(db, id, "saved", now);
+    for (const id of incoming) delTombstone(db, id, "saved");
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
