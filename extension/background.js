@@ -362,19 +362,22 @@ ensureContextMenu();   // also run when the service worker spins up
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "saveToInterests") return;
+  let host = "";
+  try { host = new URL(tab && tab.url).hostname; } catch (e) {}
+  const isYouTube = /youtube\.com|youtu\.be/i.test(host);
   const genericClip = () => clipCurrentPage(tab, {
     url: info.linkUrl || info.pageUrl || (tab && tab.url),
     image: info.srcUrl || undefined,   // a directly right-clicked image, if any
-    noShot: !!info.srcUrl,
+    // Never full-page-screenshot YouTube — the YouTube branch in clipCurrentPage
+    // derives the i.ytimg thumbnail from the URL (clean placeholder otherwise).
+    noShot: !!info.srcUrl || isYouTube,
     desc: (info.selectionText || "").trim() || undefined,
   });
-  // On capture-engine sites (Pinterest/FB/IG), capture the POST under the cursor
-  // the SAME way the native Save button does — the in-page engine finds the
-  // pin/post + its photo + permalink — instead of a full-page screenshot. Fall
-  // back to the generic page clip if no post can be identified there.
-  let host = "";
-  try { host = new URL(tab && tab.url).hostname; } catch (e) {}
-  if (/facebook\.com|instagram\.com|pinterest\./i.test(host)) {
+  // On capture-engine sites (Pinterest/FB/IG/YouTube), capture the POST under the
+  // cursor the SAME way the native Save button does — the in-page engine finds the
+  // pin/post/video + its photo + permalink — instead of a full-page screenshot.
+  // Fall back to the generic page clip if no post can be identified there.
+  if (/facebook\.com|instagram\.com|pinterest\.|youtube\.com/i.test(host)) {
     try {
       chrome.tabs.sendMessage(tab.id, { action: "captureCtxPost" }, (resp) => {
         if (chrome.runtime.lastError || !resp || !resp.ok) genericClip();
