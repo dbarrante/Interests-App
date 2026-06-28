@@ -153,6 +153,42 @@
     } catch (err) { /* never break the page */ }
   }, true);
 
+  // ---- Right-click "Save to Interests" → capture the post under the cursor ----
+  // Mirrors the native-Save flow (same post photo + permalink + rect) so a
+  // right-click saves THAT pin/post, not a full-page screenshot. background.js
+  // asks for this via the "captureCtxPost" message when the menu item is chosen.
+  function sendPostClip(post) {
+    if (!post) return false;
+    try {
+      const ex = cfg.extract ? cfg.extract(post, U) : { author: "", text: "" };
+      const author = (ex && ex.author) || "";
+      const perma = cfg.findPermalink ? cfg.findPermalink(post, U) : "";
+      const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
+      let image = U.largestImg(post, cfg.imageCdn);
+      if (!image && cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) image = U.largestImg(document, cfg.imageCdn);
+      const rect = (cfg.image !== "screenshot") ? U.rectOf((post.closest && post.closest('[role="dialog"]')) || post) : null;
+      const title = cfg.title ? cfg.title(author) : (author || "Saved post");
+      if (!chrome.runtime || !chrome.runtime.id) return false;
+      chrome.runtime.sendMessage({ action: "clipSocialPost", data: { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href } }, function () {
+        if (chrome.runtime && chrome.runtime.lastError) { /* ignore */ }
+      });
+      return true;
+    } catch (err) { return false; }
+  }
+
+  let _ctxPost = null, _ctxAt = 0;
+  document.addEventListener("contextmenu", function (e) {
+    try { const p = cfg.findPost ? cfg.findPost(e.target, U) : null; _ctxPost = p || null; _ctxAt = p ? Date.now() : 0; } catch (err) { _ctxPost = null; }
+  }, true);
+
+  chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+    if (msg && msg.action === "captureCtxPost") {
+      const post = (_ctxPost && Date.now() - _ctxAt < 60000) ? _ctxPost : null;
+      sendResponse({ ok: sendPostClip(post) });
+      return true;
+    }
+  });
+
   // ---- Batch auto-capture (Facebook) ----
   // The app's "Capture Facebook posts" batch opens each permalink for a card that
   // has no picture; the background worker then asks us (no click) to find and

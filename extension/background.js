@@ -362,18 +362,27 @@ ensureContextMenu();   // also run when the service worker spins up
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "saveToInterests") return;
-  // Right-clicking a SPECIFIC image (a Pinterest pin, a YouTube thumbnail, etc.)
-  // saves THAT image + its link — not a screenshot of the whole page. A plain
-  // page/selection right-click still screenshots the page as before.
-  // - url:   the pin/element's own link when present, else the page URL
-  // - image: the right-clicked image (info.srcUrl) becomes the saved picture
-  // - noShot: skip the full-page screenshot when we already have that image
-  clipCurrentPage(tab, {
+  const genericClip = () => clipCurrentPage(tab, {
     url: info.linkUrl || info.pageUrl || (tab && tab.url),
-    image: info.srcUrl || undefined,
+    image: info.srcUrl || undefined,   // a directly right-clicked image, if any
     noShot: !!info.srcUrl,
     desc: (info.selectionText || "").trim() || undefined,
   });
+  // On capture-engine sites (Pinterest/FB/IG), capture the POST under the cursor
+  // the SAME way the native Save button does — the in-page engine finds the
+  // pin/post + its photo + permalink — instead of a full-page screenshot. Fall
+  // back to the generic page clip if no post can be identified there.
+  let host = "";
+  try { host = new URL(tab && tab.url).hostname; } catch (e) {}
+  if (/facebook\.com|instagram\.com|pinterest\./i.test(host)) {
+    try {
+      chrome.tabs.sendMessage(tab.id, { action: "captureCtxPost" }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) genericClip();
+      });
+    } catch (e) { genericClip(); }
+    return;
+  }
+  genericClip();
 });
 
 async function captureTab(tab, delayMs, force, cardId) {
