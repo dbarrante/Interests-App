@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "4.37",
+  "version": "4.38",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation", "webRequest", "contextMenus"],
   "host_permissions": ["<all_urls>"],
@@ -22,7 +22,8 @@
         "*://*.pinterest.ca/*",
         "*://*.pinterest.co.uk/*",
         "*://*.pinterest.com.au/*",
-        "*://*.youtube.com/*"
+        "*://*.youtube.com/*",
+        "*://youtu.be/*"
       ],
       "js": ["yt-save-trigger.js", "capture-configs.js", "capture-core.js"],
       "run_at": "document_idle"

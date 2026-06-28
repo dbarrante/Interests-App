@@ -308,6 +308,14 @@ async function clipCurrentPage(tab, opts = {}) {
     const _yt = ytVideoId(_u);
     if (_yt) opts = Object.assign({}, opts, { image: "https://i.ytimg.com/vi/" + _yt + "/hqdefault.jpg", noShot: true });
   }
+  // A right-clicked image on an EXPIRING CDN (Facebook/Instagram signed URLs) must be
+  // fetched to a durable data: URL NOW — stored raw it rots in hours/days (the same
+  // silent thumbnail-loss class as the saved-clip inline bug). i.ytimg/i.pinimg are
+  // durable and left as URLs; fetchAsDataUrl returns "" on failure → keep the URL.
+  if (opts.image && /^https?:/i.test(opts.image) && /scontent|cdninstagram|fbcdn/i.test(opts.image)) {
+    const durable = await fetchAsDataUrl(opts.image);
+    if (durable) opts = Object.assign({}, opts, { image: durable });
+  }
   await setStatus("Clipping…", true);
   setBadge("📎");
   // page metadata (title / description / og image)
