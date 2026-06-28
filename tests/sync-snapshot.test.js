@@ -40,6 +40,26 @@ test("readSnapshot rejects a snapshot missing meta.json (incomplete)", () => {
   d.close();
 });
 
+test("runSync skips merge when backupFn throws (data-safety)", () => {
+  const syncDir = tmp();
+  // Peer B publishes a card.
+  const storeB = tmpStore(); const dB = dbm.openDb(storeB);
+  dbm.upsertCard(dB, { id: "c_B_safe", url: "https://b.com/safe" });
+  sync.publishSnapshot({ db: dB, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB.close();
+  // Device A runs sync with a backupFn that always throws.
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA }, {
+    syncDir,
+    deviceId: "dev_A",
+    deviceLabel: "Desktop",
+    publish: true,
+    backupFn: function () { throw new Error("backup boom"); },
+  });
+  assert.strictEqual(res.changed, false, "changed must be false when backup fails");
+  assert.ok(!dbm.allCards(dA).some(c => c.id === "c_B_safe"), "peer card must NOT be applied when backup fails");
+  dA.close();
+});
+
 test("device A merges in device B's card + image", () => {
   const syncDir = tmp();
   // B publishes a card with an image file.

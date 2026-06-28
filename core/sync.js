@@ -145,15 +145,18 @@ function applyMerge(ctx, plan) {
 function runSync(ctx, opts) {
   opts = opts || {};
   const syncDir = opts.syncDir;
-  const backupFn = opts.backupFn || function () { try { backup.runBackup(ctx.db, ctx.storeDir); } catch (e) {} };
+  const backupFn = opts.backupFn || function () { backup.runBackup(ctx.db, ctx.storeDir); };
   let changed = false, conflicts = 0;
   const peers = readPeerSnapshots(syncDir, opts.deviceId);
   if (peers.length) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0) {
-      backupFn();                              // safety backup ONLY when the merge will change data
-      const r = applyMerge(ctx, plan);
-      changed = r.changed; conflicts = plan.conflicts;
+      let backedUp = true;
+      try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
+      if (backedUp) {
+        const r = applyMerge(ctx, plan);
+        changed = r.changed; conflicts = plan.conflicts;
+      }
     }
   }
   let publishedAt = null;
