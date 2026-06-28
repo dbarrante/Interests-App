@@ -97,5 +97,25 @@ test("deleteSaved records a tombstone", () => {
   d.close();
 });
 
+// A2-fix: epoch-ms timestamp coercion tests
+test("upsertCardSynced preserves epoch-ms updatedAt without 32-bit truncation", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  const bigTs = 1782653743712;
+  db.upsertCardSynced(d, { id: "c_big", url: "x" }, bigTs);
+  const got = db.allCards(d).find(c => c.id === "c_big");
+  assert.strictEqual(got.updatedAt, bigTs, "updatedAt must equal " + bigTs + " (not truncated to " + (bigTs | 0) + ")");
+  d.close();
+});
+
+test("addTombstone preserves epoch-ms deletedAt without 32-bit truncation", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  const bigTs = 1782653743712;
+  db.addTombstone(d, "t_big", "card", bigTs);
+  const tomb = db.allTombstones(d).find(t => t.id === "t_big");
+  assert.ok(tomb, "tombstone must exist");
+  assert.strictEqual(tomb.deletedAt, bigTs, "deletedAt must equal " + bigTs + " (not truncated to " + (bigTs | 0) + ")");
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

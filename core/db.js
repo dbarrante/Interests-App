@@ -142,7 +142,8 @@ function upsertCard(db, card) {
 }
 // Merge write: set updatedAt explicitly to the winning peer's value.
 function upsertCardSynced(db, card, updatedAt) {
-  _insertCardRow(db.prepare(_CARD_INSERT_SQL), cardToRow(card), updatedAt | 0);
+  const ua = isFinite(updatedAt) ? Math.trunc(Number(updatedAt)) : Date.now();
+  _insertCardRow(db.prepare(_CARD_INSERT_SQL), cardToRow(card), ua);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
@@ -163,7 +164,7 @@ function replaceCards(db, arr) {
 }
 
 function addTombstone(db, id, kind, deletedAt) {
-  const ts = deletedAt != null ? (deletedAt | 0) : Date.now();
+  const ts = (deletedAt != null && isFinite(deletedAt)) ? Math.trunc(Number(deletedAt)) : Date.now();
   // Keep the NEWEST deletedAt for an (id,kind).
   db.prepare(
     "INSERT INTO tombstones(id,kind,deletedAt) VALUES(?,?,?) " +
@@ -245,7 +246,8 @@ function upsertSaved(db, item) {
 }
 // Merge write: set updatedAt explicitly to the winning peer's value.
 function upsertSavedSynced(db, item, updatedAt) {
-  _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), savedToRow(item), updatedAt | 0);
+  const ua = isFinite(updatedAt) ? Math.trunc(Number(updatedAt)) : Date.now();
+  _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), savedToRow(item), ua);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
