@@ -660,7 +660,7 @@ function imageChain(item){
   if(item.image){ const r = (""+item.image).indexOf("idb:")===0 ? Store.imgUrl((""+item.image).slice(4)) : item.image; if(r) c.push(r); }
   // public screenshot proxies can't see auth-walled sites — they'd return a
   // login wall / "content not available". Skip them for FB/IG (matches impThumb).
-  if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)/i.test(item.url)){
+  if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)|youtube\.com|youtu\.be/i.test(item.url)){
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
     c.push(`https://image.thum.io/get/width/640/crop/700/${item.url}`);
   }
@@ -3626,7 +3626,12 @@ function setClipImageInline(item, dataUrl){
 // distinct /watch, /permalink.php, /photo.php posts don't collapse into one card.
 function clipKey(u){
   const base=normalizeUrl(u||"");
-  try{ const q=new URL(u); if(/facebook\.com|fb\.watch/i.test(q.hostname)){ const id=q.searchParams.get("story_fbid")||q.searchParams.get("v")||q.searchParams.get("fbid"); if(id) return base+"?"+id; } }catch(e){}
+  try{ const q=new URL(u);
+    if(/facebook\.com|fb\.watch/i.test(q.hostname)){ const id=q.searchParams.get("story_fbid")||q.searchParams.get("v")||q.searchParams.get("fbid"); if(id) return base+"?"+id; }
+    // YouTube's video id lives in ?v= (/watch) or the /shorts/<id> path (or youtu.be/<id>),
+    // which normalizeUrl strips — fold it in so distinct videos don't collapse into one card.
+    if(/youtube\.com|youtu\.be/i.test(q.hostname)){ const id=q.searchParams.get("v") || (/\/shorts\/([^/?#]+)/.exec(q.pathname)||[])[1] || (/youtu\.be\/([^/?#]+)/.exec(u)||[])[1]; if(id) return base+"?"+id; }
+  }catch(e){}
   return base;
 }
 // "Clip this page": create (or update) a Saved card from an extension clip.

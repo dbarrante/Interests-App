@@ -280,16 +280,33 @@ async function cropScreenshot(tab, rect) {
 // Saved card. Used by the popup button and the right-click context menu.
 // opts: { url, desc, title, image, noShot } — image is a preferred card picture
 // (e.g. the original Facebook post photo); noShot skips the page screenshot.
+// Extract a YouTube video id from a watch / shorts / youtu.be URL ("" if none).
+function ytVideoId(u) {
+  try {
+    const q = new URL(u);
+    const host = q.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return q.pathname.slice(1).split(/[/?#]/)[0] || "";
+    if (/youtube\.com$/.test(host)) {
+      if (q.pathname === "/watch") return q.searchParams.get("v") || "";
+      const m = /\/shorts\/([^/?#]+)/.exec(q.pathname);
+      if (m) return m[1];
+    }
+  } catch (e) {}
+  return "";
+}
+
 async function clipCurrentPage(tab, opts = {}) {
   if (!tab || !tab.url || /^(chrome|chrome-extension|about|edge|view-source):/.test(tab.url)) {
     await setStatus("Cannot clip this page (browser page)", false);
     return { ok: false, error: "Cannot clip this page" };
   }
-  // YouTube hijacks right-click on the player and a full-page screenshot is noisy;
-  // a watch/shorts page's og:image IS the clean video thumbnail — prefer it.
+  // YouTube hijacks right-click on the player and a full-page screenshot is noisy.
+  // Use the deterministic public thumbnail as the image instead of a screenshot or
+  // the sometimes-missing og:image (that's what showed the thum.io "not authorized").
   const _u = opts.url || (tab && tab.url) || "";
-  if (!opts.image && /(^|\.)youtube\.com\/(watch|shorts\/)/i.test(_u)) {
-    opts = Object.assign({}, opts, { noShot: true });
+  if (!opts.image) {
+    const _yt = ytVideoId(_u);
+    if (_yt) opts = Object.assign({}, opts, { image: "https://i.ytimg.com/vi/" + _yt + "/hqdefault.jpg", noShot: true });
   }
   await setStatus("Clipping…", true);
   setBadge("📎");
