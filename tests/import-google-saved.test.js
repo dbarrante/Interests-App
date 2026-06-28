@@ -30,6 +30,13 @@ test("works with no Note column (desc empty)", () => {
   assert.strictEqual(r.length, 1);
   assert.strictEqual(r[0].desc, "");
 });
+test("an exact URL column wins over an earlier substring match", () => {
+  const csv = "Source Url,Title,URL\nbing,Thing,https://t.example.com\n";
+  const r = parseGoogleSaved(csv);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].title, "Thing");
+  assert.strictEqual(r[0].url, "https://t.example.com");
+});
 
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

@@ -21,7 +21,11 @@ function walk(node, folderPath, out) {
   }
   var children = node.children;
   if (Array.isArray(children)) {
-    for (var i = 0; i < children.length; i++) walk(children[i], folderPath, out);
+    for (var i = 0; i < children.length; i++) {
+      var child = children[i];
+      if (child && child.type === "folder") walk(child, folderPath + "/" + (child.name || "folder"), out);
+      else walk(child, folderPath, out);
+    }
   }
 }
 function parseChromeBookmarks(json) {

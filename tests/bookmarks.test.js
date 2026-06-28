@@ -24,6 +24,11 @@ test("recurses into folders and builds the nested folder path", () => {
   assert.strictEqual(r.length, 1);
   assert.strictEqual(r[0].folder, "Bookmarks bar/Recipes");
 });
+test("builds the full path for deeply nested folders", () => {
+  const r = bm.parseChromeBookmarks(TREE([ folderNode("Recipes", [ folderNode("Breads", [ urlNode("Sourdough", "https://s.example.com", TS_2023) ]) ]) ]));
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].folder, "Bookmarks bar/Recipes/Breads");
+});
 test("skips non-http(s) nodes (chrome://, javascript:, file:)", () => {
   const r = bm.parseChromeBookmarks(TREE([
     urlNode("settings", "chrome://settings", TS_2023),

@@ -21,10 +21,16 @@
     if (lines.length < 2) return out;
     var head = splitCsvLine(lines[0]).map(function (h) { return h.toLowerCase(); });
     if (head.some(function (h) { return h.indexOf("video id") >= 0 || h.indexOf("channel") >= 0; })) return out;  // YouTube -> let parseCSV handle
-    function findIdx(pred) { for (var i = 0; i < head.length; i++) if (pred(head[i])) return i; return -1; }
-    var titleIdx = findIdx(function (h) { return h === "title" || (h.indexOf("title") >= 0); });
-    var urlIdx = findIdx(function (h) { return h === "url" || (h.indexOf("url") >= 0); });
-    var noteIdx = findIdx(function (h) { return h.indexOf("note") >= 0; });
+    // Prefer an exact column-name match across the whole header before falling
+    // back to a substring match, so e.g. "Source Url,Title,URL" binds to "URL".
+    function findIdx(exact, sub) {
+      for (var i = 0; i < head.length; i++) if (head[i] === exact) return i;
+      for (var i = 0; i < head.length; i++) if (sub(head[i])) return i;
+      return -1;
+    }
+    var titleIdx = findIdx("title", function (h) { return h.indexOf("title") >= 0; });
+    var urlIdx = findIdx("url", function (h) { return h.indexOf("url") >= 0; });
+    var noteIdx = findIdx("note", function (h) { return h.indexOf("note") >= 0; });
     if (titleIdx < 0 || urlIdx < 0) return out;
     for (var r = 1; r < lines.length; r++) {
       var cols = splitCsvLine(lines[r]);
