@@ -165,10 +165,12 @@ function createServer(ctx) {
     res.json({ fp: dbm.allFp(db) });
   });
   app.put("/api/fp/:id", (req, res) => {
+    ctx.syncDirty = true;
     dbm.setFp(db, req.params.id, String(req.body && req.body.value != null ? req.body.value : ""));
     res.json({ ok: true });
   });
   app.delete("/api/fp/:id", (req, res) => {
+    ctx.syncDirty = true;
     dbm.delFp(db, req.params.id);
     res.json({ ok: true });
   });
@@ -365,8 +367,8 @@ function createServer(ctx) {
 
   app.post("/api/sync/device-label", (req, res) => {
     const label = req.body && req.body.label;
-    if (!label || typeof label !== "string") return res.status(400).json({ ok: false, error: "label required" });
-    config.setSyncConfig({ deviceLabel: label.slice(0, 60) });
+    if (!label || typeof label !== "string" || !label.trim()) return res.status(400).json({ ok: false, error: "label required" });
+    config.setSyncConfig({ deviceLabel: label.trim().slice(0, 60) });
     res.json({ ok: true });
   });
 
@@ -377,7 +379,7 @@ function createServer(ctx) {
     if (!sc.enabled || !syncDir) return res.status(400).json({ ok: false, error: "sync not enabled / no Dropbox" });
     try {
       const r = sync.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
-      if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+      if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
       res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
   });

@@ -27,6 +27,23 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.strictEqual(ctx.syncDirty, true);
   });
 
+  await test("PUT /api/fp/:id marks ctx dirty", async () => {
+    ctx.syncDirty = false;
+    await req(port, "PUT", "/api/fp/c_1", { value: "abc123" });
+    assert.strictEqual(ctx.syncDirty, true);
+  });
+
+  await test("POST /api/sync/device-label with whitespace-only label returns 400", async () => {
+    const r = await req(port, "POST", "/api/sync/device-label", { label: "   " });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test("POST /api/sync/device-label with valid label returns ok", async () => {
+    const r = await req(port, "POST", "/api/sync/device-label", { label: "My Laptop" });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.json && r.json.ok, true);
+  });
+
   s.close(); ctx.db.close();
   console.log(passed + " passed, " + failed + " failed");
   process.exit(failed ? 1 : 0);
