@@ -78,6 +78,29 @@ function setStorePath(p) {
   saveConfig(cfg);
 }
 
+function getSyncConfig() {
+  const cfg = loadConfig();
+  let changed = false;
+  if (!cfg.deviceId) { cfg.deviceId = "dev_" + require("crypto").randomUUID(); changed = true; }
+  if (!cfg.deviceLabel) { cfg.deviceLabel = require("os").hostname() || "device"; changed = true; }
+  if (changed) saveConfig(cfg);
+  return {
+    enabled: !!cfg.syncEnabled,
+    dir: cfg.syncDir || null,
+    deviceId: cfg.deviceId,
+    deviceLabel: cfg.deviceLabel,
+  };
+}
+
+function setSyncConfig(partial) {
+  const cfg = loadConfig();
+  const map = { enabled: "syncEnabled", dir: "syncDir", deviceLabel: "deviceLabel" };
+  for (const k of Object.keys(partial || {})) {
+    if (map[k]) cfg[map[k]] = partial[k];
+  }
+  saveConfig(cfg);
+}
+
 module.exports = {
   appDataDir,
   configPath,
@@ -88,4 +111,6 @@ module.exports = {
   isWritableDir,
   getStorePath,
   setStorePath,
+  getSyncConfig,
+  setSyncConfig,
 };
