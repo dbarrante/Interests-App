@@ -999,7 +999,10 @@ async function renderBackupList(){
 async function moveDataLocation(){
   let cur = {};
   try{ cur = await Store.storeLocation(); }catch(e){}
-  const target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||"");
+  let target = null;
+  const pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+  if (pf) { try { target = await pf(); } catch(e){ target = null; } }
+  else { target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||""); }
   if(!target || target === cur.path) return;
   toast("Moving data store… (the old copy is kept until the move verifies)");
   try{
@@ -1018,8 +1021,9 @@ async function moveDataLocation(){
     var out = document.getElementById("importLegacyResult");
     var srcDir = null;
     try {
-      if (window.app && typeof window.app.pickFolder === "function") {
-        srcDir = await window.app.pickFolder();
+      var pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+      if (pf) {
+        srcDir = await pf();
       } else {
         srcDir = window.prompt("Path to legacy backup folder (contains data.json):");
       }

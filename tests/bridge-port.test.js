@@ -19,12 +19,14 @@ function pingServer(port) {
 
 (async () => {
   await t("probePorts finds the first responding interests port", async () => {
-    // find a free port inside [3456..3465] by trying to bind 3460
-    let srv;
-    try { srv = await pingServer(3460); } catch (e) { console.log("  skip (3460 busy)"); pass++; return; }
+    // Bind on an OS-assigned free port so this test never collides with a real
+    // app already running on 3456 (which would make probePorts return 3456 and
+    // fail the assertion). We probe the exact port we bound.
+    const srv = await pingServer(0);
+    const realPort = srv.address().port;
     try {
-      const port = await probePorts([3456, 3457, 3458, 3459, 3460, 3461], { fetchImpl: (await import("node-fetch").catch(() => ({ default: fetch }))).default });
-      assert.strictEqual(port, 3460);
+      const port = await probePorts([realPort], { fetchImpl: fetch });
+      assert.strictEqual(port, realPort);
     } finally { srv.close(); }
   });
 
