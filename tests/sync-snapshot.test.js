@@ -40,5 +40,21 @@ test("readSnapshot rejects a snapshot missing meta.json (incomplete)", () => {
   d.close();
 });
 
+test("device A merges in device B's card + image", () => {
+  const syncDir = tmp();
+  // B publishes a card with an image file.
+  const storeB = tmpStore(); const dB = dbm.openDb(storeB);
+  dbm.upsertCard(dB, { id: "c_B", url: "https://b.com", img: "idb:c_B" });
+  fs.writeFileSync(path.join(storeB, "images", "c_B.jpg"), "JPGBYTES");
+  sync.publishSnapshot({ db: dB, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB.close();
+  // A runs a sync.
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA }, { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: true, backupFn: function () {} });
+  assert.ok(res.changed, "merge changed local data");
+  assert.ok(dbm.allCards(dA).some(c => c.id === "c_B"), "B's card merged into A");
+  assert.ok(fs.existsSync(path.join(storeA, "images", "c_B.jpg")), "B's image copied to A");
+  dA.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

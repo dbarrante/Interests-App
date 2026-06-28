@@ -105,4 +105,65 @@ function readSnapshot(folder) {
   };
 }
 
-module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot };
+function readPeerSnapshots(syncDir, selfDeviceId) {
+  return peerDirs(syncDir, selfDeviceId)
+    .map(function (p) { return readSnapshot(p.dir); })
+    .filter(function (s) { return s && (s.schemaVersion | 0) <= db.SCHEMA_VERSION; })
+    .map(function (s) {
+      // mergeSnapshots wants peer.dir for image copies.
+      return Object.assign({}, s, { dir: path.join(syncDir, s.deviceId) });
+    });
+}
+
+function buildLocal(ctx) {
+  const lib = db.serializeLibrary(ctx.db);
+  const cards = {}, saved = {}, tombs = {};
+  lib.cards.forEach(function (c) { cards[c.id] = c; });
+  lib.saved.forEach(function (s) { saved[s.id] = s; });
+  lib.tombstones.forEach(function (t) { tombs[t.kind + ":" + t.id] = t.deletedAt; });
+  return { cards: cards, saved: saved, tombstones: tombs };
+}
+
+function applyMerge(ctx, plan) {
+  const changed = (plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0;
+  for (const u of plan.upserts) {
+    if (u.kind === "card") db.upsertCardSynced(ctx.db, u.item, u.updatedAt);
+    else db.upsertSavedSynced(ctx.db, u.item, u.updatedAt);
+  }
+  for (const ic of plan.imageCopies) {
+    try { fs.copyFileSync(path.join(ic.fromDir, "images", ic.id + ".jpg"), path.join(ctx.storeDir, "images", ic.id + ".jpg")); } catch (e) {}
+  }
+  for (const d of plan.deletes) {
+    if (d.kind === "card") db.deleteCard(ctx.db, d.id); else db.deleteSaved(ctx.db, d.id);
+    try { images.delImg(ctx.storeDir, d.id); } catch (e) {}
+  }
+  for (const t of plan.tombstones) db.addTombstone(ctx.db, t.id, t.kind, t.deletedAt);
+  return { changed: changed, upserts: plan.upserts.length, deletes: plan.deletes.length };
+}
+
+// One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
+function runSync(ctx, opts) {
+  opts = opts || {};
+  const syncDir = opts.syncDir;
+  const backupFn = opts.backupFn || function () { try { backup.runBackup(ctx.db, ctx.storeDir); } catch (e) {} };
+  let changed = false, conflicts = 0;
+  const peers = readPeerSnapshots(syncDir, opts.deviceId);
+  if (peers.length) {
+    const plan = mergeSnapshots(buildLocal(ctx), peers);
+    if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0) {
+      backupFn();                              // safety backup ONLY when the merge will change data
+      const r = applyMerge(ctx, plan);
+      changed = r.changed; conflicts = plan.conflicts;
+    }
+  }
+  let publishedAt = null;
+  if (opts.publish !== false) {
+    fs.mkdirSync(syncDir, { recursive: true });
+    const out = publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
+    publishedAt = Date.now();
+    void out;
+  }
+  return { changed: changed, conflicts: conflicts, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
+}
+
+module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot, readPeerSnapshots, buildLocal, applyMerge, runSync };
