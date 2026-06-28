@@ -101,16 +101,17 @@ function counts(db) {
 const CARD_COLS = ["id", "url", "platform", "cat", "ts", "img", "updatedAt"];
 
 function cardToRow(card) {
+  const id = ensureId(card.id, "c_", [card.url, card.title, card.ts]);
   const img = card.img || "";
   let img_file = null, img_url = null;
-  if (img.indexOf("idb:") === 0) img_file = card.id + ".jpg";
+  if (img.indexOf("idb:") === 0) img_file = id + ".jpg";   // use the resolved id, not a possibly-undefined card.id
   else if (img.indexOf("http") === 0) img_url = img;
   const data = {};
   for (const k of Object.keys(card)) {
     if (CARD_COLS.indexOf(k) === -1) data[k] = card[k];
   }
   return {
-    id: ensureId(card.id, "c_", [card.url, card.title, card.ts]),
+    id,
     url: card.url != null ? card.url : null,
     platform: card.platform != null ? card.platform : null,
     cat: card.cat != null ? card.cat : null,
