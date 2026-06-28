@@ -302,6 +302,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
 <script src="import-instagram.js"></script>
+<script src="import-google-saved.js"></script>
 </head>
 <body>
 <header>
@@ -397,13 +398,14 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Import your saves (Facebook · Instagram · Pinterest · YouTube)</h3>
+        <h3>Import your saves (Facebook · Instagram · Pinterest · YouTube · Google)</h3>
         <div class="hint" style="margin-bottom:10px">Drop the platform's export file here — the ZIP works as-is. Imported titles become taste signals the AI learns from (they don't clutter your Saved tab). YouTube playlist exports contain only video IDs; titles are fetched automatically.</div>
         <div style="margin-bottom:10px">How to export:
           <button class="catpill" onclick="showGuide('facebook')">Facebook</button>
           <button class="catpill" onclick="showGuide('instagram')">Instagram</button>
           <button class="catpill" onclick="showGuide('pinterest')">Pinterest</button>
           <button class="catpill" onclick="showGuide('youtube')">YouTube</button>
+          <button class="catpill" onclick="showGuide('google')">Google</button>
         </div>
         <input type="file" id="impFile" multiple accept=".json,.html,.htm,.txt,.csv,.zip" onchange="handleImport(event)">
         <div style="margin-top:10px"><button class="btn btn-ghost" onclick="importBookmarks()">&#128209; Import browser bookmarks</button>
@@ -1534,6 +1536,12 @@ const GUIDES = {
     <li><b>Next step</b> &rarr; Export once &rarr; <b>Create export</b></li>
     <li>Download the ZIP (link emailed, expires in ~7 days) and drop it here as-is</li></ol>
     <p>Playlist exports (including Liked videos) contain only video IDs — the app automatically looks up the titles for you (up to 60 per import). Watch history and subscriptions import with full titles. Note: "Watch Later" is not included in Google's export.</p>`
+  ,google: `<h2>Export your Google Saved</h2><ol>
+    <li>Go to <b>takeout.google.com</b> and sign in</li>
+    <li><b>Deselect all</b>, then check only <b>Saved</b></li>
+    <li><b>Next step</b> &rarr; Export once &rarr; <b>Create export</b></li>
+    <li>Download the ZIP (emailed link, expires in ~7 days) and drop it here — or unzip and drop the <b>Saved/*.csv</b> files</li></ol>
+    <p>Each saved link's title, note, and URL become a taste signal. (Google Bookmarks is retired; this is google.com/save.)</p>`
 };
 function showGuide(p){ document.getElementById("modalBody").innerHTML=GUIDES[p]; document.getElementById("modal").classList.add("open"); }
 function closeGuide(){ document.getElementById("modal").classList.remove("open"); }
@@ -1707,6 +1715,8 @@ function parseFacebookJSON(p){
 }
 function parseImportText(text, name){
   if(/\.csv$/i.test(name||"")) {
+    const g=(typeof parseGoogleSaved==="function") ? parseGoogleSaved(text) : [];
+    if(g.length) return {items: g.map(i=>Object.assign(clean(i),{src:"google"})), ids:[]};
     const r=parseCSV(text);
     return {items:r.items.map(clean), ids:r.ids};
   }
@@ -1782,7 +1792,7 @@ async function parseZip(f){
     if(!/saved|collection|pin|board|watch-history|subscriptions|playlists|liked|history/i.test(path)) continue;
     const r=parseImportText(await e.async("string"), path);
     const h=srcHint(path);
-    if(h) r.items.forEach(i=>i.src=h);
+    if(h) r.items.forEach(i=>{ if(!i.src) i.src=h; });
     items=items.concat(r.items); ids=ids.concat(r.ids);
   }
   return {items, ids};
@@ -1947,7 +1957,7 @@ function clearFbPlaceholders(silent){
   else if(!silent) toast("No placeholder captures found");
   return cleared;
 }
-const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["web","Other web"]];
+const PLATS = [["","All sources"],["facebook","Facebook"],["pinterest","Pinterest"],["youtube","YouTube"],["google","Google"],["bookmark","Bookmarks"],["web","Other web"]];
 function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
 function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; _refreshPins.clear(); save("iunrev",impUnreviewed); renderImportedKeepFocus(); }
@@ -2146,6 +2156,7 @@ function srcHint(name){
   name=(name||"").toLowerCase();
   if(/bookmark/.test(name)) return "bookmark";
   if(/instagram|saved_posts/.test(name)) return "instagram";
+  if(/\bsaved\b/.test(name) && !/instagram|youtube|facebook|pinterest/.test(name)) return "google";
   if(/youtube|takeout|watch-history|subscription|liked/.test(name)) return "youtube";
   if(/pinterest|\bpins?\b|board/.test(name)) return "pinterest";
   if(/facebook|saved_items|saves|fb/.test(name)) return "facebook";
