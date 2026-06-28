@@ -215,5 +215,44 @@
     title: function (a) { return a ? ("Pinterest · " + a) : "Pinterest pin"; },
   };
 
-  window.INTERESTS_CAPTURE_CONFIGS = [facebook, instagram, pinterest];
+  // YouTube: no native Save-mirror (its "Save" = playlist). Used by the right-click
+  // "Save to Interests" path (captureCtxPost) — find the video tile under the cursor,
+  // its /watch permalink + title; the image is the deterministic i.ytimg thumbnail
+  // (derived in background.js from the permalink), more reliable than a scraped tile.
+  const youtube = {
+    id: "youtube",
+    match: function (h) { return /(^|\.)youtube\.com$/.test(h); },
+    image: "photo", imageCdn: /ytimg/, preCaptureDelayMs: 0,
+    saveTrigger: function () { return null; },
+    findPost: function (trigger, U) {
+      const sel = "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-playlist-video-renderer, ytd-rich-grid-media";
+      let el = (trigger && trigger.closest) ? trigger.closest(sel) : null;
+      if (el) return el;
+      let node = trigger;
+      while (node && node !== document.body) {
+        if (node.querySelector && node.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]')) return node;
+        node = node.parentElement;
+      }
+      if (/[?&]v=/.test(location.href) || /\/shorts\//.test(location.href)) return document.querySelector("ytd-watch-flexy, #primary") || document.body;
+      return null;
+    },
+    isSpecificUrl: function (href) { return /[?&]v=/.test(href || "") || /\/shorts\//.test(href || ""); },
+    findPermalink: function (post, U) {
+      const a = post.querySelector ? post.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]') : null;
+      const href = a ? U.hrefOf(a) : (this.isSpecificUrl(location.href) ? location.href : "");
+      try {
+        const q = new URL(href, location.origin);
+        const v = q.searchParams.get("v"); if (v) return "https://www.youtube.com/watch?v=" + v;
+        const m = /\/shorts\/([^/?#]+)/.exec(q.pathname); if (m) return "https://www.youtube.com/shorts/" + m[1];
+      } catch (e) {}
+      return href || location.href;
+    },
+    extract: function (post, U) {
+      const t = U.txtOf(post.querySelector ? post.querySelector('#video-title, a#video-title, yt-formatted-string#video-title, h1 yt-formatted-string, h1.title') : null);
+      return { author: (t || "").split("\n")[0].slice(0, 200), text: "" };
+    },
+    title: function (a) { return a || "YouTube video"; },
+  };
+
+  window.INTERESTS_CAPTURE_CONFIGS = [facebook, instagram, pinterest, youtube];
 })();

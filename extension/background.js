@@ -913,6 +913,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         const d = msg.data;
+        // YouTube: the deterministic public thumbnail beats a scraped tile image.
+        if (/youtube\.com|youtu\.be/i.test(d.url || "")) { const _yt = ytVideoId(d.url); if (_yt) d.image = "https://i.ytimg.com/vi/" + _yt + "/hqdefault.jpg"; }
         // Build the card image, ordered by the config's strategy. All results
         // are durable data URLs (CDN URLs expire, so we never store them raw).
         //   "photo"  (Facebook): the post's own photo first — ignores the
