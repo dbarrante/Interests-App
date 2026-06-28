@@ -3663,14 +3663,15 @@ function setSavedImage(item, src){
 // (which is what made clip pictures vanish on refresh). Shows full-res now,
 // then swaps in the small version once downscaled.
 function setClipImageInline(item, dataUrl){
-  if(item.image && (item.image+"").indexOf("idb:")===0){ Store.imgDel(item.id); }
-  item.image = dataUrl;   // immediate render (full-res, in memory)
+  // Electron app: images live as FILES (no IndexedDB eviction), and the saved-row DB
+  // layer does not file-back a bare inline data: image — storing the clip image inline
+  // is what made Pinterest/Instagram clip thumbnails get dropped on save. So persist
+  // the clip image as a FILE via setSavedImage. Shows full-res immediately, then swaps
+  // in the downscaled file once ready. (Name kept for history; it now file-backs.)
+  item.image = dataUrl;   // immediate full-res render in memory
   downscaleDataUrl(dataUrl, function(small){
-    item.image = small || dataUrl;
-    if(!Store.putSaved(saved)){
-      // localStorage is full — keep the image in IndexedDB instead of losing it on reload
-      try{ setSavedImage(item, item.image); Store.putSaved(saved); }catch(e){}
-    }
+    try{ setSavedImage(item, small || dataUrl); }catch(e){ item.image = small || dataUrl; }   // data: -> 'idb:'+id + Store.imgPut(file)
+    Store.putSaved(saved);
     if(curTab==="saved") renderSaved();
   });
 }

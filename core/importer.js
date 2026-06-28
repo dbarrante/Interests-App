@@ -38,6 +38,18 @@ function importLegacyBackup(srcDir, ctx) {
   const dataJson = JSON.parse(fs.readFileSync(dataPath, "utf8"));
   const mapped = mapLegacyKeys(dataJson);
 
+  // Saved clips store their thumbnail INLINE as a data: URL in the legacy backup.
+  // The saved-row layer keeps idb:/http images, but a bare inline data: image would
+  // not be a file ref — so persist each data: clip image to a FILE and re-point it to
+  // idb:<id> BEFORE writing the rows, exactly as card images are file-backed. Without
+  // this, the migration silently dropped Pinterest/Instagram clip thumbnails.
+  for (const item of mapped.saved) {
+    if (item && typeof item.image === "string" && item.image.indexOf("data:") === 0) {
+      try { images.putImg(ctx.storeDir, item.id, item.image); item.image = "idb:" + item.id; }
+      catch (e) { /* leave inline; the db layer preserves it in data as a fallback */ }
+    }
+  }
+
   // Rows first (transactions inside replaceCards/replaceSaved).
   db.replaceCards(ctx.db, mapped.cards);
   db.replaceSaved(ctx.db, mapped.saved);

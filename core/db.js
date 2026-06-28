@@ -215,6 +215,12 @@ function savedToRow(item) {
   for (const k of Object.keys(item)) {
     if (SAVED_COLS.indexOf(k) === -1) data[k] = item[k];
   }
+  // Defense-in-depth: a clip thumbnail can be an inline data: URL — neither an idb:
+  // file ref nor an http URL — and would otherwise be SILENTLY DROPPED here (it's
+  // excluded from `data` because "image" is a promoted column). Preserve it in the
+  // data JSON so a saved-clip image is never lost on a DB write. (The save path now
+  // persists clip images as files, so this is the last-resort net, not the norm.)
+  if (!img_file && !img_url && image.indexOf("data:") === 0) data.image = image;
   return {
     id: item.id,
     url: item.url != null ? item.url : null,
@@ -232,7 +238,9 @@ function rowToSaved(row) {
   base.url = row.url;
   base.category = row.category;
   base.clipped = row.clipped;
-  base.image = row.img_file ? ("idb:" + row.id) : (row.img_url || "");
+  // A file ref wins, then an http url, then a preserved inline data: image (base.image
+  // came from the data JSON — the savedToRow net above).
+  base.image = row.img_file ? ("idb:" + row.id) : (row.img_url || base.image || "");
   if ("updatedAt" in row) base.updatedAt = row.updatedAt != null ? row.updatedAt : 0;
   return base;
 }
