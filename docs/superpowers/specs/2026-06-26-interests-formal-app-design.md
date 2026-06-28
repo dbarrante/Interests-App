@@ -33,6 +33,7 @@ This is the "formalization" phase that follows the resilience roadmap (Pillar 1 
 - **Instagram import:** a new import source parallel to the existing Facebook/Pinterest/YouTube importers (source = the user's Instagram data-download export).
 - **Scheduled extraction from social saved lists (manual + optional daily; bounded & stoppable):** runs inside the **extension** (the only logged-in context); an on-demand button plus an optional once-a-day run that is capped per run, rate-limited, and has a visible **Stop**. Best-effort given platform rate limits/ToS.
 - **"Save to Interests" in the post ⋯ menu (FB-Purity-style):** the extension injects a menu item into the native post overflow menu on Facebook/Instagram/Pinterest, alongside the existing capture engine.
+- **Post-import/restore live refresh (v1 papercut, reported 2026-06-27):** after Import-legacy / Restore succeeds, the database is updated but the rendered library doesn't refresh until the app is restarted. Fix: on import/restore success, re-load state from the store (`Store.getCards`/`getSaved`) and re-render the current view (or trigger the app's normal startup reload) so records appear immediately. Same applies to store-move. Small change in `web/index.html` (the import/restore handlers).
 
 ## Non-Goals (not planned)
 
