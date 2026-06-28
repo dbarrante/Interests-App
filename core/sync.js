@@ -125,20 +125,40 @@ function buildLocal(ctx) {
 }
 
 function applyMerge(ctx, plan) {
-  const changed = (plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0;
+  // Index imageCopies by id so each upsert can pair with its (single) copy.
+  const copyByeId = {};
+  for (const ic of plan.imageCopies) copyByeId[ic.id] = ic;
+
+  let upsertsApplied = 0, imageCopiesDone = 0;
   for (const u of plan.upserts) {
+    const ref = u.kind === "card" ? (u.item && u.item.img) : (u.item && u.item.image);
+    // An idb: ref needs a local file images/<id>.jpg. Gate the upsert on it being
+    // present locally — otherwise DEFER (skip) so a later cycle retries once the
+    // image propagates (local keeps its lower updatedAt → self-heals).
+    if (typeof ref === "string" && ref.indexOf("idb:") === 0) {
+      const id = u.item.id;
+      const ic = copyByeId[id];
+      if (ic) {
+        try {
+          fs.copyFileSync(path.join(ic.fromDir, "images", id + ".jpg"), path.join(images.imagesDir(ctx.storeDir), id + ".jpg"));
+          imageCopiesDone++;
+        } catch (e) {
+          console.error("sync: image copy failed for " + id + ":", e && e.message);
+        }
+      }
+      if (!images.hasImg(ctx.storeDir, id)) continue;   // DEFER: image not available locally yet
+    }
     if (u.kind === "card") db.upsertCardSynced(ctx.db, u.item, u.updatedAt);
     else db.upsertSavedSynced(ctx.db, u.item, u.updatedAt);
-  }
-  for (const ic of plan.imageCopies) {
-    try { fs.copyFileSync(path.join(ic.fromDir, "images", ic.id + ".jpg"), path.join(ctx.storeDir, "images", ic.id + ".jpg")); } catch (e) {}
+    upsertsApplied++;
   }
   for (const d of plan.deletes) {
     if (d.kind === "card") db.deleteCard(ctx.db, d.id); else db.deleteSaved(ctx.db, d.id);
     try { images.delImg(ctx.storeDir, d.id); } catch (e) {}
   }
   for (const t of plan.tombstones) db.addTombstone(ctx.db, t.id, t.kind, t.deletedAt);
-  return { changed: changed, upserts: plan.upserts.length, deletes: plan.deletes.length };
+  const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0;
+  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length };
 }
 
 // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.

@@ -76,6 +76,44 @@ test("device A merges in device B's card + image", () => {
   dA.close();
 });
 
+test("merge DEFERS a winning idb card whose image hasn't propagated (no dangling ref)", () => {
+  const syncDir = tmp();
+  // B publishes a card with an idb image ref but NO image file in its folder.
+  const storeB = tmpStore(); const dB = dbm.openDb(storeB);
+  dbm.upsertCard(dB, { id: "c_noimg", url: "https://b.com/noimg", img: "idb:c_noimg" });
+  sync.publishSnapshot({ db: dB, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB.close();
+  // Sanity: peer folder really has no image, and meta.counts.images is 0.
+  assert.ok(!fs.existsSync(path.join(syncDir, "dev_B", "images", "c_noimg.jpg")), "peer published no image file");
+  // A runs a sync against a fresh store.
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA }, { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: true, backupFn: function () {} });
+  assert.ok(!dbm.allCards(dA).some(c => c.id === "c_noimg"), "card with absent image must NOT be applied (deferred)");
+  assert.ok(!fs.existsSync(path.join(storeA, "images", "c_noimg.jpg")), "no dangling image file locally");
+  assert.strictEqual(res.changed, false, "a fully-deferred cycle reports changed:false");
+  dA.close();
+});
+
+test("merge SELF-HEALS: same card applies once its image propagates", () => {
+  const syncDir = tmp();
+  const storeB = tmpStore(); const dB = dbm.openDb(storeB);
+  dbm.upsertCard(dB, { id: "c_heal", url: "https://b.com/heal", img: "idb:c_heal" });
+  sync.publishSnapshot({ db: dB, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB.close();
+  // First cycle: image absent → deferred.
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  sync.runSync({ db: dA, storeDir: storeA }, { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: true, backupFn: function () {} });
+  assert.ok(!dbm.allCards(dA).some(c => c.id === "c_heal"), "deferred on first cycle (no image yet)");
+  // Image now propagates: B writes the file and republishes.
+  const dB2 = dbm.openDb(storeB);
+  fs.writeFileSync(path.join(storeB, "images", "c_heal.jpg"), "JPGBYTES");
+  sync.publishSnapshot({ db: dB2, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB2.close();
+  // Second cycle: image present → applies + copies.
+  const res2 = sync.runSync({ db: dA, storeDir: storeA }, { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: true, backupFn: function () {} });
+  assert.ok(res2.changed, "self-heal cycle reports changed");
+  assert.ok(dbm.allCards(dA).some(c => c.id === "c_heal"), "card applied once image propagated");
+  assert.ok(fs.existsSync(path.join(storeA, "images", "c_heal.jpg")), "image copied locally on self-heal");
+  dA.close();
+});
+
 test("defaultSyncDir() resolves without throwing (returns string or null)", () => {
   const d = sync.defaultSyncDir();
   assert.ok(d === null || typeof d === "string", "defaultSyncDir returns string|null, never throws");
