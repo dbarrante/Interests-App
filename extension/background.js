@@ -285,6 +285,12 @@ async function clipCurrentPage(tab, opts = {}) {
     await setStatus("Cannot clip this page (browser page)", false);
     return { ok: false, error: "Cannot clip this page" };
   }
+  // YouTube hijacks right-click on the player and a full-page screenshot is noisy;
+  // a watch/shorts page's og:image IS the clean video thumbnail — prefer it.
+  const _u = opts.url || (tab && tab.url) || "";
+  if (!opts.image && /(^|\.)youtube\.com\/(watch|shorts\/)/i.test(_u)) {
+    opts = Object.assign({}, opts, { noShot: true });
+  }
   await setStatus("Clipping…", true);
   setBadge("📎");
   // page metadata (title / description / og image)
