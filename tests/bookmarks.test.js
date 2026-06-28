@@ -3,8 +3,9 @@ const bm = require("../core/bookmarks");
 let passed = 0, failed = 0;
 function test(n, fn) { try { fn(); passed++; } catch (e) { failed++; console.error("FAIL: " + n + "\n  " + (e && e.message)); } }
 
-// Chrome date_added for 2023-11-14T22:13:20Z ≈ 13346776400000000 µs since 1601.
-const TS_2023 = "13346776400000000";
+// Chrome date_added for 2023-11-14T22:13:20Z (= 1700000000 s since 1970):
+// µs since 1601 = (1700000000000 + 11644473600000) * 1000.
+const TS_2023 = "13344473600000000";
 const urlNode = (name, url, da) => ({ type: "url", name: name, url: url, date_added: da });
 const folderNode = (name, children) => ({ type: "folder", name: name, children: children });
 const TREE = (bar) => ({ roots: { bookmark_bar: { type: "folder", name: "Bookmarks bar", children: bar } } });
