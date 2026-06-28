@@ -162,8 +162,30 @@ function replaceCards(db, arr) {
   }
 }
 
+function addTombstone(db, id, kind, deletedAt) {
+  const ts = deletedAt != null ? (deletedAt | 0) : Date.now();
+  // Keep the NEWEST deletedAt for an (id,kind).
+  db.prepare(
+    "INSERT INTO tombstones(id,kind,deletedAt) VALUES(?,?,?) " +
+    "ON CONFLICT(id,kind) DO UPDATE SET deletedAt=MAX(tombstones.deletedAt, excluded.deletedAt)"
+  ).run(id, kind, ts);
+}
+function allTombstones(db) {
+  return db.prepare("SELECT id,kind,deletedAt FROM tombstones").all()
+    .map(r => ({ id: r.id, kind: r.kind, deletedAt: Number(r.deletedAt) }));
+}
+function delTombstone(db, id, kind) {
+  db.prepare("DELETE FROM tombstones WHERE id=? AND kind=?").run(id, kind);
+}
+// Delete tombstones older than (now - olderThanMs). Retention pruning.
+function pruneTombstones(db, olderThanMs) {
+  const cutoff = Date.now() - (olderThanMs | 0);
+  db.prepare("DELETE FROM tombstones WHERE deletedAt < ?").run(cutoff);
+}
+
 function deleteCard(db, id) {
   db.prepare("DELETE FROM cards WHERE id=?").run(id);
+  addTombstone(db, id, "card");
 }
 
 // Saved column fields live in their own columns; everything else goes in `data` JSON.
@@ -245,6 +267,7 @@ function replaceSaved(db, arr) {
 
 function deleteSaved(db, id) {
   db.prepare("DELETE FROM saved WHERE id=?").run(id);
+  addTombstone(db, id, "saved");
 }
 
 function getFp(db, id) {
@@ -268,4 +291,5 @@ module.exports = {
   rowToCard, cardToRow, cardSig, allCards, replaceCards, upsertCard, upsertCardSynced, deleteCard,
   rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   getFp, setFp, delFp, allFp,
+  addTombstone, allTombstones, delTombstone, pruneTombstones,
 };
