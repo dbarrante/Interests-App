@@ -467,6 +467,24 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint">Replaces everything currently in the app. A safety copy of your current data is downloaded automatically before the restore runs.</div>
       </div>
 
+      <div class="sec">
+        <h3>Dropbox sync</h3>
+        <div class="hint" style="margin-bottom:10px">Share your library across machines through Dropbox. Each computer keeps its own local copy and merges changes from the others — newest edit wins. The live database never lives inside Dropbox.</div>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
+          <input type="checkbox" id="syncToggle" style="width:auto"> Enable Dropbox sync
+        </label>
+        <div style="margin-top:12px">
+          <button class="btn btn-ghost" onclick="chooseSyncFolder()">Choose Dropbox folder…</button>
+          <span class="hint" id="syncFolderInfo" style="margin-left:8px"></span>
+        </div>
+        <label style="margin-top:14px;display:block">This device's name</label>
+        <input type="text" id="syncDeviceName" style="width:auto;min-width:220px" placeholder="e.g. Desktop">
+        <div style="margin-top:12px">
+          <button class="btn btn-ghost" onclick="syncNowClick()">&#8635; Sync now</button>
+        </div>
+        <div id="syncStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSettings(true)">Save settings</button>
     </div>
   </div>
@@ -1013,6 +1031,35 @@ async function moveDataLocation(){
   }catch(e){ toast("Move failed: " + (e&&e.message||e)); }
 }
 
+async function renderSyncStatus(){
+  const el = document.getElementById("syncStatus"); if(!el) return;
+  let st = null; try{ st = await Store.syncStatus(); }catch(e){}
+  if(!st){ el.textContent = "Sync status unavailable."; return; }
+  const tog = document.getElementById("syncToggle"); if(tog) tog.checked = !!st.enabled;
+  const fi = document.getElementById("syncFolderInfo");
+  if(fi) fi.textContent = st.folder ? st.folder : (st.dropboxFound ? "(default Dropbox location)" : "Dropbox not found — install Dropbox or pick a folder.");
+  const nm = document.getElementById("syncDeviceName"); if(nm && document.activeElement!==nm) nm.value = st.deviceLabel || "";
+  const peers = (st.peers||[]).map(p => esc(p.deviceLabel||p.deviceId) + (p.publishedAt ? " ("+new Date(p.publishedAt).toLocaleString()+")" : "")).join(", ") || "none seen yet";
+  el.innerHTML =
+    "<div>Status: <b>" + (st.enabled ? "on" : "off") + "</b></div>" +
+    "<div>This device: <b>" + esc(st.deviceLabel||"") + "</b></div>" +
+    "<div>Other devices: <b>" + peers + "</b></div>";
+}
+async function chooseSyncFolder(){
+  const pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+  let target = null;
+  if(pf){ try{ target = await pf(); }catch(e){ target = null; } }
+  else { target = prompt("Full path of the Dropbox sync folder:"); }
+  if(!target) return;
+  try{ await Store.setSyncFolder(target); toast("Sync folder set"); await renderSyncStatus(); }
+  catch(e){ toast("Couldn't set folder: " + (e&&e.message||e)); }
+}
+async function syncNowClick(){
+  toast("Syncing…");
+  try{ const r = await Store.syncNow(); toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date"); if(r && r.changed){ setTimeout(()=>location.reload(), 900); } }
+  catch(e){ toast("Sync failed: " + (e&&e.message||e)); }
+}
+
 // Settings → "Import legacy backup…": pick a folder (native bridge if present,
 // else a path prompt) and call Store.runImport, then render a one-line result.
 (function bindImportLegacy(){
@@ -1101,6 +1148,12 @@ function renderSettings(){
   document.getElementById("tagSideToggle").onchange = e=>{ S.tagSidebar = e.target.checked; save("settings", S); if(curTab==="imported") renderImported(); };
   document.getElementById("autoBackup").value = String(S.autoBackup||0);
   document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
+  if(document.getElementById("syncToggle")){
+    document.getElementById("syncToggle").onchange = async e=>{ try{ await Store.setSyncEnabled(e.target.checked); toast(e.target.checked?"Dropbox sync enabled":"Dropbox sync disabled"); }catch(err){} renderSyncStatus(); };
+    const nm = document.getElementById("syncDeviceName");
+    if(nm) nm.onchange = async e=>{ try{ await Store.setDeviceLabel(e.target.value.trim()); }catch(err){} };
+  }
+  if(typeof renderSyncStatus === "function") renderSyncStatus();
   renderImportStatus();
   if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
   if(typeof renderBackupList === "function") renderBackupList();
@@ -3745,6 +3798,17 @@ async function bootData(){
 bootData();
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
+let _lastSyncChangedAt = 0;
+async function pollSyncChanged(){
+  try{
+    const st = await Store.syncStatus();
+    if(st && st.changedAt && _lastSyncChangedAt && st.changedAt > _lastSyncChangedAt){
+      toast("✨ Updates synced from your other devices — click to refresh", 8000, ()=>location.reload());
+    }
+    if(st) _lastSyncChangedAt = st.changedAt || _lastSyncChangedAt || 1;
+  }catch(e){}
+}
+setInterval(pollSyncChanged, 30000);
 setInterval(pollBatchProgress, 1500);
 setupPasteToCard();
 </script>
