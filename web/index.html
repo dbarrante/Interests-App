@@ -406,6 +406,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <button class="catpill" onclick="showGuide('youtube')">YouTube</button>
         </div>
         <input type="file" id="impFile" multiple accept=".json,.html,.htm,.txt,.csv,.zip" onchange="handleImport(event)">
+        <div style="margin-top:10px"><button class="btn btn-ghost" onclick="importBookmarks()">&#128209; Import browser bookmarks</button>
+          <span class="hint" id="bmStatus" style="margin-left:8px"></span></div>
         <div class="hint" id="impStatus" style="margin-top:8px"></div>
       </div>
 
@@ -1801,12 +1803,19 @@ async function handleImport(ev){
     toast("Looking up "+Math.min(ids.length,60)+" YouTube video titles…");
     try{ found=found.concat(await resolveYT(ids)); }catch(e){ console.warn(e); }
   }
+  ingestImported(found);
+  ev.target.value="";
+}
+// Dedup `found` items into `imported` cards (shared by file-import + bookmark-import).
+// Enriches existing (image/desc/url/sdate), appends new, never deletes. Returns {added,updated}.
+function ingestImported(found){
   const byTitle = new Map(imported.map((it,i)=>[it.title.toLowerCase(), i]));
   const byUrl = new Map(imported.filter(it=>it.url).map((it,i)=>[it.url, i]));
   const junk = /^(like|comment|share|save|home|menu|profile|settings|see more|watch|reels?|marketplace|groups?|notifications?)$/i;
   let added=0, updated=0;
   const seenThis = new Set();
   found.forEach(i=>{
+    if(!i || !i.title) return;
     const k=i.title.toLowerCase();
     if(junk.test(k) || /^https?:\/\//i.test(i.title)) return;
     if(seenThis.has(k)) return;
@@ -1832,7 +1841,41 @@ async function handleImport(ev){
   if(added) parts.push(added+" new items imported");
   if(updated) parts.push(updated+" existing items enriched");
   toast(parts.length ? parts.join(", ") : "No new data found in that file", 5000);
-  ev.target.value="";
+  return {added, updated};
+}
+// Auto-import Chrome/Edge bookmarks: pick a profile, then tick folders.
+async function importBookmarks(){
+  let sources=[];
+  try{ sources=await Store.bookmarkSources(); }catch(e){ toast("Couldn't reach the app service"); return; }
+  if(!sources.length){ toast("No Chrome/Edge bookmarks found on this machine", 5000); return; }
+  const rows = sources.map((s,i)=>`<button class="btn btn-ghost" style="display:block;width:100%;text-align:left;margin:4px 0" onclick="_bmPick(${i})">${esc(s.browser==="edge"?"Edge":"Chrome")} &middot; ${esc(s.name)} <span class="hint">(${s.count} bookmarks)</span></button>`).join("");
+  window._bmSources = sources;
+  document.getElementById("modalBody").innerHTML = `<h2>Import browser bookmarks</h2><div class="hint" style="margin-bottom:10px">Pick a browser profile:</div>${rows}`;
+  document.getElementById("modal").classList.add("open");
+}
+async function _bmPick(idx){
+  const s = window._bmSources[idx];
+  document.getElementById("modalBody").innerHTML = `<h2>${esc(s.name)}</h2><div class="hint">Loading bookmarks…</div>`;
+  let bms=[];
+  try{ bms=await Store.bookmarks(s.browser, s.profile); }catch(e){ document.getElementById("modalBody").innerHTML="<h2>Couldn't read bookmarks</h2>"; return; }
+  window._bmAll = bms;
+  const counts={}; bms.forEach(b=>{ counts[b.folder]=(counts[b.folder]||0)+1; });
+  const folders = Object.keys(counts).sort();
+  const rows = folders.map(f=>`<label style="display:block;margin:3px 0"><input type="checkbox" class="_bmf" value="${esc(f)}" checked style="width:auto"> ${esc(f)} <span class="hint">(${counts[f]})</span></label>`).join("") || "<div class='hint'>No bookmarks in this profile.</div>";
+  document.getElementById("modalBody").innerHTML = `<h2>${esc(s.name)} — pick folders</h2><div style="max-height:340px;overflow:auto;margin:8px 0">${rows}</div>
+    <button class="btn btn-primary" onclick="_bmImport()">Import selected folders</button>`;
+}
+function _bmImport(){
+  const picked = new Set([...document.querySelectorAll("._bmf:checked")].map(c=>c.value));
+  // Run each bookmark through clean() (exactly like file imports) so ts->sdate,
+  // ts=now, and title-slicing are consistent; then tag the source.
+  const found = (window._bmAll||[]).filter(b=>picked.has(b.folder)).map(b=>
+    Object.assign(clean({ title: b.title, url: b.url, ts: b.ts, desc: "Bookmark · " + (b.folder||"") }), { src: "bookmark" })
+  );
+  document.getElementById("modal").classList.remove("open");
+  if(!found.length){ toast("No folders selected"); return; }
+  ingestImported(found);
+  const el=document.getElementById("bmStatus"); if(el) el.textContent = "Imported "+found.length+" bookmark(s).";
 }
 function renderImportStatus(){
   const el=document.getElementById("impStatus"); if(!el) return;
@@ -2101,6 +2144,7 @@ function cleanDesc(d){
 }
 function srcHint(name){
   name=(name||"").toLowerCase();
+  if(/bookmark/.test(name)) return "bookmark";
   if(/instagram|saved_posts/.test(name)) return "instagram";
   if(/youtube|takeout|watch-history|subscription|liked/.test(name)) return "youtube";
   if(/pinterest|\bpins?\b|board/.test(name)) return "pinterest";
