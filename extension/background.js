@@ -339,9 +339,16 @@ ensureContextMenu();   // also run when the service worker spins up
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "saveToInterests") return;
-  // a right-clicked link saves that link; selected text becomes the description
+  // Right-clicking a SPECIFIC image (a Pinterest pin, a YouTube thumbnail, etc.)
+  // saves THAT image + its link — not a screenshot of the whole page. A plain
+  // page/selection right-click still screenshots the page as before.
+  // - url:   the pin/element's own link when present, else the page URL
+  // - image: the right-clicked image (info.srcUrl) becomes the saved picture
+  // - noShot: skip the full-page screenshot when we already have that image
   clipCurrentPage(tab, {
     url: info.linkUrl || info.pageUrl || (tab && tab.url),
+    image: info.srcUrl || undefined,
+    noShot: !!info.srcUrl,
     desc: (info.selectionText || "").trim() || undefined,
   });
 });
