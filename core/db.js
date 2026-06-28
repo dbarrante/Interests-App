@@ -21,12 +21,45 @@ const MIGRATIONS = [
    );
    CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
    CREATE TABLE IF NOT EXISTS fp (id TEXT PRIMARY KEY, fp TEXT);`,
+  `CREATE TABLE IF NOT EXISTS tombstones (
+     id TEXT, kind TEXT, deletedAt INTEGER, PRIMARY KEY(id, kind)
+   );
+   CREATE INDEX IF NOT EXISTS ix_tomb_deletedAt ON tombstones(deletedAt);`,
 ];
+
+const SCHEMA_VERSION = 2;   // bump whenever the schema below changes
+
+// Stable, key-order-independent stringify so content comparison doesn't churn
+// updatedAt when the renderer round-trips a card and re-serializes `data`.
+function _stable(v) {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(_stable).join(",") + "]";
+  return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + _stable(v[k])).join(",") + "}";
+}
+// Content signature of a stored-or-to-be-stored row (EXCLUDES id + updatedAt).
+function cardSig(r) { return _stable([r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, JSON.parse(r.data || "{}")]); }
+function savedSig(r) { return _stable([r.url, r.category, r.clipped, r.img_file, r.img_url, JSON.parse(r.data || "{}")]); }
+
+// Add columns that ALTER can't add idempotently (ADD COLUMN throws if it exists).
+function ensureColumns(db) {
+  const hasCol = (table, col) =>
+    db.prepare("PRAGMA table_info(" + table + ")").all().some(c => c.name === col);
+  const now = Date.now();
+  if (!hasCol("cards", "updatedAt")) {
+    db.exec("ALTER TABLE cards ADD COLUMN updatedAt INTEGER");
+    db.exec("UPDATE cards SET updatedAt = COALESCE(ts, " + now + ") WHERE updatedAt IS NULL");
+  }
+  if (!hasCol("saved", "updatedAt")) {
+    db.exec("ALTER TABLE saved ADD COLUMN updatedAt INTEGER");
+    db.exec("UPDATE saved SET updatedAt = " + now + " WHERE updatedAt IS NULL");
+  }
+}
 
 function openDb(storeDir) {
   const db = new DatabaseSync(path.join(storeDir, "interests.db"));
   db.exec("PRAGMA journal_mode=WAL");
   for (const sql of MIGRATIONS) db.exec(sql);
+  ensureColumns(db);                       // add updatedAt columns to existing DBs
   const ic = db.prepare("PRAGMA integrity_check").get(); // {integrity_check:'ok'} on a healthy DB
   if (!ic || ic.integrity_check !== "ok") {
     throw new Error("integrity_check failed: " + (ic && ic.integrity_check));
@@ -51,7 +84,7 @@ function counts(db) {
 }
 
 // Card column fields live in their own columns; everything else goes in `data` JSON.
-const CARD_COLS = ["id", "url", "platform", "cat", "ts", "img"];
+const CARD_COLS = ["id", "url", "platform", "cat", "ts", "img", "updatedAt"];
 
 function cardToRow(card) {
   const img = card.img || "";
@@ -82,6 +115,7 @@ function rowToCard(row) {
   base.cat = row.cat;
   base.ts = row.ts;
   base.img = row.img_file ? ("idb:" + row.id) : (row.img_url || "");
+  if ("updatedAt" in row) base.updatedAt = row.updatedAt != null ? row.updatedAt : (row.ts || 0);
   return base;
 }
 
@@ -91,16 +125,24 @@ function allCards(db) {
 
 // node:sqlite has no named-param helper here; bind positional `?` params in column order.
 const _CARD_INSERT_SQL =
-  "INSERT INTO cards(id,url,platform,cat,ts,img_file,img_url,data) VALUES(?,?,?,?,?,?,?,?) " +
-  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,platform=excluded.platform,cat=excluded.cat,ts=excluded.ts,img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data";
+  "INSERT INTO cards(id,url,platform,cat,ts,img_file,img_url,data,updatedAt) VALUES(?,?,?,?,?,?,?,?,?) " +
+  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,platform=excluded.platform,cat=excluded.cat,ts=excluded.ts," +
+  "img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data,updatedAt=excluded.updatedAt";
 
-function _runCardInsert(stmt, card) {
-  const r = cardToRow(card);
-  stmt.run(r.id, r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, r.data);
+function _insertCardRow(stmt, r, updatedAt) {
+  stmt.run(r.id, r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, r.data, updatedAt);
 }
 
+// Local write: auto-stamp updatedAt — bump only when stored content actually changed.
 function upsertCard(db, card) {
-  _runCardInsert(db.prepare(_CARD_INSERT_SQL), card);
+  const r = cardToRow(card);
+  const ex = db.prepare("SELECT url,platform,cat,ts,img_file,img_url,data,updatedAt FROM cards WHERE id=?").get(r.id);
+  const updatedAt = (ex && cardSig(ex) === cardSig(r)) ? ex.updatedAt : Date.now();
+  _insertCardRow(db.prepare(_CARD_INSERT_SQL), r, updatedAt);
+}
+// Merge write: set updatedAt explicitly to the winning peer's value.
+function upsertCardSynced(db, card, updatedAt) {
+  _insertCardRow(db.prepare(_CARD_INSERT_SQL), cardToRow(card), updatedAt | 0);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
@@ -109,7 +151,10 @@ function replaceCards(db, arr) {
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM cards").run();
-    for (const c of (arr || [])) _runCardInsert(ins, c);
+    for (const c of (arr || [])) {
+      const r = cardToRow(c);
+      _insertCardRow(ins, r, Date.now());   // interim: Task A3 replaces with diff logic
+    }
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -122,7 +167,7 @@ function deleteCard(db, id) {
 }
 
 // Saved column fields live in their own columns; everything else goes in `data` JSON.
-const SAVED_COLS = ["id", "url", "category", "clipped", "image"];
+const SAVED_COLS = ["id", "url", "category", "clipped", "image", "updatedAt"];
 
 function savedToRow(item) {
   const image = item.image || "";
@@ -151,6 +196,7 @@ function rowToSaved(row) {
   base.category = row.category;
   base.clipped = row.clipped;
   base.image = row.img_file ? ("idb:" + row.id) : (row.img_url || "");
+  if ("updatedAt" in row) base.updatedAt = row.updatedAt != null ? row.updatedAt : 0;
   return base;
 }
 
@@ -160,16 +206,24 @@ function allSaved(db) {
 
 // node:sqlite has no named-param helper here; bind positional `?` params in column order.
 const _SAVED_INSERT_SQL =
-  "INSERT INTO saved(id,url,category,clipped,img_file,img_url,data) VALUES(?,?,?,?,?,?,?) " +
-  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,category=excluded.category,clipped=excluded.clipped,img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data";
+  "INSERT INTO saved(id,url,category,clipped,img_file,img_url,data,updatedAt) VALUES(?,?,?,?,?,?,?,?) " +
+  "ON CONFLICT(id) DO UPDATE SET url=excluded.url,category=excluded.category,clipped=excluded.clipped," +
+  "img_file=excluded.img_file,img_url=excluded.img_url,data=excluded.data,updatedAt=excluded.updatedAt";
 
-function _runSavedInsert(stmt, item) {
-  const r = savedToRow(item);
-  stmt.run(r.id, r.url, r.category, r.clipped, r.img_file, r.img_url, r.data);
+function _insertSavedRow(stmt, r, updatedAt) {
+  stmt.run(r.id, r.url, r.category, r.clipped, r.img_file, r.img_url, r.data, updatedAt);
 }
 
+// Local write: auto-stamp updatedAt — bump only when stored content actually changed.
 function upsertSaved(db, item) {
-  _runSavedInsert(db.prepare(_SAVED_INSERT_SQL), item);
+  const r = savedToRow(item);
+  const ex = db.prepare("SELECT url,category,clipped,img_file,img_url,data,updatedAt FROM saved WHERE id=?").get(r.id);
+  const updatedAt = (ex && savedSig(ex) === savedSig(r)) ? ex.updatedAt : Date.now();
+  _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), r, updatedAt);
+}
+// Merge write: set updatedAt explicitly to the winning peer's value.
+function upsertSavedSynced(db, item, updatedAt) {
+  _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), savedToRow(item), updatedAt | 0);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
@@ -178,7 +232,10 @@ function replaceSaved(db, arr) {
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM saved").run();
-    for (const it of (arr || [])) _runSavedInsert(ins, it);
+    for (const it of (arr || [])) {
+      const r = savedToRow(it);
+      _insertSavedRow(ins, r, Date.now());   // interim: Task A3 replaces with diff logic
+    }
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -207,8 +264,8 @@ function allFp(db) {
 }
 
 module.exports = {
-  openDb, getKV, setKV, delKV, counts,
-  rowToCard, cardToRow, allCards, replaceCards, upsertCard, deleteCard,
-  rowToSaved, savedToRow, allSaved, replaceSaved, upsertSaved, deleteSaved,
+  openDb, SCHEMA_VERSION, getKV, setKV, delKV, counts,
+  rowToCard, cardToRow, cardSig, allCards, replaceCards, upsertCard, upsertCardSynced, deleteCard,
+  rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   getFp, setFp, delFp, allFp,
 };
