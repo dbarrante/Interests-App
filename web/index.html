@@ -1820,7 +1820,9 @@ async function handleImport(ev){
 // Enriches existing (image/desc/url/sdate), appends new, never deletes. Returns {added,updated}.
 function ingestImported(found){
   const byTitle = new Map(imported.map((it,i)=>[it.title.toLowerCase(), i]));
-  const byUrl = new Map(imported.filter(it=>it.url).map((it,i)=>[it.url, i]));
+  // Map URL -> real index in `imported` (filter().map() would store the FILTERED
+  // index and point matches at the wrong card when any earlier card has no url).
+  const byUrl = new Map(); imported.forEach((it,i)=>{ if(it.url) byUrl.set(it.url, i); });
   const junk = /^(like|comment|share|save|home|menu|profile|settings|see more|watch|reels?|marketplace|groups?|notifications?)$/i;
   let added=0, updated=0;
   const seenThis = new Set();
