@@ -3,9 +3,13 @@ const { app, BrowserWindow, dialog, shell, ipcMain } = require("electron");
 const config = require("./core/config");
 const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
+const sync = require("./core/sync");
 
 let mainWindow = null;
 let httpServer = null;
+let ctx = null;                 // hoisted so will-quit / timers can reach it
+let syncTimer = null;
+let publishTimer = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -24,7 +28,19 @@ if (!gotLock) {
 
       // ctx for the Core service: opens the live DB at the resolved store path and
       // provides reopen() for restore/move flows (core/appctx.buildContext).
-      const ctx = buildContext(storeDir);
+      // Assign (no const/let) so it binds the module-scope `ctx` that will-quit
+      // and the sync timers reach.
+      ctx = buildContext(storeDir);
+
+      // Dropbox sync (non-fatal): merge peers + publish before the server serves data.
+      try {
+        const sc = config.getSyncConfig();
+        if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
+          const syncDir = sc.dir || sync.defaultSyncDir();
+          sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
+          startSyncTimers(sc, syncDir);
+        }
+      } catch (e) { console.error("launch sync skipped:", e && e.message); }   // NEVER hard-fail launch
 
       const { server, port } = await startServer(ctx, 3456);
       httpServer = server;
@@ -57,10 +73,40 @@ if (!gotLock) {
   });
 
   app.on("will-quit", () => {
+    // Final best-effort publish if a write left the store dirty. Keep it
+    // synchronous — Electron does not await will-quit handlers.
+    try {
+      if (ctx && ctx.syncDirty) {
+        const sc = config.getSyncConfig();
+        if (sc.enabled) {
+          const syncDir = sc.dir || sync.defaultSyncDir();
+          if (syncDir) sync.publishSnapshot(ctx, syncDir, sc.deviceId, sc.deviceLabel);
+        }
+      }
+    } catch (e) { /* best-effort */ }
+    if (syncTimer) { try { clearInterval(syncTimer); } catch (e) {} }
+    if (publishTimer) { try { clearInterval(publishTimer); } catch (e) {} }
     if (httpServer) {
       try { httpServer.close(); } catch (_) { /* ignore */ }
     }
   });
+}
+
+function startSyncTimers(sc, syncDir) {
+  // Periodic merge + publish (~3 min). On a change, signal the renderer via a kv flag.
+  syncTimer = setInterval(function () {
+    try {
+      const res = sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
+      if (res.changed) { try { require("./core/db").setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+    } catch (e) { console.error("periodic sync error:", e && e.message); }
+  }, 3 * 60 * 1000);
+
+  // Debounced publish: every ~10s, if a write marked the store dirty, publish our snapshot.
+  publishTimer = setInterval(function () {
+    if (!ctx || !ctx.syncDirty) return;
+    ctx.syncDirty = false;
+    try { sync.publishSnapshot(ctx, syncDir, sc.deviceId, sc.deviceLabel); } catch (e) { console.error("debounced publish error:", e && e.message); }
+  }, 10 * 1000);
 }
 
 function createWindow(port) {
