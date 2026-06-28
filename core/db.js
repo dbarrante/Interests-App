@@ -180,7 +180,7 @@ function delTombstone(db, id, kind) {
 }
 // Delete tombstones older than (now - olderThanMs). Retention pruning.
 function pruneTombstones(db, olderThanMs) {
-  const cutoff = Date.now() - (olderThanMs | 0);
+  const cutoff = Date.now() - (Number(olderThanMs) || 0);
   db.prepare("DELETE FROM tombstones WHERE deletedAt < ?").run(cutoff);
 }
 

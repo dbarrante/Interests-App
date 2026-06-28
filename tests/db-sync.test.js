@@ -50,16 +50,25 @@ test("addTombstone + allTombstones round-trip; delete writes a tombstone", () =>
   d.close();
 });
 
-test("addTombstone keeps the newest deletedAt; prune drops old ones", () => {
+test("addTombstone keeps the newest deletedAt (newest-wins)", () => {
   const dir = tmpStore(); const d = db.openDb(dir);
   db.addTombstone(d, "c_2", "card", 1000);
   db.addTombstone(d, "c_2", "card", 5000);   // newer wins
   assert.strictEqual(db.allTombstones(d).find(t => t.id === "c_2").deletedAt, 5000);
-  db.pruneTombstones(d, Date.now() - 4000);  // older-than cutoff removes deletedAt=5000? no — keep
-  // deletedAt 5000 is ancient relative to now; prune(now - 4000) removes anything < now-4000.
-  // Use an explicit cutoff instead:
-  db.addTombstone(d, "c_old", "card", 1);
-  db.pruneTombstones(d, 2);                  // remove deletedAt < (now - 2ms)? see impl note
+  d.close();
+});
+
+test("pruneTombstones 90-day retention: keeps recent, drops 100-day-old (32-bit overflow guard)", () => {
+  const dir = tmpStore(); const d = db.openDb(dir);
+  const now = Date.now();
+  const recentDeletedAt = now;                         // just now — must survive
+  const oldDeletedAt    = now - (100 * 24 * 60 * 60 * 1000);  // 100 days ago — must be pruned
+  db.addTombstone(d, "t_recent", "card", recentDeletedAt);
+  db.addTombstone(d, "t_old",    "card", oldDeletedAt);
+  db.pruneTombstones(d, 90 * 24 * 60 * 60 * 1000);   // prune anything older than 90 days
+  const remaining = db.allTombstones(d);
+  assert.ok(remaining.some(t => t.id === "t_recent"), "recent tombstone must survive 90-day prune");
+  assert.ok(!remaining.some(t => t.id === "t_old"),   "100-day-old tombstone must be pruned");
   d.close();
 });
 
