@@ -660,7 +660,7 @@ function imageChain(item){
   if(item.image){ const r = (""+item.image).indexOf("idb:")===0 ? Store.imgUrl((""+item.image).slice(4)) : item.image; if(r) c.push(r); }
   // public screenshot proxies can't see auth-walled sites — they'd return a
   // login wall / "content not available". Skip them for FB/IG (matches impThumb).
-  if(item.url && !/facebook\.com|fb\.watch|instagram\.com/i.test(item.url)){
+  if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)/i.test(item.url)){
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
     c.push(`https://image.thum.io/get/width/640/crop/700/${item.url}`);
   }
