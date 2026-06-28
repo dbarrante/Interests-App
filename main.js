@@ -19,23 +19,37 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    const storeDir = config.getStorePath();
+    try {
+      const storeDir = config.getStorePath();
 
-    // ctx for the Core service: opens the live DB at the resolved store path and
-    // provides reopen() for restore/move flows (core/appctx.buildContext).
-    const ctx = buildContext(storeDir);
+      // ctx for the Core service: opens the live DB at the resolved store path and
+      // provides reopen() for restore/move flows (core/appctx.buildContext).
+      const ctx = buildContext(storeDir);
 
-    const { server, port } = await startServer(ctx, 3456);
-    httpServer = server;
+      const { server, port } = await startServer(ctx, 3456);
+      httpServer = server;
 
-    // Record the chosen port so discovery/relaunch can find it.
-    config.saveConfig(Object.assign({}, config.loadConfig(), { port }));
+      // Record the chosen port so discovery/relaunch can find it.
+      config.saveConfig(Object.assign({}, config.loadConfig(), { port }));
 
-    createWindow(port);
+      createWindow(port);
 
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow(port);
-    });
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow(port);
+      });
+    } catch (err) {
+      // Never fail silently — a startup error (e.g. an un-writable store or a
+      // busy port) must be visible, not an app that "won't open".
+      try {
+        dialog.showErrorBox(
+          "Interests App couldn't start",
+          "The app hit an error while starting up:\n\n" +
+            String((err && err.stack) || err) +
+            "\n\nYour data is safe. Please report this message."
+        );
+      } catch (_) { /* dialog unavailable */ }
+      app.quit();
+    }
   });
 
   app.on("window-all-closed", () => {

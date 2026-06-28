@@ -37,9 +37,36 @@ function defaultStoreDir() {
   return path.resolve("data");
 }
 
+// True if `dir` can be created and written to. Used to detect a non-writable
+// preferred store dir (e.g. a per-machine install under C:\Program Files).
+function isWritableDir(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, ".wtest-" + process.pid);
+    fs.writeFileSync(probe, "");
+    fs.unlinkSync(probe);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Always-writable per-user fallback (next to config.json in %APPDATA%).
+function fallbackStoreDir() {
+  return path.join(appDataDir(), "data");
+}
+
 function getStorePath() {
   const cfg = loadConfig();
-  const dir = cfg.storePath || defaultStoreDir();
+  let dir = cfg.storePath || defaultStoreDir();
+  // If the preferred location isn't writable (e.g. a Program Files install dir),
+  // fall back to a guaranteed-writable per-user folder and remember it, so the
+  // app always opens instead of crashing on an un-creatable store.
+  if (!isWritableDir(dir)) {
+    dir = fallbackStoreDir();
+    fs.mkdirSync(dir, { recursive: true });
+    if (cfg.storePath !== dir) { cfg.storePath = dir; saveConfig(cfg); }
+  }
   fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(path.join(dir, "images"), { recursive: true });
   return dir;
@@ -57,6 +84,8 @@ module.exports = {
   loadConfig,
   saveConfig,
   defaultStoreDir,
+  fallbackStoreDir,
+  isWritableDir,
   getStorePath,
   setStorePath,
 };
