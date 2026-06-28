@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "4.36",
+  "version": "4.37",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation", "webRequest", "contextMenus"],
   "host_permissions": ["<all_urls>"],
@@ -24,7 +24,7 @@
         "*://*.pinterest.com.au/*",
         "*://*.youtube.com/*"
       ],
-      "js": ["capture-configs.js", "capture-core.js"],
+      "js": ["yt-save-trigger.js", "capture-configs.js", "capture-core.js"],
       "run_at": "document_idle"
     }
   ],

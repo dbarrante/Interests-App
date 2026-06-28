@@ -215,26 +215,93 @@
     title: function (a) { return a ? ("Pinterest · " + a) : "Pinterest pin"; },
   };
 
-  // YouTube: no native Save-mirror (its "Save" = playlist). Used by the right-click
-  // "Save to Interests" path (captureCtxPost) — find the video tile under the cursor,
-  // its /watch permalink + title; the image is the deterministic i.ytimg thumbnail
-  // (derived in background.js from the permalink), more reliable than a scraped tile.
+  /* ============================ YouTube ============================ */
+  // The add-to-playlist dialog is a DETACHED popup with no link back to the video,
+  // so remember which tile's ⋮ menu opened the save flow (mirrors fbLastPost). On a
+  // watch page the video is resolvable from the URL, so no tracking is needed there.
+  let _ytPending = null, _ytPendingAt = 0;
+  const YT_TILE_SEL = "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-playlist-video-renderer, ytd-rich-grid-media";
+  function ytTileFrom(el) {
+    let node = (el && el.closest) ? el.closest(YT_TILE_SEL) : null;
+    if (node) return node;
+    node = el;
+    while (node && node !== document.body) {
+      if (node.querySelector && node.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]')) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function ytWatchVideo() {
+    if (/[?&]v=/.test(location.href) || /\/shorts\//.test(location.href)) return document.querySelector("ytd-watch-flexy, #primary") || document.body;
+    return null;
+  }
+  function ytInPlaylistDialog(el) {
+    return !!(el && el.closest && el.closest('ytd-add-to-playlist-renderer, ytd-playlist-add-to-option-renderer'));
+  }
+  function ytPlaylistRow(el) { return (el && el.closest) ? el.closest('ytd-playlist-add-to-option-renderer') : null; }
+  function ytLabelOf(el) {
+    const b = (el && el.closest) ? el.closest('[aria-label], [title], ytd-menu-service-item-renderer, tp-yt-paper-item, a, button') : null;
+    return (((b && b.getAttribute && (b.getAttribute("aria-label") || b.getAttribute("title"))) || (b && b.innerText) || (el && el.innerText) || "")).toLowerCase();
+  }
+  // Read a playlist row's current checked state. A freshly-listed row with no
+  // explicit state defaults to UN-checked (so a click on it is "about to add").
+  function ytRowChecked(row) {
+    const cb = row.querySelector('tp-yt-paper-checkbox, [role="checkbox"], #checkbox') || row;
+    const ac = (cb.getAttribute && cb.getAttribute("aria-checked")) || (row.getAttribute && row.getAttribute("aria-checked"));
+    if (ac === "true") return true;
+    if (ac === "false") return false;
+    if (cb.hasAttribute && (cb.hasAttribute("checked") || cb.hasAttribute("active"))) return true;
+    return false;
+  }
   const youtube = {
     id: "youtube",
     match: function (h) { return /(^|\.)youtube\.com$/.test(h); },
     image: "photo", imageCdn: /ytimg/, preCaptureDelayMs: 0,
-    saveTrigger: function () { return null; },
+    // Remember which tile a save flow started from: clicking a tile's ⋮ "Action
+    // menu" in the feed/grid/search/sidebar. Capture-phase so we see it first.
+    init: function (U) {
+      document.addEventListener("click", function (e) {
+        try {
+          const menu = e.target.closest && e.target.closest("ytd-menu-renderer");
+          const lab = ytLabelOf(e.target);
+          if (!menu && !/action menu|more actions/.test(lab)) return;
+          const tile = ytTileFrom(menu || e.target);
+          if (tile) { _ytPending = tile; _ytPendingAt = Date.now(); }
+        } catch (err) { /* never break the page */ }
+      }, true);
+    },
+    saveTrigger: function (e, U) {
+      try {
+        const t = e.target;
+        const inDialog = ytInPlaylistDialog(t);
+        const row = ytPlaylistRow(t);
+        const lab = ytLabelOf(t);
+        const isWatchLater = /save to watch later|add to watch later/.test(lab) && !/remove/.test(lab);
+        const isOpener = (/^\s*save\s*$/.test(lab) || /save to playlist|add to playlist/.test(lab)) && !inDialog;
+        const decide = (typeof window !== "undefined") && window.ytShouldFireAdd;
+        if (!decide) return null;   // helper not loaded -> fail safe (capture nothing)
+        const fire = decide({
+          inPlaylistDialog: inDialog && !!row,
+          ariaChecked: (inDialog && row) ? ytRowChecked(row) : undefined,
+          isWatchLaterMenuItem: isWatchLater,
+          isSavePlaylistOpener: isOpener,
+        });
+        if (!fire) return null;
+        return row || t.closest('ytd-menu-service-item-renderer, tp-yt-paper-item, [role="menuitem"]') || t;
+      } catch (err) { return null; }
+    },
+    // Dialog/Watch-later trigger -> the pending video (or the watch-page video).
+    // A direct tile trigger (right-click captureCtxPost) -> resolve the tile as before.
     findPost: function (trigger, U) {
-      const sel = "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-playlist-video-renderer, ytd-rich-grid-media";
-      let el = (trigger && trigger.closest) ? trigger.closest(sel) : null;
-      if (el) return el;
-      let node = trigger;
-      while (node && node !== document.body) {
-        if (node.querySelector && node.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]')) return node;
-        node = node.parentElement;
-      }
-      if (/[?&]v=/.test(location.href) || /\/shorts\//.test(location.href)) return document.querySelector("ytd-watch-flexy, #primary") || document.body;
-      return null;
+      try {
+        if (ytInPlaylistDialog(trigger) || /save to watch later|add to watch later/.test(ytLabelOf(trigger))) {
+          if (_ytPending && _ytPending.isConnected !== false && (Date.now() - _ytPendingAt) < 60000) return _ytPending;
+          return ytWatchVideo();
+        }
+      } catch (err) {}
+      const tile = ytTileFrom(trigger);
+      if (tile) return tile;
+      return ytWatchVideo();
     },
     isSpecificUrl: function (href) { return /[?&]v=/.test(href || "") || /\/shorts\//.test(href || ""); },
     findPermalink: function (post, U) {
