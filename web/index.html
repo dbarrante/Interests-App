@@ -301,6 +301,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
+<script src="import-instagram.js"></script>
 </head>
 <body>
 <header>
@@ -396,7 +397,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Import your saves (Facebook · Pinterest · YouTube)</h3>
+        <h3>Import your saves (Facebook · Instagram · Pinterest · YouTube)</h3>
         <div class="hint" style="margin-bottom:10px">Drop the platform's export file here — the ZIP works as-is. Imported titles become taste signals the AI learns from (they don't clutter your Saved tab). YouTube playlist exports contain only video IDs; titles are fetched automatically.</div>
         <div style="margin-bottom:10px">How to export:
           <button class="catpill" onclick="showGuide('facebook')">Facebook</button>
@@ -1708,6 +1709,8 @@ function parseImportText(text, name){
       const p=JSON.parse(t);
       const fb=parseFacebookJSON(p);
       if(fb.length) return {items: fb.map(i=>Object.assign(clean(i),{src:"facebook"})), ids:[]};
+      const ig=(typeof parseInstagramSaved==="function") ? parseInstagramSaved(p) : [];
+      if(ig.length) return {items: ig.map(i=>Object.assign(clean(i),{src:"instagram"})), ids:[]};
       harvest(p, out);
     }catch(e){}
   } else if(/<html|<!doctype|<a[ >]/i.test(t)){
@@ -2089,6 +2092,7 @@ function cleanDesc(d){
 }
 function srcHint(name){
   name=(name||"").toLowerCase();
+  if(/instagram|saved_posts/.test(name)) return "instagram";
   if(/youtube|takeout|watch-history|subscription|liked/.test(name)) return "youtube";
   if(/pinterest|\bpins?\b|board/.test(name)) return "pinterest";
   if(/facebook|saved_items|saves|fb/.test(name)) return "facebook";
