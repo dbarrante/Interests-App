@@ -216,5 +216,41 @@ t("fp: set/get/all/del", () => {
   d.close();
 });
 
+t("replaceCards persists an id-less card instead of throwing/rolling back the whole import", () => {
+  const d = db.openDb(tmpStore());
+  // A real import sends a mix: existing id-bearing cards + new id-less ones (clean() has no id).
+  // Before the fix this threw on the id-less card and rolled back ALL of replaceCards.
+  db.replaceCards(d, [
+    { id: "card_keep", title: "has id", url: "https://a.example.com" },
+    { title: "no id bookmark", url: "https://b.example.com" },
+    { title: "no id instagram", url: "https://www.instagram.com/p/Z/" },
+  ]);
+  const cards = db.allCards(d);
+  assert.strictEqual(cards.length, 3, "all three cards persisted");
+  assert.ok(cards.every(c => c.id && c.id.length > 0), "every persisted card has a non-empty id");
+  assert.ok(cards.some(c => c.id === "card_keep"), "an explicit id is preserved");
+  d.close();
+});
+
+t("an id-less card gets a STABLE id (re-import is idempotent, not duplicated)", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ title: "no id", url: "https://stable.example.com/p/1" }]);
+  const id1 = db.allCards(d)[0].id;
+  db.replaceCards(d, [{ title: "no id", url: "https://stable.example.com/p/1" }]);
+  const after = db.allCards(d);
+  assert.strictEqual(after.length, 1, "no duplicate on re-import");
+  assert.strictEqual(after[0].id, id1, "same id-less card maps to the same stable id");
+  d.close();
+});
+
+t("replaceSaved also tolerates an id-less saved item", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceSaved(d, [{ url: "https://s.example.com", title: "no id saved" }]);
+  const saved = db.allSaved(d);
+  assert.strictEqual(saved.length, 1);
+  assert.ok(saved[0].id && saved[0].id.length > 0, "saved item got a non-empty id");
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

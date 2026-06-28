@@ -3,7 +3,21 @@
 // is nothing to compile, install, or rebuild for the DB. Verified under Node v25
 // and Electron 42 (Node 24).
 const path = require("path");
+const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
+
+// A row's id is a TEXT PRIMARY KEY and is bound positionally, so a missing id
+// (undefined) makes the bind THROW and rolls back the whole replaceCards/replaceSaved
+// transaction — silently losing an entire import. Derive a STABLE fallback id from
+// the row's identity so one id-less item can never wipe a write. Stable so the same
+// item re-sent maps to the same row (idempotent) instead of duplicating.
+function stableId(prefix, parts) {
+  const basis = parts.map(p => (p == null ? "" : String(p))).join("");
+  return prefix + crypto.createHash("sha1").update(basis).digest("hex").slice(0, 16);
+}
+function ensureId(id, prefix, parts) {
+  return (id != null && id !== "") ? id : stableId(prefix, parts);
+}
 
 // Each migration is an idempotent SQL string run in order. Bump by appending.
 const MIGRATIONS = [
@@ -96,7 +110,7 @@ function cardToRow(card) {
     if (CARD_COLS.indexOf(k) === -1) data[k] = card[k];
   }
   return {
-    id: card.id,
+    id: ensureId(card.id, "c_", [card.url, card.title, card.ts]),
     url: card.url != null ? card.url : null,
     platform: card.platform != null ? card.platform : null,
     cat: card.cat != null ? card.cat : null,
@@ -222,7 +236,7 @@ function savedToRow(item) {
   // persists clip images as files, so this is the last-resort net, not the norm.)
   if (!img_file && !img_url && image.indexOf("data:") === 0) data.image = image;
   return {
-    id: item.id,
+    id: ensureId(item.id, "s_", [item.url, item.title, item.ts]),
     url: item.url != null ? item.url : null,
     category: item.category != null ? item.category : null,
     clipped: item.clipped != null ? item.clipped : null,

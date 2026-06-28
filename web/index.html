@@ -1847,6 +1847,9 @@ function ingestImported(found){
       const sd=normTs(i.sdate); if(sd && ex.sdate!==sd){ ex.sdate=sd; changed=true; }
       if(changed) updated++;
     } else {
+      if(!i.id) i.id=newId();   // every card needs a stable id — the DB id is a PRIMARY KEY;
+                                // an id-less card makes the Core's replaceCards throw and roll
+                                // back the WHOLE import (it persisted nothing until this).
       imported.push(i); added++;
       byTitle.set(k, imported.length-1);
       if(i.url) byUrl.set(i.url, imported.length-1);
