@@ -25,7 +25,12 @@
     storeLocation: function () { return "/api/store-location"; },
     storeMove: function () { return "/api/store-location/move"; },
     health: function () { return "/api/health"; },
-    import: function () { return "/api/import"; }
+    import: function () { return "/api/import"; },
+    syncStatus: function () { return "/api/sync-status"; },
+    syncEnable: function () { return "/api/sync/enable"; },
+    syncFolder: function () { return "/api/sync/folder"; },
+    syncDeviceLabel: function () { return "/api/sync/device-label"; },
+    syncNow: function () { return "/api/sync/now"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -104,7 +109,14 @@
       storeLocation: function () { return jget(SE.storeLocation()); },
       moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
       health: function () { return jget(SE.health()); },
-      runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); }
+      runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); },
+
+      // --- sync ---
+      syncStatus: function () { return jget(SE.syncStatus()); },
+      setSyncEnabled: function (b) { return jsend("POST", SE.syncEnable(), { enabled: !!b }); },
+      setSyncFolder: function (p) { return jsend("POST", SE.syncFolder(), { folder: p }); },
+      setDeviceLabel: function (s) { return jsend("POST", SE.syncDeviceLabel(), { label: s }); },
+      syncNow: function () { return jsend("POST", SE.syncNow()); }
     };
 
     root.Store = Store;

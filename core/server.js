@@ -11,6 +11,8 @@ const { importLegacyBackup } = require("./importer");
 const backup = require("./backup.js");
 const { counts } = require("./db.js");
 const { imageCount } = require("./images.js");
+const config = require("./config");
+const sync = require("./sync");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -85,17 +87,20 @@ function createServer(ctx) {
     res.json({ cards: dbm.allCards(db) });
   });
   app.put("/api/cards", (req, res) => {
+    ctx.syncDirty = true;
     const cards = (req.body && req.body.cards) || [];
     dbm.replaceCards(db, cards);
     res.json({ ok: true, count: cards.length });
   });
   app.patch("/api/cards/:id", (req, res) => {
+    ctx.syncDirty = true;
     const card = (req.body && req.body.card) || {};
     card.id = req.params.id;
     dbm.upsertCard(db, card);
     res.json({ ok: true });
   });
   app.delete("/api/cards/:id", (req, res) => {
+    ctx.syncDirty = true;
     dbm.deleteCard(db, req.params.id);
     res.json({ ok: true });
   });
@@ -105,17 +110,20 @@ function createServer(ctx) {
     res.json({ saved: dbm.allSaved(db) });
   });
   app.put("/api/saved", (req, res) => {
+    ctx.syncDirty = true;
     const saved = (req.body && req.body.saved) || [];
     dbm.replaceSaved(db, saved);
     res.json({ ok: true, count: saved.length });
   });
   app.patch("/api/saved/:id", (req, res) => {
+    ctx.syncDirty = true;
     const item = (req.body && req.body.item) || {};
     item.id = req.params.id;
     dbm.upsertSaved(db, item);
     res.json({ ok: true });
   });
   app.delete("/api/saved/:id", (req, res) => {
+    ctx.syncDirty = true;
     dbm.deleteSaved(db, req.params.id);
     res.json({ ok: true });
   });
@@ -132,6 +140,7 @@ function createServer(ctx) {
     res.type("image/jpeg").send(buf);
   });
   app.put("/api/img/:id", (req, res) => {
+    ctx.syncDirty = true;
     try {
       const file = images.putImg(storeDir, req.params.id, String(req.body && req.body.data || ""));
       res.json({ ok: true, file });
@@ -141,6 +150,7 @@ function createServer(ctx) {
     }
   });
   app.delete("/api/img/:id", (req, res) => {
+    ctx.syncDirty = true;
     try {
       images.delImg(storeDir, req.params.id);
       res.json({ ok: true });
@@ -174,6 +184,7 @@ function createServer(ctx) {
   }
 
   app.post("/api/captures", (req, res) => {
+    ctx.syncDirty = true;
     const capture = req.body && req.body.capture;
     if (!capture || typeof capture !== "object") {
       return res.status(400).json({ ok: false, error: "missing capture" });
@@ -319,6 +330,56 @@ function createServer(ctx) {
       console.error("store move failed:", e);
       res.status(500).json({ ok: false, path: ctx.storeDir, error: "move failed" });
     }
+  });
+
+  // ---- Dropbox sync ----
+  app.get("/api/sync-status", (req, res) => {
+    const sc = config.getSyncConfig();
+    let defaultDir = null, dropboxFound = false;
+    try { defaultDir = sync.defaultSyncDir(); dropboxFound = !!defaultDir; } catch (e) {}
+    const syncDir = sc.dir || defaultDir;
+    let peers = [];
+    try { if (syncDir) peers = sync.readPeerSnapshots(syncDir, sc.deviceId).map(function (p) { return { deviceLabel: p.deviceLabel, deviceId: p.deviceId, publishedAt: p.publishedAt }; }); } catch (e) {}
+    let changedAt = 0; try { changedAt = +(dbm.getKV(ctx.db, "ia_sync_changed_at") || 0); } catch (e) {}
+    res.json({
+      enabled: sc.enabled, folder: syncDir, dropboxFound: dropboxFound,
+      deviceId: sc.deviceId, deviceLabel: sc.deviceLabel,
+      peers: peers, changedAt: changedAt,
+    });
+  });
+
+  app.post("/api/sync/enable", (req, res) => {
+    config.setSyncConfig({ enabled: !!(req.body && req.body.enabled) });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/sync/folder", (req, res) => {
+    let folder = req.body && req.body.folder;
+    if (!folder || typeof folder !== "string" || !path.isAbsolute(folder)) {
+      return res.status(400).json({ ok: false, error: "absolute folder required" });
+    }
+    folder = path.resolve(folder);
+    config.setSyncConfig({ dir: folder });
+    res.json({ ok: true, folder: folder });
+  });
+
+  app.post("/api/sync/device-label", (req, res) => {
+    const label = req.body && req.body.label;
+    if (!label || typeof label !== "string") return res.status(400).json({ ok: false, error: "label required" });
+    config.setSyncConfig({ deviceLabel: label.slice(0, 60) });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/sync/now", (req, res) => {
+    const sc = config.getSyncConfig();
+    let defaultDir = null; try { defaultDir = sync.defaultSyncDir(); } catch (e) {}
+    const syncDir = sc.dir || defaultDir;
+    if (!sc.enabled || !syncDir) return res.status(400).json({ ok: false, error: "sync not enabled / no Dropbox" });
+    try {
+      const r = sync.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
+      if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+      res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
+    } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
   });
 
   // Serve the existing web app.
