@@ -119,5 +119,18 @@ test("defaultSyncDir() resolves without throwing (returns string or null)", () =
   assert.ok(d === null || typeof d === "string", "defaultSyncDir returns string|null, never throws");
 });
 
+test("readSnapshot rejects a snapshot whose meta counts mismatch snapshot.json (torn write)", () => {
+  const store = tmpStore(); const d = dbm.openDb(store);
+  dbm.upsertCard(d, { id: "c_1", url: "https://a.com" });
+  const syncDir = tmp();
+  sync.publishSnapshot({ db: d, storeDir: store }, syncDir, "dev_A", "Desktop");
+  const folder = path.join(syncDir, "dev_A");
+  const meta = JSON.parse(fs.readFileSync(path.join(folder, "meta.json"), "utf8"));
+  meta.counts.cards = 999;   // tamper: claim more cards than snapshot.json actually has
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify(meta));
+  assert.strictEqual(sync.readSnapshot(folder), null, "a count mismatch must be rejected");
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

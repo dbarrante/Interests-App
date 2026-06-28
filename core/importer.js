@@ -43,12 +43,14 @@ function importLegacyBackup(srcDir, ctx) {
   // not be a file ref — so persist each data: clip image to a FILE and re-point it to
   // idb:<id> BEFORE writing the rows, exactly as card images are file-backed. Without
   // this, the migration silently dropped Pinterest/Instagram clip thumbnails.
+  let savedImageFailures = 0;
   for (const item of mapped.saved) {
     if (item && typeof item.image === "string" && item.image.indexOf("data:") === 0) {
       try { images.putImg(ctx.storeDir, item.id, item.image); item.image = "idb:" + item.id; }
-      catch (e) { /* leave inline; the db layer preserves it in data as a fallback */ }
+      catch (e) { savedImageFailures++; /* leave inline; the db net preserves it in data as a fallback */ }
     }
   }
+  if (savedImageFailures) console.error("importLegacyBackup: " + savedImageFailures + " saved-clip image(s) failed to write to disk (kept inline as a fallback)");
 
   // Rows first (transactions inside replaceCards/replaceSaved).
   db.replaceCards(ctx.db, mapped.cards);

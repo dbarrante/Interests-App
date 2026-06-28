@@ -26,9 +26,9 @@ test("re-upsert with identical content keeps updatedAt", () => {
 
 test("upsert with changed content bumps updatedAt", () => {
   const dir = tmpStore(); const d = db.openDb(dir);
-  db.upsertCard(d, { id: "c_1", url: "https://a.com", cat: "x" });
+  db.upsertCardSynced(d, { id: "c_1", url: "https://a.com", cat: "x" }, 1000);   // seed a known-old updatedAt (avoids same-ms flake vs Date.now())
   const first = db.allCards(d)[0].updatedAt;
-  db.upsertCard(d, { id: "c_1", url: "https://a.com", cat: "DIFFERENT" });
+  db.upsertCard(d, { id: "c_1", url: "https://a.com", cat: "DIFFERENT" });        // changed content -> stamps now
   const second = db.allCards(d)[0].updatedAt;
   assert.ok(second > first, "changed content must bump updatedAt");
   d.close();
@@ -129,7 +129,9 @@ test("addTombstone preserves epoch-ms deletedAt without 32-bit truncation", () =
 // A3: replaceCards/replaceSaved — content-diff stamping + tombstone diff
 test("replaceCards bumps updatedAt only for changed rows", () => {
   const dir = tmpStore(); const d = db.openDb(dir);
-  db.replaceCards(d, [{ id: "c_1", url: "https://a.com", cat: "x" }, { id: "c_2", url: "https://b.com" }]);
+  // Seed both rows with a known-old updatedAt so the bump vs Date.now() is deterministic (no same-ms flake).
+  db.upsertCardSynced(d, { id: "c_1", url: "https://a.com", cat: "x" }, 1000);
+  db.upsertCardSynced(d, { id: "c_2", url: "https://b.com" }, 1000);
   const u1 = db.allCards(d).find(c => c.id === "c_1").updatedAt;
   // Re-persist the full array with c_1 unchanged, c_2 edited:
   db.replaceCards(d, [{ id: "c_1", url: "https://a.com", cat: "x" }, { id: "c_2", url: "https://b-EDITED.com" }]);
@@ -151,7 +153,9 @@ test("replaceCards writes a tombstone for a removed card and clears it on re-add
 
 test("replaceSaved bumps updatedAt only for changed rows", () => {
   const dir = tmpStore(); const d = db.openDb(dir);
-  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com", category: "x" }, { id: "s_2", url: "https://b.com" }]);
+  // Seed both rows with a known-old updatedAt so the bump vs Date.now() is deterministic (no same-ms flake).
+  db.upsertSavedSynced(d, { id: "s_1", url: "https://a.com", category: "x" }, 1000);
+  db.upsertSavedSynced(d, { id: "s_2", url: "https://b.com" }, 1000);
   const u1 = db.allSaved(d).find(s => s.id === "s_1").updatedAt;
   // Re-persist the full array with s_1 unchanged, s_2 edited:
   db.replaceSaved(d, [{ id: "s_1", url: "https://a.com", category: "x" }, { id: "s_2", url: "https://b-EDITED.com" }]);
@@ -176,10 +180,12 @@ test("serializeLibrary returns cards, saved, fp, tombstones", () => {
   const dir = tmpStore(); const d = db.openDb(dir);
   db.upsertCard(d, { id: "c_1", url: "https://a.com" });
   db.upsertSaved(d, { id: "s_1", url: "https://s.com" });
+  db.upsertSaved(d, { id: "s_2", url: "https://s2.com" });
   db.setFp(d, "c_1", "fp123");
   db.deleteSaved(d, "s_1");
   const lib = db.serializeLibrary(d);
   assert.ok(Array.isArray(lib.cards) && lib.cards[0].updatedAt > 0);
+  assert.ok(Array.isArray(lib.saved) && lib.saved.some(s => s.id === "s_2") && !lib.saved.some(s => s.id === "s_1"), "saved excludes the deleted s_1, includes s_2");
   assert.ok(lib.fp.c_1 === "fp123");
   assert.ok(lib.tombstones.some(t => t.id === "s_1" && t.kind === "saved"));
   d.close();
