@@ -50,5 +50,43 @@ test("returns [] for null / garbage / non-bookmarks object (no throw)", () => {
   [null, undefined, {}, [], 5, "x", { foo: 1 }].forEach(v => assert.deepStrictEqual(bm.parseChromeBookmarks(v), []));
 });
 
+// ---- A2: fs profile discovery + validated read ----
+const os = require("os"), fs = require("fs"), path = require("path");
+function seedProfile(base, profileDir, bookmarksObj, displayName) {
+  const dir = path.join(base, profileDir);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "Bookmarks"), JSON.stringify(bookmarksObj));
+  if (displayName) {
+    const ls = { profile: { info_cache: {} } };
+    ls.profile.info_cache[profileDir] = { name: displayName };
+    fs.writeFileSync(path.join(base, "Local State"), JSON.stringify(ls));
+  }
+}
+
+test("listBrowserProfiles finds a seeded profile with count + display name", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ia-chrome-"));
+  seedProfile(base, "Default", TREE([ urlNode("a", "https://a.example.com", TS_2023) ]), "Dave (work)");
+  const list = bm.listBrowserProfiles({ chrome: base, edge: path.join(base, "nope") });
+  const me = list.find(p => p.browser === "chrome" && p.profile === "Default");
+  assert.ok(me, "Default profile discovered");
+  assert.strictEqual(me.name, "Dave (work)");
+  assert.strictEqual(me.count, 1);
+});
+test("readProfileBookmarks returns parsed items for a valid discovered profile", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ia-chrome-"));
+  seedProfile(base, "Default", TREE([ urlNode("a", "https://a.example.com", TS_2023) ]));
+  const r = bm.readProfileBookmarks("chrome", "Default", { chrome: base, edge: path.join(base, "nope") });
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].url, "https://a.example.com");
+});
+test("readProfileBookmarks REJECTS a traversal/invalid profile and reads nothing", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ia-chrome-"));
+  seedProfile(base, "Default", TREE([]));
+  for (const bad of ["../evil", "a/b", "a\\b", "..", ""]) {
+    assert.throws(() => bm.readProfileBookmarks("chrome", bad, { chrome: base, edge: base }), /BAD_PROFILE/, "rejects " + JSON.stringify(bad));
+  }
+  assert.throws(() => bm.readProfileBookmarks("firefox", "Default", { chrome: base, edge: base }), /BAD_PROFILE/);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

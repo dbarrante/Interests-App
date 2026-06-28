@@ -42,4 +42,50 @@ function parseChromeBookmarks(json) {
   }
   return out;
 }
-module.exports = { parseChromeBookmarks: parseChromeBookmarks };
+const fs = require("fs");
+const path = require("path");
+
+function defaultBases() {
+  const la = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || "", "AppData", "Local");
+  return { chrome: path.join(la, "Google", "Chrome", "User Data"), edge: path.join(la, "Microsoft", "Edge", "User Data") };
+}
+function readJsonSafe(p) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return null; } }
+const PROFILE_RE = /^[A-Za-z0-9 ._-]+$/;
+
+function listBrowserProfiles(basesOverride) {
+  const bases = basesOverride || defaultBases();
+  const out = [];
+  ["chrome", "edge"].forEach(function (browser) {
+    const base = bases[browser];
+    if (!base) return;
+    let entries = [];
+    try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch (e) { return; }  // missing base -> skip
+    const ls = readJsonSafe(path.join(base, "Local State"));
+    const nameCache = (ls && ls.profile && ls.profile.info_cache) || {};
+    entries.forEach(function (ent) {
+      if (!ent.isDirectory()) return;
+      const profile = ent.name;
+      const bookmarksPath = path.join(base, profile, "Bookmarks");
+      let count = 0;
+      try {
+        if (!fs.statSync(bookmarksPath).isFile()) return;
+        count = parseChromeBookmarks(readJsonSafe(bookmarksPath)).length;
+      } catch (e) { return; }  // no Bookmarks file in this dir
+      const name = (nameCache[profile] && nameCache[profile].name) || profile;
+      out.push({ browser: browser, profile: profile, name: name, count: count });
+    });
+  });
+  return out;
+}
+function badProfile(msg) { const e = new Error(msg || "BAD_PROFILE"); e.code = "BAD_PROFILE"; return e; }
+function readProfileBookmarks(browser, profile, basesOverride) {
+  if (browser !== "chrome" && browser !== "edge") throw badProfile("BAD_PROFILE: browser");
+  if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw badProfile("BAD_PROFILE: profile");
+  const ok = listBrowserProfiles(basesOverride).some(function (p) { return p.browser === browser && p.profile === profile; });
+  if (!ok) throw badProfile("BAD_PROFILE: unknown");
+  const bases = basesOverride || defaultBases();
+  const bookmarksPath = path.join(bases[browser], profile, "Bookmarks");
+  return parseChromeBookmarks(readJsonSafe(bookmarksPath));
+}
+
+module.exports = { parseChromeBookmarks: parseChromeBookmarks, listBrowserProfiles: listBrowserProfiles, readProfileBookmarks: readProfileBookmarks };
