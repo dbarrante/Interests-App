@@ -9,10 +9,32 @@ const { listImageIds, imagesDir, imageCount } = require("./images.js");
 const { counts, openDb } = require("./db.js");
 const { setStorePath } = require("./config.js");
 
-// <userprofile>/Dropbox/Interests App/backups, overridable via config.backupDir.
+// Find the user's real Dropbox root from Dropbox's own info.json, which records
+// the actual location (it may be on any drive, e.g. D:\Dropbox — not necessarily
+// under the user profile). Returns null if not found.
+function detectDropboxRoot() {
+  const files = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Dropbox", "info.json"),
+    process.env.APPDATA && path.join(process.env.APPDATA, "Dropbox", "info.json"),
+  ].filter(Boolean);
+  for (const f of files) {
+    try {
+      const info = JSON.parse(fs.readFileSync(f, "utf8"));
+      const p = (info.personal && info.personal.path) || (info.business && info.business.path);
+      if (p && fs.existsSync(p)) return p;
+    } catch (_) { /* not present / unreadable — try next */ }
+  }
+  return null;
+}
+
+// <dropbox>/Interests App/backups. Resolution order: explicit config.backupDir,
+// then the real Dropbox root detected from info.json, then a <userprofile>\Dropbox
+// fallback. (The fallback alone was wrong for Dropbox installs on another drive.)
 function dropboxBackupDir() {
   const cfg = loadConfig() || {};
   if (cfg.backupDir) return cfg.backupDir;
+  const dbx = detectDropboxRoot();
+  if (dbx) return path.join(dbx, "Interests App", "backups");
   const home = process.env.USERPROFILE || process.env.HOME || ".";
   return path.join(home, "Dropbox", "Interests App", "backups");
 }
