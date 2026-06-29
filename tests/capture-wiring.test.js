@@ -75,5 +75,15 @@ t("fail modal renders live Success/REMOVED/Recapturing status, refreshed by drai
   assert.ok(fbody.indexOf("data-card=") >= 0 && fbody.indexOf('class="fst"') >= 0, "row has data-card + status slot");
 });
 
+t("openFailOne clears image backup-first, sets last-opened + recapturing, then opens in browser", () => {
+  const i = html.indexOf("function openFailOne(");
+  const b = html.slice(i, i + 800);
+  assert.ok(b.indexOf("snapshotBeforeDestructive(") >= 0, "backs up before clearing");
+  assert.ok(b.indexOf("Store.imgDel(") >= 0, "clears the existing image");
+  assert.ok(b.indexOf("ia_last_opened") >= 0, "records last-opened for extension Remove fallback");
+  assert.ok(b.indexOf('"recapturing"') >= 0, "marks the card recapturing");
+  assert.ok(b.indexOf("openUrlsInTabs(") >= 0, "still opens the link in the browser");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

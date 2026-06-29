@@ -2402,7 +2402,21 @@ function failSelectGroup(reason){
 function _failCheckedIds(){
   return Array.prototype.map.call(document.querySelectorAll('#failBody input[data-id]:checked'), el=>el.getAttribute("data-id"));
 }
-function openFailOne(id){ const c=_failModalList.find(x=>x&&x.id===id); if(c&&c.url) openUrlsInTabs([c.url]); }   // single-click a title → open in browser
+// Single-click a title: back up, clear this card's (bad) image so the recapture lands clean, mark it the
+// last-opened card (so the extension's Remove targets it even without a URL match), flag it "recapturing",
+// then open the page in the browser. The user then clicks the extension's Clip (recapture) or Remove;
+// drainCaptures ingests the result and refreshFailStatuses flips the row to Success/REMOVED.
+function openFailOne(id){
+  const c=_failModalList.find(x=>x&&x.id===id); if(!c||!c.url) return;
+  if(_failRowStatus(id)==="removed") return;   // already resolved — no-op
+  snapshotBeforeDestructive();
+  const cur=imported.find(x=>x&&x.id===id);
+  if(cur){ const img=(typeof cur.img==="string")?cur.img:""; if(img.indexOf("idb:")===0){ try{ Store.imgDel(cur.id); }catch(e){} } cur.img=""; Store.putCards(imported); }
+  try{ Store.kvSet("ia_last_opened", {id:c.id, ts:Date.now()}); }catch(e){}
+  _failStatus[id]="recapturing";
+  refreshFailRow(id);
+  openUrlsInTabs([c.url]);
+}
 function openFailSelected(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   const urls=_failModalList.filter(c=>c&&ids.has(c.id)).map(c=>c.url).filter(Boolean);
