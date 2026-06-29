@@ -20,6 +20,11 @@ t("startBatchCapture stamps capReason and supports retry-clear + id subset", () 
   assert.ok(body.indexOf("BATCH_CAP") < 0 || body.indexOf("slice(0, BATCH_CAP)") < 0, "loop should be uncapped (no BATCH_CAP slice)");
 });
 
+t("mark-done is durable: sets capDone and captureable excludes it", () => {
+  assert.ok(html.indexOf("c.capDone=true") >= 0, "markFailDone sets capDone");
+  assert.ok(/function captureable\(i\)\{[^}]*!i\.capDone/.test(html), "captureable excludes capDone cards");
+});
+
 t("failed-capture triage modal exists and groups by reason with actions", () => {
   assert.ok(html.indexOf('id="failModal"') >= 0, "fail triage modal present");
   assert.ok(html.indexOf("function openFailReview") >= 0);

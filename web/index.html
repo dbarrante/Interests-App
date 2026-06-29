@@ -2388,6 +2388,7 @@ function renderFailModal(){
     </div>`;
   attachCardImages();
 }
+// reason is a closed internal constant set ("social"/"unreachable"/"no-image"/"image-failed") emitted only by Core — esc() interpolation into onclick/selector is safe without additional quote-escaping.
 function failSelectGroup(reason){
   Array.prototype.forEach.call(document.querySelectorAll('#failBody .dupe-row[data-reason="'+reason+'"] input[data-id]'), el=>{ el.checked=true; });
 }
@@ -2401,7 +2402,7 @@ function retryFailFresh(){
 }
 function markFailDone(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
-  imported.forEach(c=>{ if(c&&ids.has(c.id)){ c.lastResult="ok"; c.lastUpdate=Date.now(); } });
+  imported.forEach(c=>{ if(c&&ids.has(c.id)){ c.lastResult="ok"; c.lastUpdate=Date.now(); c.capDone=true; c.capReason=""; } });
   Store.putCards(imported); updateCounts();
   closeFailReview(); if(curTab==="imported") renderImported();
   toast(`Marked ${ids.size} done`, 4000);
@@ -3189,18 +3190,17 @@ async function enrichOnOpen(it, idx){
   }catch(e){ console.warn("enrichOnOpen failed",e); }
 }
 /* ============ batch "capture missing" ============ */
-const BATCH_CAP = 100;   // per run; re-run for more
 let batchUI = {active:false, done:0, total:0};
 let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress briefly
 // a card worth auto-capturing: has a link, no real image, not blocked, not a
 // Facebook permalink, AND not already attempted (so the batch never re-does a
 // card unless you explicitly retry it)
-function captureable(i){ return i.url && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
+function captureable(i){ return i.url && !i.capDone && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
 function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }   // never tried
 function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }      // tried but still no image (fail/blocked-cleared/lost result)
 // Facebook posts can't be captured by web proxies (login wall) — they're grabbed
 // via the extension on the real, logged-in page. Mirror of needsCapture, FB-only.
-function captureableFb(i){ return i.url && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
+function captureableFb(i){ return i.url && !i.capDone && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
 function needsFbCapture(i){ return captureableFb(i) && !i.lastUpdate && !i.captured; }
 let _capStop = false;
 async function startBatchCapture(mode, onlyIds){
