@@ -33,4 +33,44 @@ function parseLookupResponse(json) {
   return out;
 }
 
-module.exports = { buildLookupBody: buildLookupBody, parseLookupResponse: parseLookupResponse, THREAT_TYPES: THREAT_TYPES, ENDPOINT: ENDPOINT, BATCH: BATCH };
+var UA = "Mozilla/5.0 InterestsApp SafeBrowse";
+
+// Look up urls against Safe Browsing in batches of BATCH. Fail-open: a batch that errors
+// returns its urls with threat:null + error:true (never a false "unsafe" on an API failure).
+async function checkUrls(urls, apiKey, opts) {
+  opts = opts || {};
+  var timeoutMs = Math.min(opts.timeoutMs || 8000, 20000);
+  var list = Array.isArray(urls) ? urls : [];
+
+  async function lookup(slice) {
+    var ac = new AbortController();
+    var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
+    try {
+      var res = await fetch(ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+        method: "POST",
+        signal: ac.signal,
+        headers: { "Content-Type": "application/json", "User-Agent": UA, "Connection": "close" },
+        body: JSON.stringify(buildLookupBody(slice))
+      });
+      if (!res.ok) return { map: {}, failed: true };
+      return { map: parseLookupResponse(await res.json()), failed: false };
+    } catch (e) {
+      return { map: {}, failed: true };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  var results = [];
+  for (var i = 0; i < list.length; i += BATCH) {
+    var slice = list.slice(i, i + BATCH);
+    var r = await lookup(slice);
+    for (var j = 0; j < slice.length; j++) {
+      var u = slice[j];
+      results.push({ url: u, threat: r.map[u] || null, error: r.failed ? true : undefined });
+    }
+  }
+  return results;
+}
+
+module.exports = { buildLookupBody: buildLookupBody, parseLookupResponse: parseLookupResponse, THREAT_TYPES: THREAT_TYPES, ENDPOINT: ENDPOINT, BATCH: BATCH, checkUrls: checkUrls };
