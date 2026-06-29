@@ -47,6 +47,15 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.ok(r.json.results.length <= 500, "got "+r.json.results.length);
   });
 
+  await t("GET /api/safebrowsing-verify: none when no key, active when key + 200", async () => {
+    config.setSafeBrowsingKey("");
+    let r = await req(port, "GET", "/api/safebrowsing-verify");
+    assert.strictEqual(r.json.state, "none");
+    config.setSafeBrowsingKey("KEY");
+    r = await req(port, "GET", "/api/safebrowsing-verify");
+    assert.strictEqual(r.json.state, "active");   // stubbed fetch returns ok:true
+  });
+
   await new Promise(r => core.close(r));
   ctx.db.close();
   global.fetch = realFetch;

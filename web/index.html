@@ -1210,16 +1210,24 @@ function saveSettings(notify){
   save("settings", S);
   if(notify){ toast("Settings saved"); showTab("feed"); }
 }
+const SB_MASK = "••••••••••••••••••••••••";
 async function loadSafetyKeyStatus(){
+  let has = false;
+  try { has = await Store.getSafeBrowsingKey(); } catch(e){ const el0=document.getElementById("sbKeyStatus"); if(el0) el0.textContent=""; return; }
+  const inp = document.getElementById("sbKey");
+  if (inp && has && !inp.value) inp.value = SB_MASK;        // cosmetic: show a key is present
+  const el = document.getElementById("sbKeyStatus");
+  if (el) el.textContent = has ? "— checking…" : "— not set";
+  if (!has) return;
   try {
-    const has = await Store.getSafeBrowsingKey();
-    const el = document.getElementById("sbKeyStatus");
-    if (el) el.textContent = has ? "— a key is set" : "— no key set";
-  } catch(e){ /* Core unavailable; leave blank */ }
+    const state = await Store.verifySafeBrowsing();
+    if (el) el.textContent = state==="active" ? "— ✅ Active" : state==="invalid" ? "— ⚠ Invalid key" : "— a key is set";
+  } catch(e){ if (el) el.textContent = "— a key is set"; }
 }
 async function saveSafeBrowsingKey(){
   const inp = document.getElementById("sbKey");
   const v = inp ? inp.value.trim() : "";
+  if (v === SB_MASK) { toast("Key unchanged"); return; }    // mask untouched = no change
   try { await Store.setSafeBrowsingKey(v); } catch(e){ toast("Couldn't save key", 4000); return; }
   if (inp) inp.value = "";
   toast(v ? "Safe Browsing key saved" : "Safe Browsing key cleared", 4000);

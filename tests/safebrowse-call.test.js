@@ -37,6 +37,15 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(calls, 3, "1100/500 -> 3 batches, got "+calls);
   });
 
+  await t("verifyKey: 200 -> active, 4xx -> invalid, throw -> error", async () => {
+    global.fetch = async () => ({ ok:true, status:200, json: async () => ({}) });
+    assert.deepStrictEqual(await sb.verifyKey("K"), { ok:true, status:"active" });
+    global.fetch = async () => ({ ok:false, status:400, json: async () => ({}) });
+    assert.deepStrictEqual(await sb.verifyKey("K"), { ok:false, status:"invalid" });
+    global.fetch = async () => { throw new Error("net"); };
+    assert.deepStrictEqual(await sb.verifyKey("K"), { ok:false, status:"error" });
+  });
+
   global.fetch = realFetch;
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;

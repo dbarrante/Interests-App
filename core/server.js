@@ -487,6 +487,18 @@ function createServer(ctx) {
     res.json({ ok: true, hasKey: !!key });
   });
 
+  app.get("/api/safebrowsing-verify", async (req, res) => {
+    try {
+      const key = config.getSafeBrowsingKey();
+      if (!key) { res.json({ state: "none" }); return; }
+      const v = await safebrowse.verifyKey(key, {});
+      res.json({ state: v.status });
+    } catch (e) {
+      console.error("safebrowsing-verify failed:", e);
+      res.json({ state: "error" });
+    }
+  });
+
   // Serve the existing web app.
   app.use(express.static(WEB_DIR));
 

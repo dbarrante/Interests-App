@@ -42,5 +42,10 @@ t("Settings links to step-by-step Safe Browsing key instructions", () => {
   assert.ok(html.indexOf("Create credentials") >= 0);
 });
 
+t("Settings shows a live Safe Browsing status + cosmetic key mask", () => {
+  assert.ok(html.indexOf("Store.verifySafeBrowsing") >= 0);
+  assert.ok(html.indexOf("SB_MASK") >= 0, "uses a cosmetic mask constant");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

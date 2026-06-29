@@ -73,4 +73,23 @@ async function checkUrls(urls, apiKey, opts) {
   return results;
 }
 
-module.exports = { buildLookupBody: buildLookupBody, parseLookupResponse: parseLookupResponse, THREAT_TYPES: THREAT_TYPES, ENDPOINT: ENDPOINT, BATCH: BATCH, checkUrls: checkUrls };
+// One benign-URL lookup to check the key is accepted by Google. Distinguishes a working key
+// (200) from a rejected one (4xx) from a transient network failure (throw). Never returns/logs the key.
+async function verifyKey(apiKey, opts) {
+  opts = opts || {};
+  var timeoutMs = Math.min(opts.timeoutMs || 8000, 20000);
+  var ac = new AbortController(); var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
+  try {
+    var res = await fetch(ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+      method: "POST", signal: ac.signal,
+      headers: { "Content-Type": "application/json", "Connection": "close" },
+      body: JSON.stringify(buildLookupBody(["https://example.com/"]))
+    });
+    if (res.ok) return { ok: true, status: "active" };
+    if (res.status >= 400 && res.status < 500) return { ok: false, status: "invalid" };
+    return { ok: false, status: "error" };
+  } catch (e) { return { ok: false, status: "error" }; }
+  finally { clearTimeout(timer); }
+}
+
+module.exports = { buildLookupBody: buildLookupBody, parseLookupResponse: parseLookupResponse, THREAT_TYPES: THREAT_TYPES, ENDPOINT: ENDPOINT, BATCH: BATCH, checkUrls: checkUrls, verifyKey: verifyKey };
