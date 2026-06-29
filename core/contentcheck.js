@@ -86,18 +86,25 @@ var MAX_HOPS = 5;
 async function readCapped(res, maxBytes) {
   if (res && res.body && typeof res.body.getReader === "function") {
     var reader = res.body.getReader();
-    var chunks = [], received = 0;
-    while (received < maxBytes) {
+    var chunks = [], kept = 0;
+    // DRAIN the body to completion, keeping only the first maxBytes. Do NOT cancel():
+    // cancelling a not-fully-consumed undici body leaves its HTTP parser paused, and on
+    // socket end undici throws an async, uncatchable AssertionError (assert(!this.paused))
+    // that crashes the Electron main process. Reading to `done` lets the socket finish
+    // cleanly. Memory stays bounded — we stop accumulating once kept >= maxBytes.
+    while (true) {
       var step = await reader.read();
       if (step.done) break;
-      var chunk = Buffer.from(step.value);
-      chunks.push(chunk);
-      received += chunk.length;
+      if (kept < maxBytes && step.value) {
+        var chunk = Buffer.from(step.value);
+        var room = maxBytes - kept;
+        if (chunk.length > room) chunk = chunk.subarray(0, room);
+        chunks.push(chunk);
+        kept += chunk.length;
+      }
+      // else: past the cap — discard the chunk but keep reading so the socket drains cleanly.
     }
-    try { await reader.cancel(); } catch (e) {}
-    var buf = Buffer.concat(chunks);
-    if (buf.length > maxBytes) buf = buf.subarray(0, maxBytes);
-    return buf.toString("utf8");
+    return Buffer.concat(chunks).toString("utf8");
   }
   if (res && typeof res.text === "function") {
     var full = await res.text();

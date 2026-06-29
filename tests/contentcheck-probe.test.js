@@ -67,6 +67,28 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.ok(r.snippet.length <= 100, "snippet should be capped at 100, got " + r.snippet.length);
   });
 
+  await t("readCapped drains an over-cap body instead of cancelling (undici teardown crash guard)", async () => {
+    const prev = global.fetch;
+    const enc = new TextEncoder();
+    // 5 chunks × 80 bytes = 400 bytes total, well over maxBytes=100. The stream stays OPEN
+    // after the cap is reached (3+ chunks still pending), so the old cancel() path would
+    // fire the source cancel — which is exactly what crashes undici on socket end.
+    const parts = []; for (let k = 0; k < 5; k++) parts.push(enc.encode("X".repeat(80)));
+    let idx = 0, cancelled = false, reads = 0;
+    global.fetch = async (url) => ({
+      status: 200, url: String(url), headers: { get: () => null },
+      body: new ReadableStream({
+        pull(c){ if(idx < parts.length){ reads++; c.enqueue(parts[idx++]); } else c.close(); },
+        cancel(){ cancelled = true; }
+      })
+    });
+    const r = await cc.fetchContent("https://example.test/big2", { maxBytes: 100 });
+    global.fetch = prev;
+    assert.ok(r.snippet.length <= 100, "snippet capped at 100, got " + r.snippet.length);
+    assert.strictEqual(cancelled, false, "must drain the stream, not cancel (cancel pauses undici parser -> crash on socket end)");
+    assert.strictEqual(reads, parts.length, "should read every chunk to completion (drain), got " + reads);
+  });
+
   global.fetch = realFetch;
   require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");

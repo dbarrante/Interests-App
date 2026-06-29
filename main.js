@@ -4,6 +4,18 @@ const config = require("./core/config");
 const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
 const sync = require("./core/sync");
+const undiciGuard = require("./core/undici-guard");
+
+// Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
+// from a cancelled/aborted response body during a link sweep) that would otherwise crash
+// the main process with a scary dialog. Genuine errors still surface via onFatal.
+undiciGuard.installCrashGuard({
+  log: function (m) { try { console.warn(m); } catch (e) {} },
+  onFatal: function (err) {
+    try { dialog.showErrorBox("Interests App — unexpected error", String((err && err.stack) || err) + "\n\nYour data is safe."); } catch (e) {}
+    try { app.quit(); } catch (e) {}
+  }
+});
 
 let mainWindow = null;
 let httpServer = null;
