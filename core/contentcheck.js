@@ -80,6 +80,32 @@ function classifyContent(info) {
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
 var MAX_HOPS = 5;
 
+// Read a response body but stop at maxBytes so a hostile/huge page never fully
+// materializes in memory. Streams via res.body when available; falls back to text()
+// (used by test stubs that don't provide a stream).
+async function readCapped(res, maxBytes) {
+  if (res && res.body && typeof res.body.getReader === "function") {
+    var reader = res.body.getReader();
+    var chunks = [], received = 0;
+    while (received < maxBytes) {
+      var step = await reader.read();
+      if (step.done) break;
+      var chunk = Buffer.from(step.value);
+      chunks.push(chunk);
+      received += chunk.length;
+    }
+    try { await reader.cancel(); } catch (e) {}
+    var buf = Buffer.concat(chunks);
+    if (buf.length > maxBytes) buf = buf.subarray(0, maxBytes);
+    return buf.toString("utf8");
+  }
+  if (res && typeof res.text === "function") {
+    var full = await res.text();
+    return (typeof full === "string" && full.length > maxBytes) ? full.slice(0, maxBytes) : (full || "");
+  }
+  return "";
+}
+
 // GET a page's content with the SSRF guard applied to every hop. Redirects followed
 // manually so each next host is re-validated (a public url that 30x->internal is NOT
 // followed). Body read is capped at maxBytes. Never throws — returns best-effort info.
@@ -87,6 +113,7 @@ async function fetchContent(url, opts) {
   opts = opts || {};
   var timeoutMs = Math.min(opts.timeoutMs || 8000, 20000);
   var maxBytes = opts.maxBytes || 256 * 1024;
+  if (!linkcheck.isProbableHost(url)) return { finalUrl: url, status: 0, title: "", snippet: "" };
 
   async function getOnce(target) {
     var ac = new AbortController();
@@ -95,10 +122,7 @@ async function fetchContent(url, opts) {
       var res = await fetch(target, { method: "GET", redirect: "manual", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
       var loc = (res.headers && typeof res.headers.get === "function") ? res.headers.get("location") : null;
       var body = "";
-      try {
-        var full = await res.text();
-        body = (typeof full === "string" && full.length > maxBytes) ? full.slice(0, maxBytes) : (full || "");
-      } catch (e) { body = ""; }
+      try { body = await readCapped(res, maxBytes); } catch (e) { body = ""; }
       return { status: res.status, location: loc, body: body, finalUrl: (res.url || target) };
     } catch (e) {
       return { status: 0, location: null, body: "", finalUrl: target };

@@ -40,6 +40,30 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(by.priv.verdict, "skipped");
   });
 
+  await t("fetchContent guards the initial url (SSRF) without fetching", async () => {
+    let called = false;
+    const prev = global.fetch;
+    global.fetch = async () => { called = true; return { status: 200, url: "x", headers: { get: () => null }, text: async () => "x" }; };
+    const r = await cc.fetchContent("http://127.0.0.1:9/");
+    global.fetch = prev;
+    assert.strictEqual(called, false, "must not fetch a private host");
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.title, "");
+    assert.strictEqual(r.snippet, "");
+  });
+
+  await t("fetchContent caps a huge streamed body at maxBytes", async () => {
+    const prev = global.fetch;
+    const data = new TextEncoder().encode("Z".repeat(5000));
+    global.fetch = async (url) => ({
+      status: 200, url: String(url), headers: { get: () => null },
+      body: new ReadableStream({ start(c){ c.enqueue(data); c.close(); } })
+    });
+    const r = await cc.fetchContent("https://example.test/big", { maxBytes: 100 });
+    global.fetch = prev;
+    assert.ok(r.snippet.length <= 100, "snippet should be capped at 100, got " + r.snippet.length);
+  });
+
   global.fetch = realFetch;
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;
