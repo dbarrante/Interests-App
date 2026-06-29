@@ -22,17 +22,18 @@ This is renderer-only (`web/index.html`). No data store, no Core endpoint, no de
 
 ---
 
-## A. Single-click a title → open one link
+## A. Single-click a title → open one link in the browser
 
 - In `failRowHTML(c)`, the title element (`.meta .t`) becomes a click target: `cursor:pointer`,
-  subtle hover underline, and `onclick` → `openLink(c.url)`.
-- `openLink(url)` already exists (web/index.html:803) and **honors the `S.reuseWindow` setting**:
-  reuse-window ON → one in-app viewer window (click through candidates one at a time); OFF → a new
-  browser tab. It already guards to http(s) only.
+  subtle hover underline, and `onclick` → opens `c.url` **in the default browser** (a new tab).
+- It **always opens in the browser**, NOT the in-app reused viewer — the reuse-window setting is not
+  involved in this feature at all. Use the same browser path as bulk open (`window.open(url,"_blank")`,
+  which the Electron window-open handler routes to `shell.openExternal` → the system browser), guarded
+  to http(s) only. Reuse the shared helper: `openUrlsInTabs([c.url])`.
 - Clicking the title **only opens** — it must NOT toggle the row's checkbox. The checkbox / "select"
   label remains the separate selection control; the thumbnail is non-interactive.
-- Verification opens are **NOT** logged as interest "clicks" — call `openLink` directly, never
-  `openItem` (which pushes to `clicks`). Checking dead links must not pollute the interest signal.
+- Verification opens are **NOT** logged as interest "clicks" — never call `openItem` (which pushes to
+  `clicks`). Checking dead links must not pollute the interest signal.
 
 ## B. "Open" button → open all selected links (browser tabs)
 
@@ -44,8 +45,9 @@ This is renderer-only (`web/index.html`). No data store, no Core endpoint, no de
   - if none checked → toast "Select some cards first." and return;
   - opens via the shared `openUrlsInTabs(urls)` helper (see C).
 - Bulk open **always uses browser tabs**, never the reuse-window — opening many pages into one reused
-  window is meaningless (last wins). This is a deliberate, confirmed exception to the single-click
-  behavior and mirrors the existing main-grid `openSelected()`.
+  window is meaningless (last wins). Mirrors the existing main-grid `openSelected()`. (Single-click
+  also opens in the browser, so the whole feature is browser-only — the reuse-window setting is never
+  consulted here.)
 
 ## C. Shared open-in-tabs helper (DRY)
 
@@ -66,7 +68,8 @@ This is renderer-only (`web/index.html`). No data store, no Core endpoint, no de
 ## Components
 
 - `web/index.html`:
-  - `failRowHTML` — title becomes an `openLink(c.url)` click target (checkbox unaffected).
+  - `failRowHTML` — title becomes a click target that opens `c.url` in the browser via
+    `openUrlsInTabs([c.url])` (checkbox unaffected; reuse-window not consulted).
   - `renderFailModal` — add the "Open" button to the pinned action bar (first).
   - NEW `openFailSelected()`.
   - NEW `openUrlsInTabs(urls)` extracted from `openSelected()`; `openSelected()` refactored to use it.
@@ -80,11 +83,11 @@ This is renderer-only (`web/index.html`). No data store, no Core endpoint, no de
 
 ## Testing (text-assert wiring + gate)
 
-- `failRowHTML`/`renderFailModal` reference `openLink(` on the title and an "Open" action calling
-  `openFailSelected`.
+- `failRowHTML` title is a click target that opens via `openUrlsInTabs([` (browser), and
+  `renderFailModal` renders an "Open" action calling `openFailSelected`.
 - `openUrlsInTabs` exists and is called by BOTH `openSelected` and `openFailSelected`.
-- `openFailSelected` reads `_failCheckedIds()` and opens via `openUrlsInTabs` (browser tabs), and does
-  NOT route through the reuse-window path.
+- `openFailSelected` reads `_failCheckedIds()` and opens via `openUrlsInTabs` (browser tabs).
+- Neither the title click nor `openFailSelected` routes through the reuse-window / `openInApp` path.
 - `tests/syntax-check.js` + full `node tests/run.js` green.
 
 ## Data-safety & security
