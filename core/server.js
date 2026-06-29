@@ -15,6 +15,7 @@ const config = require("./config");
 const sync = require("./sync");
 const bookmarks = require("./bookmarks");
 const linkcheck = require("./linkcheck");
+const contentcheck = require("./contentcheck");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -415,6 +416,21 @@ function createServer(ctx) {
       res.json({ results: results });
     } catch (e) {
       console.error("check-links failed:", e);
+      res.status(500).json({ error: "check failed" });
+    }
+  });
+
+  // ---- content-aware "soft-dead" check (fetches the real page, runs free heuristics;
+  // social/SSRF skipped; never deletes — renderer's AI tier confirms, then user reviews) ----
+  app.post("/api/check-content", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
+      const timeoutMs = Math.max(1000, Math.min(Number(body.timeoutMs) || 8000, 20000));
+      const results = await contentcheck.checkContentChunk(items, { concurrency: 8, timeoutMs: timeoutMs });
+      res.json({ results: results });
+    } catch (e) {
+      console.error("check-content failed:", e);
       res.status(500).json({ error: "check failed" });
     }
   });
