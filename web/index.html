@@ -2813,31 +2813,30 @@ function captureSelected(){
   toast("Capturing "+items.length+" selected card"+(items.length===1?"":"s")+"… restricted Facebook posts open briefly in a tab to render; others fetch instantly. Stay logged into Facebook."+(uniq.length>100?" (100 max per run)":""), 8000);
   renderImportedKeepFocus();
 }
-function openSelected(){
-  const picks=[...selPicks].map(i=>imported[i]).filter(it=>it && it.url);
-  if(!picks.length){ toast("Select some cards with a link first"); return; }
-  // one tab per distinct link — don't open the same article five times
-  const seen=new Set(), urls=[];
-  for(const it of picks){ const k=normalizeUrl(it.url); if(seen.has(k)) continue; seen.add(k); urls.push(it.url); }
-  // only ever hand http(s) to window.open — never javascript:/data:/etc. from a
-  // restored backup or parsed import (mirrors the og-image guard used on import)
-  const httpUrls = urls.filter(u=>/^https?:\/\//i.test(u));
-  const unsafe = urls.length - httpUrls.length;
-  // skip links already opened this Select session, so a retry after allowing
-  // pop-ups opens ONLY the rest (no duplicate tabs); reset on Select on/off
-  const toOpen = httpUrls.filter(u=>!_openedSel.has(normalizeUrl(u)));
+// Open each distinct http(s) URL in its own browser tab (deduped). Non-web links (javascript:/data:/
+// etc. from an old import or restored backup) are skipped — mirrors the import og-image guard. Opens
+// synchronously inside the user's click so the pop-up blocker treats them as ONE gesture (opening on a
+// timer/await gets every tab after the first blocked). opts.skip: optional Set of normalizeUrl keys to
+// skip and to add newly opened keys to (per-session dedup for the main grid). Returns tabs opened.
+function openUrlsInTabs(urls, opts){
+  opts = opts || {};
+  const skip = opts.skip || null;
+  const seen=new Set(), distinct=[];
+  for(const u of (urls||[])){ if(!u) continue; const k=normalizeUrl(u); if(seen.has(k)) continue; seen.add(k); distinct.push(u); }
+  const httpUrls = distinct.filter(u=>/^https?:\/\//i.test(u));
+  const unsafe = distinct.length - httpUrls.length;
   const note = unsafe ? " ("+unsafe+" non-web link"+(unsafe===1?"":"s")+" skipped)" : "";
+  const toOpen = skip ? httpUrls.filter(u=>!skip.has(normalizeUrl(u))) : httpUrls;
   if(!toOpen.length){
     if(unsafe && !httpUrls.length) toast("Those links can't be opened in a tab (not http/https).");
-    else toast("Already opened the selected link"+(httpUrls.length===1?"":"s")+" this session — click Done, then Select again to reopen."+note, 7000);
-    return;
+    else if(skip && httpUrls.length) toast("Already opened the selected link"+(httpUrls.length===1?"":"s")+" this session — click Done, then Select again to reopen."+note, 7000);
+    else toast("Nothing to open."+note);
+    return 0;
   }
   // opening a lot of tabs at once can choke the browser / trip the pop-up blocker — confirm past a sane number
-  if(toOpen.length>25 && !confirm("Open all "+toOpen.length+" links in new tabs?\n\nYour browser may block the pop-ups or slow down. If they don't all appear, allow pop-ups for this site and try again.")) return;
-  // open synchronously inside this click so the browser treats them as ONE user
-  // gesture — opening on a timer/await gets every tab after the first blocked.
+  if(toOpen.length>25 && !confirm("Open all "+toOpen.length+" links in new tabs?\n\nYour browser may block the pop-ups or slow down. If they don't all appear, allow pop-ups for this site and try again.")) return 0;
   let opened=0, blocked=0;
-  for(const u of toOpen){ let w=null; try{ w=window.open(u,"_blank"); }catch(e){} if(w){ try{ w.opener=null; }catch(e){} _openedSel.add(normalizeUrl(u)); opened++; } else blocked++; }
+  for(const u of toOpen){ let w=null; try{ w=window.open(u,"_blank"); }catch(e){} if(w){ try{ w.opener=null; }catch(e){} if(skip) skip.add(normalizeUrl(u)); opened++; } else blocked++; }
   if(blocked && !opened){
     toast("Your browser blocked the pop-ups. Click the blocked-pop-up icon in the address bar, allow pop-ups for this site, then click Open again."+note, 9000);
   } else if(blocked){
@@ -2845,6 +2844,12 @@ function openSelected(){
   } else {
     toast("Opened "+opened+" tab"+(opened===1?"":"s")+"."+note);
   }
+  return opened;
+}
+function openSelected(){
+  const picks=[...selPicks].map(i=>imported[i]).filter(it=>it && it.url);
+  if(!picks.length){ toast("Select some cards with a link first"); return; }
+  openUrlsInTabs(picks.map(it=>it.url), {skip:_openedSel});
 }
 function fmtCardDate(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }catch(e){ return ""; } }
 function impCardHTML(it,idx){

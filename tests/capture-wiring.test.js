@@ -32,5 +32,18 @@ t("failed-capture triage modal exists and groups by reason with actions", () => 
   assert.ok(html.indexOf("function retryFailFresh") >= 0 && html.indexOf("function removeFailSelected") >= 0 && html.indexOf("function markFailDone") >= 0);
 });
 
+t("openUrlsInTabs is the shared open-in-tabs helper, used by openSelected", () => {
+  assert.ok(html.indexOf("function openUrlsInTabs(") >= 0, "openUrlsInTabs defined");
+  const oi = html.indexOf("function openUrlsInTabs(");
+  const obody = html.slice(oi, oi + 1600);
+  assert.ok(obody.indexOf("https?:") >= 0, "keeps http(s)-only guard");
+  assert.ok(obody.indexOf(">25") >= 0 && obody.indexOf("confirm(") >= 0, "keeps the 25-tab confirm");
+  assert.ok(obody.indexOf("window.open(") >= 0, "opens via window.open (browser tab)");
+  const si = html.indexOf("function openSelected(");
+  const sbody = html.slice(si, si + 600);
+  assert.ok(sbody.indexOf("openUrlsInTabs(") >= 0, "openSelected delegates to openUrlsInTabs");
+  assert.ok(sbody.indexOf("_openedSel") >= 0, "openSelected still passes its session skip-set");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
