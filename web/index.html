@@ -185,7 +185,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #dupeModal.open,#deadModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 .dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
-.dupe-list{overflow:auto;padding:8px 16px}
+.dupe-list{overflow-y:auto;padding:8px 16px;flex:1 1 auto;min-height:0}
 .dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
 .dupe-group{border:1px solid var(--line);border-radius:11px;padding:10px;margin:12px 0}
 .dupe-row{display:flex;align-items:center;gap:12px;padding:6px 4px}
@@ -3727,13 +3727,13 @@ function deadRowHTML(c){
 function renderDeadModal(){
   document.getElementById("deadBody").innerHTML = `
     <div class="dupe-head"><span>&#128279; Dead links — ${_deadList.length} found</span>
-      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeDeadReview()">&#10005;</button></div>
+      <span style="flex:1"></span>
+      <button class="btn btn-ghost" onclick="closeDeadReview()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>
     <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Only definitively-dead links (404 / gone domain) are listed. Uncheck any you want to keep.</div>
+      <div class="s" style="opacity:.7;padding:2px 4px 8px">Only definitively-dead links (404 / gone domain) are listed. Uncheck any you want to keep, then click Remove selected.</div>
       ${_deadList.map(deadRowHTML).join("") || "<div class='s'>No dead links.</div>"}
-    </div>
-    <div class="dupe-foot"><button class="btn btn-ghost" onclick="closeDeadReview()">Cancel</button>
-      <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>`;
+    </div>`;
   attachCardImages();
 }
 function openDeadReview(list){ _deadList = list || []; if(!_deadList.length){ toast("No dead links found", 4000); return; } renderDeadModal(); document.getElementById("deadModal").classList.add("open"); }
