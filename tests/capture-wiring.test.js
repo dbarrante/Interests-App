@@ -107,5 +107,12 @@ t("grid recapture arms the heal target: impRefresh always, impOpen only when doC
   assert.ok(ob.replace(/\s/g, "").indexOf("if(doCapture)_recapTarget") >= 0, "impOpen arms only when doCapture");
 });
 
+t("enrichOnOpen enriches via the Core (no CORS proxy): uses Store.captureMeta, no allorigins", () => {
+  const ei = html.indexOf("async function enrichOnOpen(");
+  const eb = html.slice(ei, ei + 2200);
+  assert.ok(eb.indexOf("Store.captureMeta(") >= 0, "enrichOnOpen calls the Core capture-meta");
+  assert.ok(eb.indexOf("allorigins.win") < 0, "no api.allorigins.win proxy fetch remains");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

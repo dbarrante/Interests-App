@@ -3206,18 +3206,20 @@ async function enrichOnOpen(it, idx){
     let changed=false;
     const isFb = /facebook\.com|fb\.watch/.test(it.url);
     if(!isFb){
-      const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(), 10000);
-      const r=await fetch("https://api.allorigins.win/get?url="+encodeURIComponent(it.url), {signal:ctl.signal});
-      clearTimeout(tm);
-      if(r.ok){
-        const d=await r.json();
-        if(d.contents && typeof d.contents==="string"){
-          const og=ogParse(d.contents.slice(0,60000));
-          if(og.title && og.title.length>10 && genericTitle(it.title)){ it.title=og.title.slice(0,250); changed=true; }
-          if(og.desc && og.desc.length>15 && (!it.desc || it.desc.startsWith("Saved from") || it.desc.startsWith("From your"))){ it.desc=og.desc.slice(0,220); changed=true; }
-          if(og.img && /^https?:/.test(og.img) && !it.img){ it.img=og.img; changed=true; }
+      // Enrich via the app's own Core (same-origin, SSRF-guarded) instead of a renderer->3rd-party
+      // proxy fetch. The old allorigins proxy call was CORS-blocked from http://127.0.0.1 and only
+      // spammed the console. The Core fetches og server-side, stores any image as images/<id>.jpg,
+      // and returns {title, description, hasImage}. Social hosts (IG/FB) are skipped server-side, so
+      // for those this makes NO outbound request and returns hasImage:false.
+      try{
+        const res = await Store.captureMeta([{id:it.id, url:it.url}]);
+        const m = res && res[0];
+        if(m){
+          if(m.title && m.title.length>10 && genericTitle(it.title)){ it.title=m.title.slice(0,250); changed=true; }
+          if(m.description && m.description.length>15 && (!it.desc || it.desc.startsWith("Saved from") || it.desc.startsWith("From your"))){ it.desc=m.description.slice(0,220); changed=true; }
+          if(m.hasImage && isBadImg(it.img)){ setCardImage(it, "idb:"+it.id); changed=true; }
         }
-      }
+      }catch(e){}
     }
     if(!it.img && it.url && !isFb){
       try{
