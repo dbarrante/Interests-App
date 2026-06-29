@@ -22,13 +22,18 @@
   }
   // largest CDN image inside a root (skips tiny avatars/icons). Used as the
   // image fallback when a region crop fails.
+  // A platform's image-CDN allow-list (e.g. /cdninstagram/) also matches STATIC UI
+  // assets: Instagram's logo sprite lives at static.cdninstagram.com/rsrc.php/*.png and
+  // was being captured as the "post photo". Reject those — real media is on
+  // scontent*/fbcdn*/i.pinimg and never carries these markers. Mirrors the FB metaPhoto guard.
+  function isUiAssetUrl(u) { return /static\.|rsrc\.php|\/images\//i.test(u || ""); }
   function largestImg(root, cdnRe) {
     const re = cdnRe || DEFAULT_CDN;
     let best = "", bestArea = 0;
     try {
       Array.prototype.forEach.call((root || document).querySelectorAll("img"), function (im) {
         const s = im.currentSrc || im.src || "";
-        if (!re.test(s)) return;
+        if (!re.test(s) || isUiAssetUrl(s)) return;
         // ONLY a fully DECODED image — never the display-sized but still-loading
         // placeholder/spinner (the old `im.width` fallback let that through, which
         // is exactly what auto-capture grabbed). Manual works because by click

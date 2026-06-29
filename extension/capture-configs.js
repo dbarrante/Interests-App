@@ -140,7 +140,7 @@
     const svg = btn && btn.querySelector("svg[aria-label]");
     return svg ? svg.getAttribute("aria-label") : "";
   }
-  function igIsSpecific(h) { return /instagram\.com\/(p|reel|tv)\/[\w.-]+/.test(h || ""); }
+  function igIsSpecific(h) { return /instagram\.com\/(p|reel|reels|tv)\/[\w.-]+/.test(h || ""); }
   const instagram = {
     id: "instagram",
     match: function (h) { return /instagram\.com/.test(h); },
