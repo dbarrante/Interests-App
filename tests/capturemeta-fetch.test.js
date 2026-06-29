@@ -49,6 +49,27 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(called, false, "must not fetch social/SSRF hosts");
   });
 
+  await t("captureMetaChunk: reason = social / unreachable / no-image / image-failed", async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.png/.test(u)) return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "text/html" : null }, arrayBuffer: async () => new Uint8Array([9]).buffer }; // image fetch returns non-image -> image-failed
+      if (/\/noimg/.test(u)) return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () => "<title>No image here</title>" };
+      if (/\/withimg/.test(u)) return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () => '<meta property="og:image" content="https://img.test/x.png">' };
+      return { ok:false, status:0, url:u, headers:{ get:()=>null }, text: async () => "" }; // unreachable
+    };
+    const out = await cm.captureMetaChunk([
+      { id:"soc", url:"https://www.instagram.com/p/x/" },
+      { id:"dead", url:"https://example.test/dead" },
+      { id:"noimg", url:"https://example.test/noimg" },
+      { id:"imgfail", url:"https://example.test/withimg" }
+    ]);
+    const by = {}; out.forEach(x=>by[x.id]=x);
+    assert.strictEqual(by.soc.reason, "social");
+    assert.strictEqual(by.dead.reason, "unreachable");
+    assert.strictEqual(by.noimg.reason, "no-image");
+    assert.strictEqual(by.imgfail.reason, "image-failed");
+  });
+
   global.fetch = realFetch;
   require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");

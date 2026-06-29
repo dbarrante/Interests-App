@@ -105,7 +105,8 @@ async function captureMetaChunk(items, opts) {
       try {
         var url = it.url;
         if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
-          results[idx] = { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "" }; continue;
+          var skipReason = (typeof url === "string" && linkcheck.isSkippedHost(url)) ? "social" : "unreachable";
+          results[idx] = { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "", reason: skipReason }; continue;
         }
         var page = await _fetchHtml(url, opts);
         var og = extractOg(page.html);
@@ -114,9 +115,15 @@ async function captureMetaChunk(items, opts) {
           var abs; try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
           if (abs) imageDataUrl = await _fetchImageDataUrl(abs, opts);
         }
-        results[idx] = { id: it.id, imageDataUrl: imageDataUrl, title: og.title, description: og.description };
+        var reason = "";
+        if (!imageDataUrl) {
+          if (!page.html) reason = "unreachable";
+          else if (og.image) reason = "image-failed";
+          else reason = "no-image";
+        }
+        results[idx] = { id: it.id, imageDataUrl: imageDataUrl, title: og.title, description: og.description, reason: reason };
       } catch (e) {
-        results[idx] = { id: it.id, imageDataUrl: "", title: "", description: "" };
+        results[idx] = { id: it.id, imageDataUrl: "", title: "", description: "", reason: "unreachable" };
       }
     }
   }

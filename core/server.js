@@ -450,7 +450,7 @@ function createServer(ctx) {
           try { images.putImg(storeDir, r.id, r.imageDataUrl); hasImage = true; }
           catch (e) { console.error("capture-meta putImg failed:", e && e.message); }
         }
-        return { id: r && r.id, hasImage: hasImage, title: (r && r.title) || "", description: (r && r.description) || "" };
+        return { id: r && r.id, hasImage: hasImage, title: (r && r.title) || "", description: (r && r.description) || "", reason: hasImage ? "" : ((r && r.reason) || "unreachable") };
       });
       res.json({ results: results });
     } catch (e) {

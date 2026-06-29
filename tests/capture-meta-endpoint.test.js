@@ -35,6 +35,13 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.ok(r.json.results.length <= 100, "got "+r.json.results.length);
   });
 
+  await t("endpoint returns reason when no image", async () => {
+    global.fetch = async (url) => ({ ok:true, status:200, url:String(url), headers:{ get:()=>null }, text: async () => "<title>none</title>" });
+    const r = await req(port, "POST", "/api/capture-meta", { items:[{ id:"n1", url:"https://example.test/none" }] });
+    assert.strictEqual(r.json.results[0].hasImage, false);
+    assert.strictEqual(r.json.results[0].reason, "no-image");
+  });
+
   await new Promise(r => core.close(r));
   ctx.db.close();
   global.fetch = realFetch;
