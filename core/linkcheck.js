@@ -68,7 +68,9 @@ async function probeUrl(url, opts) {
     var ac = new AbortController();
     var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
     try {
-      var res = await fetch(url, { method: method, redirect: "follow", signal: ac.signal, headers: { "User-Agent": UA } });
+      // Connection: close — don't pool sockets across the thousands of distinct hosts a
+      // sweep touches (also sidesteps a Windows undici keep-alive teardown crash on exit).
+      var res = await fetch(url, { method: method, redirect: "follow", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
       return { status: res.status, code: null };
     } catch (e) {
       // Node's fetch wraps the real DNS/connection error under e.cause; a timeout shows

@@ -58,5 +58,8 @@ function listen(handler){ return new Promise(r=>{ const s=http.createServer(hand
   });
   await new Promise(r => s.close(r));
   console.log(passed + " passed, " + failed + " failed");
-  process.exit(failed ? 1 : 0);
+  // Let the event loop drain rather than process.exit() — forcing exit while an undici
+  // socket handle is still closing trips a Windows libuv assertion. Connection:close +
+  // a drained loop exits promptly and cleanly. Set the code for the gate.
+  process.exitCode = failed ? 1 : 0;
 })();
