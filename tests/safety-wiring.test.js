@@ -22,5 +22,10 @@ t("has the Check link safety button", () => {
   assert.ok(html.indexOf("Check link safety") >= 0);
 });
 
+t("shared runSafetyPass helper exists and checkLinkSafety uses it", () => {
+  assert.ok(html.indexOf("function runSafetyPass") >= 0);
+  assert.ok(html.indexOf("runSafetyPass(") >= 0);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

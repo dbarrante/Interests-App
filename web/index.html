@@ -3787,6 +3787,26 @@ function _sbFresh(it){ return !!(it && it.sb && it.sb.at && (Date.now()-it.sb.at
 function _threatLabel(t){
   return ({ MALWARE:"Malware", SOCIAL_ENGINEERING:"Phishing / social engineering", UNWANTED_SOFTWARE:"Unwanted software", POTENTIALLY_HARMFUL_APPLICATION:"Harmful app" })[t] || ("Flagged: " + (t || "unsafe"));
 }
+// Shared safety pass (Google Safe Browsing) used by BOTH the standalone safety button and the
+// combined dead-link sweep. Stamps each card's additive `sb` marker and returns the flagged
+// entries {scope, card, unsafe:true, threat}. Honors a caller-supplied stop check.
+async function runSafetyPass(cands, opts){
+  opts = opts || {};
+  const isStopped = opts.isStopped || function(){ return false; };
+  const onStop = opts.onStop || function(){};
+  const unsafe = []; let done = 0;
+  for(let i=0; i<cands.length && !isStopped(); i+=200){
+    const chunk = cands.slice(i, i+200);
+    toast(`Checking link safety… ${done}/${cands.length} — tap to stop`, 60000, onStop);
+    let results = [];
+    try{ results = await Store.checkSafety(chunk.map(c=>({ id:c.card.id, url:c.card.url }))); }
+    catch(e){ console.warn("check-safety chunk failed", e); continue; }
+    const byId = {}; results.forEach(r=>byId[r.id]=r);
+    chunk.forEach(c=>{ const r=byId[c.card.id]; if(!r) return; const threat=r.threat||null; c.card.sb={ at:Date.now(), verdict: threat?"unsafe":"safe", threat:threat }; if(threat) unsafe.push(Object.assign({}, c, {unsafe:true, threat:threat})); });
+    done += chunk.length;
+  }
+  return unsafe;
+}
 async function checkLinkSafety(){
   let hasKey = false;
   try { hasKey = await Store.getSafeBrowsingKey(); } catch(e){ hasKey = false; }
@@ -3796,20 +3816,10 @@ async function checkLinkSafety(){
   saved.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_sbFresh(it)) cand.push({scope:"saved", card:it}); });
   if(!cand.length){ toast("No links to check (all recently checked)", 4000); return; }
   _sbStop = false;
-  const unsafe = []; let done = 0;
-  for(let i=0; i<cand.length && !_sbStop; i+=200){
-    const chunk = cand.slice(i, i+200);
-    toast(`Checking link safety… ${done}/${cand.length} — tap to stop`, 60000, ()=>{ _sbStop = true; });
-    let results = [];
-    try{ results = await Store.checkSafety(chunk.map(c=>({ id:c.card.id, url:c.card.url }))); }
-    catch(e){ console.warn("check-safety chunk failed", e); continue; }
-    const byId = {}; results.forEach(r=>byId[r.id]=r);
-    chunk.forEach(c=>{ const r=byId[c.card.id]; if(!r) return; const threat=r.threat||null; c.card.sb={ at:Date.now(), verdict: threat?"unsafe":"safe", threat:threat }; if(threat) unsafe.push(Object.assign({}, c, {threat})); });
-    done += chunk.length;
-  }
+  const unsafe = await runSafetyPass(cand, { isStopped: function(){ return _sbStop; }, onStop: function(){ _sbStop = true; } });
   Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
   if(unsafe.length) openSafetyReview(unsafe);
-  else toast(_sbStop ? "Stopped — none flagged so far" : (done ? "No unsafe links found." : "Nothing to check"), 5000);
+  else toast(_sbStop ? "Stopped — none flagged so far" : "No unsafe links found.", 5000);
 }
 function safetyRowHTML(c){
   const it=c.card; const dom=domain(it.url)||""; const tag=c.scope==="saved"?"Saved":"Imported";
