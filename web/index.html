@@ -181,8 +181,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
 #modal.open{display:flex}
-#dupeModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
-#dupeModal.open{display:flex}
+#dupeModal,#deadModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+#dupeModal.open,#deadModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 .dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
 .dupe-list{overflow:auto;padding:8px 16px}
@@ -506,6 +506,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   </div>
 </div>
 <div id="dupeModal"><div class="dupe-box"><div id="dupeBody"></div></div></div>
+<div id="deadModal"><div class="dupe-box"><div id="deadBody"></div></div></div>
 
 <script>
 "use strict";
@@ -2055,6 +2056,7 @@ function renderImported(){
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
       <button class="btn btn-ghost" onclick="openDupeReview(scanDuplicates())" title="Scan Imported + Saved for duplicate links and near-identical titles, then review before removing">&#128270; Scan duplicates</button>
+      <button class="btn btn-ghost" onclick="checkDeadLinks()" title="Check Imported + Saved links for dead pages (404 / gone domain) and review before removing">&#128279; Check dead links</button>
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -3614,6 +3616,77 @@ async function applyDupeRemoval(){
   closeDupeReview();
   if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
+}
+
+// ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
+// backup-first bulk-replace path; only definitively-dead links are ever offered) ----
+const LC_FRESH_DAYS = 14;            // re-runs skip links confirmed alive within this window
+let _deadStop = false, _deadList = [];
+function _lcFresh(it){ return !!(it && it.lc && it.lc.st==="alive" && it.lc.at && (Date.now()-it.lc.at) < LC_FRESH_DAYS*864e5); }
+async function checkDeadLinks(){
+  const cand = [];
+  imported.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_lcFresh(it)) cand.push({scope:"imported", card:it}); });
+  saved.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_lcFresh(it)) cand.push({scope:"saved", card:it}); });
+  if(!cand.length){ toast("No links to check (all recently verified)", 4000); return; }
+  _deadStop = false;
+  const dead = []; let done = 0;
+  for(let i=0; i<cand.length && !_deadStop; i+=100){
+    const chunk = cand.slice(i, i+100);
+    toast(`Checking links… ${done}/${cand.length} — tap to stop`, 60000, ()=>{ _deadStop = true; });
+    let results = [];
+    try{ results = await Store.checkLinks(chunk.map(c=>({ id:c.card.id, url:c.card.url }))); }
+    catch(e){ console.warn("check-links chunk failed", e); continue; }
+    const byId = {}; results.forEach(r=>byId[r.id]=r);
+    chunk.forEach(c=>{ const r=byId[c.card.id]; if(!r) return; c.card.lc = { at: Date.now(), st: r.status, code: r.code }; if(r.status==="dead") dead.push(c); });
+    done += chunk.length;
+  }
+  // Persist the lc markers (so re-runs resume) via the normal bulk-replace path.
+  Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
+  if(dead.length) openDeadReview(dead);
+  else toast(_deadStop ? "Stopped — none dead so far" : (done ? "No dead links found." : "Nothing to check"), 5000);
+}
+function _deadReason(code){
+  if(code===404) return "404 not found"; if(code===410) return "410 gone"; if(code===451) return "451 unavailable";
+  if(code==="ENOTFOUND"||code==="ERR_NAME_NOT_RESOLVED") return "domain gone"; if(code==="ECONNREFUSED") return "connection refused";
+  return code ? String(code) : "dead";
+}
+function deadRowHTML(c){
+  const it=c.card; const dom=domain(it.url)||""; const tag=c.scope==="saved"?"Saved":"Imported";
+  return `<div class="dupe-row">
+    ${dupeThumb(c)}
+    <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
+      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · <span style="color:#e0556b">${esc(_deadReason(it.lc&&it.lc.code))}</span></div></div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(c.scope+":"+it.id)}" checked style="width:auto"> remove</label>
+  </div>`;
+}
+function renderDeadModal(){
+  document.getElementById("deadBody").innerHTML = `
+    <div class="dupe-head"><span>&#128279; Dead links — ${_deadList.length} found</span>
+      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeDeadReview()">&#10005;</button></div>
+    <div class="dupe-list">
+      <div class="s" style="opacity:.7;padding:2px 4px 8px">Only definitively-dead links (404 / gone domain) are listed. Uncheck any you want to keep.</div>
+      ${_deadList.map(deadRowHTML).join("") || "<div class='s'>No dead links.</div>"}
+    </div>
+    <div class="dupe-foot"><button class="btn btn-ghost" onclick="closeDeadReview()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>`;
+  attachCardImages();
+}
+function openDeadReview(list){ _deadList = list || []; if(!_deadList.length){ toast("No dead links found", 4000); return; } renderDeadModal(); document.getElementById("deadModal").classList.add("open"); }
+function closeDeadReview(){ document.getElementById("deadModal").classList.remove("open"); _deadList = []; }
+function applyDeadRemoval(){
+  const checked = new Set(Array.prototype.map.call(document.querySelectorAll('#deadBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
+  if(!checked.size){ closeDeadReview(); toast("Nothing selected"); return; }
+  snapshotBeforeDestructive();
+  const rmImported = new Set(), rmSaved = new Set();
+  checked.forEach(v=>{ const i=v.indexOf(":"); const scope=v.slice(0,i), id=v.slice(i+1); (scope==="saved"?rmSaved:rmImported).add(id); });
+  const gone = imported.filter(c=>c&&rmImported.has(c.id)).concat(saved.filter(c=>c&&rmSaved.has(c.id)));
+  gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
+  if(rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
+  if(rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
+  Store.putCards(imported); Store.putSaved(saved); writeSavesFile(); updateCounts();
+  closeDeadReview();
+  if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+  toast(`Removed ${checked.size} dead link${checked.size===1?"":"s"}`, 5000);
 }
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 async function drainCaptures(){
