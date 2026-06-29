@@ -12,5 +12,15 @@ t("saves the key via Store", () => {
   assert.ok(html.indexOf("Store.getSafeBrowsingKey") >= 0);
 });
 
+t("loads the safety helper entry points", () => {
+  assert.ok(html.indexOf("function checkLinkSafety") >= 0);
+  assert.ok(html.indexOf("Store.checkSafety") >= 0);
+  assert.ok(html.indexOf('id="safetyModal"') >= 0);
+});
+t("has the Check link safety button", () => {
+  assert.ok(html.indexOf("checkLinkSafety()") >= 0);
+  assert.ok(html.indexOf("Check link safety") >= 0);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
