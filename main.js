@@ -166,6 +166,8 @@ ipcMain.handle("ia:open-external", async (_evt, url) => {
 // context-isolated + sandboxed; child-window opens go to the real browser; only http(s).
 let linkWin = null;
 ipcMain.handle("ia:open-in-app", (_evt, url) => {
+  // Only the main app UI may drive this — never a frame inside the viewer itself.
+  if (mainWindow && _evt.senderFrame !== mainWindow.webContents.mainFrame) return false;
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return false;
   if (linkWin && !linkWin.isDestroyed()) {
     linkWin.loadURL(url);
@@ -193,6 +195,9 @@ ipcMain.handle("ia:open-in-app", (_evt, url) => {
     if (/^https?:/i.test(u)) shell.openExternal(u);
     return { action: "deny" };
   });
+  // Keep the viewer http(s)-only: block a page/redirect that tries to load file:// etc.
+  linkWin.webContents.on("will-navigate", (e, u) => { if (!/^https?:\/\//i.test(u)) e.preventDefault(); });
+  linkWin.webContents.on("will-redirect", (e, u) => { if (!/^https?:\/\//i.test(u)) e.preventDefault(); });
   linkWin.on("closed", () => { linkWin = null; });
   linkWin.loadURL(url);
   return true;
