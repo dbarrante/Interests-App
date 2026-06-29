@@ -102,18 +102,22 @@ async function captureMetaChunk(items, opts) {
     while (true) {
       var idx = next++; if (idx >= arr.length) return;
       var it = arr[idx] || {};
-      var url = it.url;
-      if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
-        results[idx] = { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "" }; continue;
+      try {
+        var url = it.url;
+        if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
+          results[idx] = { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "" }; continue;
+        }
+        var page = await _fetchHtml(url, opts);
+        var og = extractOg(page.html);
+        var imageDataUrl = "";
+        if (og.image) {
+          var abs; try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
+          if (abs) imageDataUrl = await _fetchImageDataUrl(abs, opts);
+        }
+        results[idx] = { id: it.id, imageDataUrl: imageDataUrl, title: og.title, description: og.description };
+      } catch (e) {
+        results[idx] = { id: it.id, imageDataUrl: "", title: "", description: "" };
       }
-      var page = await _fetchHtml(url, opts);
-      var og = extractOg(page.html);
-      var imageDataUrl = "";
-      if (og.image) {
-        var abs; try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
-        if (abs) imageDataUrl = await _fetchImageDataUrl(abs, opts);
-      }
-      results[idx] = { id: it.id, imageDataUrl: imageDataUrl, title: og.title, description: og.description };
     }
   }
   var pool = []; for (var w = 0; w < Math.min(concurrency, arr.length); w++) pool.push(worker());
