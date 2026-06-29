@@ -40,6 +40,19 @@ t("classifyContent: homepage->homepage is NOT redirect-home (no deep path)", () 
   const r = cc.classifyContent({ originalUrl:"https://x.com/", finalUrl:"https://x.com/", status:200, title:"Home", text:"Welcome to the homepage with plenty of normal looking content here." });
   assert.strictEqual(r.signals.indexOf("redirect-home"), -1);
 });
+t("classifyContent: cross-domain redirect does NOT fire redirect-home", () => {
+  const r = cc.classifyContent({originalUrl:"https://shop.com/item/1", finalUrl:"https://other.com/", status:200, title:"Other Home", text:"a totally different site homepage with lots of normal content here today"});
+  assert.strictEqual(r.signals.indexOf("redirect-home"), -1);
+});
+t("classifyContent: curly-apostrophe dead phrase is matched", () => {
+  const r = cc.classifyContent({originalUrl:"https://x.com/p", finalUrl:"https://x.com/p", status:200, title:"This isn't available", text:"some other text that is long enough to not be empty at all here"});
+  assert.strictEqual(r.verdict, "suspect");
+  assert.ok(r.signals.some(s => s.indexOf("phrase:") === 0));
+});
+t("DEAD_PHRASES is exported and non-empty", () => {
+  assert.ok(Array.isArray(cc.DEAD_PHRASES));
+  assert.ok(cc.DEAD_PHRASES.length > 0);
+});
 
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

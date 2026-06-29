@@ -25,7 +25,7 @@ var DEAD_PHRASES = [
   "page not found", "page can't be found", "page can't be found",
   "404 not found", "error 404", "not found",
   "no longer available", "no longer exists", "isn't available", "isn't available",
-  "is not available", "content unavailable", "this content isn't available",
+  "is not available", "content unavailable", "this content isn't available", "this content isn't available",
   "doesn't exist", "doesn't exist", "does not exist",
   "has been removed", "been deleted", "this listing has ended",
   "item is no longer", "product is no longer", "sorry, this page",
@@ -34,6 +34,10 @@ var DEAD_PHRASES = [
 
 function pathOf(url) {
   try { return new URL(url).pathname || "/"; } catch (e) { return ""; }
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname || ""; } catch (e) { return ""; }
 }
 
 function classifyContent(info) {
@@ -47,10 +51,11 @@ function classifyContent(info) {
     if (hay.indexOf(DEAD_PHRASES[i]) >= 0) { signals.push("phrase:" + DEAD_PHRASES[i]); break; }
   }
 
-  // Redirected from a real (deep) path to the site homepage.
+  // Redirected from a real (deep) path to the site homepage (same site only).
   if (info.finalUrl) {
     var op = pathOf(info.originalUrl), fp = pathOf(info.finalUrl);
-    if (op && op.replace(/\/+$/, "").length > 0 && (fp === "/" || fp === "")) signals.push("redirect-home");
+    var oh = hostOf(info.originalUrl), fh = hostOf(info.finalUrl);
+    if (oh && oh === fh && op && op.replace(/\/+$/, "").length > 0 && (fp === "/" || fp === "")) signals.push("redirect-home");
   }
 
   // Almost no readable text.
