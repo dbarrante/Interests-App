@@ -181,8 +181,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
 #modal.open{display:flex}
-#dupeModal,#deadModal,#safetyModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
-#dupeModal.open,#deadModal.open,#safetyModal.open{display:flex}
+#dupeModal,#deadModal,#safetyModal,#failModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+#dupeModal.open,#deadModal.open,#safetyModal.open,#failModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 .dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
 .dupe-list{overflow-y:auto;padding:8px 16px;flex:1 1 auto;min-height:0}
@@ -535,6 +535,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <div id="dupeModal"><div class="dupe-box"><div id="dupeBody"></div></div></div>
 <div id="deadModal"><div class="dupe-box"><div id="deadBody"></div></div></div>
 <div id="safetyModal"><div class="dupe-box"><div id="safetyBody"></div></div></div>
+<div id="failModal"><div class="dupe-box"><div id="failBody"></div></div></div>
 
 <script>
 "use strict";
@@ -2338,7 +2339,79 @@ function toggleTagMenu(){ const m=document.getElementById("tagMenu"); const open
 function closeTagMenu(){ const m=document.getElementById("tagMenu"); if(m) m.classList.remove("open"); }
 function toggleRetryMenu(){ const m=document.getElementById("retryMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
 function closeRetryMenu(){ const m=document.getElementById("retryMenu"); if(m) m.classList.remove("open"); }
-function viewFailures(){ impFailed=true; renderImportedKeepFocus(); }
+function viewFailures(){ openFailReview(); }
+function _failLabel(reason){
+  return ({ social:"Login-walled — open & Save from your browser", unreachable:"Couldn't reach — may be dead", "no-image":"No preview image on the page", "image-failed":"Preview image wouldn't download" })[reason] || "Couldn't capture";
+}
+let _failModalList = [];
+function openFailReview(){
+  _failModalList = imported.filter(needsRetry);
+  if(!_failModalList.length){ toast("No failed captures"); return; }
+  renderFailModal();
+  document.getElementById("failModal").classList.add("open");
+}
+function closeFailReview(){ document.getElementById("failModal").classList.remove("open"); _failModalList=[]; }
+function failRowHTML(c){
+  const dom=domain(c.url)||""; const reason=c.capReason||"unreachable";
+  return `<div class="dupe-row" data-reason="${esc(reason)}">
+    ${dupeThumb({scope:"imported", card:c})}
+    <div class="meta"><div class="t">${esc(c.title||dom||"(untitled)")}</div>
+      <div class="s">${esc(dom)} · <span style="color:#e0556b">${esc(_failLabel(reason))}</span></div></div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-id="${esc(c.id)}" style="width:auto"> select</label>
+  </div>`;
+}
+function renderFailModal(){
+  const order=["unreachable","image-failed","no-image","social"];
+  const groups={}; _failModalList.forEach(c=>{ const r=c.capReason||"unreachable"; (groups[r]=groups[r]||[]).push(c); });
+  let body="";
+  order.concat(Object.keys(groups).filter(r=>order.indexOf(r)<0)).forEach(r=>{
+    const g=groups[r]; if(!g||!g.length) return;
+    body += `<div class="s" style="opacity:.8;margin:10px 4px 4px;font-weight:600">${esc(_failLabel(r))} (${g.length}) · <a href="#" onclick="failSelectGroup('${esc(r)}');return false">select these</a></div>`;
+    body += g.map(failRowHTML).join("");
+  });
+  document.getElementById("failBody").innerHTML = `
+    <div class="dupe-head"><span>&#128260; Failed captures — ${_failModalList.length}</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-ghost" onclick="closeFailReview()">Close</button></div>
+    <div class="dupe-list">
+      <div class="s" style="opacity:.7;padding:2px 4px 8px">Select cards, then choose a fix. <b>Retry (fresh)</b> clears the old picture and re-captures; <b>Remove</b> deletes (backup-first); <b>Mark done</b> stops a card showing as failed (e.g. no preview image). Login-walled cards need the extension.</div>
+      ${body || "<div class='s'>No failed captures.</div>"}
+    </div>
+    <div class="dupe-foot">
+      <button class="btn btn-primary" onclick="retryFailFresh()">&#128260; Retry (fresh)</button>
+      <button class="btn btn-ghost" onclick="markFailDone()">&#10003; Mark done</button>
+      <button class="btn btn-ghost" onclick="removeFailSelected()" style="color:#e0556b">&#128465; Remove</button>
+    </div>`;
+  attachCardImages();
+}
+function failSelectGroup(reason){
+  Array.prototype.forEach.call(document.querySelectorAll('#failBody .dupe-row[data-reason="'+reason+'"] input[data-id]'), el=>{ el.checked=true; });
+}
+function _failCheckedIds(){
+  return Array.prototype.map.call(document.querySelectorAll('#failBody input[data-id]:checked'), el=>el.getAttribute("data-id"));
+}
+function retryFailFresh(){
+  const ids=_failCheckedIds(); if(!ids.length){ toast("Select some cards first"); return; }
+  closeFailReview();
+  startBatchCapture(null, ids);   // onlyIds path clears the old image + re-captures fresh
+}
+function markFailDone(){
+  const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
+  imported.forEach(c=>{ if(c&&ids.has(c.id)){ c.lastResult="ok"; c.lastUpdate=Date.now(); } });
+  Store.putCards(imported); updateCounts();
+  closeFailReview(); if(curTab==="imported") renderImported();
+  toast(`Marked ${ids.size} done`, 4000);
+}
+function removeFailSelected(){
+  const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
+  snapshotBeforeDestructive();
+  const gone=imported.filter(c=>c&&ids.has(c.id));
+  gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
+  imported = imported.filter(c=>!c||!ids.has(c.id));
+  Store.putCards(imported); updateCounts();
+  closeFailReview(); if(curTab==="imported") renderImported();
+  toast(`Removed ${ids.size} card${ids.size===1?"":"s"}`, 5000);
+}
 function clearFailedFilter(){ impFailed=false; renderImportedKeepFocus(); }
 document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeMenus(); });
 async function autoTag(limit){

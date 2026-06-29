@@ -20,5 +20,12 @@ t("startBatchCapture stamps capReason and supports retry-clear + id subset", () 
   assert.ok(body.indexOf("BATCH_CAP") < 0 || body.indexOf("slice(0, BATCH_CAP)") < 0, "loop should be uncapped (no BATCH_CAP slice)");
 });
 
+t("failed-capture triage modal exists and groups by reason with actions", () => {
+  assert.ok(html.indexOf('id="failModal"') >= 0, "fail triage modal present");
+  assert.ok(html.indexOf("function openFailReview") >= 0);
+  assert.ok(html.indexOf("c.capReason") >= 0 || html.indexOf(".capReason") >= 0, "triage reads capReason");
+  assert.ok(html.indexOf("function retryFailFresh") >= 0 && html.indexOf("function removeFailSelected") >= 0 && html.indexOf("function markFailDone") >= 0);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
