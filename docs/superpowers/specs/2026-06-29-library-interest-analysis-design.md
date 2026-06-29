@@ -72,7 +72,10 @@ populated they reflect it automatically.
 - **NEW `web/profile-analyze.js`** (pure, dual browser/Node UMD like `web/route-capture.js`):
   - `summarizeLibrary(cards) -> { total, categories, domains, keywords, tags }` (cards = the
     combined imported+saved array; pure).
-  - `buildProfilePrompt(summary, { about, interests }) -> string` (pure).
+  - `buildProfilePrompt(summary, { about, interests }, extraSources) -> string` (pure).
+    `extraSources` is an **optional** array of `{ label, text }` (default `[]`) appended to the
+    prompt as additional taste signals. It is unused now (always `[]`) but is the seam a future
+    **Notion connector** plugs into without reworking the analysis — see Deferred below.
   - `parseProfileResult(text) -> { interests: string[], about: string }` (pure, tolerant; `{}` /
     garbage → `{interests:[], about:""}`).
   - `mergeInterests(existingCsv, picked) -> string` (case-insensitive dedup-append; pure).
@@ -111,3 +114,13 @@ Pure units in `tests/profile-analyze.test.js`:
 - Changing the feed/Stumble prompts (they already consume the profile).
 - A scheduled/auto re-analysis (manual button only — YAGNI).
 - Per-category weighting / sliders (just topics + About you for now).
+- **Notion connector (explicit NEXT feature, separate spec→plan→build).** The app has no live
+  Notion read-integration today (the existing "Notion & Jarvis bridge" is a one-way `saves.json`
+  export an external process reads — and a no-op in the Electron build). A future feature would:
+  add a Notion integration token in Settings; have the **Core** fetch the user's pages/databases via
+  the Notion API (paginated, bounded); aggregate that text into one or more
+  `{ label:"Notion", text }` source summaries; and pass them as the `extraSources` arg to
+  `buildProfilePrompt` so Notion interests/project items fold into the same analysis + review flow.
+  Designing `buildProfilePrompt` to accept `extraSources` now is the only concession this spec makes
+  to that future work — no Notion code is built here. That connector gets its own data-safety +
+  electron-security review (new external API + token handling).
