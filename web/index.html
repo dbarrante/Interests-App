@@ -302,6 +302,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
 <script src="deadcheck-ai.js"></script>
+<script src="profile-analyze.js"></script>
 <script src="import-instagram.js"></script>
 <script src="import-google-saved.js"></script>
 </head>
@@ -385,6 +386,19 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <textarea id="aboutMe"></textarea>
         <label>Interests (comma-separated — the feed learns and you can prune anytime)</label>
         <textarea id="interestList" style="min-height:120px"></textarea>
+        <div style="margin-top:12px">
+          <button class="btn btn-ghost" id="analyzeLibBtn" onclick="analyzeLibrary()" title="Let your AI read your whole library and suggest interests + an About-you draft">&#129504; Analyze my library</button>
+          <div id="profileReview" style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:11px;padding:12px">
+            <div class="s" style="opacity:.7;margin-bottom:8px">Topics from your library — uncheck any you don't want, edit the About-you draft, then Accept.</div>
+            <div id="profileChips" class="tagwrap"></div>
+            <label style="font-weight:600;display:block;margin-top:12px">About you (draft)</label>
+            <textarea id="profileAbout" style="min-height:110px;width:100%"></textarea>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn btn-primary" onclick="acceptProfile()">Accept</button>
+              <button class="btn btn-ghost" onclick="cancelProfile()">Cancel</button>
+            </div>
+          </div>
+        </div>
         <div class="row2">
           <div><label>Items per refresh</label><input type="number" id="itemCount" min="4" max="24" step="1"></div>
           <div><label>&nbsp;</label><button class="btn btn-ghost" style="width:100%" onclick="resetLearning()">Reset learning history</button></div>
@@ -3453,6 +3467,45 @@ function addDiscovered(){
   renderDiscTags();
   toast(add.length+" interest"+(add.length>1?"s":"")+" added to your profile");
 }
+// ---- Analyze my library → interest profile (reuses the provider dispatch; chips like Discover;
+// non-destructive: interests appended de-duped, About you = the reviewed/edited box) ----
+let _profileTags = [];
+async function analyzeLibrary(){
+  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" first"); showTab("settings"); return; }
+  const all = imported.concat(saved);
+  if(!all.length){ toast("No cards to analyze yet"); return; }
+  const btn=document.getElementById("analyzeLibBtn");
+  btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Analyzing…';
+  try{
+    const summary = summarizeLibrary(all);
+    const prompt = buildProfilePrompt(summary, { about:S.about, interests:S.interests }, []);
+    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
+    const res = parseProfileResult(await call(prompt));
+    if(!res.interests.length && !res.about){ toast("The AI didn't return usable results — try again", 6000); return; }
+    _profileTags = res.interests.map(name=>({ name, sel:true }));
+    document.getElementById("profileAbout").value = (S.about ? S.about.trim()+"\n\n" : "") + res.about;
+    renderProfileChips();
+    document.getElementById("profileReview").style.display = "";
+  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
+  finally{ btn.disabled=false; btn.innerHTML="&#129504; Analyze my library"; }
+}
+function renderProfileChips(){
+  document.getElementById("profileChips").innerHTML = _profileTags.map((tg,i)=>
+    `<button class="tagchip${tg.sel?" sel":""}" onclick="toggleProfileTag(${i})">${tg.sel?"&#10003; ":""}${esc(tg.name)}</button>`).join("");
+}
+function toggleProfileTag(i){ _profileTags[i].sel=!_profileTags[i].sel; renderProfileChips(); }
+function acceptProfile(){
+  const picked = _profileTags.filter(tg=>tg.sel).map(tg=>tg.name);
+  S.interests = mergeInterests(S.interests, picked);
+  S.about = document.getElementById("profileAbout").value.trim();
+  document.getElementById("interestList").value = S.interests;
+  document.getElementById("aboutMe").value = S.about;
+  save("settings", S);
+  document.getElementById("profileReview").style.display = "none";
+  _profileTags = [];
+  toast("Profile updated — "+picked.length+" interest"+(picked.length===1?"":"s")+" added");
+}
+function cancelProfile(){ document.getElementById("profileReview").style.display="none"; _profileTags=[]; }
 
 /* ============ backups / store (Core service) ============ */
 // Folder picking via the File System Access API is gone — the Core service owns
