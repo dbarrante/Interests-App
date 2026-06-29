@@ -71,9 +71,14 @@ async function probeUrl(url, opts) {
       var res = await fetch(url, { method: method, redirect: "follow", signal: ac.signal, headers: { "User-Agent": UA } });
       return { status: res.status, code: null };
     } catch (e) {
-      var code = (e && e.code) || (e && e.name === "AbortError" ? "ETIMEDOUT" : "ERR");
-      // Node wraps DNS/connection errors under e.cause for fetch — surface the inner code.
-      if (e && e.cause && e.cause.code) code = e.cause.code;
+      // Node's fetch wraps the real DNS/connection error under e.cause; a timeout shows
+      // up as an AbortError (whose numeric e.code must NOT be used as the error code).
+      var code = "ERR";
+      if (e) {
+        if (e.name === "AbortError") code = "ETIMEDOUT";
+        else if (e.cause && e.cause.code) code = e.cause.code;       // ECONNREFUSED / ENOTFOUND / ...
+        else if (typeof e.code === "string") code = e.code;
+      }
       return { status: 0, code: code };
     } finally {
       clearTimeout(timer);
