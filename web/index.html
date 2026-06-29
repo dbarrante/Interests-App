@@ -400,6 +400,14 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <label>Open PageRank API key (optional, enforces the filter)</label>
         <input type="password" id="oprKey" placeholder="Free key — no card needed">
         <div class="hint">Get one at <a href="https://www.domcop.com/openpagerank/" target="_blank">openpagerank.com</a> — <a href="#" onclick="showGuide('oprkey');return false"><b>step-by-step instructions</b></a>. Without a key the preference is prompt-only.</div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Google Safe Browsing API key <span id="sbKeyStatus" class="hint"></span></label>
+          <div class="hint">Free malware/phishing check for your links. Get a key at <b>developers.google.com/safe-browsing/v4/get-started</b>. Leave blank to disable.</div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="password" id="sbKey" placeholder="Paste your Safe Browsing key…" style="flex:1">
+            <button class="btn btn-primary" onclick="saveSafeBrowsingKey()">Save</button>
+          </div>
+        </div>
       </div>
 
       <div class="sec">
@@ -1181,6 +1189,7 @@ function renderSettings(){
   renderImportStatus();
   if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
   if(typeof renderBackupList === "function") renderBackupList();
+  if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
 }
 function saveSettings(notify){
   S.about = document.getElementById("aboutMe").value;
@@ -1188,6 +1197,21 @@ function saveSettings(notify){
   S.itemCount = Math.max(4, Math.min(24, +document.getElementById("itemCount").value || 12));
   save("settings", S);
   if(notify){ toast("Settings saved"); showTab("feed"); }
+}
+async function loadSafetyKeyStatus(){
+  try {
+    const has = await Store.getSafeBrowsingKey();
+    const el = document.getElementById("sbKeyStatus");
+    if (el) el.textContent = has ? "— a key is set" : "— no key set";
+  } catch(e){ /* Core unavailable; leave blank */ }
+}
+async function saveSafeBrowsingKey(){
+  const inp = document.getElementById("sbKey");
+  const v = inp ? inp.value.trim() : "";
+  try { await Store.setSafeBrowsingKey(v); } catch(e){ toast("Couldn't save key", 4000); return; }
+  if (inp) inp.value = "";
+  toast(v ? "Safe Browsing key saved" : "Safe Browsing key cleared", 4000);
+  loadSafetyKeyStatus();
 }
 
 /* ============ prompt ============ */
