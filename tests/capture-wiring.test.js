@@ -45,5 +45,20 @@ t("openUrlsInTabs is the shared open-in-tabs helper, used by openSelected", () =
   assert.ok(sbody.indexOf("_openedSel") >= 0, "openSelected still passes its session skip-set");
 });
 
+t("fail modal: title opens one link in browser; Open button opens selected via openUrlsInTabs", () => {
+  assert.ok(html.indexOf("function openFailSelected(") >= 0, "openFailSelected defined");
+  assert.ok(html.indexOf("function openFailOne(") >= 0, "openFailOne defined");
+  const fi = html.indexOf("function failRowHTML(");
+  const fbody = html.slice(fi, fi + 800);
+  assert.ok(fbody.indexOf("openFailOne(") >= 0, "title click opens one link");
+  const ri = html.indexOf("function renderFailModal(");
+  const rbody = html.slice(ri, ri + 2600);
+  assert.ok(rbody.indexOf("openFailSelected()") >= 0, "Open button calls openFailSelected");
+  const oi = html.indexOf("function openFailSelected(");
+  const obody = html.slice(oi, oi + 400);
+  assert.ok(obody.indexOf("openUrlsInTabs(") >= 0, "openFailSelected uses the shared browser-tab helper");
+  assert.ok(obody.indexOf("openInApp") < 0, "must not use the reuse-window path");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

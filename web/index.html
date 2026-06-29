@@ -185,6 +185,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #dupeModal.open,#deadModal.open,#safetyModal.open,#failModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 #failBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
+#failBody .dupe-row .meta .t{cursor:pointer}
+#failBody .dupe-row .meta .t:hover{text-decoration:underline}
 .dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
 .dupe-list{overflow-y:auto;padding:8px 16px;flex:1 1 auto;min-height:0}
 .dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
@@ -2360,7 +2362,7 @@ function failRowHTML(c){
   const dom=domain(c.url)||""; const reason=c.capReason||"unreachable";
   return `<div class="dupe-row" data-reason="${esc(reason)}">
     ${dupeThumb({scope:"imported", card:c})}
-    <div class="meta"><div class="t">${esc(c.title||dom||"(untitled)")}</div>
+    <div class="meta"><div class="t" title="Open in browser" onclick="openFailOne('${esc(c.id)}')">${esc(c.title||dom||"(untitled)")}</div>
       <div class="s">${esc(dom)} · <span style="color:#e0556b">${esc(_failLabel(reason))}</span></div></div>
     <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-id="${esc(c.id)}" style="width:auto"> select</label>
   </div>`;
@@ -2379,6 +2381,7 @@ function renderFailModal(){
       <span style="flex:1"></span>
       <button class="btn btn-ghost" onclick="closeFailReview()">Close</button></div>
     <div class="dupe-foot" style="border-top:0;border-bottom:1px solid var(--line);justify-content:flex-start;flex-wrap:wrap">
+      <button class="btn btn-ghost" onclick="openFailSelected()">&#8599; Open</button>
       <button class="btn btn-primary" onclick="retryFailFresh()">&#128260; Retry (fresh)</button>
       <button class="btn btn-ghost" onclick="markFailDone()">&#10003; Mark done</button>
       <button class="btn btn-ghost" onclick="removeFailSelected()" style="color:#e0556b">&#128465; Remove</button>
@@ -2395,6 +2398,12 @@ function failSelectGroup(reason){
 }
 function _failCheckedIds(){
   return Array.prototype.map.call(document.querySelectorAll('#failBody input[data-id]:checked'), el=>el.getAttribute("data-id"));
+}
+function openFailOne(id){ const c=_failModalList.find(x=>x&&x.id===id); if(c&&c.url) openUrlsInTabs([c.url]); }   // single-click a title → open in browser
+function openFailSelected(){
+  const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
+  const urls=_failModalList.filter(c=>c&&ids.has(c.id)).map(c=>c.url).filter(Boolean);
+  openUrlsInTabs(urls);   // browser tabs only — no reuse-window, no session-skip in the modal
 }
 function retryFailFresh(){
   const ids=_failCheckedIds(); if(!ids.length){ toast("Select some cards first"); return; }
