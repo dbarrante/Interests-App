@@ -301,6 +301,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
+<script src="deadcheck-ai.js"></script>
 <script src="import-instagram.js"></script>
 <script src="import-google-saved.js"></script>
 </head>
@@ -3639,6 +3640,30 @@ async function applyDupeRemoval(){
 const LC_FRESH_DAYS = 14;            // re-runs skip links confirmed alive within this window
 let _deadStop = false, _deadList = [];
 function _lcFresh(it){ return !!(it && it.lc && it.lc.st==="alive" && it.lc.at && (Date.now()-it.lc.at) < LC_FRESH_DAYS*864e5); }
+const AI_DEAD_CAP = 200;   // hard ceiling on paid AI calls per sweep (bounded; never silent)
+// Tier 3: ask the user's configured AI to confirm each heuristic-suspect link is dead.
+// Bounded (AI_DEAD_CAP), stoppable (_deadStop), and only spends after explicit consent.
+async function confirmSoftDead(suspects){
+  if(!suspects.length) return [];
+  const provider = S.provider;
+  if(!S.keys[provider] && provider!=="local"){
+    toast("Add your "+PROVIDERS[provider].keyName+" in Settings to confirm soft-dead links", 6000);
+    return [];
+  }
+  const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[provider];
+  const confirmed = []; let used = 0;
+  for(const s of suspects){
+    if(_deadStop || used >= AI_DEAD_CAP) break;
+    used++;
+    toast(`Confirming with AI… ${used}/${Math.min(suspects.length, AI_DEAD_CAP)} — tap to stop`, 60000, ()=>{ _deadStop = true; });
+    try{
+      const v = parseDeadVerdict(await call(buildDeadCheckPrompt({ title:s.title, snippet:s.snippet, url:s.card.url })));
+      if(v.dead) confirmed.push(Object.assign({}, s, { soft:true, softReason:v.reason||s.reason }));
+    }catch(e){ console.warn("AI dead-check failed", e); }
+  }
+  if(suspects.length > AI_DEAD_CAP) toast(`Confirmed the first ${AI_DEAD_CAP}; ${suspects.length-AI_DEAD_CAP} suspects skipped (cap).`, 8000);
+  return confirmed;
+}
 async function checkDeadLinks(){
   const cand = [];
   imported.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_lcFresh(it)) cand.push({scope:"imported", card:it}); });
@@ -3656,6 +3681,30 @@ async function checkDeadLinks(){
     chunk.forEach(c=>{ const r=byId[c.card.id]; if(!r) return; c.card.lc = { at: Date.now(), st: r.status, code: r.code }; if(r.status==="dead") dead.push(c); });
     done += chunk.length;
   }
+  // Tier 2: content heuristics for links that came back alive/unknown (non-social only —
+  // social was already reported "skipped" by the server probe). Collect suspects.
+  const aliveCands = [];
+  cand.forEach(c=>{ const st=c.card.lc && c.card.lc.st; if((st==="alive"||st==="unknown") && /^https?:\/\//i.test(c.card.url||"")) aliveCands.push(c); });
+  const suspects = [];
+  for(let i=0; i<aliveCands.length && !_deadStop; i+=100){
+    const chunk = aliveCands.slice(i, i+100);
+    toast(`Reading pages… ${i}/${aliveCands.length} — tap to stop`, 60000, ()=>{ _deadStop = true; });
+    let cres = [];
+    try{ cres = await Store.checkContent(chunk.map(c=>({ id:c.card.id, url:c.card.url }))); }
+    catch(e){ console.warn("check-content chunk failed", e); continue; }
+    const byId = {}; cres.forEach(r=>byId[r.id]=r);
+    chunk.forEach(c=>{ const r=byId[c.card.id]; if(r && r.verdict==="suspect") suspects.push({ scope:c.scope, card:c.card, title:r.title, snippet:r.snippet, finalUrl:r.finalUrl, reason:r.reason }); });
+  }
+
+  // Tier 3: AI confirmation (consent-gated, bounded). Confirmed-dead join the review list.
+  if(suspects.length && !_deadStop){
+    const ok = confirm(`Checked ${cand.length} link(s). ${suspects.length} look possibly dead.\n\nAsk your AI (${PROVIDERS[S.provider].label}) to confirm them? This uses your API key.`);
+    if(ok){
+      const confirmedSoft = await confirmSoftDead(suspects);
+      confirmedSoft.forEach(s=>dead.push(s));
+    }
+  }
+
   // Persist the lc markers (so re-runs resume) via the normal bulk-replace path.
   Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
   if(dead.length) openDeadReview(dead);
@@ -3671,7 +3720,7 @@ function deadRowHTML(c){
   return `<div class="dupe-row">
     ${dupeThumb(c)}
     <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
-      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · <span style="color:#e0556b">${esc(_deadReason(it.lc&&it.lc.code))}</span></div></div>
+      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · <span style="color:#e0556b">${c.soft ? esc("AI: "+(c.softReason||"content removed")) : esc(_deadReason(it.lc&&it.lc.code))}</span>${c.soft?` · <a href="${esc(waybackUrl(it.url))}" target="_blank" rel="noopener">archived copy</a>`:""}</div></div>
     <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(c.scope+":"+it.id)}" checked style="width:auto"> remove</label>
   </div>`;
 }
