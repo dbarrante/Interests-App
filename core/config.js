@@ -101,6 +101,17 @@ function setSyncConfig(partial) {
   saveConfig(cfg);
 }
 
+function getSafeBrowsingKey() {
+  const cfg = loadConfig();
+  return typeof cfg.safeBrowsingKey === "string" ? cfg.safeBrowsingKey : "";
+}
+
+function setSafeBrowsingKey(key) {
+  const cfg = loadConfig();
+  cfg.safeBrowsingKey = typeof key === "string" ? key.trim() : "";
+  saveConfig(cfg);
+}
+
 module.exports = {
   appDataDir,
   configPath,
@@ -113,4 +124,6 @@ module.exports = {
   setStorePath,
   getSyncConfig,
   setSyncConfig,
+  getSafeBrowsingKey,
+  setSafeBrowsingKey,
 };
