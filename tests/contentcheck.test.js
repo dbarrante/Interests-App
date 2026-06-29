@@ -44,8 +44,9 @@ t("classifyContent: cross-domain redirect does NOT fire redirect-home", () => {
   const r = cc.classifyContent({originalUrl:"https://shop.com/item/1", finalUrl:"https://other.com/", status:200, title:"Other Home", text:"a totally different site homepage with lots of normal content here today"});
   assert.strictEqual(r.signals.indexOf("redirect-home"), -1);
 });
-t("classifyContent: curly-apostrophe dead phrase is matched", () => {
-  const r = cc.classifyContent({originalUrl:"https://x.com/p", finalUrl:"https://x.com/p", status:200, title:"This isn't available", text:"some other text that is long enough to not be empty at all here"});
+t("classifyContent: curly-apostrophe dead phrase is matched (\\u2019 normalized to straight)", () => {
+  // Real curly right-single-quote via \u escape so the test source is unambiguous.
+  const r = cc.classifyContent({originalUrl:"https://x.com/p", finalUrl:"https://x.com/p", status:200, title:"This isn’t available", text:"some other text that is long enough to not be empty at all here"});
   assert.strictEqual(r.verdict, "suspect");
   assert.ok(r.signals.some(s => s.indexOf("phrase:") === 0));
 });

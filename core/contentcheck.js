@@ -21,12 +21,14 @@ function extractText(html, maxChars) {
 }
 
 // Lowercase substrings that strongly indicate a removed/missing page. English v1.
+// Apostrophes are STRAIGHT (') here; classifyContent normalizes curly apostrophes in
+// the page text to straight before matching, so both "isn't" and "isn’t" hit.
 var DEAD_PHRASES = [
-  "page not found", "page can't be found", "page can't be found",
+  "page not found", "page can't be found",
   "404 not found", "error 404", "not found",
-  "no longer available", "no longer exists", "isn't available", "isn't available",
-  "is not available", "content unavailable", "this content isn't available", "this content isn't available",
-  "doesn't exist", "doesn't exist", "does not exist",
+  "no longer available", "no longer exists", "isn't available",
+  "is not available", "content unavailable", "this content isn't available",
+  "doesn't exist", "does not exist",
   "has been removed", "been deleted", "this listing has ended",
   "item is no longer", "product is no longer", "sorry, this page",
   "the page you requested", "domain is for sale", "buy this domain"
@@ -44,7 +46,9 @@ function classifyContent(info) {
   info = info || {};
   var title = String(info.title || "");
   var text = String(info.text || "");
-  var hay = (title + " " + text).toLowerCase();
+  // Normalize curly apostrophes (U+2018/U+2019) to straight so dead phrases match
+  // regardless of which apostrophe a page uses. \u escapes keep the source ASCII-only.
+  var hay = (title + " " + text).toLowerCase().replace(/[‘’]/g, "'");
   var signals = [];
 
   for (var i = 0; i < DEAD_PHRASES.length; i++) {
