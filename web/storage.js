@@ -36,7 +36,8 @@
     checkSafety: function () { return "/api/check-safety"; },
     safeBrowsingKey: function () { return "/api/safebrowsing-key"; },
     bookmarkSources: function () { return "/api/bookmark-sources"; },
-    bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); }
+    bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); },
+    captureMeta: function () { return "/api/capture-meta"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -131,7 +132,8 @@
       checkContent: function (items, opts) { return jsend("POST", SE.checkContent(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
       checkSafety: function (items, opts) { return jsend("POST", SE.checkSafety(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
       getSafeBrowsingKey: function () { return jget(SE.safeBrowsingKey()).then(function (j) { return !!(j && j.hasKey); }); },
-      setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); }
+      setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); },
+      captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); }
     };
 
     root.Store = Store;

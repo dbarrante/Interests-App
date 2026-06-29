@@ -43,6 +43,9 @@ t("backup/restore/store/import endpoints", () => {
 t("check-content endpoint", () => {
   assert.strictEqual(SE.checkContent(), "/api/check-content");
 });
+t("capture-meta endpoint", () => {
+  assert.strictEqual(SE.captureMeta(), "/api/capture-meta");
+});
 t("safety endpoints", () => {
   assert.strictEqual(SE.checkSafety(), "/api/check-safety");
   assert.strictEqual(SE.safeBrowsingKey(), "/api/safebrowsing-key");

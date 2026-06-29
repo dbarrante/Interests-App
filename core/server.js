@@ -17,6 +17,7 @@ const bookmarks = require("./bookmarks");
 const linkcheck = require("./linkcheck");
 const contentcheck = require("./contentcheck");
 const safebrowse = require("./safebrowse");
+const capturemeta = require("./capturemeta");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -433,6 +434,28 @@ function createServer(ctx) {
     } catch (e) {
       console.error("check-content failed:", e);
       res.status(500).json({ error: "check failed" });
+    }
+  });
+
+  // ---- Electron-native "Capture missing": fetch each card's page server-side, extract its
+  // preview image + title/description, store the image. Social/SSRF skipped. Read/writes images only.
+  app.post("/api/capture-meta", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
+      const found = await capturemeta.captureMetaChunk(items, {});
+      const results = found.map((r) => {
+        let hasImage = false;
+        if (r && r.imageDataUrl) {
+          try { images.putImg(storeDir, r.id, r.imageDataUrl); hasImage = true; }
+          catch (e) { console.error("capture-meta putImg failed:", e && e.message); }
+        }
+        return { id: r && r.id, hasImage: hasImage, title: (r && r.title) || "", description: (r && r.description) || "" };
+      });
+      res.json({ results: results });
+    } catch (e) {
+      console.error("capture-meta failed:", e);
+      res.status(500).json({ error: "capture failed" });
     }
   });
 
