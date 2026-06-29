@@ -2098,7 +2098,7 @@ function renderImported(){
         const miss=imported.filter(needsCapture).length;
         const fail=imported.filter(needsRetry).length;
         var out="";
-        if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Open, screenshot &amp; close each not-yet-tried card with no picture (needs the extension)">&#128247; Capture missing ${miss>BATCH_CAP?("("+BATCH_CAP+" of "+miss+")"):("("+miss+")")}</button>`;
+        if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Fetch a preview image + info for every not-yet-tried card with no picture (in the app, no extension needed)">&#128247; Capture missing (${miss})</button>`;
         const fbmiss=imported.filter(needsFbCapture).length;
         if(fbmiss){ const fbcap=_fbTested?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Capture ONE batch of Facebook posts via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`;
           out+= fbAuto
@@ -3126,20 +3126,31 @@ function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }
 function captureableFb(i){ return i.url && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
 function needsFbCapture(i){ return captureableFb(i) && !i.lastUpdate && !i.captured; }
 let _capStop = false;
-async function startBatchCapture(mode){
+async function startBatchCapture(mode, onlyIds){
   if(batchUI.active){ toast("A capture run is already going"); return; }
-  const need = imported.filter(mode==="retry" ? needsRetry : needsCapture);
-  if(!need.length){ toast(mode==="retry" ? "No failed cards to retry" : "No new cards to capture"); return; }
+  let cand;
+  if(onlyIds && onlyIds.length){
+    const set=new Set(onlyIds); cand=imported.filter(c=>c && set.has(c.id) && /^https?:\/\//i.test(c.url||""));
+  } else {
+    cand = imported.filter(mode==="retry" ? needsRetry : needsCapture);
+  }
+  if(!cand.length){ toast(mode==="retry" ? "No failed cards to retry" : "No new cards to capture"); return; }
   const seen=new Set();
-  const uniq=need.filter(i=>{ const k=clipKey(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
-  const items = uniq.slice(0, BATCH_CAP).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
-  // Mark every dispatched page (and duplicates) attempted now, so a card never loops even if a result is lost.
+  const uniq=cand.filter(i=>{ if(!i.id) i.id=newId(); const k=clipKey(i.url); if(seen.has(k)) return false; seen.add(k); return true; });
+  const items = uniq.map(i=>({id:i.id, url:i.url}));
+  const isRetry = mode==="retry" || !!(onlyIds && onlyIds.length);
+  const byId={}; imported.forEach(c=>{ if(c&&c.id) byId[c.id]=c; });
+  // Retry / triage re-capture starts FRESH: clear the existing (bad) picture, backup-first.
+  if(isRetry){
+    snapshotBeforeDestructive();
+    items.forEach(it=>{ const c=byId[it.id]; if(!c) return; const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } c.img=""; });
+  }
+  // Mark dispatched cards attempted now (incl. clearing a stale "fail" to "pending"), so they don't loop.
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
-  imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureable(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
+  imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureable(c)){ c.lastUpdate=at; if(!c.lastResult || c.lastResult==="fail") c.lastResult="pending"; } });
   Store.putCards(imported);
   _capStop=false; batchUI={active:true, done:0, total:items.length};
-  const byId={}; imported.forEach(c=>{ if(c&&c.id) byId[c.id]=c; });
   let got=0;
   try{
     for(let i=0; i<items.length && !_capStop; i+=25){
@@ -3150,7 +3161,8 @@ async function startBatchCapture(mode){
       catch(e){ console.warn("capture-meta chunk failed", e); continue; }
       results.forEach(r=>{
         const c=r&&byId[r.id]; if(!c) return;
-        if(r.hasImage){ c.img="idb:"+c.id; got++; }
+        if(r.hasImage){ c.img="idb:"+c.id; c.capReason=""; got++; }
+        else { c.capReason = r.reason || "unreachable"; }
         const dom=domain(c.url)||"";
         if(r.title && (!c.title || c.title===dom)) c.title=r.title;
         if(r.description && !c.description) c.description=r.description;
