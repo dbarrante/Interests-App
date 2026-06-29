@@ -381,11 +381,16 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Your interest profile</h3>
+        <h3>Your interests</h3>
         <label>About you</label>
         <textarea id="aboutMe"></textarea>
         <label>Interests (comma-separated — the feed learns and you can prune anytime)</label>
         <textarea id="interestList" style="min-height:120px"></textarea>
+        <label style="margin-top:14px;display:block">Or describe what you're into — get suggestions</label>
+        <textarea id="discInput" placeholder="e.g. I've been curious about welding, smart irrigation, maybe restoring an old arcade cabinet…"></textarea>
+        <button class="btn btn-ghost" id="discBtn" onclick="discoverInterests()" style="margin-top:10px">&#10024; Suggest interest categories</button>
+        <div id="discResults" class="tagwrap"></div>
+        <button id="discAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addDiscovered()">Add selected to my profile</button>
         <div style="margin-top:12px">
           <button class="btn btn-ghost" id="analyzeLibBtn" onclick="analyzeLibrary()" title="Let your AI read your whole library and suggest interests + an About-you draft">&#129504; Analyze my library</button>
           <div id="profileReview" style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:11px;padding:12px">
@@ -438,15 +443,6 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div style="margin-top:10px"><button class="btn btn-ghost" onclick="importBookmarks()">&#128209; Import browser bookmarks</button>
           <span class="hint" id="bmStatus" style="margin-left:8px"></span></div>
         <div class="hint" id="impStatus" style="margin-top:8px"></div>
-      </div>
-
-      <div class="sec">
-        <h3>Discover new interests</h3>
-        <label>Describe things you might be into — half-formed is fine</label>
-        <textarea id="discInput" placeholder="e.g. I've been curious about welding, smart irrigation, maybe restoring an old arcade cabinet…"></textarea>
-        <button class="btn btn-ghost" id="discBtn" onclick="discoverInterests()" style="margin-top:10px">&#10024; Suggest interest categories</button>
-        <div id="discResults" class="tagwrap"></div>
-        <button id="discAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addDiscovered()">Add selected to my profile</button>
       </div>
 
       <div class="sec">

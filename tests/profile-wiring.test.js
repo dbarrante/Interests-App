@@ -15,5 +15,12 @@ t("accept writes interests + about via mergeInterests", () => {
   assert.ok(html.indexOf("mergeInterests(") >= 0);
 });
 
+t("interests + discover are one consolidated section", () => {
+  // The Discover heading must be gone; its tool lives under the interests section now.
+  assert.ok(html.indexOf("Discover new interests</h3>") < 0, "separate Discover <h3> removed");
+  assert.ok(html.indexOf('id="discInput"') >= 0 && html.indexOf('id="analyzeLibBtn"') >= 0, "both tools still present");
+  assert.ok(html.indexOf("Your interests</h3>") >= 0, "single 'Your interests' heading");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
