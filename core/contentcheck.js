@@ -113,7 +113,8 @@ async function fetchContent(url, opts) {
   opts = opts || {};
   var timeoutMs = Math.min(opts.timeoutMs || 8000, 20000);
   var maxBytes = opts.maxBytes || 256 * 1024;
-  if (!linkcheck.isProbableHost(url)) return { finalUrl: url, status: 0, title: "", snippet: "" };
+  // SSRF: string guard + DNS-rebinding guard (a public-looking name that resolves private).
+  if (!(await linkcheck.safeToFetch(url, opts))) return { finalUrl: url, status: 0, title: "", snippet: "" };
 
   async function getOnce(target) {
     var ac = new AbortController();
@@ -140,7 +141,7 @@ async function fetchContent(url, opts) {
     }
     var nextUrl;
     try { nextUrl = new URL(r.location, current).href; } catch (e) { return { finalUrl: current, status: r.status, title: "", snippet: "" }; }
-    if (!linkcheck.isProbableHost(nextUrl)) return { finalUrl: current, status: r.status, title: "", snippet: "" };
+    if (!(await linkcheck.safeToFetch(nextUrl, opts))) return { finalUrl: current, status: r.status, title: "", snippet: "" };
     current = nextUrl;
   }
   return { finalUrl: current, status: 0, title: "", snippet: "" };
@@ -160,7 +161,7 @@ async function checkContentChunk(items, opts) {
       if (idx >= arr.length) return;
       var it = arr[idx] || {};
       var url = it.url;
-      if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url)) {
+      if (typeof url !== "string" || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
         results[idx] = { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "" };
         continue;
       }

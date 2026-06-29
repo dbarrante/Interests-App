@@ -4,6 +4,9 @@ let passed = 0, failed = 0;
 function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch(e=>{failed++; console.error("FAIL: "+n+"\n  "+(e&&e.message));}); }
 
 (async () => {
+  // Stub DNS so example.test "resolves" to a public IP — the rebinding guard must not touch
+  // the real resolver (no network in tests).
+  require("../core/linkcheck")._setLookup(async () => [{ address: "93.184.216.34", family: 4 }]);
   const realFetch = global.fetch;
   // Synthetic responses: /dead -> a "page not found" body; /ok -> a real article; no redirects.
   global.fetch = async (url) => {
@@ -65,6 +68,7 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
   });
 
   global.fetch = realFetch;
+  require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;
 })();

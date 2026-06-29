@@ -14,6 +14,9 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
   // sockets (so no Windows teardown crash). "/gone" -> 404, otherwise 200.
   const realFetch = global.fetch;
   global.fetch = async (url) => ({ status: /\/gone/.test(String(url)) ? 404 : 200 });
+  // Stub DNS so example.test "resolves" to a public IP (safeToFetch's rebinding guard runs
+  // in-process here) — no real resolver call.
+  require("../core/linkcheck")._setLookup(async () => [{ address: "93.184.216.34", family: 4 }]);
 
   const ctx = buildContext(tmpStore());
   const { s: core, port } = await listen(createServer(ctx));
@@ -47,6 +50,7 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
   await new Promise(r => core.close(r));
   ctx.db.close();
   global.fetch = realFetch;
+  require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;
 })();

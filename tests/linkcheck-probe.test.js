@@ -6,6 +6,9 @@ function t(n, fn){ return fn().then(()=>{passed++;}).catch(e=>{failed++; console
 function listen(handler){ return new Promise(r=>{ const s=http.createServer(handler); s.listen(0,"127.0.0.1",()=>r({s,port:s.address().port})); }); }
 
 (async () => {
+  // Stub DNS so public.example "resolves" to a public IP (the redirect-following test) without
+  // touching the real resolver. Literal-IP paths (127.0.0.1, 169.254.x) need no lookup.
+  lc._setLookup(async () => [{ address: "93.184.216.34", family: 4 }]);
   const { s, port } = await listen((req, res) => {
     if (req.url === "/gone") { res.statusCode = 404; res.end("nope"); return; }
     if (req.url === "/ok")   { res.statusCode = 200; res.end("yep"); return; }
@@ -76,6 +79,7 @@ function listen(handler){ return new Promise(r=>{ const s=http.createServer(hand
     assert.strictEqual(by.ftp, "skipped", "non-http(s) scheme is skipped");
   });
   await new Promise(r => s.close(r));
+  lc._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");
   // Let the event loop drain rather than process.exit() — forcing exit while an undici
   // socket handle is still closing trips a Windows libuv assertion. Connection:close +
