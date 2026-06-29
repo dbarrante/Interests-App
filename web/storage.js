@@ -31,6 +31,7 @@
     syncFolder: function () { return "/api/sync/folder"; },
     syncDeviceLabel: function () { return "/api/sync/device-label"; },
     syncNow: function () { return "/api/sync/now"; },
+    checkLinks: function () { return "/api/check-links"; },
     bookmarkSources: function () { return "/api/bookmark-sources"; },
     bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); }
   };
@@ -122,7 +123,8 @@
 
       // --- browser bookmarks (read-only import source) ---
       bookmarkSources: function () { return jget(SE.bookmarkSources()).then(function (j) { return (j && j.sources) || []; }); },
-      bookmarks: function (browser, profile) { return jget(SE.bookmarks(browser, profile)).then(function (j) { return (j && j.bookmarks) || []; }); }
+      bookmarks: function (browser, profile) { return jget(SE.bookmarks(browser, profile)).then(function (j) { return (j && j.bookmarks) || []; }); },
+      checkLinks: function (items, opts) { return jsend("POST", SE.checkLinks(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); }
     };
 
     root.Store = Store;

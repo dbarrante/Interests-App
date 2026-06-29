@@ -14,6 +14,7 @@ const { imageCount } = require("./images.js");
 const config = require("./config");
 const sync = require("./sync");
 const bookmarks = require("./bookmarks");
+const linkcheck = require("./linkcheck");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -399,6 +400,22 @@ function createServer(ctx) {
       if (e && e.code === "BAD_PROFILE") return res.status(400).json({ error: "invalid browser/profile" });
       console.error("bookmarks read failed:", e);
       res.status(404).json({ error: "could not read bookmarks" });
+    }
+  });
+
+  // ---- dead-link check (probes user card URLs server-side; conservative + SSRF-guarded;
+  // social hosts skipped; never deletes — the renderer reviews results before removal) ----
+  app.post("/api/check-links", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
+      const concurrency = Math.min(Number(body.concurrency) || 8, 8);
+      const timeoutMs = Math.min(Number(body.timeoutMs) || 8000, 20000);
+      const results = await linkcheck.checkChunk(items, { concurrency: concurrency, timeoutMs: timeoutMs });
+      res.json({ results: results });
+    } catch (e) {
+      console.error("check-links failed:", e);
+      res.status(500).json({ error: "check failed" });
     }
   });
 
