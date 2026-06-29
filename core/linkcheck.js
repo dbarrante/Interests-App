@@ -56,4 +56,65 @@ function isProbableHost(url) {
   return true;
 }
 
-module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, SKIP_HOSTS: SKIP_HOSTS };
+var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
+
+// Probe ONE url. HEAD first (cheap); retry once with GET if HEAD is unsupported
+// (405/501) or errored. redirect:"follow" so the FINAL status is classified (a moved
+// page that 404s = dead; a redirect to a login page = 200 = alive = not flagged).
+async function probeUrl(url, opts) {
+  opts = opts || {};
+  var timeoutMs = opts.timeoutMs || 8000;
+  async function once(method) {
+    var ac = new AbortController();
+    var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
+    try {
+      var res = await fetch(url, { method: method, redirect: "follow", signal: ac.signal, headers: { "User-Agent": UA } });
+      return { status: res.status, code: null };
+    } catch (e) {
+      var code = (e && e.code) || (e && e.name === "AbortError" ? "ETIMEDOUT" : "ERR");
+      // Node wraps DNS/connection errors under e.cause for fetch — surface the inner code.
+      if (e && e.cause && e.cause.code) code = e.cause.code;
+      return { status: 0, code: code };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  var r = await once("HEAD");
+  if (r.status === 405 || r.status === 501 || r.status === 0) {
+    var g = await once("GET");
+    if (g.status !== 0) return g;          // GET reached the server — trust it
+    return r.status !== 0 ? r : g;         // both failed — keep whichever has a status/code
+  }
+  return r;
+}
+
+// Probe a chunk of {id,url} with a concurrency cap. Non-probable (SSRF) or
+// social-skip urls are reported "skipped" WITHOUT a network request.
+async function checkChunk(items, opts) {
+  opts = opts || {};
+  var concurrency = Math.min(opts.concurrency || 8, 8);
+  var timeoutMs = opts.timeoutMs || 8000;
+  var arr = Array.isArray(items) ? items : [];
+  var results = new Array(arr.length);
+  var next = 0;
+  async function worker() {
+    while (true) {
+      var idx = next++;
+      if (idx >= arr.length) return;
+      var it = arr[idx] || {};
+      var url = it.url;
+      if (typeof url !== "string" || !isProbableHost(url) || isSkippedHost(url)) {
+        results[idx] = { id: it.id, status: "skipped", code: null };
+        continue;
+      }
+      var p = await probeUrl(url, { timeoutMs: timeoutMs });
+      results[idx] = { id: it.id, status: classify(p.status, p.code), code: (p.code != null ? p.code : p.status) };
+    }
+  }
+  var pool = [];
+  for (var w = 0; w < Math.min(concurrency, arr.length); w++) pool.push(worker());
+  await Promise.all(pool);
+  return results;
+}
+
+module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };
