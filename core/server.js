@@ -16,6 +16,7 @@ const sync = require("./sync");
 const bookmarks = require("./bookmarks");
 const linkcheck = require("./linkcheck");
 const contentcheck = require("./contentcheck");
+const safebrowse = require("./safebrowse");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -433,6 +434,34 @@ function createServer(ctx) {
       console.error("check-content failed:", e);
       res.status(500).json({ error: "check failed" });
     }
+  });
+
+  // ---- link safety (Google Safe Browsing; server-side; key from config; read-only) ----
+  app.post("/api/check-safety", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const items = Array.isArray(body.items) ? body.items.slice(0, 500) : [];
+      const key = config.getSafeBrowsingKey();
+      if (!key) { res.json({ error: "no_key", results: [] }); return; }
+      const urls = items.map((it) => (it && typeof it.url === "string") ? it.url : "").filter(Boolean);
+      const found = await safebrowse.checkUrls(urls, key, {});
+      const byUrl = {}; found.forEach((f) => { byUrl[f.url] = f.threat; });
+      const results = items.map((it) => ({ id: it && it.id, threat: (it && byUrl[it.url]) || null }));
+      res.json({ results: results });
+    } catch (e) {
+      console.error("check-safety failed:", e);
+      res.status(500).json({ error: "check failed" });
+    }
+  });
+
+  app.get("/api/safebrowsing-key", (req, res) => {
+    res.json({ hasKey: !!config.getSafeBrowsingKey() });
+  });
+
+  app.post("/api/safebrowsing-key", (req, res) => {
+    const key = (req.body && typeof req.body.key === "string") ? req.body.key : "";
+    config.setSafeBrowsingKey(key);
+    res.json({ ok: true, hasKey: !!key });
   });
 
   // Serve the existing web app.
