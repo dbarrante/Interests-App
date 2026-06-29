@@ -4,6 +4,8 @@
 // "likely-alive" — the AI tier (browser) makes the final dead/alive call.
 "use strict";
 
+var linkcheck = require("./linkcheck");
+
 function extractTitle(html) {
   var m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html || ""));
   return m ? m[1].replace(/\s+/g, " ").trim() : "";
@@ -75,4 +77,78 @@ function classifyContent(info) {
   return { verdict: signals.length ? "suspect" : "likely-alive", reason: reason, signals: signals };
 }
 
-module.exports = { extractTitle: extractTitle, extractText: extractText, DEAD_PHRASES: DEAD_PHRASES, classifyContent: classifyContent };
+var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
+var MAX_HOPS = 5;
+
+// GET a page's content with the SSRF guard applied to every hop. Redirects followed
+// manually so each next host is re-validated (a public url that 30x->internal is NOT
+// followed). Body read is capped at maxBytes. Never throws — returns best-effort info.
+async function fetchContent(url, opts) {
+  opts = opts || {};
+  var timeoutMs = Math.min(opts.timeoutMs || 8000, 20000);
+  var maxBytes = opts.maxBytes || 256 * 1024;
+
+  async function getOnce(target) {
+    var ac = new AbortController();
+    var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
+    try {
+      var res = await fetch(target, { method: "GET", redirect: "manual", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
+      var loc = (res.headers && typeof res.headers.get === "function") ? res.headers.get("location") : null;
+      var body = "";
+      try {
+        var full = await res.text();
+        body = (typeof full === "string" && full.length > maxBytes) ? full.slice(0, maxBytes) : (full || "");
+      } catch (e) { body = ""; }
+      return { status: res.status, location: loc, body: body, finalUrl: (res.url || target) };
+    } catch (e) {
+      return { status: 0, location: null, body: "", finalUrl: target };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  var current = url;
+  for (var hop = 0; hop < MAX_HOPS; hop++) {
+    var r = await getOnce(current);
+    var isRedirect = r.status >= 300 && r.status < 400 && r.location;
+    if (!isRedirect) {
+      return { finalUrl: current, status: r.status, title: extractTitle(r.body), snippet: extractText(r.body) };
+    }
+    var nextUrl;
+    try { nextUrl = new URL(r.location, current).href; } catch (e) { return { finalUrl: current, status: r.status, title: "", snippet: "" }; }
+    if (!linkcheck.isProbableHost(nextUrl)) return { finalUrl: current, status: r.status, title: "", snippet: "" };
+    current = nextUrl;
+  }
+  return { finalUrl: current, status: 0, title: "", snippet: "" };
+}
+
+// Probe a chunk of {id,url} with a concurrency cap. Social/SSRF/non-probable urls are
+// reported {verdict:"skipped"} WITHOUT any network request.
+async function checkContentChunk(items, opts) {
+  opts = opts || {};
+  var concurrency = Math.min(opts.concurrency || 8, 8);
+  var arr = Array.isArray(items) ? items : [];
+  var results = new Array(arr.length);
+  var next = 0;
+  async function worker() {
+    while (true) {
+      var idx = next++;
+      if (idx >= arr.length) return;
+      var it = arr[idx] || {};
+      var url = it.url;
+      if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url)) {
+        results[idx] = { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "" };
+        continue;
+      }
+      var c = await fetchContent(url, opts);
+      var cls = classifyContent({ originalUrl: url, finalUrl: c.finalUrl, status: c.status, title: c.title, text: c.snippet });
+      results[idx] = { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason };
+    }
+  }
+  var pool = [];
+  for (var w = 0; w < Math.min(concurrency, arr.length); w++) pool.push(worker());
+  await Promise.all(pool);
+  return results;
+}
+
+module.exports = { extractTitle: extractTitle, extractText: extractText, DEAD_PHRASES: DEAD_PHRASES, classifyContent: classifyContent, fetchContent: fetchContent, checkContentChunk: checkContentChunk };
