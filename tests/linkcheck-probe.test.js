@@ -45,6 +45,25 @@ function listen(handler){ return new Promise(r=>{ const s=http.createServer(hand
       assert.strictEqual(lc.classify(r.status, r.code), "unknown");
     } finally { global.fetch = real; }
   });
+  await t("probeUrl: follows a redirect on a PUBLIC host to its final 404 (dead)", async () => {
+    const real = global.fetch;
+    global.fetch = async (u) => /\/start/.test(String(u))
+      ? { status: 301, headers: { get: (h) => h === "location" ? "http://public.example/final" : null } }
+      : { status: 404, headers: { get: () => null } };
+    try {
+      const r = await lc.probeUrl("http://public.example/start", { timeoutMs: 1000 });
+      assert.strictEqual(lc.classify(r.status, r.code), "dead");
+    } finally { global.fetch = real; }
+  });
+  await t("probeUrl: REFUSES to follow a redirect to an internal host (SSRF) -> reports the 3xx, not dead", async () => {
+    const real = global.fetch;
+    global.fetch = async () => ({ status: 302, headers: { get: (h) => h === "location" ? "http://169.254.169.254/latest/meta-data/" : null } });
+    try {
+      const r = await lc.probeUrl("http://public.example/start", { timeoutMs: 1000 });
+      assert.strictEqual(r.status, 302, "did not follow into the internal host");
+      assert.notStrictEqual(lc.classify(r.status, r.code), "dead");
+    } finally { global.fetch = real; }
+  });
   await t("checkChunk: SSRF (private IP), social, and bad-scheme urls are all skipped without a request", async () => {
     const r = await lc.checkChunk([
       { id: "priv", url: base + "/gone" },                 // private IP -> SSRF-skipped

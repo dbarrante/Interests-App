@@ -44,7 +44,14 @@ function isProbableHost(url) {
   var host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");  // strip IPv6 brackets
   if (host === "localhost" || host === "::1") return false;
   if (/\.local$|\.localhost$/.test(host)) return false;
-  if (/^fc[0-9a-f]{2}:|^fd[0-9a-f]{2}:/i.test(host)) return false;   // fc00::/7 (unique-local IPv6)
+  if (host.indexOf(":") >= 0) {  // IPv6 literal (WHATWG URL already canonicalizes to compressed form)
+    // Reject loopback/unspecified/IPv4-mapped/compat ("::1", "::", "::ffff:7f00:1",
+    // "::<v4>") — all compress to a "::" prefix — plus ULA and link/site-local.
+    if (/^::/.test(host)) return false;
+    if (/^f[cd][0-9a-f]{2}:/i.test(host)) return false;   // fc00::/7 unique-local
+    if (/^fe[89ab][0-9a-f]:/i.test(host)) return false;   // fe80::/10 link-local
+    if (/^fec[0-9a-f]:/i.test(host)) return false;        // fec0::/10 site-local (deprecated)
+  }
   var m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
     var a = +m[1], b = +m[2];
@@ -59,19 +66,23 @@ function isProbableHost(url) {
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
 
 // Probe ONE url. HEAD first (cheap); retry once with GET if HEAD is unsupported
-// (405/501) or errored. redirect:"follow" so the FINAL status is classified (a moved
-// page that 404s = dead; a redirect to a login page = 200 = alive = not flagged).
+// (405/501) or errored. Redirects are followed MANUALLY (redirect:"manual") so each
+// hop's host is re-validated by isProbableHost — a public url that 30x-redirects to an
+// internal/loopback/metadata host is NOT followed (SSRF guard), and its 3xx (=alive) is
+// returned. On a probable host we follow to the final status (a moved page that 404s = dead).
+var MAX_HOPS = 5;
 async function probeUrl(url, opts) {
   opts = opts || {};
   var timeoutMs = opts.timeoutMs || 8000;
-  async function once(method) {
+  async function fetchOnce(target, method) {
     var ac = new AbortController();
     var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
     try {
       // Connection: close — don't pool sockets across the thousands of distinct hosts a
       // sweep touches (also sidesteps a Windows undici keep-alive teardown crash on exit).
-      var res = await fetch(url, { method: method, redirect: "follow", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
-      return { status: res.status, code: null };
+      var res = await fetch(target, { method: method, redirect: "manual", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
+      var loc = (res.headers && typeof res.headers.get === "function") ? res.headers.get("location") : null;
+      return { status: res.status, code: null, location: loc };
     } catch (e) {
       // Node's fetch wraps the real DNS/connection error under e.cause; a timeout shows
       // up as an AbortError (whose numeric e.code must NOT be used as the error code).
@@ -81,18 +92,32 @@ async function probeUrl(url, opts) {
         else if (e.cause && e.cause.code) code = e.cause.code;       // ECONNREFUSED / ENOTFOUND / ...
         else if (typeof e.code === "string") code = e.code;
       }
-      return { status: 0, code: code };
+      return { status: 0, code: code, location: null };
     } finally {
       clearTimeout(timer);
     }
   }
-  var r = await once("HEAD");
-  if (r.status === 405 || r.status === 501 || r.status === 0) {
-    var g = await once("GET");
-    if (g.status !== 0) return g;          // GET reached the server — trust it
-    return r.status !== 0 ? r : g;         // both failed — keep whichever has a status/code
+  async function probeOnce(target) {
+    var r = await fetchOnce(target, "HEAD");
+    if (r.status === 405 || r.status === 501 || r.status === 0) {
+      var g = await fetchOnce(target, "GET");
+      if (g.status !== 0) return g;          // GET reached the server — trust it
+      return r.status !== 0 ? r : g;         // both failed — keep whichever has a status/code
+    }
+    return r;
   }
-  return r;
+  var current = url;
+  for (var hop = 0; hop < MAX_HOPS; hop++) {
+    var r = await probeOnce(current);
+    if (!(r.status >= 300 && r.status < 400) || !r.location) return { status: r.status, code: r.code };
+    var nextUrl;
+    try { nextUrl = new URL(r.location, current).href; } catch (e) { return { status: r.status, code: r.code }; }
+    // SSRF: never follow a redirect to a non-public host — stop and report the 3xx
+    // (=> "alive", never "dead": conservative, never flagged for deletion).
+    if (!isProbableHost(nextUrl)) return { status: r.status, code: r.code };
+    current = nextUrl;
+  }
+  return { status: 308, code: null };        // redirect loop / too many hops -> treat as alive (never dead)
 }
 
 // Probe a chunk of {id,url} with a concurrency cap. Non-probable (SSRF) or

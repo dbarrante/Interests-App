@@ -27,6 +27,12 @@ t("isSkippedHost: a custom skip-list is honored", () => {
 t("isProbableHost: rejects non-http(s), localhost, private/loopback/link-local, .local", () => {
   ["ftp://example.com","javascript:alert(1)","http://localhost/x","https://localhost:3456/api","http://127.0.0.1/","http://127.5.5.5/","http://10.0.0.1/","http://172.16.0.1/","http://172.31.255.1/","http://192.168.1.1/","http://169.254.1.1/","http://[::1]/","https://printer.local/","http://0.0.0.0/"].forEach(u => assert.strictEqual(lc.isProbableHost(u), false, u));
 });
+t("isProbableHost: rejects IPv6 loopback / IPv4-mapped / link-local / site-local literals", () => {
+  ["http://[::1]/","http://[::]/","http://[::ffff:127.0.0.1]/","http://[::ffff:7f00:1]/","http://[::ffff:10.0.0.1]/","http://[::ffff:192.168.1.1]/","http://[fe80::1]/","http://[fec0::1]/","http://[fc00::1]/","http://[fd12:3456::1]/"].forEach(u => assert.strictEqual(lc.isProbableHost(u), false, u));
+});
+t("isProbableHost: allows a genuine public IPv6 literal", () => {
+  ["http://[2606:4700:4700::1111]/","https://[2001:4860:4860::8888]/"].forEach(u => assert.strictEqual(lc.isProbableHost(u), true, u));
+});
 t("isProbableHost: allows public http(s) hosts (incl. public IPs and 172.x outside private range)", () => {
   ["http://example.com/","https://www.recipes.example/x","https://8.8.8.8/","http://172.32.0.1/","http://172.15.0.1/"].forEach(u => assert.strictEqual(lc.isProbableHost(u), true, u));
 });

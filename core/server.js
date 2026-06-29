@@ -409,8 +409,8 @@ function createServer(ctx) {
     try {
       const body = req.body || {};
       const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
-      const concurrency = Math.min(Number(body.concurrency) || 8, 8);
-      const timeoutMs = Math.min(Number(body.timeoutMs) || 8000, 20000);
+      const concurrency = Math.max(1, Math.min(Number(body.concurrency) || 8, 8));
+      const timeoutMs = Math.max(1000, Math.min(Number(body.timeoutMs) || 8000, 20000));
       const results = await linkcheck.checkChunk(items, { concurrency: concurrency, timeoutMs: timeoutMs });
       res.json({ results: results });
     } catch (e) {
