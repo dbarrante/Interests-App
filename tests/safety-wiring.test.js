@@ -35,5 +35,12 @@ t("dead-link sweep runs the safety pass and tags unsafe rows", () => {
   assert.ok(html.slice(drh, drh + 800).indexOf("c.unsafe") >= 0, "deadRowHTML should handle c.unsafe");
 });
 
+t("Settings links to step-by-step Safe Browsing key instructions", () => {
+  assert.ok(html.indexOf("showGuide('sbkey')") >= 0);
+  assert.ok(html.indexOf("sbkey:") >= 0);
+  assert.ok(html.indexOf("Safe Browsing API") >= 0);
+  assert.ok(html.indexOf("Create credentials") >= 0);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

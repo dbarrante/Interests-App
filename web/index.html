@@ -402,7 +402,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint">Get one at <a href="https://www.domcop.com/openpagerank/" target="_blank">openpagerank.com</a> — <a href="#" onclick="showGuide('oprkey');return false"><b>step-by-step instructions</b></a>. Without a key the preference is prompt-only.</div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Google Safe Browsing API key <span id="sbKeyStatus" class="hint"></span></label>
-          <div class="hint">Free malware/phishing check for your links. Get a key at <b>developers.google.com/safe-browsing/v4/get-started</b>. Leave blank to disable.</div>
+          <div class="hint">Free malware/phishing check for your links — <a href="#" onclick="showGuide('sbkey');return false"><b>step-by-step instructions</b></a>. Leave blank to disable.</div>
           <div style="display:flex;gap:8px;margin-top:6px">
             <input type="password" id="sbKey" placeholder="Paste your Safe Browsing key…" style="flex:1">
             <button class="btn btn-primary" onclick="saveSafeBrowsingKey()">Save</button>
@@ -1565,6 +1565,13 @@ const GUIDES = {
     <li>Your API key is shown on the dashboard — copy it</li>
     <li>Paste it into the key field here</li></ol>
     <p>Open PageRank scores every domain 0–10 using open Common Crawl link data (Google's original PageRank idea, rebuilt on open data). With the popularity toggle on, the app checks each recommendation's domain in one batched call and drops anything scoring below ~3.5 — small unknown blogs and made-up domains never reach your feed. The free tier allows thousands of checks per hour, far more than this app will ever use.</p>`,
+  sbkey: `<h2>Get a free Google Safe Browsing API key</h2><ol>
+    <li>Go to <b>console.cloud.google.com</b> and sign in with your Google account</li>
+    <li>Create a project (top bar project dropdown &rarr; <b>New Project</b>), or pick an existing one</li>
+    <li>Open <b>APIs &amp; Services &rarr; Library</b>, search <b>Safe Browsing API</b>, and click <b>Enable</b></li>
+    <li>Open <b>APIs &amp; Services &rarr; Credentials</b>, click <b>Create credentials &rarr; API key</b></li>
+    <li>Copy the key and paste it into the field here</li></ol>
+    <p>Safe Browsing is Google's free malware/phishing blocklist — the same one Chrome uses. The free quota (about 10,000 checks/day) is far more than this app needs. The links you check are sent to Google for lookup; nothing else leaves your machine.</p>`,
   groqkey: `<h2>Get a free Groq API key</h2><ol>
     <li>Go to <b>console.groq.com</b> and sign up — free, no credit card (Google or GitHub login works)</li>
     <li>In the left menu, open <b>API Keys</b></li>
