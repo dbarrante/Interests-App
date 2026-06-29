@@ -344,6 +344,10 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <label style="display:block;margin-top:8px">
           <input type="checkbox" id="tagSideToggle" style="width:auto"> Tags in a left sidebar (Imported view)
         </label>
+        <label style="display:block;margin-top:8px">
+          <input type="checkbox" id="reuseWinToggle" style="width:auto"> Open links in one reused window (instead of a new browser tab each)
+        </label>
+        <div class="hint" style="margin-top:6px">Opens links inside the app and reuses a single window for each click — no more tab pile-up. It's separate from your main browser (its own logins). Bulk "Open" still uses your browser.</div>
       </div>
 
       <div class="sec">
@@ -553,6 +557,7 @@ const DEFAULTS = {
   showDates:false,
   autoBackup:0,
   tagSidebar:false,
+  reuseWindow:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
   about:"",
@@ -771,12 +776,19 @@ function renderSaved(){
 
 /* ============ item actions ============ */
 function findItem(id){ return feed.find(i=>i.id===id) || saved.find(i=>i.id===id); }
+// Open a link the user clicked. With the "reuse window" setting on, route it to one
+// reused in-app window (window.ia.openInApp); otherwise the normal new-browser-tab path.
+function openLink(url){
+  if(!url || !/^https?:\/\//i.test(url)) { if(url) window.open(url, "_blank"); return; }
+  if(S.reuseWindow && window.ia && typeof window.ia.openInApp==="function") window.ia.openInApp(url);
+  else window.open(url, "_blank");
+}
 function openItem(id,mode){
   const it=findItem(id); if(!it) return;
   clicks.push({title:it.title, category:it.category, ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   persistAll();
-  window.open(it.url, "_blank");
+  openLink(it.url);
 }
 function saveItem(id){
   const it=feed.find(i=>i.id===id); if(!it) return;
@@ -1153,6 +1165,10 @@ function renderSettings(){
   document.getElementById("datesToggle").onchange = e=>{ S.showDates=e.target.checked; save("settings",S); if(curTab==="imported") renderImported(); };
   document.getElementById("tagSideToggle").checked = !!S.tagSidebar;
   document.getElementById("tagSideToggle").onchange = e=>{ S.tagSidebar = e.target.checked; save("settings", S); if(curTab==="imported") renderImported(); };
+  if(document.getElementById("reuseWinToggle")){
+    document.getElementById("reuseWinToggle").checked = !!S.reuseWindow;
+    document.getElementById("reuseWinToggle").onchange = e=>{ S.reuseWindow = e.target.checked; save("settings", S); toast(S.reuseWindow?"Links open in one reused window":"Links open in your browser", 3500); };
+  }
   document.getElementById("autoBackup").value = String(S.autoBackup||0);
   document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
   if(document.getElementById("syncToggle")){
@@ -1491,7 +1507,7 @@ function stumbleOpen(){
   clicks.push({title:stCur.title, category:stCur.category, ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   persistAll();
-  window.open(stCur.url,"_blank");
+  openLink(stCur.url);
 }
 
 /* ============ export guides modal ============ */
@@ -2946,7 +2962,7 @@ function impOpen(idx){
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
   Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture});
-  window.open(it.url,"_blank");
+  openLink(it.url);
   if(doCapture) enrichOnOpen(it, idx);
 }
 // Force a fresh image for one card: drop the current picture and request a

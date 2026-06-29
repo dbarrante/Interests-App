@@ -159,3 +159,41 @@ ipcMain.handle("ia:open-external", async (_evt, url) => {
   }
   return false;
 });
+
+// "Reuse window" setting: open a clicked link in ONE in-app window that is reused for
+// every click (no browser-tab pile-up). The window is a plain, hardened browser surface
+// for UNTRUSTED external pages: no preload (so the page can't reach our IPC), no node,
+// context-isolated + sandboxed; child-window opens go to the real browser; only http(s).
+let linkWin = null;
+ipcMain.handle("ia:open-in-app", (_evt, url) => {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return false;
+  if (linkWin && !linkWin.isDestroyed()) {
+    linkWin.loadURL(url);
+    if (linkWin.isMinimized()) linkWin.restore();
+    linkWin.show();
+    linkWin.focus();
+    return true;
+  }
+  linkWin = new BrowserWindow({
+    width: 1100,
+    height: 820,
+    title: "Interests — link viewer",
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // NO preload here: this window shows untrusted external sites and must not have
+      // any bridge into the app's IPC / main process.
+    },
+  });
+  // A link inside the viewer that opens a new window goes to the real browser (don't
+  // spawn more in-app windows); deny non-http(s).
+  linkWin.webContents.setWindowOpenHandler(({ url: u }) => {
+    if (/^https?:/i.test(u)) shell.openExternal(u);
+    return { action: "deny" };
+  });
+  linkWin.on("closed", () => { linkWin = null; });
+  linkWin.loadURL(url);
+  return true;
+});
