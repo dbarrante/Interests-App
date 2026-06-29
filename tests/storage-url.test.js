@@ -40,6 +40,9 @@ t("backup/restore/store/import endpoints", () => {
   assert.strictEqual(SE.storeMove(), "/api/store-location/move");
   assert.strictEqual(SE.import(), "/api/import");
 });
+t("check-content endpoint", () => {
+  assert.strictEqual(SE.checkContent(), "/api/check-content");
+});
 t("Store is NOT exported to Node (browser-only); SE still is", () => {
   const mod = require("../web/storage.js");
   assert.ok(mod.SE, "SE must be exported for Node tests");
