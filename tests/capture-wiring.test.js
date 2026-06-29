@@ -97,5 +97,15 @@ t("recapture heal wiring: openFailOne arms _recapTarget; drainCaptures passes + 
   assert.ok(db.replace(/\s/g, "").indexOf("_recapTarget=null") >= 0, "disarms _recapTarget after heal");
 });
 
+t("grid recapture arms the heal target: impRefresh always, impOpen only when doCapture", () => {
+  const ri = html.indexOf("function impRefresh(");
+  const rb = html.slice(ri, ri + 1200);
+  assert.ok(rb.indexOf("_recapTarget") >= 0, "impRefresh arms _recapTarget");
+  const oi = html.indexOf("function impOpen(");
+  const ob = html.slice(oi, oi + 1700);
+  assert.ok(ob.indexOf("_recapTarget") >= 0, "impOpen arms _recapTarget");
+  assert.ok(ob.replace(/\s/g, "").indexOf("if(doCapture)_recapTarget") >= 0, "impOpen arms only when doCapture");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

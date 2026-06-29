@@ -3151,6 +3151,7 @@ function impOpen(idx){
   const alreadyGood = it.captured && !stale && !isBadImg(it.img);   // already captured AND has a real picture — skip (a captured-but-bad/placeholder image still needs a re-capture, not "nothing to capture")
   const doCapture = !alreadyGood && (needs || stale);
   if(doCapture){ it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending"; Store.putCards(imported); }
+  if(doCapture) _recapTarget = {id:it.id, ts:Date.now()};   // deliberate recapture-on-open: the next extension Clip heals THIS card
   // always send a request so the extension can watch for an unreachable site
   // (and remove the card); capture:false means "watch only, don't screenshot"
   Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture});
@@ -3176,6 +3177,7 @@ function impRefresh(idx){
   it.lastUpdate=Date.now(); it.lastResult="pending";
   Store.putCards(imported);
   Store.kvSet("ia_last_opened", {id:it.id, ts:Date.now()});
+  _recapTarget = {id:it.id, ts:Date.now()};   // ⟳ recapture: the next extension Clip heals THIS card
   // render:1 (FB only) → the extension opens its own focused tab, renders the post
   // the way a manual "Save to Interests" does, captures it, and closes the tab.
   // The app doesn't open the tab itself (the extension owns + closes it).
