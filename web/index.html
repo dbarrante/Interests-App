@@ -2351,8 +2351,10 @@ function _failLabel(reason){
   return ({ social:"Login-walled — open & Save from your browser", unreachable:"Couldn't reach — may be dead", "no-image":"No preview image on the page", "image-failed":"Preview image wouldn't download" })[reason] || "Couldn't capture";
 }
 let _failModalList = [];
+let _failStatus = {};   // {cardId: "recapturing"} — transient hint set on title-click; success/removed are derived
 function openFailReview(){
   _failModalList = imported.filter(needsRetry);
+  _failStatus = {};
   if(!_failModalList.length){ toast("No failed captures"); return; }
   renderFailModal();
   document.getElementById("failModal").classList.add("open");
@@ -2360,11 +2362,12 @@ function openFailReview(){
 function closeFailReview(){ document.getElementById("failModal").classList.remove("open"); _failModalList=[]; }
 function failRowHTML(c){
   const dom=domain(c.url)||""; const reason=c.capReason||"unreachable";
-  return `<div class="dupe-row" data-reason="${esc(reason)}">
+  const st=_failRowStatus(c.id); const resolved=(st==="success"||st==="removed");
+  return `<div class="dupe-row" data-reason="${esc(reason)}" data-card="${esc(c.id)}"${st==="removed"?' style="text-decoration:line-through"':''}>
     ${dupeThumb({scope:"imported", card:c})}
-    <div class="meta"><div class="t" title="Open in browser" onclick="openFailOne('${esc(c.id)}')">${esc(c.title||dom||"(untitled)")}</div>
-      <div class="s">${esc(dom)} · <span style="color:#e0556b">${esc(_failLabel(reason))}</span></div></div>
-    <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-id="${esc(c.id)}" style="width:auto"> select</label>
+    <div class="meta"><div class="t" title="Open in browser" style="${resolved?'pointer-events:none;opacity:.55':''}"${resolved?'':` onclick="openFailOne('${esc(c.id)}')"`}>${esc(c.title||dom||"(untitled)")}</div>
+      <div class="s">${esc(dom)} · <span style="color:#e0556b">${esc(_failLabel(reason))}</span> <span class="fst">${_failStatusHTML(st)}</span></div></div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-id="${esc(c.id)}"${resolved?' disabled':''} style="width:auto"> select</label>
   </div>`;
 }
 function renderFailModal(){
@@ -2404,6 +2407,38 @@ function openFailSelected(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   const urls=_failModalList.filter(c=>c&&ids.has(c.id)).map(c=>c.url).filter(Boolean);
   openUrlsInTabs(urls);   // browser tabs only — no reuse-window, no session-skip in the modal
+}
+// Derive a failed card's current status from REAL state (not a trusted flag): gone from the library →
+// removed; has a good image again → success; otherwise the transient "recapturing" hint (or none).
+function _failRowStatus(id){
+  const cur = imported.find(x=>x&&x.id===id);
+  if(!cur) return "removed";
+  if(!isBadImg(cur.img||"")) return "success";
+  return _failStatus[id] || "";
+}
+function _failStatusHTML(st){
+  if(st==="success") return '<span style="color:#22c55e">&#10003; Success</span>';
+  if(st==="removed") return '<span style="color:#9a958d">&#128465; Removed</span>';
+  if(st==="recapturing") return '<span style="color:#c2410c">Recapturing&hellip;</span>';
+  return "";
+}
+// Update ONE row's badge + interactivity in place (preserves selection + scroll). No full re-render.
+function refreshFailRow(id){
+  const row = document.querySelector('#failBody .dupe-row[data-card="'+id+'"]'); if(!row) return;
+  const st = _failRowStatus(id);
+  const resolved = (st==="success" || st==="removed");
+  const badge = row.querySelector(".fst"); if(badge) badge.innerHTML = _failStatusHTML(st);
+  const titleEl = row.querySelector(".meta .t");
+  if(titleEl){ titleEl.style.pointerEvents = resolved ? "none" : ""; titleEl.style.opacity = resolved ? ".55" : ""; }
+  const cb = row.querySelector('input[data-id]');
+  if(cb){ cb.disabled = resolved; if(resolved) cb.checked = false; }
+  row.style.textDecoration = (st==="removed") ? "line-through" : "";
+}
+// Refresh every row's status while the modal is open (called from the 3s drain loop + on focus return).
+function refreshFailStatuses(){
+  const modal = document.getElementById("failModal");
+  if(!modal || !modal.classList.contains("open")) return;
+  _failModalList.forEach(c=>{ if(c && c.id) refreshFailRow(c.id); });
 }
 function retryFailFresh(){
   const ids=_failCheckedIds(); if(!ids.length){ toast("Select some cards first"); return; }
@@ -4175,6 +4210,7 @@ async function drainCaptures(){
       toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
     }
   }
+  refreshFailStatuses();
 }
 // store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
@@ -4324,6 +4360,7 @@ async function bootData(){
 bootData();
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ drainCaptures(); } });   // returning from the browser: ingest + refresh now
 let _lastSyncChangedAt = 0;
 async function pollSyncChanged(){
   try{

@@ -60,5 +60,20 @@ t("fail modal: title opens one link in browser; Open button opens selected via o
   assert.ok(obody.indexOf("openInApp") < 0, "must not use the reuse-window path");
 });
 
+t("fail modal renders live Success/REMOVED/Recapturing status, refreshed by drainCaptures", () => {
+  assert.ok(html.indexOf("function _failRowStatus(") >= 0, "_failRowStatus defined");
+  const i = html.indexOf("function _failRowStatus(");
+  const b = html.slice(i, i + 400);
+  assert.ok(b.indexOf('"removed"') >= 0, "card missing from imported → removed");
+  assert.ok(b.indexOf("isBadImg") >= 0 && b.indexOf('"success"') >= 0, "good image → success");
+  assert.ok(html.indexOf("function refreshFailStatuses(") >= 0, "refreshFailStatuses defined");
+  const di = html.indexOf("async function drainCaptures(");
+  const dbody = html.slice(di, di + 8000);
+  assert.ok(dbody.indexOf("refreshFailStatuses(") >= 0, "drainCaptures refreshes fail statuses");
+  const fi = html.indexOf("function failRowHTML(");
+  const fbody = html.slice(fi, fi + 900);
+  assert.ok(fbody.indexOf("data-card=") >= 0 && fbody.indexOf('class="fst"') >= 0, "row has data-card + status slot");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
