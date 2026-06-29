@@ -52,6 +52,29 @@ t("stale active card -> unmatched", () => {
 t("force manual capture, no card -> saved", () => {
   assert.strictEqual(routeCapture({ force: true, url: "https://x.com/p" }, base()).action, "saved");
 });
+t("clip + recent recapTarget (id in imported) -> card-image(target) [heal, url need not match]", () => {
+  const imported = [{ id: "f1", url: "https://fatpita.net/?i=1" }];
+  const r = routeCapture({ clip: true, url: "https://fatpita.net/?i=9999" }, base({ imported, recapTarget: { id: "f1", ts: 999000 } }));
+  assert.strictEqual(r.action, "card-image"); assert.strictEqual(r.target.id, "f1");
+});
+t("clip + NO recapTarget -> saved (unchanged)", () => {
+  const imported = [{ id: "f1", url: "https://x.com/p" }];
+  assert.strictEqual(routeCapture({ clip: true, url: "https://x.com/p" }, base({ imported })).action, "saved");
+});
+t("clip + EXPIRED recapTarget -> saved", () => {
+  const imported = [{ id: "f1", url: "https://x.com/p" }];
+  const r = routeCapture({ clip: true, url: "https://x.com/p" }, base({ imported, recapTarget: { id: "f1", ts: 0 } }));
+  assert.strictEqual(r.action, "saved");
+});
+t("clip + recapTarget id NOT in imported -> saved", () => {
+  const imported = [{ id: "other", url: "https://x.com/p" }];
+  const r = routeCapture({ clip: true, url: "https://x.com/p" }, base({ imported, recapTarget: { id: "gone", ts: 999000 } }));
+  assert.strictEqual(r.action, "saved");
+});
+t("dead + recapTarget still -> dead (Remove unaffected)", () => {
+  const r = routeCapture({ dead: true, url: "x" }, base({ recapTarget: { id: "f1", ts: 999000 } }));
+  assert.strictEqual(r.action, "dead");
+});
 
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

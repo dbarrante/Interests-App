@@ -16,6 +16,16 @@
 
     if (!cap || !cap.url) return { action: "skip", reason: "no url" };
     if (cap.dead) return { action: "dead", reason: "extension reported dead/removed" };
+    // A clip arriving while the user is actively recapturing a failed card (they clicked its
+    // title in the failures modal within RECAP_WINDOW) heals THAT card instead of creating a new
+    // Saved entry. The target is the explicit card they clicked, so the clip URL need NOT match
+    // (handles redirects / random query params like fatpita's ?i=). One-shot: the renderer disarms
+    // recapTarget after a picture lands.
+    var RECAP_WINDOW = 15 * 60 * 1000;
+    if (cap.clip && ctx.recapTarget && ctx.recapTarget.id && now - (ctx.recapTarget.ts || 0) < RECAP_WINDOW) {
+      var rt = find(imported, function (it) { return it.id === ctx.recapTarget.id; });
+      if (rt) return { action: "card-image", target: rt, reason: "recapture target (healing failed card)" };
+    }
     if (cap.clip) return { action: "saved", reason: "clip -> Saved library (never modifies Imported)" };
 
     // Non-clip = an image fetched FOR an imported card (batch/auto-capture).
