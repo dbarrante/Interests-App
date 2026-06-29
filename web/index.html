@@ -2352,6 +2352,7 @@ function _failLabel(reason){
 }
 let _failModalList = [];
 let _failStatus = {};   // {cardId: "recapturing"} — transient hint set on title-click; success/removed are derived
+let _recapTarget = null;   // {id, ts} — one-shot, time-windowed target armed by openFailOne; a clip heals it (route-capture.js)
 function openFailReview(){
   _failModalList = imported.filter(needsRetry);
   _failStatus = {};
@@ -2413,6 +2414,7 @@ function openFailOne(id){
   const cur=imported.find(x=>x&&x.id===id);
   if(cur){ const img=(typeof cur.img==="string")?cur.img:""; if(img.indexOf("idb:")===0){ try{ Store.imgDel(cur.id); }catch(e){} } cur.img=""; Store.putCards(imported); }
   try{ Store.kvSet("ia_last_opened", {id:c.id, ts:Date.now()}); }catch(e){}
+  _recapTarget = {id:c.id, ts:Date.now()};   // the next extension Clip heals THIS card (route-capture.js)
   _failStatus[id]="recapturing";
   refreshFailRow(id);
   openUrlsInTabs([c.url]);
@@ -4126,7 +4128,7 @@ async function drainCaptures(){
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
-    const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl, domain });
+    const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl, domain, recapTarget:_recapTarget });
     console.log("[route] " + cap.url + " -> " + decision.action + " (" + decision.reason + ")");
 
     if(decision.action === "dead"){
@@ -4158,6 +4160,7 @@ async function drainCaptures(){
     // viaActive = matched only via the recently-opened "active card" window (a
     // subpage capture), not by id/url — keep the existing subpage semantics.
     const viaActive = decision.reason === "active card (same domain)";
+    const viaRecap = !!(decision.reason && decision.reason.indexOf("recapture target") === 0);   // user-driven heal of the clicked failed card
     if(viaActive){ refreshActive=true; console.log("[drainCaptures] assigned to active card "+(lastOpened&&lastOpened.id)); }
     matched++;
     if(cap.blocked){
@@ -4179,9 +4182,9 @@ async function drainCaptures(){
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
-    // manual: prefer the actual screenshot (what you see); auto: prefer clean OG image
-    const best = force ? (cap.screenshot || cap.ogImage || cap.contentImage)
-                       : (cap.ogImage || cap.contentImage || cap.screenshot);
+    // manual OR an active recapture: prefer the actual screenshot (what you see); auto: prefer clean OG image
+    const best = (force || viaRecap) ? (cap.screenshot || cap.ogImage || cap.contentImage)
+                                     : (cap.ogImage || cap.contentImage || cap.screenshot);
     // Reject a capture that reproduced a KNOWN junk placeholder (recorded when you
     // clicked "Fix placeholders"): don't store it — mark the card couldn't-capture.
     // This is what stops gated posts from re-looping into the placeholder pile.
@@ -4192,7 +4195,7 @@ async function drainCaptures(){
       continue;
     }
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
-    if(best && (force || cap.recap || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
+    if(best && (force || viaRecap || cap.recap || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
     if(cap.capsrc && /facebook\.com|fb\.watch/i.test(match.url||"")) console.log("[fb-cap] "+((match.title||"").slice(0,34))+" → src="+cap.capsrc+" (ext v"+(cap.extv||"OLD/stale")+")");
     // a subpage capture only sets the image — don't overwrite the card's
     // title/description with the unrelated subpage's metadata
@@ -4203,6 +4206,7 @@ async function drainCaptures(){
     if(viaActive) assignedTitle=match.title||"";
     // stamp/refresh capture + last-update so future runs skip it
     match.captured=now; if(match.blocked) delete match.blocked; match.lastUpdate=now; match.lastResult="ok"; persisted=true;
+    if(viaRecap) _recapTarget=null;   // healed — consume the one-shot target
     // fill any DUPLICATE cards sharing this URL so they aren't re-fetched later
     if(best && match.url){
       const nu=clipKey(match.url);   // FB-aware: only fill TRUE duplicates (same post id), never distinct /watch?v= posts sharing a path

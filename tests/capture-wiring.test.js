@@ -68,7 +68,7 @@ t("fail modal renders live Success/REMOVED/Recapturing status, refreshed by drai
   assert.ok(b.indexOf("isBadImg") >= 0 && b.indexOf('"success"') >= 0, "good image → success");
   assert.ok(html.indexOf("function refreshFailStatuses(") >= 0, "refreshFailStatuses defined");
   const di = html.indexOf("async function drainCaptures(");
-  const dbody = html.slice(di, di + 8000);
+  const dbody = html.slice(di, di + 9000);
   assert.ok(dbody.indexOf("refreshFailStatuses(") >= 0, "drainCaptures refreshes fail statuses");
   const fi = html.indexOf("function failRowHTML(");
   const fbody = html.slice(fi, fi + 900);
@@ -83,6 +83,18 @@ t("openFailOne clears image backup-first, sets last-opened + recapturing, then o
   assert.ok(b.indexOf("ia_last_opened") >= 0, "records last-opened for extension Remove fallback");
   assert.ok(b.indexOf('"recapturing"') >= 0, "marks the card recapturing");
   assert.ok(b.indexOf("openUrlsInTabs(") >= 0, "still opens the link in the browser");
+});
+
+t("recapture heal wiring: openFailOne arms _recapTarget; drainCaptures passes + disarms; viaRecap prefers screenshot", () => {
+  assert.ok(html.indexOf("let _recapTarget") >= 0, "_recapTarget declared");
+  const oi = html.indexOf("function openFailOne(");
+  const ob = html.slice(oi, oi + 800);
+  assert.ok(ob.indexOf("_recapTarget") >= 0, "openFailOne arms _recapTarget");
+  const di = html.indexOf("async function drainCaptures(");
+  const db = html.slice(di, di + 7000);
+  assert.ok(db.replace(/\s/g, "").indexOf("recapTarget:_recapTarget") >= 0, "drainCaptures passes recapTarget to routeCapture");
+  assert.ok(db.indexOf("viaRecap") >= 0, "drainCaptures computes viaRecap");
+  assert.ok(db.replace(/\s/g, "").indexOf("_recapTarget=null") >= 0, "disarms _recapTarget after heal");
 });
 
 console.log(passed + " passed, " + failed + " failed");
