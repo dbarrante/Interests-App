@@ -3731,10 +3731,24 @@ async function checkDeadLinks(){
     }
   }
 
-  // Persist the lc markers (so re-runs resume) via the normal bulk-replace path.
+  // Safety pass (Google Safe Browsing) over the same links — flagged links join the review
+  // tagged unsafe. Only if a key is set; otherwise a one-time hint. Honors _deadStop. Free, no consent.
+  let sbHasKey = false;
+  try { sbHasKey = await Store.getSafeBrowsingKey(); } catch(e){ sbHasKey = false; }
+  if(sbHasKey){
+    const sbCands = cand.filter(c=>!_sbFresh(c.card));
+    if(sbCands.length && !_deadStop){
+      const flagged = await runSafetyPass(sbCands, { isStopped: function(){ return _deadStop; }, onStop: function(){ _deadStop = true; } });
+      flagged.forEach(u=>{ const ex = dead.find(d=>d.card && d.card.id===u.card.id && d.scope===u.scope); if(ex){ ex.unsafe = true; ex.threat = u.threat; } else dead.push(u); });
+    }
+  } else if(!_deadStop){
+    toast("Add a Google Safe Browsing key in Settings to also check link safety", 7000);
+  }
+
+  // Persist the lc/sb markers (so re-runs resume) via the normal bulk-replace path.
   Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
   if(dead.length) openDeadReview(dead);
-  else toast(_deadStop ? "Stopped — none dead so far" : (done ? "No dead links found." : "Nothing to check"), 5000);
+  else toast(_deadStop ? "Stopped — nothing flagged so far" : (done ? "No dead or unsafe links found." : "Nothing to check"), 5000);
 }
 function _deadReason(code){
   if(code===404) return "404 not found"; if(code===410) return "410 gone"; if(code===451) return "451 unavailable";
@@ -3743,21 +3757,26 @@ function _deadReason(code){
 }
 function deadRowHTML(c){
   const it=c.card; const dom=domain(it.url)||""; const tag=c.scope==="saved"?"Saved":"Imported";
+  const reason = c.unsafe
+    ? `<span style="color:#e0556b">&#9888; ${esc(_threatLabel(c.threat))}</span>`
+    : c.soft
+      ? `<span style="color:#e0556b">${esc("AI: "+(c.softReason||"content removed"))}</span> · <a href="${esc(waybackUrl(it.url))}" target="_blank" rel="noopener">archived copy</a>`
+      : `<span style="color:#e0556b">${esc(_deadReason(it.lc&&it.lc.code))}</span>`;
   return `<div class="dupe-row">
     ${dupeThumb(c)}
     <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
-      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · <span style="color:#e0556b">${c.soft ? esc("AI: "+(c.softReason||"content removed")) : esc(_deadReason(it.lc&&it.lc.code))}</span>${c.soft?` · <a href="${esc(waybackUrl(it.url))}" target="_blank" rel="noopener">archived copy</a>`:""}</div></div>
+      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · ${reason}</div></div>
     <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(c.scope+":"+it.id)}" checked style="width:auto"> remove</label>
   </div>`;
 }
 function renderDeadModal(){
   document.getElementById("deadBody").innerHTML = `
-    <div class="dupe-head"><span>&#128279; Dead links — ${_deadList.length} found</span>
+    <div class="dupe-head"><span>&#128279; Dead &amp; unsafe links — ${_deadList.length} found</span>
       <span style="flex:1"></span>
       <button class="btn btn-ghost" onclick="closeDeadReview()">Cancel</button>
       <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>
     <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Only definitively-dead links (404 / gone domain) are listed. Uncheck any you want to keep, then click Remove selected.</div>
+      <div class="s" style="opacity:.7;padding:2px 4px 8px">Dead, removed, or unsafe (malware/phishing) links found in your library. Uncheck any you want to keep, then click Remove selected.</div>
       ${_deadList.map(deadRowHTML).join("") || "<div class='s'>No dead links.</div>"}
     </div>`;
   attachCardImages();

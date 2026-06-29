@@ -27,5 +27,13 @@ t("shared runSafetyPass helper exists and checkLinkSafety uses it", () => {
   assert.ok(html.indexOf("runSafetyPass(") >= 0);
 });
 
+t("dead-link sweep runs the safety pass and tags unsafe rows", () => {
+  const cdl = html.indexOf("async function checkDeadLinks");
+  const drh = html.indexOf("function deadRowHTML");
+  assert.ok(cdl >= 0 && drh >= 0);
+  assert.ok(html.indexOf("runSafetyPass(") >= 0);
+  assert.ok(html.slice(drh, drh + 800).indexOf("c.unsafe") >= 0, "deadRowHTML should handle c.unsafe");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
