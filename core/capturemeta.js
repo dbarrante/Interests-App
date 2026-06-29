@@ -16,6 +16,7 @@ function _meta(html, prop) {
 
 function extractOg(html) {
   var h = String(html || "");
+  if (h.length > 300000) h = h.slice(0, 300000);   // bound the regex scans on a hostile/huge page (og tags live in <head>)
   var image = _meta(h, "og:image") || _meta(h, "og:image:url") || _meta(h, "twitter:image") || _meta(h, "twitter:image:src");
   if (!image) { var li = /<link[^>]+rel\s*=\s*["']image_src["'][^>]*href\s*=\s*["']([^"']+)["']/i.exec(h); if (li) image = li[1]; }
   var title = _meta(h, "og:title");
