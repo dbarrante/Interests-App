@@ -183,5 +183,17 @@ t("captureSelected and retryFailFresh both route bulk recapture through the work
   assert.ok(rb.indexOf("startBatchCapture(") < 0, "retryFailFresh must NOT use the Core batch (social-blind)");
 });
 
+t("toolbar 'Retry all' routes the whole failed set through the worker (not the Core fetch)", () => {
+  const i = html.indexOf("function retryAllFailed(");
+  assert.ok(i >= 0, "retryAllFailed defined");
+  const body = html.slice(i, i + 400);
+  assert.ok(body.indexOf("imported.filter(needsRetry)") >= 0, "retries the same set the failures modal lists");
+  assert.ok(body.indexOf("recaptureViaWorker(") >= 0, "drives the worker");
+  assert.ok(body.indexOf("startBatchCapture(") < 0, "must NOT use the Core fetch");
+  // the Retry-all button must call retryAllFailed, not the old Core startBatchCapture('retry')
+  assert.ok(html.indexOf("retryAllFailed()\">&#128260; Retry all") >= 0, "Retry all button wired to retryAllFailed");
+  assert.ok(html.indexOf("startBatchCapture('retry')") < 0, "no Core 'retry' batch left wired to a button");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

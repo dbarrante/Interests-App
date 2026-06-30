@@ -2120,7 +2120,7 @@ function renderImported(){
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
           <div class="tag-menu" id="retryMenu">
             ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
-            ${fail?`<button onclick="closeRetryMenu();startBatchCapture('retry')">&#128260; Retry all ${fail}</button>`:""}
+            ${fail?`<button onclick="closeRetryMenu();retryAllFailed()">&#128260; Retry all ${fail}</button>`:""}
             ${impFailed?`<button onclick="closeRetryMenu();clearFailedFilter()">&#10005; Show all cards</button>`:""}
           </div></div>`;
         return out;
@@ -2463,6 +2463,14 @@ function retryFailFresh(){
   closeFailReview();
   // Route through the extension worker (not the Core server-fetch, which is blind to
   // Instagram/Facebook/social) so failed social cards actually recapture. force overwrites.
+  recaptureViaWorker(cards);
+}
+// Toolbar "Retry all" — recapture EVERY failed card (the same imported.filter(needsRetry) set
+// the failures modal lists) through the extension worker, not the social-blind Core fetch.
+// One click → bulk Instagram/social recapture. Capped, Stoppable, progress shown.
+function retryAllFailed(){
+  const cards=imported.filter(needsRetry);
+  if(!cards.length){ toast("No failed captures to retry"); return; }
   recaptureViaWorker(cards);
 }
 function markFailDone(){
@@ -2864,7 +2872,8 @@ function recaptureViaWorker(cards){
   if(!usable.length){ toast("Select some cards with a link first"); return 0; }
   const seen=new Set();
   const uniq=usable.filter(it=>{ const k=clipKey(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
-  const items=uniq.slice(0,100).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
+  const HARD_MAX=1000;   // safety ceiling (one tab per card, sequential) — not a silent small cap
+  const items=uniq.slice(0,HARD_MAX).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
   items.forEach(x=>_refreshPins.add(x.id));  // keep these visible in the current filter so the picture lands in place instead of the card vanishing
   // stamp dispatched cards (and any url-duplicates) pending so progress/filters update
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
@@ -2877,7 +2886,8 @@ function recaptureViaWorker(cards){
     Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1, force:1});   // force: a deliberate Recapture overwrites the existing image (like the per-card ⟳)
   }catch(e){}
   batchUI={active:true, done:0, total:items.length};
-  toast("Recapturing "+items.length+" card"+(items.length===1?"":"s")+" via the extension — each page opens briefly, captures, and closes (overwriting the old image). Keep Chrome open and stay logged in."+(uniq.length>100?" (100 max per run)":""), 8000);
+  const mins=Math.max(1, Math.round(items.length*10/60));   // ~10s/card (open+capture+close+delay)
+  toast("Recapturing "+items.length+" card"+(items.length===1?"":"s")+" via the extension — one tab opens/captures/closes at a time (~"+mins+" min), overwriting old images. Keep Chrome open + logged in; click Stop anytime."+(uniq.length>HARD_MAX?" (1000 max per run — run again for the rest)":""), 9000);
   renderImportedKeepFocus();
   return items.length;
 }
