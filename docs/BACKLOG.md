@@ -5,6 +5,19 @@ A running list of requested features and deferred items. Each entry has enough c
 
 ## Requested 2026-06-30 (Dave)
 
+- [ ] **Feed is broken (all 404s) → make it dead-page-free + AI-recommended from interests & saves.**
+  Two parts: **(1) BUG** — the feed page ("New ideas" / Stumble) currently shows nothing but 404 errors;
+  the proposed links are dead (LLMs commonly invent plausible-but-nonexistent URLs). **(2) ENHANCEMENT** —
+  the feed should (a) **never display a dead page** — verify each proposed URL is live before showing it
+  (reuse the existing dead-link probe: `Store.checkLinks` / `core/linkcheck.js`, conservative 404/410/gone),
+  and (b) **use AI to propose the most likely pages the user will want**, grounded in their **interests**
+  (`S.interests` / `S.about`, already populated by Analyze-my-library) **and previous saves** (Saved +
+  Imported history). Context: the feed/Stumble already builds an AI prompt from `S.about`+`S.interests`
+  (`buildPrompt` in `web/index.html`); the gap is (i) it surfaces dead/hallucinated URLs and (ii) it may
+  not weight prior saves. Brainstorm: have the AI suggest topics/queries → resolve to REAL pages (or only
+  suggest from a live source) → live-check before render → rank by interest/saves overlap; consider
+  caching validated suggestions so the feed isn't empty while checking.
+
 - [ ] **Single-card "reader" view (full-page, one article at a time).** A page-sized view that shows ONE
   card at a time with **advance / retreat arrows** to move through the set, plus a **Remove card** button
   in the view. For focused reading/triage of one item at a time (vs. the grid). Open questions for
