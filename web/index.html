@@ -1395,26 +1395,21 @@ function parseItems(text){
     image: (i.image && /^https?:\/\//.test(String(i.image))) ? String(i.image) : null
   }));
 }
+// Drop CONFIRMED-dead links before showing them in the feed. Uses the app's OWN Core probe
+// (Store.checkLinks -> /api/check-links): server-side (no CORS), SSRF-guarded, conservative —
+// 404/410/451 + DNS/connection failures = "dead"; social hosts = "skipped"; everything else =
+// "alive"/"unknown". We drop ONLY status==="dead", so a live page is never hidden and social/
+// unknown links are kept. (Replaces the old api.allorigins.win proxy check, which returned HTTP
+// 500 / was CORS-blocked from the app and FAILED OPEN — so every dead AI URL slipped through,
+// which is why the feed showed nothing but 404s.) Fails open ONLY if the whole check errors, so
+// a checker hiccup can't empty the feed.
 async function validateItems(items){
-  let proxyDown = false;
-  const check = async it=>{
-    try{
-      if(/facebook\.com|youtube\.com|youtu\.be/.test(it.url)) return true;
-      const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(), 8000);
-      const r=await fetch("https://api.allorigins.win/get?url="+encodeURIComponent(it.url), {signal:ctl.signal});
-      clearTimeout(tm);
-      if(!r.ok){ proxyDown=true; return true; }
-      const d=await r.json();
-      const code=(d.status && (d.status.http_code || d.status.code)) || 0;
-      if(code<200 || code>=400) return false;
-      if(!d.contents || typeof d.contents!=="string" || d.contents.length<200) return false;
-      if(/<title>[^<]*(404|not found|oops|can.t be reached|temporarily unavailable)[^<]*<\/title>/i.test(d.contents.slice(0,3000))) return false;
-      return true;
-    }catch(e){ proxyDown=true; return true; }
-  };
-  const flags = await Promise.all(items.map(check));
-  if(proxyDown) console.warn("Link checker partially unavailable — some links unverified");
-  return items.filter((_,i)=>flags[i]);
+  if(!items.length) return items;
+  let results;
+  try{ results = await Store.checkLinks(items.map(i=>({ id:i.id, url:i.url }))); }
+  catch(e){ console.warn("Feed link check unavailable — showing unverified", e); return items; }
+  const dead = new Set((results||[]).filter(r=>r && r.status==="dead").map(r=>r.id));
+  return items.filter(i=>!dead.has(i.id));
 }
 async function rankFilter(items){
   if(!S.popularOnly || !S.oprKey || !items.length) return items;
