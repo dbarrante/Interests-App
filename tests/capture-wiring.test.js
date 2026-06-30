@@ -157,5 +157,12 @@ t("dedupClipUrl: bare homepages dedup, bare social feeds don't, path URLs dedup"
   assert.strictEqual(dedupClipUrl(""), false);
 });
 
+t("impRefresh lets the extension own the capture tab (no app window.open duplicate)", () => {
+  const i = html.indexOf("function impRefresh(");
+  const body = html.slice(i, i + 1800);
+  assert.ok(body.indexOf("Store.setCaptureRequest(") >= 0, "still queues the capture request for the worker");
+  assert.ok(body.indexOf("window.open(") < 0, "impRefresh must NOT open its own tab — the extension worker owns it");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

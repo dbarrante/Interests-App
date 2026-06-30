@@ -3183,15 +3183,13 @@ function impRefresh(idx){
   // The app doesn't open the tab itself (the extension owns + closes it).
   Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true, closeAfter:true, render: isFb?1:undefined});
   closeRefreshTab(it.id);   // clear any prior pending refresh for this card
-  if(!isFb){
-    const win = window.open(it.url,"_blank");
-    // track the tab we opened so drainCaptures can close it once the capture lands;
-    // a fallback timer closes it even if no result ever arrives (extension off, etc.)
-    if(win) _refreshTabs[it.id] = { win, timer: setTimeout(()=>closeRefreshTab(it.id), 60000) };
-  }
-  enrichOnOpen(it, idx);
+  // The extension's background worker (capture-request poller) opens the page, captures it, and
+  // closes the tab for EVERY platform — so the app no longer opens its own tab (that produced a
+  // duplicate). The image was cleared above and the request carries force:true, so the capture
+  // overwrites the card with no manual delete.
+  enrichOnOpen(it, idx);    // fast Core og/thumbnail fallback while the real screenshot lands
   renderImportedKeepFocus();   // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
-  toast(isFb ? "Auto-capturing this Facebook post — a tab opens briefly to render it, then closes. Stay logged into Facebook." : "Refreshing image — capturing the page…", 5000);
+  toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
 }
 // tabs opened by a manual refresh, keyed by card id, so they can be auto-closed
 let _refreshTabs = {};
