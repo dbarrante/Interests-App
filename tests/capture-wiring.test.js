@@ -146,5 +146,16 @@ t("IG match-and-heal: igHealMatch defined, heals by shortcode, called before add
   assert.ok(db.replace(/\s/g, "").indexOf("if(!igHealMatch(cap))addClip(cap)") >= 0, "drainCaptures tries igHealMatch before addClip");
 });
 
+t("dedupClipUrl: bare homepages dedup, bare social feeds don't, path URLs dedup", () => {
+  const { dedupClipUrl } = loadFns(["dedupClipUrl"]);
+  assert.strictEqual(dedupClipUrl("training.linuxfoundation.org"), true);   // bare homepage -> dedup (was the bug)
+  assert.strictEqual(dedupClipUrl("lazywinadmin.com"), true);
+  assert.strictEqual(dedupClipUrl("facebook.com"), false);                  // bare social feed -> keep distinct posts separate
+  assert.strictEqual(dedupClipUrl("instagram.com"), false);
+  assert.strictEqual(dedupClipUrl("facebook.com/photo/x"), true);           // path -> dedup (clipKey folds in the post id)
+  assert.strictEqual(dedupClipUrl("example.com/article"), true);
+  assert.strictEqual(dedupClipUrl(""), false);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
