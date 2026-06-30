@@ -13,7 +13,7 @@
     "productName": "Interests App",
     "directories": {
       "buildResources": "build",
-      "output": "dist"
+      "output": "C:/Users/dkbar/interests-dist"
     },
     "files": [
       "main.js",
