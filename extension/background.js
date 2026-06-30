@@ -367,6 +367,39 @@ chrome.runtime.onStartup.addListener(ensureContextMenu);
 chrome.runtime.onStartup.addListener(() => { flushQueue().catch(() => {}); });
 chrome.runtime.onInstalled.addListener(() => { flushQueue().catch(() => {}); });
 ensureContextMenu();   // also run when the service worker spins up
+
+// === SW-driven single-capture poller (v4.40 proof) ==========================
+// The capture DRIVER historically lived in bridge.js, a content script Chrome
+// injects ONLY into a localhost:3456 tab. The standalone desktop app is not a
+// Chrome tab, so bridge.js never runs and automated capture requests are never
+// drained. Drive them from the always-on background service worker instead:
+// poll the app's single-capture mailbox and run the EXISTING handleCaptureRequest
+// in-SW — the same path the popup already uses. Works whenever Chrome is open
+// with the extension, no localhost tab required.
+async function pollCaptureRequest() {
+  // If the app IS open as a Chrome localhost tab, bridge.js drives it (faster, 800ms);
+  // defer to it so we never double-claim/double-capture the same request.
+  try { const lt = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] }); if (lt && lt.length) return; } catch (e) {}
+  let port; try { port = await findAppPort(); } catch (e) { return; }
+  if (port == null) return;
+  let req = null;
+  try {
+    const r = await fetch("http://127.0.0.1:" + port + "/api/capture-request");
+    if (r && r.ok) { const j = await r.json(); req = j && j.request; }
+  } catch (e) { return; }
+  if (!req || !req.url) return;
+  try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
+  log("SW poller claimed capture request: " + req.url);
+  try { await handleCaptureRequest(req); } catch (e) { log("SW handleCaptureRequest failed: " + (e && e.message)); }
+}
+try {
+  chrome.alarms.create("iaCapturePoll", { periodInMinutes: 0.5 });   // 30s is the MV3 minimum period
+  chrome.alarms.onAlarm.addListener((a) => { if (a && a.name === "iaCapturePoll") pollCaptureRequest().catch(() => {}); });
+} catch (e) { log("alarms unavailable: " + (e && e.message)); }
+chrome.runtime.onStartup.addListener(() => { pollCaptureRequest().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => { pollCaptureRequest().catch(() => {}); });
+pollCaptureRequest().catch(() => {});   // poll once on SW spin-up
+
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "saveToInterests") return;
