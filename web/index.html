@@ -4273,6 +4273,12 @@ function clipKey(u){
   }catch(e){}
   return base;
 }
+// Extract an Instagram post shortcode from a /p|reel|reels|tv/<code> permalink (else ""). Lets a
+// freshly-captured IG post be matched to a failed imported card regardless of /p vs /reel(s) form.
+function igShortcode(url){
+  const m = /instagram\.com\/(?:p|reel|reels|tv)\/([\w-]+)/i.exec(url||"");
+  return m ? m[1] : "";
+}
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
   const nu=normalizeUrl(cap.url||"");

@@ -1,6 +1,7 @@
 const assert = require("assert");
 const fs = require("fs"), path = require("path");
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+const { loadFns } = require("./_extract");
 let passed = 0, failed = 0;
 function t(n, fn){ try { fn(); passed++; } catch(e){ failed++; console.error("FAIL: "+n+"\n  "+(e&&e.message)); } }
 
@@ -121,6 +122,16 @@ t("og-url fallback applied: startBatchCapture + enrichOnOpen handle r.imageUrl",
   const ei = html.indexOf("async function enrichOnOpen(");
   const eb = html.slice(ei, ei + 2400);
   assert.ok(eb.indexOf("m.imageUrl") >= 0, "enrichOnOpen applies m.imageUrl");
+});
+
+t("igShortcode extracts the IG post code from p/reel/reels/tv, else ''", () => {
+  const { igShortcode } = loadFns(["igShortcode"]);
+  assert.strictEqual(igShortcode("https://www.instagram.com/p/ABC123/"), "ABC123");
+  assert.strictEqual(igShortcode("https://www.instagram.com/reel/DYnA8VyoVYR/"), "DYnA8VyoVYR");
+  assert.strictEqual(igShortcode("https://www.instagram.com/reels/DZ-P1bMxOwg/"), "DZ-P1bMxOwg");
+  assert.strictEqual(igShortcode("https://www.instagram.com/tv/XYZ9/"), "XYZ9");
+  assert.strictEqual(igShortcode("https://www.instagram.com/accounts/login/"), "");
+  assert.strictEqual(igShortcode("https://fatpita.net/?i=6043"), "");
 });
 
 console.log(passed + " passed, " + failed + " failed");
