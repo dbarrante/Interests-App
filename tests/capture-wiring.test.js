@@ -134,5 +134,17 @@ t("igShortcode extracts the IG post code from p/reel/reels/tv, else ''", () => {
   assert.strictEqual(igShortcode("https://fatpita.net/?i=6043"), "");
 });
 
+t("IG match-and-heal: igHealMatch defined, heals by shortcode, called before addClip", () => {
+  assert.ok(html.indexOf("function igHealMatch(") >= 0, "igHealMatch defined");
+  const hi = html.indexOf("function igHealMatch(");
+  const hb = html.slice(hi, hi + 1000);
+  assert.ok(hb.indexOf("igShortcode") >= 0, "matches by shortcode");
+  assert.ok(hb.indexOf("setCardImage") >= 0, "heals via setCardImage");
+  assert.ok(hb.indexOf("isBadImg") >= 0 && hb.indexOf("cdninstagram") >= 0, "heals bad-image OR static-logo cards");
+  const di = html.indexOf("async function drainCaptures(");
+  const db = html.slice(di, di + 9000);
+  assert.ok(db.replace(/\s/g, "").indexOf("if(!igHealMatch(cap))addClip(cap)") >= 0, "drainCaptures tries igHealMatch before addClip");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

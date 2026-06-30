@@ -2391,7 +2391,7 @@ function renderFailModal(){
       <button class="btn btn-ghost" onclick="removeFailSelected()" style="color:#e0556b">&#128465; Remove</button>
     </div>
     <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Select cards, then use a button above. <b>Retry (fresh)</b> clears the old picture and re-captures; <b>Remove</b> deletes (backup-first); <b>Mark done</b> stops a card showing as failed (e.g. no preview image). Login-walled cards need the extension.</div>
+      <div class="s" style="opacity:.7;padding:2px 4px 8px">Select cards, then use a button above. <b>Retry (fresh)</b> clears the old picture and re-captures; <b>Remove</b> deletes (backup-first); <b>Mark done</b> stops a card showing as failed (e.g. no preview image). <b>Instagram:</b> open your IG <b>Saved collection</b> in Chrome (logged in) and right-click &#8594; &ldquo;Save to Interests&rdquo; on each post &mdash; matching ones heal here automatically.</div>
       ${body || "<div class='s'>No failed captures.</div>"}
     </div>`;
   attachCardImages();
@@ -4149,7 +4149,7 @@ async function drainCaptures(){
     }
 
     if(decision.action === "saved"){
-      try{ addClip(cap); }catch(e){ console.error("[clip] addClip failed", e); }
+      try{ if(!igHealMatch(cap)) addClip(cap); }catch(e){ console.error("[clip] addClip failed", e); }
       continue;
     }
 
@@ -4278,6 +4278,23 @@ function clipKey(u){
 function igShortcode(url){
   const m = /instagram\.com\/(?:p|reel|reels|tv)\/([\w-]+)/i.exec(url||"");
   return m ? m[1] : "";
+}
+// A captured Instagram post: if its shortcode matches failed imported card(s) — whose image is bad or
+// the v4.39-era static logo — heal them with the captured photo instead of creating a duplicate Saved
+// card. Returns true if it healed at least one. Non-IG / no-image / no-match -> false (caller falls
+// back to addClip). Deliberate user re-capture; never touches a genuinely good image.
+function igHealMatch(cap){
+  const sc = igShortcode(cap && cap.url); if(!sc) return false;
+  const img = (cap && (cap.clipImage || cap.screenshot || cap.ogImage || cap.contentImage)) || "";
+  if(!img) return false;
+  const broken = (s)=> isBadImg(s) || /static\.cdninstagram\.com|rsrc\.php|\/images\//i.test(s);
+  const matches = imported.filter(c=> c && igShortcode(c.url)===sc && broken((typeof c.img==="string"?c.img:"")||""));
+  if(!matches.length) return false;
+  const now=Date.now();
+  matches.forEach(c=>{ setCardImage(c, img); c.captured=now; c.lastUpdate=now; c.lastResult="ok"; c.capReason=""; });
+  Store.putCards(imported); updateCounts();
+  if(curTab==="imported") renderImportedKeepFocus();
+  return true;
 }
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
