@@ -114,5 +114,14 @@ t("enrichOnOpen enriches via the Core (no CORS proxy): uses Store.captureMeta, n
   assert.ok(eb.indexOf("allorigins.win") < 0, "no api.allorigins.win proxy fetch remains");
 });
 
+t("og-url fallback applied: startBatchCapture + enrichOnOpen handle r.imageUrl", () => {
+  const si = html.indexOf("async function startBatchCapture");
+  const sb = html.slice(si, si + 3200);
+  assert.ok(sb.indexOf("imageUrl") >= 0, "startBatchCapture applies imageUrl");
+  const ei = html.indexOf("async function enrichOnOpen(");
+  const eb = html.slice(ei, ei + 2400);
+  assert.ok(eb.indexOf("m.imageUrl") >= 0, "enrichOnOpen applies m.imageUrl");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
