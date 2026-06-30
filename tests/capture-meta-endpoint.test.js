@@ -42,6 +42,18 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.strictEqual(r.json.results[0].reason, "no-image");
   });
 
+  await t("endpoint returns imageUrl fallback when the image download is blocked", async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.png/.test(u)) return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "text/html" : null }, arrayBuffer: async () => new Uint8Array([9]).buffer }; // non-image -> download fails
+      return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () => '<meta property="og:image" content="https://img.test/y.png">' };
+    };
+    const r = await req(port, "POST", "/api/capture-meta", { items:[{ id:"u1", url:"https://example.test/withimg" }] });
+    assert.strictEqual(r.json.results[0].hasImage, false);
+    assert.strictEqual(r.json.results[0].imageUrl, "https://img.test/y.png");
+    assert.strictEqual(r.json.results[0].reason, "");
+  });
+
   await new Promise(r => core.close(r));
   ctx.db.close();
   global.fetch = realFetch;
