@@ -5,18 +5,23 @@ A running list of requested features and deferred items. Each entry has enough c
 
 ## Requested 2026-06-30 (Dave)
 
-- [ ] **Feed is broken (all 404s) → make it dead-page-free + AI-recommended from interests & saves.**
-  Two parts: **(1) BUG** — the feed page ("New ideas" / Stumble) currently shows nothing but 404 errors;
-  the proposed links are dead (LLMs commonly invent plausible-but-nonexistent URLs). **(2) ENHANCEMENT** —
-  the feed should (a) **never display a dead page** — verify each proposed URL is live before showing it
-  (reuse the existing dead-link probe: `Store.checkLinks` / `core/linkcheck.js`, conservative 404/410/gone),
-  and (b) **use AI to propose the most likely pages the user will want**, grounded in their **interests**
-  (`S.interests` / `S.about`, already populated by Analyze-my-library) **and previous saves** (Saved +
-  Imported history). Context: the feed/Stumble already builds an AI prompt from `S.about`+`S.interests`
-  (`buildPrompt` in `web/index.html`); the gap is (i) it surfaces dead/hallucinated URLs and (ii) it may
-  not weight prior saves. Brainstorm: have the AI suggest topics/queries → resolve to REAL pages (or only
-  suggest from a live source) → live-check before render → rank by interest/saves overlap; consider
-  caching validated suggestions so the feed isn't empty while checking.
+- [x] **(1) BUG — feed showed nothing but 404s. FIXED v1.6.3 (commit pending rebuild).** Root cause:
+  `validateItems` checked each AI-suggested URL through `api.allorigins.win` (now HTTP 500 / CORS-blocked
+  from the app) and FAILED OPEN (returned "alive" on any proxy error) → zero filtering → every dead
+  AI-hallucinated URL was shown. Fix: `validateItems` now uses the app's own `Store.checkLinks`
+  (`/api/check-links`: server-side, SSRF-guarded, conservative) and drops ONLY confirmed-dead links
+  (404/410/451/DNS); social hosts return `skipped`, unknown/alive are kept (live pages never hidden).
+  Verified the Core probe live (example.com→alive, fake→404 dead, yt/ig/fb→skipped). `tests/feed-validate.test.js`.
+- [ ] **(2) ENHANCEMENT — feed AI-recommends from interests & previous saves (the larger upgrade, NOT yet built).**
+  The feed should **use AI to propose the most likely pages the user will want**, grounded in their
+  **interests** (`S.interests` / `S.about`, populated by Analyze-my-library) **and previous saves** (Saved +
+  Imported history). The feed already builds an AI prompt from `S.about`+`S.interests` (`buildPrompt` in
+  `web/index.html`) and passes recent saves/likes/clicks; the upgrade is to weight prior saves more heavily
+  and improve relevance/ranking. Brainstorm: have the AI suggest topics/queries → resolve to REAL pages
+  (or suggest only from a live source) → still live-check before render (done in part 1) → rank by
+  interest/saves overlap; consider caching validated suggestions so the feed isn't empty while checking.
+  NOTE: hard-404 filtering is done (part 1); soft-404 (200-but-gone) detection in the feed could fold in
+  the existing `/api/check-content` tier if needed.
 
 - [ ] **Single-card "reader" view (full-page, one article at a time).** A page-sized view that shows ONE
   card at a time with **advance / retreat arrows** to move through the set, plus a **Remove card** button
