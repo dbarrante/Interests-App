@@ -181,8 +181,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
 #modal.open{display:flex}
-#dupeModal,#deadModal,#safetyModal,#failModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
-#dupeModal.open,#deadModal.open,#safetyModal.open,#failModal.open{display:flex}
+#dupeModal,#deadModal,#failModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+#dupeModal.open,#deadModal.open,#failModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 #failBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
 #failBody .dupe-row .meta .t{cursor:pointer}
@@ -533,7 +533,6 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 </div>
 <div id="dupeModal"><div class="dupe-box"><div id="dupeBody"></div></div></div>
 <div id="deadModal"><div class="dupe-box"><div id="deadBody"></div></div></div>
-<div id="safetyModal"><div class="dupe-box"><div id="safetyBody"></div></div></div>
 <div id="failModal"><div class="dupe-box"><div id="failBody"></div></div></div>
 
 <script>
@@ -2127,8 +2126,7 @@ function renderImported(){
       })()}
       ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
       <button class="btn btn-ghost" onclick="openDupeReview(scanDuplicates())" title="Scan Imported + Saved for duplicate links and near-identical titles, then review before removing">&#128270; Scan duplicates</button>
-      <button class="btn btn-ghost" onclick="checkDeadLinks()" title="Check Imported + Saved links for dead pages (404 / gone domain) and review before removing">&#128279; Check dead links</button>
-      <button class="btn btn-ghost" onclick="checkLinkSafety()" title="Check Imported + Saved links against Google Safe Browsing and review before removing">&#128737; Check link safety</button>
+      <button class="btn btn-ghost" onclick="checkDeadLinks()" title="Check Imported + Saved links for dead pages (404 / gone domain) AND unsafe sites (Google Safe Browsing), then review before removing">&#128279; Check links</button>
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -4059,7 +4057,6 @@ function applyDeadRemoval(){
 // ---- Link safety check (Google Safe Browsing) → review (mirrors the dead-link flow;
 // removal reuses the same backup-first bulk-replace path; only Google-flagged links shown) ----
 const SB_FRESH_DAYS = 7;          // re-runs skip links checked within this window
-let _sbStop = false, _safetyList = [];
 function _sbFresh(it){ return !!(it && it.sb && it.sb.at && (Date.now()-it.sb.at) < SB_FRESH_DAYS*864e5); }
 function _threatLabel(t){
   return ({ MALWARE:"Malware", SOCIAL_ENGINEERING:"Phishing / social engineering", UNWANTED_SOFTWARE:"Unwanted software", POTENTIALLY_HARMFUL_APPLICATION:"Harmful app" })[t] || ("Flagged: " + (t || "unsafe"));
@@ -4084,58 +4081,8 @@ async function runSafetyPass(cands, opts){
   }
   return unsafe;
 }
-async function checkLinkSafety(){
-  let hasKey = false;
-  try { hasKey = await Store.getSafeBrowsingKey(); } catch(e){ hasKey = false; }
-  if(!hasKey){ toast("Add your Google Safe Browsing API key in Settings first", 6000); showTab("settings"); return; }
-  const cand = [];
-  imported.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_sbFresh(it)) cand.push({scope:"imported", card:it}); });
-  saved.forEach(it=>{ if(it && /^https?:\/\//i.test(it.url||"") && !_sbFresh(it)) cand.push({scope:"saved", card:it}); });
-  if(!cand.length){ toast("No links to check (all recently checked)", 4000); return; }
-  _sbStop = false;
-  const unsafe = await runSafetyPass(cand, { isStopped: function(){ return _sbStop; }, onStop: function(){ _sbStop = true; } });
-  Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
-  if(unsafe.length) openSafetyReview(unsafe);
-  else toast(_sbStop ? "Stopped — none flagged so far" : "No unsafe links found.", 5000);
-}
-function safetyRowHTML(c){
-  const it=c.card; const dom=domain(it.url)||""; const tag=c.scope==="saved"?"Saved":"Imported";
-  return `<div class="dupe-row">
-    ${dupeThumb(c)}
-    <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
-      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span> · <span style="color:#e0556b">&#9888; ${esc(_threatLabel(c.threat))}</span></div></div>
-    <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(c.scope+":"+it.id)}" checked style="width:auto"> remove</label>
-  </div>`;
-}
-function renderSafetyModal(){
-  document.getElementById("safetyBody").innerHTML = `
-    <div class="dupe-head"><span>&#128737; Unsafe links — ${_safetyList.length} found</span>
-      <span style="flex:1"></span>
-      <button class="btn btn-ghost" onclick="closeSafetyReview()">Cancel</button>
-      <button class="btn btn-primary" onclick="applySafetyRemoval()">Remove selected</button></div>
-    <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Links Google Safe Browsing flagged as dangerous. Uncheck any you want to keep, then click Remove selected.</div>
-      ${_safetyList.map(safetyRowHTML).join("") || "<div class='s'>No unsafe links.</div>"}
-    </div>`;
-  attachCardImages();
-}
-function openSafetyReview(list){ _safetyList = list || []; if(!_safetyList.length){ toast("No unsafe links found", 4000); return; } renderSafetyModal(); document.getElementById("safetyModal").classList.add("open"); }
-function closeSafetyReview(){ document.getElementById("safetyModal").classList.remove("open"); _safetyList = []; }
-function applySafetyRemoval(){
-  const checked = new Set(Array.prototype.map.call(document.querySelectorAll('#safetyBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
-  if(!checked.size){ closeSafetyReview(); toast("Nothing selected"); return; }
-  snapshotBeforeDestructive();
-  const rmImported = new Set(), rmSaved = new Set();
-  checked.forEach(v=>{ const i=v.indexOf(":"); const scope=v.slice(0,i), id=v.slice(i+1); (scope==="saved"?rmSaved:rmImported).add(id); });
-  const gone = imported.filter(c=>c&&rmImported.has(c.id)).concat(saved.filter(c=>c&&rmSaved.has(c.id)));
-  gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
-  if(rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
-  if(rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported); Store.putSaved(saved); writeSavesFile(); updateCounts();
-  closeSafetyReview();
-  if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
-  toast(`Removed ${checked.size} unsafe link${checked.size===1?"":"s"}`, 5000);
-}
+// (Safety-only button + its modal removed 2026-06-30: link safety is now folded into the single
+// "Check links" sweep — checkDeadLinks runs runSafetyPass and merges unsafe rows into the dead-review modal.)
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 async function drainCaptures(){
   let queue;

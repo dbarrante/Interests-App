@@ -195,5 +195,25 @@ t("toolbar 'Retry all' routes the whole failed set through the worker (not the C
   assert.ok(html.indexOf("startBatchCapture('retry')") < 0, "no Core 'retry' batch left wired to a button");
 });
 
+t("link checks are consolidated into ONE 'Check links' button (safety folded into the dead sweep)", () => {
+  // one combined button, renamed
+  assert.ok(html.indexOf("Check links<") >= 0, "the consolidated 'Check links' button exists");
+  assert.ok(html.indexOf("Check dead links") < 0, "old 'Check dead links' label is gone (renamed)");
+  assert.ok(html.indexOf("Check link safety") < 0, "separate 'Check link safety' button is gone");
+  assert.ok(html.indexOf("checkLinkSafety(") < 0, "no checkLinkSafety reference remains");
+  // the combined sweep still runs the safety pass (consolidation kept, not lost)
+  const di = html.indexOf("async function checkDeadLinks(");
+  assert.ok(di >= 0, "checkDeadLinks present");
+  assert.ok(html.slice(di, di + 3200).indexOf("runSafetyPass(") >= 0, "checkDeadLinks still runs the safety pass");
+  // orphaned safety-only code removed
+  assert.ok(html.indexOf("function applySafetyRemoval(") < 0, "applySafetyRemoval removed");
+  assert.ok(html.indexOf("function renderSafetyModal(") < 0, "renderSafetyModal removed");
+  assert.ok(html.indexOf("function openSafetyReview(") < 0, "openSafetyReview removed");
+  assert.ok(html.indexOf('id="safetyModal"') < 0, "safetyModal markup removed");
+  // shared pieces the combined sweep needs are kept
+  assert.ok(html.indexOf("async function runSafetyPass(") >= 0, "runSafetyPass kept (shared)");
+  assert.ok(html.indexOf("function _threatLabel(") >= 0, "_threatLabel kept (used by deadRowHTML)");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

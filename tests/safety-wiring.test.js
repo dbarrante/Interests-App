@@ -12,17 +12,18 @@ t("saves the key via Store", () => {
   assert.ok(html.indexOf("Store.getSafeBrowsingKey") >= 0);
 });
 
-t("loads the safety helper entry points", () => {
-  assert.ok(html.indexOf("function checkLinkSafety") >= 0);
-  assert.ok(html.indexOf("Store.checkSafety") >= 0);
-  assert.ok(html.indexOf('id="safetyModal"') >= 0);
+t("safety engine is wired (Store.checkSafety + runSafetyPass)", () => {
+  assert.ok(html.indexOf("Store.checkSafety") >= 0, "Store.checkSafety adapter present");
+  assert.ok(html.indexOf("async function runSafetyPass(") >= 0, "shared safety pass present");
 });
-t("has the Check link safety button", () => {
-  assert.ok(html.indexOf("checkLinkSafety()") >= 0);
-  assert.ok(html.indexOf("Check link safety") >= 0);
+t("the separate 'Check link safety' button/modal are GONE (consolidated into Check links)", () => {
+  // safety is now folded into the single 'Check links' sweep — no standalone button or modal
+  assert.ok(html.indexOf("checkLinkSafety") < 0, "no standalone checkLinkSafety function/button");
+  assert.ok(html.indexOf("Check link safety") < 0, "no 'Check link safety' button label");
+  assert.ok(html.indexOf('id="safetyModal"') < 0, "no separate safety modal");
 });
 
-t("shared runSafetyPass helper exists and checkLinkSafety uses it", () => {
+t("shared runSafetyPass helper exists and the dead-link sweep uses it", () => {
   assert.ok(html.indexOf("function runSafetyPass") >= 0);
   assert.ok(html.indexOf("runSafetyPass(") >= 0);
 });
