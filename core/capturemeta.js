@@ -111,8 +111,9 @@ async function captureMetaChunk(items, opts) {
         var page = await _fetchHtml(url, opts);
         var og = extractOg(page.html);
         var imageDataUrl = "";
+        var abs = "";
         if (og.image) {
-          var abs; try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
+          try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
           if (abs) imageDataUrl = await _fetchImageDataUrl(abs, opts);
         }
         var reason = "";
@@ -121,7 +122,11 @@ async function captureMetaChunk(items, opts) {
           else if (og.image) reason = "image-failed";
           else reason = "no-image";
         }
-        results[idx] = { id: it.id, imageDataUrl: imageDataUrl, title: og.title, description: og.description, reason: reason };
+        // When the image couldn't be downloaded server-side but a valid http(s) og:image URL was found,
+        // return it so the renderer can display it directly via <img> (the browser loads it where the
+        // server-side fetch was blocked by hotlink/referer protection). http(s) only.
+        var imageUrl = (!imageDataUrl && /^https?:\/\//i.test(abs)) ? abs : "";
+        results[idx] = { id: it.id, imageDataUrl: imageDataUrl, imageUrl: imageUrl, title: og.title, description: og.description, reason: reason };
       } catch (e) {
         results[idx] = { id: it.id, imageDataUrl: "", title: "", description: "", reason: "unreachable" };
       }

@@ -17,6 +17,7 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(out.length, 1);
     assert.ok(out[0].imageDataUrl.indexOf("data:image/png;base64,") === 0, "expected png data url, got "+out[0].imageDataUrl.slice(0,30));
     assert.strictEqual(out[0].title, "Hi");
+    assert.strictEqual(out[0].imageUrl, "");   // download succeeded -> no fallback url needed
   });
 
   await t("captureMetaChunk: no og:image -> empty imageDataUrl", async () => {
@@ -68,6 +69,8 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(by.dead.reason, "unreachable");
     assert.strictEqual(by.noimg.reason, "no-image");
     assert.strictEqual(by.imgfail.reason, "image-failed");
+    assert.strictEqual(by.imgfail.imageUrl, "https://img.test/x.png");   // download failed -> return the og URL
+    assert.strictEqual(by.noimg.imageUrl, "");                            // no og -> no fallback url
   });
 
   global.fetch = realFetch;
