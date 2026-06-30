@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interests Capture",
-  "version": "4.44",
+  "version": "4.45",
   "description": "Captures screenshots and metadata for the Interests App",
   "permissions": ["scripting", "tabs", "storage", "notifications", "webNavigation", "webRequest", "contextMenus", "alarms"],
   "host_permissions": ["<all_urls>"],
@@ -30,11 +30,19 @@
     }
   ],
   "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
     "48": "icon48.png",
     "128": "icon128.png"
   },
   "action": {
     "default_title": "Interests Capture",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   }
 }
