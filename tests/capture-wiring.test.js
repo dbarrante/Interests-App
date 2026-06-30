@@ -164,5 +164,24 @@ t("impRefresh lets the extension own the capture tab (no app window.open duplica
   assert.ok(body.indexOf("window.open(") < 0, "impRefresh must NOT open its own tab — the extension worker owns it");
 });
 
+t("recaptureViaWorker drives the extension batch with force+render (unified bulk Recapture)", () => {
+  const i = html.indexOf("function recaptureViaWorker(");
+  assert.ok(i >= 0, "recaptureViaWorker defined");
+  const body = html.slice(i, i + 1700);
+  assert.ok(body.indexOf("Store.setBatchState(") >= 0, "writes batch-state for the worker");
+  assert.ok(/force:\s*1/.test(body), "sets force:1 so the recapture overwrites the existing image");
+  assert.ok(/render:\s*1/.test(body), "sets render:1 so FB posts render-capture");
+  assert.ok(body.indexOf("Store.captureMeta") < 0, "must NOT use the Core server-fetch (blind to social)");
+});
+
+t("captureSelected and retryFailFresh both route bulk recapture through the worker", () => {
+  const ci = html.indexOf("function captureSelected(");
+  assert.ok(html.slice(ci, ci + 300).indexOf("recaptureViaWorker(") >= 0, "captureSelected delegates to recaptureViaWorker");
+  const ri = html.indexOf("function retryFailFresh(");
+  const rb = html.slice(ri, ri + 600);
+  assert.ok(rb.indexOf("recaptureViaWorker(") >= 0, "retryFailFresh uses the worker path");
+  assert.ok(rb.indexOf("startBatchCapture(") < 0, "retryFailFresh must NOT use the Core batch (social-blind)");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

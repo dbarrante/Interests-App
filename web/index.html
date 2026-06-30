@@ -2136,7 +2136,7 @@ function renderImported(){
             <button onclick="closeTagMenu();autoTag(0)">Tag all ${n}</button>
           </div></div>`:"";})()}
       ${selMode
-        ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Capture the selected cards via the extension — Facebook posts fetch instantly, other sites open &amp; close a tab. Use this to retry the 'Couldn't capture' ones.">&#128247; Capture selected (${selPicks.size})</button>
+        ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Recapture the selected cards via the extension worker — every platform (Instagram, Facebook, bookmarks, YouTube, Pinterest). Each page opens briefly, is captured, and closes; the real screenshot overwrites the old image. Keep Chrome open and stay logged in.">&#128260; Recapture (${selPicks.size})</button>
            <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
            <button class="btn btn-ghost" id="openSelBtn" onclick="openSelected()" ${selPicks.size?"":"disabled"} title="Open each selected card's link in its own browser tab. Your browser may ask to allow pop-ups the first time — allow them for this site.">&#128279; Open (${selPicks.size})</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
@@ -2458,8 +2458,12 @@ function refreshFailStatuses(){
 }
 function retryFailFresh(){
   const ids=_failCheckedIds(); if(!ids.length){ toast("Select some cards first"); return; }
+  const idset=new Set(ids);
+  const cards=imported.filter(c=>c && idset.has(c.id));
   closeFailReview();
-  startBatchCapture(null, ids);   // onlyIds path clears the old image + re-captures fresh
+  // Route through the extension worker (not the Core server-fetch, which is blind to
+  // Instagram/Facebook/social) so failed social cards actually recapture. force overwrites.
+  recaptureViaWorker(cards);
 }
 function markFailDone(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
@@ -2847,15 +2851,22 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
 // a tab and get a screenshot + metadata. Routes the picked cards through the same
 // batch driver as Capture missing / Capture Facebook, but scoped to the selection
 // and bypassing the "already attempted" gate (the whole point is to retry them).
-function captureSelected(){
-  if(batchUI.active){ toast("A capture run is already going"); return; }
-  const picks=[...selPicks].map(i=>imported[i]).filter(it=>it && it.url && !it.blocked);
-  if(!picks.length){ toast("Select some cards with a link first"); return; }
+// The ONE unified bulk-recapture path: hand a bounded set of cards to the extension
+// worker batch (drained by the SW batch driver, which loops the same captureOneTab
+// primitive the per-card ⟳ uses). force:1 so the real screenshot OVERWRITES the old
+// image; render:1 lets restricted Facebook posts render-capture (ignored for non-FB).
+// Works for EVERY platform — Instagram, Facebook, bookmarks, YouTube, Pinterest. Capped
+// at 100/run, Stoppable (cancelBatchCapture), progress via pollBatchProgress. Returns
+// the number dispatched (0 if nothing to do).
+function recaptureViaWorker(cards){
+  if(batchUI.active){ toast("A capture run is already going — stop it first or wait for it to finish"); return 0; }
+  const usable=(cards||[]).filter(it=>it && it.url && !it.blocked);
+  if(!usable.length){ toast("Select some cards with a link first"); return 0; }
   const seen=new Set();
-  const uniq=picks.filter(it=>{ const k=clipKey(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
+  const uniq=usable.filter(it=>{ const k=clipKey(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
   const items=uniq.slice(0,100).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
   items.forEach(x=>_refreshPins.add(x.id));  // keep these visible in the current filter so the picture lands in place instead of the card vanishing
-  // stamp dispatched cards (and any url-duplicates) attempted so progress/filters update
+  // stamp dispatched cards (and any url-duplicates) pending so progress/filters update
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
   const at=Date.now();
   imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url))){ c.lastUpdate=at; if(c.lastResult!=="ok") c.lastResult="pending"; } });
@@ -2863,15 +2874,16 @@ function captureSelected(){
   _batchIgnoreUntil=0;
   try{
     Store.setBatchProgress(null);
-    // render:1 → restricted Facebook posts (no og:image) open briefly in a focused
-    // tab to render-capture, like a manual Save; posts that unfurl still fetch
-    // instantly with no tab, and non-FB sites open & close a tab.
-    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1});
+    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1, force:1});   // force: a deliberate Recapture overwrites the existing image (like the per-card ⟳)
   }catch(e){}
   batchUI={active:true, done:0, total:items.length};
-  selMode=false; selPicks.clear();
-  toast("Capturing "+items.length+" selected card"+(items.length===1?"":"s")+"… restricted Facebook posts open briefly in a tab to render; others fetch instantly. Stay logged into Facebook."+(uniq.length>100?" (100 max per run)":""), 8000);
+  toast("Recapturing "+items.length+" card"+(items.length===1?"":"s")+" via the extension — each page opens briefly, captures, and closes (overwriting the old image). Keep Chrome open and stay logged in."+(uniq.length>100?" (100 max per run)":""), 8000);
   renderImportedKeepFocus();
+  return items.length;
+}
+function captureSelected(){
+  const picks=[...selPicks].map(i=>imported[i]);
+  if(recaptureViaWorker(picks)){ selMode=false; selPicks.clear(); renderImportedKeepFocus(); }
 }
 // Open each distinct http(s) URL in its own browser tab (deduped). Non-web links (javascript:/data:/
 // etc. from an old import or restored backup) are skipped — mirrors the import og-image guard. Opens

@@ -39,5 +39,28 @@ t("capturePending passes the pending force into captureTab (not hardcoded false)
     "capturePending must NOT hardcode force=false");
 });
 
+t("SW has a batch driver (pollBatchState) that loops captureOneTab with force+render", () => {
+  assert.ok(/async function pollBatchState\(/.test(bg), "pollBatchState defined");
+  const i = bg.indexOf("async function pollBatchState(");
+  const body = bg.slice(i, i + 2800);
+  assert.ok(body.indexOf("/api/batch-state") >= 0, "reads the batch-state mailbox");
+  assert.ok(/captureOneTab\(it\.url,\s*it\.id\s*\|\|\s*""\s*,\s*delay,\s*render,\s*force\)/.test(body),
+    "drives captureOneTab with delay, render AND force");
+  assert.ok(body.indexOf("/api/batch-progress") >= 0, "writes batch-progress for the app UI");
+  assert.ok(body.indexOf("cur.cancel") >= 0 && body.indexOf("cur.active === false") >= 0,
+    "honors the app's Stop (cancel / active:false), re-read each item");
+});
+
+t("the batch driver has a re-entrancy guard and is registered on the alarm + startup", () => {
+  assert.ok(/let batchDriving = false/.test(bg), "batchDriving re-entrancy guard declared");
+  const i = bg.indexOf("async function pollBatchState(");
+  assert.ok(/if \(batchDriving\) return;/.test(bg.slice(i, i + 120)), "guards re-entry at the top");
+  const ip = bg.indexOf("function iaPollAll()");
+  assert.ok(ip >= 0, "iaPollAll defined");
+  assert.ok(bg.slice(ip, ip + 130).indexOf("pollBatchState()") >= 0, "iaPollAll runs pollBatchState");
+  assert.ok(bg.indexOf('a.name === "iaCapturePoll") iaPollAll()') >= 0, "alarm fires iaPollAll");
+  assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(iaPollAll)") >= 0, "runs on SW startup");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
