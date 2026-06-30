@@ -390,12 +390,14 @@ async function pollCaptureRequest() {
   if (!req || !req.url) return;
   try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
   if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
-  log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : ""));
+  log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
   // Use captureOneTab (opens its OWN tab, tracks it by tab-id through redirects, captures, closes)
   // rather than handleCaptureRequest (which matched the app-opened tab by URL and hung on any
   // cross-domain redirect, e.g. dead typepad.com -> networksolutions.com). This is also the single
   // primitive the batch uses, so single + bulk converge on one redirect-safe path.
-  try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render); }
+  // Pass req.force through: a ⟳ refresh sets force:true so the app OVERWRITES the existing image
+  // (without force, drainCaptures only fills empty/bad images and the real screenshot is discarded).
+  try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
   catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
 }
 try {
@@ -831,14 +833,14 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
     const t = await chrome.tabs.get(tabId);
     if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) {
       if (/facebook\.com|fb\.watch/i.test(p.url || t.url || "")) await captureFbPost(t, p.url, p.delay, p.id);
-      else await captureTab(t, p.delay, false, p.id);
+      else await captureTab(t, p.delay, !!p.force, p.id);   // honor the request's force flag (⟳ refresh = overwrite)
     }
   } catch (e) {}
   delete pendings[tabId];
   p.resolve("captured");
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
-async function captureOneTab(url, id, delay, render) {
+async function captureOneTab(url, id, delay, render, force) {
   // Facebook FIRST: pull og:image from the raw server HTML and fetch it — NO tab.
   // This avoids the cold-render spinner entirely (the rendered page never paints
   // the photo, esp. for videos), keeps the app focused, and is fast. Falls through
@@ -868,7 +870,7 @@ async function captureOneTab(url, id, delay, render) {
   recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
   const outcome = await new Promise((resolve) => {
     pendings[tabId] = {
-      url, id, delay: delay || 0, settled: false, resolve,
+      url, id, delay: delay || 0, force: !!force, settled: false, resolve,
       fb: setTimeout(() => { capturePending(tabId); }, (delay || 0) + 15000),   // page never fired load → grab what's there
       wd: setTimeout(() => settlePending(tabId, "watchdog"), (delay || 0) + 45000),  // hard give-up
     };
