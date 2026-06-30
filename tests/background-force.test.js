@@ -76,17 +76,19 @@ t("captureTab skips screenshotting an HTTP error page (e.g. Instagram 429) via t
 t("capturePending propagates capture success ('ok'/'noimg') for the back-off", () => {
   const i = bg.indexOf("async function capturePending(");
   const body = bg.slice(i, i + 1000);
-  assert.ok(body.indexOf('p.resolve(ok ? "ok" : "noimg")') >= 0, "resolves ok/noimg, not the old constant");
+  assert.ok(body.indexOf('p.resolve(rateLimited ? "ratelimited" : (ok ? "ok" : "noimg"))') >= 0, "resolves ratelimited/ok/noimg");
+  assert.ok(body.indexOf("tabStatus[tabId] === 429") >= 0, "detects a 429 to distinguish throttling from a plain no-image");
   assert.ok(body.indexOf("ok = await captureTab(") >= 0, "captures captureTab's return");
 });
 
-t("batch driver paces Instagram gently + backs off when rate-limited", () => {
+t("batch driver paces Instagram gently + backs off only on real 429 rate-limiting", () => {
   const i = bg.indexOf("async function pollBatchState(");
   const body = bg.slice(i, i + 4600);
   assert.ok(/const IG_DELAY_MS = \d+/.test(bg) && /const IG_BACKOFF = \d+/.test(bg), "IG pacing/back-off constants defined");
-  assert.ok(body.indexOf("instagram\\.com") >= 0, "detects Instagram items");
+  assert.ok(body.indexOf("instagram\\.com") >= 0, "detects Instagram items for pacing");
   assert.ok(body.indexOf("IG_DELAY_MS + Math.floor(Math.random()") >= 0, "uses a long jittered gap for IG");
-  assert.ok(body.indexOf("igFails") >= 0 && body.indexOf("IG_BACKOFF") >= 0, "tracks consecutive IG failures and backs off");
+  assert.ok(body.indexOf('outcome === "ratelimited"') >= 0 && body.indexOf("rlStreak") >= 0, "back-off keys off consecutive 429s, not plain no-image");
+  assert.ok(body.indexOf("rlStreak >= IG_BACKOFF") >= 0, "stops after a 429 streak");
 });
 
 console.log(pass + " passed, " + fail + " failed");

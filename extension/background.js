@@ -12,7 +12,7 @@ const tabStatus = {};     // tabId -> last main-frame HTTP status for OUR captur
 // captures out with a long, jittered gap and back off if several in a row come back empty.
 const IG_DELAY_MS = 12000;   // ~12s between Instagram captures (other sites keep the fast default)
 const IG_JITTER_MS = 6000;   // + up to 6s random jitter so it's a human-like trickle, not a metronome
-const IG_BACKOFF = 4;        // this many empty IG captures in a row → stop (likely rate-limited)
+const IG_BACKOFF = 3;        // this many HTTP 429s (rate-limited) in a row → stop the run (not plain no-image)
 // serialize the actual screenshot — captureVisibleTab can only grab one visible
 // tab at a time, even though batch page-loads run in parallel
 let captureLock = Promise.resolve();
@@ -445,7 +445,7 @@ async function pollBatchState() {
 
   batchDriving = true;
   log("SW batch driver: " + total + " item(s) from " + next + (st.force ? " (force/overwrite)" : ""));
-  let igFails = 0;   // consecutive Instagram captures that came back empty — back off if it climbs
+  let rlStreak = 0;   // consecutive captures that hit an HTTP 429 (rate-limited) — back off if it climbs
   try {
     while (next < total) {
       // re-read state each item so the app's Stop (active:false/cancel) halts promptly,
@@ -465,16 +465,14 @@ async function pollBatchState() {
       next++; done++;
       // persist the cursor in PROGRESS only (never batch-state) so a SW suspension resumes here
       await postProg(done, total, true);
-      // Instagram back-off: several IG captures empty in a row = the 429/throttle signature → stop the
-      // run so we don't keep hammering IG, and tell the user to retry later (smaller batches help).
-      if (isIG) {
-        igFails = (outcome === "ok") ? 0 : (igFails + 1);
-        if (igFails >= IG_BACKOFF) {
-          log("SW batch driver: " + igFails + " Instagram captures failed in a row — backing off (rate-limited)");
-          notify("ig-backoff-" + done, "Interests Capture", "Instagram looks rate-limited — paused the recapture at " + done + "/" + total + ". Try again in a little while (smaller batches help).");
-          await postState(null); await postProg(done, total, false);
-          return;
-        }
+      // Back off ONLY on real rate-limiting — consecutive HTTP 429s — not on plain image-less/dead
+      // pages, so a few private/deleted reels scattered in a mixed run don't stop the whole batch.
+      if (outcome === "ratelimited") rlStreak++; else if (outcome === "ok") rlStreak = 0;
+      if (rlStreak >= IG_BACKOFF) {
+        log("SW batch driver: " + rlStreak + " HTTP 429s in a row — backing off (rate-limited)");
+        notify("ratelimit-" + done, "Interests Capture", "A site (likely Instagram) is rate-limiting (HTTP 429) — paused the recapture at " + done + "/" + total + ". Try again in a little while (smaller batches help).");
+        await postState(null); await postProg(done, total, false);
+        return;
       }
       if (next < total) {
         // Pace Instagram gently (long, jittered gap) so IG sees a human-like trickle, not a burst —
@@ -937,8 +935,9 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
       else ok = await captureTab(t, p.delay, !!p.force, p.id);   // honor force; returns true=image, false=no image/error page
     }
   } catch (e) { ok = false; }
+  const rateLimited = !ok && tabStatus[tabId] === 429;   // 429 page → distinguish real throttling from a plain no-image/dead reel
   delete pendings[tabId];
-  p.resolve(ok ? "ok" : "noimg");   // outcome flows up to the batch driver for pacing/back-off
+  p.resolve(rateLimited ? "ratelimited" : (ok ? "ok" : "noimg"));   // outcome flows up to the batch driver for pacing/back-off
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay, render, force) {
