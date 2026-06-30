@@ -42,7 +42,7 @@ t("capturePending passes the pending force into captureTab (not hardcoded false)
 t("SW has a batch driver (pollBatchState) that loops captureOneTab with force+render", () => {
   assert.ok(/async function pollBatchState\(/.test(bg), "pollBatchState defined");
   const i = bg.indexOf("async function pollBatchState(");
-  const body = bg.slice(i, i + 2800);
+  const body = bg.slice(i, i + 3600);
   assert.ok(body.indexOf("/api/batch-state") >= 0, "reads the batch-state mailbox");
   assert.ok(/captureOneTab\(it\.url,\s*it\.id\s*\|\|\s*""\s*,\s*delay,\s*render,\s*force\)/.test(body),
     "drives captureOneTab with delay, render AND force");

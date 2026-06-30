@@ -409,31 +409,42 @@ async function pollCaptureRequest() {
 // the same redirect-safe, force-aware captureOneTab primitive. Defers to bridge.js
 // when a localhost tab is open (same guard as the single poller) to avoid double-driving.
 let batchDriving = false;   // re-entrancy guard: the 30s alarm must not start a 2nd loop
+async function localhostTabOpen() {
+  try { const lt = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] }); return !!(lt && lt.length); } catch (e) { return false; }
+}
 async function pollBatchState() {
   if (batchDriving) return;
-  try { const lt = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] }); if (lt && lt.length) return; } catch (e) {}
+  if (await localhostTabOpen()) return;   // a localhost tab is open → bridge.js drives it
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
   const base = "http://127.0.0.1:" + port;
   const getState = async () => { try { const r = await fetch(base + "/api/batch-state"); if (r && r.ok) { const j = await r.json(); return j && j.state; } } catch (e) {} return undefined; };
   const postState = async (state) => { try { await fetch(base + "/api/batch-state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) }); } catch (e) {} };
+  const getProg = async () => { try { const r = await fetch(base + "/api/batch-progress"); if (r && r.ok) { const j = await r.json(); return j && j.progress; } } catch (e) {} return undefined; };
   const postProg = async (done, total, active) => { try { await fetch(base + "/api/batch-progress", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ progress: { done, total, active, ts: Date.now() } }) }); } catch (e) {} };
 
-  let st = await getState();
+  const st = await getState();
   if (!st || !st.items || !st.items.length || st.active === false || st.cancel) return;
-  let next = (typeof st.next === "number") ? st.next : (st.done || 0);
   const total = st.items.length;
+  // Resume cursor lives in PROGRESS (done), NOT in batch-state: the worker must never write
+  // batch-state, otherwise a write could resurrect active:true and clobber the app's Stop.
+  // The app clears progress (setBatchProgress(null)) when starting a new batch, so a stale
+  // cursor can't leak across runs. Only count progress as ours if it matches this batch.
+  let done = 0;
+  const p0 = await getProg();
+  if (p0 && p0.total === total && (p0.done || 0) <= total) done = p0.done || 0;
+  let next = done;
   if (next >= total) { await postState(null); return; }
 
   batchDriving = true;
   log("SW batch driver: " + total + " item(s) from " + next + (st.force ? " (force/overwrite)" : ""));
-  let done = st.done || 0;
   try {
     while (next < total) {
-      // re-read state each item so the app's Stop (active:false/cancel) halts the run,
-      // and a SW suspension mid-batch resumes from the persisted next index.
+      // re-read state each item so the app's Stop (active:false/cancel) halts promptly,
+      // and re-check for a localhost tab appearing mid-run (then defer to bridge.js).
       const cur = await getState();
-      if (!cur || !cur.items || cur.active === false || cur.cancel) { log("SW batch driver: stopped by app"); await postProg(done, total, false); return; }
+      if (!cur || !cur.items || cur.active === false || cur.cancel) { log("SW batch driver: stopped by app"); break; }
+      if (await localhostTabOpen()) { log("SW batch driver: localhost tab appeared — deferring to bridge.js"); break; }
       if (next >= cur.items.length) break;
       const it = cur.items[next] || {};
       const delay = (it.delay != null) ? it.delay : (cur.delay || 0);
@@ -442,17 +453,12 @@ async function pollBatchState() {
       try { await captureOneTab(it.url, it.id || "", delay, render, force); }
       catch (e) { log("SW batch item failed: " + (e && e.message)); }
       next++; done++;
-      // re-read right before persisting so a Stop that landed DURING this capture isn't
-      // clobbered by writing back a stale active:true (the app's cancel must always win).
-      const after = await getState();
-      if (!after || !after.items || after.active === false || after.cancel) { log("SW batch driver: stopped by app"); await postProg(done, total, false); return; }
-      await postState(Object.assign({}, after, { next, done }));   // persist progress so a suspension resumes here
+      // persist the cursor in PROGRESS only (never batch-state) so a SW suspension resumes here
       await postProg(done, total, true);
       if (delay && next < total) await new Promise((r) => setTimeout(r, delay));
     }
-    await postState(null);                 // finished — clear the mailbox
-    await postProg(done, total, false);
-    log("SW batch driver finished " + done + "/" + total);
+    if (next >= total) { await postState(null); log("SW batch driver finished " + done + "/" + total); }   // fully done → clear the mailbox
+    await postProg(done, total, false);   // mark progress inactive (app owns batch-state's active/cancel on a Stop)
   } finally { batchDriving = false; }
 }
 
