@@ -6,6 +6,13 @@ const MAX_QUEUE = 20;
 let pendingRequest = null;
 let pendingTimer = null;
 let recentWatches = [];   // recently-opened card URLs, for unreachable-site detection
+const tabStatus = {};     // tabId -> last main-frame HTTP status for OUR capture tabs (so we skip
+                          // screenshotting a 4xx/5xx error page — e.g. Instagram's 429 rate-limit page)
+// Gentle Instagram bulk pacing — IG rate-limits (HTTP 429) bursts of rapid page loads, so space IG
+// captures out with a long, jittered gap and back off if several in a row come back empty.
+const IG_DELAY_MS = 12000;   // ~12s between Instagram captures (other sites keep the fast default)
+const IG_JITTER_MS = 6000;   // + up to 6s random jitter so it's a human-like trickle, not a metronome
+const IG_BACKOFF = 4;        // this many empty IG captures in a row → stop (likely rate-limited)
 // serialize the actual screenshot — captureVisibleTab can only grab one visible
 // tab at a time, even though batch page-loads run in parallel
 let captureLock = Promise.resolve();
@@ -438,6 +445,7 @@ async function pollBatchState() {
 
   batchDriving = true;
   log("SW batch driver: " + total + " item(s) from " + next + (st.force ? " (force/overwrite)" : ""));
+  let igFails = 0;   // consecutive Instagram captures that came back empty — back off if it climbs
   try {
     while (next < total) {
       // re-read state each item so the app's Stop (active:false/cancel) halts promptly,
@@ -450,12 +458,30 @@ async function pollBatchState() {
       const delay = (it.delay != null) ? it.delay : (cur.delay || 0);
       const render = (it.render != null) ? !!it.render : !!cur.render;
       const force = (it.force != null) ? !!it.force : !!cur.force;
-      try { await captureOneTab(it.url, it.id || "", delay, render, force); }
-      catch (e) { log("SW batch item failed: " + (e && e.message)); }
+      const isIG = /instagram\.com/i.test(it.url || "");
+      let outcome = "ok";
+      try { outcome = (await captureOneTab(it.url, it.id || "", delay, render, force)) || "ok"; }
+      catch (e) { outcome = "error"; log("SW batch item failed: " + (e && e.message)); }
       next++; done++;
       // persist the cursor in PROGRESS only (never batch-state) so a SW suspension resumes here
       await postProg(done, total, true);
-      if (delay && next < total) await new Promise((r) => setTimeout(r, delay));
+      // Instagram back-off: several IG captures empty in a row = the 429/throttle signature → stop the
+      // run so we don't keep hammering IG, and tell the user to retry later (smaller batches help).
+      if (isIG) {
+        igFails = (outcome === "ok") ? 0 : (igFails + 1);
+        if (igFails >= IG_BACKOFF) {
+          log("SW batch driver: " + igFails + " Instagram captures failed in a row — backing off (rate-limited)");
+          notify("ig-backoff-" + done, "Interests Capture", "Instagram looks rate-limited — paused the recapture at " + done + "/" + total + ". Try again in a little while (smaller batches help).");
+          await postState(null); await postProg(done, total, false);
+          return;
+        }
+      }
+      if (next < total) {
+        // Pace Instagram gently (long, jittered gap) so IG sees a human-like trickle, not a burst —
+        // this is the main 429 mitigation. Other platforms keep the fast batch delay.
+        const wait = isIG ? (IG_DELAY_MS + Math.floor(Math.random() * IG_JITTER_MS)) : delay;
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+      }
     }
     if (next >= total) { await postState(null); log("SW batch driver finished " + done + "/" + total); }   // fully done → clear the mailbox
     await postProg(done, total, false);   // mark progress inactive (app owns batch-state's active/cancel on a Stop)
@@ -516,6 +542,17 @@ async function captureTab(tab, delayMs, force, cardId) {
   setBadge("...");
 
   try {
+    // If the page came back as an HTTP error (esp. Instagram's 429 rate-limit page), do NOT
+    // screenshot it — that would overwrite the card with a "This page isn't working" image.
+    // Report a failed attempt instead (the batch driver uses this to back off when IG throttles).
+    const httpStatus = tabStatus[tabId];
+    if (httpStatus && httpStatus >= 400) {
+      log("Skipping capture — HTTP " + httpStatus + (httpStatus === 429 ? " (rate-limited)" : "") + " for " + tabUrl);
+      setBadge("!", 4000);
+      await setStatus("HTTP " + httpStatus + (httpStatus === 429 ? " (rate-limited)" : "") + " — not captured", false);
+      await deliverToApp({ url: tabUrl, id: cardId || "", attempt: true, ok: false, status: httpStatus, ts: Date.now() });
+      return false;
+    }
     let meta = {};
     try {
       const metaResults = await chrome.scripting.executeScript({
@@ -892,15 +929,16 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
   const p = pendings[tabId];
   if (!p || p.settled) return;
   p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd);
+  let ok = true;   // did this capture deliver a real image? (non-FB; used by the IG back-off)
   try {
     const t = await chrome.tabs.get(tabId);
     if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) {
       if (/facebook\.com|fb\.watch/i.test(p.url || t.url || "")) await captureFbPost(t, p.url, p.delay, p.id);
-      else await captureTab(t, p.delay, !!p.force, p.id);   // honor the request's force flag (⟳ refresh = overwrite)
+      else ok = await captureTab(t, p.delay, !!p.force, p.id);   // honor force; returns true=image, false=no image/error page
     }
-  } catch (e) {}
+  } catch (e) { ok = false; }
   delete pendings[tabId];
-  p.resolve("captured");
+  p.resolve(ok ? "ok" : "noimg");   // outcome flows up to the batch driver for pacing/back-off
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay, render, force) {
@@ -939,6 +977,7 @@ async function captureOneTab(url, id, delay, render, force) {
     };
   });
   try { await chrome.tabs.remove(tabId); batchTabs.delete(tabId); } catch (e) { /* removal failed — leave it for the end-of-run sweep */ }
+  delete tabStatus[tabId];   // tab is gone — drop its remembered HTTP status
   if (outcome === "watchdog") await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });  // never loaded → mark attempted
   return outcome;
 }
@@ -968,6 +1007,9 @@ chrome.webNavigation.onErrorOccurred.addListener((details) => {
 const DEAD_STATUS = new Set([404, 410]);
 chrome.webRequest.onCompleted.addListener((details) => {
   if (details.type !== "main_frame") return;
+  // Remember the final main-frame status for tabs WE opened to capture, so captureTab can skip
+  // screenshotting an error page (esp. Instagram's 429). The last main_frame completion wins (redirects).
+  if (pendings[details.tabId]) tabStatus[details.tabId] = details.statusCode;
   if (!DEAD_STATUS.has(details.statusCode)) return;
   reportDead(details.url, "HTTP " + details.statusCode, details.tabId);
 }, { urls: ["<all_urls>"], types: ["main_frame"] });

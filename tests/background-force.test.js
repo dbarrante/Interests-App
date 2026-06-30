@@ -62,5 +62,32 @@ t("the batch driver has a re-entrancy guard and is registered on the alarm + sta
   assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(iaPollAll)") >= 0, "runs on SW startup");
 });
 
+t("captureTab skips screenshotting an HTTP error page (e.g. Instagram 429) via tabStatus", () => {
+  assert.ok(/const tabStatus = \{\}/.test(bg), "tabStatus map declared");
+  // the webRequest listener records the main-frame status for our capture tabs
+  assert.ok(bg.indexOf("if (pendings[details.tabId]) tabStatus[details.tabId] = details.statusCode;") >= 0,
+    "main-frame status recorded for capture tabs");
+  const ci = bg.indexOf("async function captureTab(");
+  const body = bg.slice(ci, ci + 1600);
+  assert.ok(body.indexOf("tabStatus[tabId]") >= 0 && body.indexOf(">= 400") >= 0, "captureTab checks status >= 400");
+  assert.ok(body.indexOf("attempt: true, ok: false, status: httpStatus") >= 0, "delivers a failed attempt, not the error-page screenshot");
+});
+
+t("capturePending propagates capture success ('ok'/'noimg') for the back-off", () => {
+  const i = bg.indexOf("async function capturePending(");
+  const body = bg.slice(i, i + 1000);
+  assert.ok(body.indexOf('p.resolve(ok ? "ok" : "noimg")') >= 0, "resolves ok/noimg, not the old constant");
+  assert.ok(body.indexOf("ok = await captureTab(") >= 0, "captures captureTab's return");
+});
+
+t("batch driver paces Instagram gently + backs off when rate-limited", () => {
+  const i = bg.indexOf("async function pollBatchState(");
+  const body = bg.slice(i, i + 4600);
+  assert.ok(/const IG_DELAY_MS = \d+/.test(bg) && /const IG_BACKOFF = \d+/.test(bg), "IG pacing/back-off constants defined");
+  assert.ok(body.indexOf("instagram\\.com") >= 0, "detects Instagram items");
+  assert.ok(body.indexOf("IG_DELAY_MS + Math.floor(Math.random()") >= 0, "uses a long jittered gap for IG");
+  assert.ok(body.indexOf("igFails") >= 0 && body.indexOf("IG_BACKOFF") >= 0, "tracks consecutive IG failures and backs off");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
