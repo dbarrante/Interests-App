@@ -389,8 +389,14 @@ async function pollCaptureRequest() {
   } catch (e) { return; }
   if (!req || !req.url) return;
   try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
-  log("SW poller claimed capture request: " + req.url);
-  try { await handleCaptureRequest(req); } catch (e) { log("SW handleCaptureRequest failed: " + (e && e.message)); }
+  if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
+  log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : ""));
+  // Use captureOneTab (opens its OWN tab, tracks it by tab-id through redirects, captures, closes)
+  // rather than handleCaptureRequest (which matched the app-opened tab by URL and hung on any
+  // cross-domain redirect, e.g. dead typepad.com -> networksolutions.com). This is also the single
+  // primitive the batch uses, so single + bulk converge on one redirect-safe path.
+  try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render); }
+  catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
 }
 try {
   chrome.alarms.create("iaCapturePoll", { periodInMinutes: 0.5 });   // 30s is the MV3 minimum period
