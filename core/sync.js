@@ -167,7 +167,7 @@ function applyMerge(ctx, plan) {
     // reaches delImg/deleteCard (delImg → imgPath → safeImgId would throw).
     try { images.safeImgId(d.id); }
     catch (e) { console.error("sync: skipping delete with unsafe id:", d.id); continue; }
-    if (d.kind === "card") db.deleteCard(ctx.db, d.id); else db.deleteSaved(ctx.db, d.id);
+    if (d.kind === "card") db.deleteCard(ctx.db, d.id, d.deletedAt); else db.deleteSaved(ctx.db, d.id, d.deletedAt);
     try { images.delImg(ctx.storeDir, d.id); } catch (e) {}
   }
   for (const t of plan.tombstones) db.addTombstone(ctx.db, t.id, t.kind, t.deletedAt);

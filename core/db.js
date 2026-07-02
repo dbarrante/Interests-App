@@ -51,8 +51,11 @@ function _stable(v) {
   return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + _stable(v[k])).join(",") + "}";
 }
 // Content signature of a stored-or-to-be-stored row (EXCLUDES id + updatedAt).
-function cardSig(r) { return _stable([r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, JSON.parse(r.data || "{}")]); }
-function savedSig(r) { return _stable([r.url, r.category, r.clipped, r.img_file, r.img_url, JSON.parse(r.data || "{}")]); }
+// Guarded the same way as rowToCard/rowToSaved: a corrupt stored `data` must not
+// throw here either (cardSig/savedSig run against EXISTING rows read from the DB
+// inside upsertCard/upsertSaved/replaceCards/replaceSaved).
+function cardSig(r) { return _stable([r.url, r.platform, r.cat, r.ts, r.img_file, r.img_url, _safeParseData(r.data)]); }
+function savedSig(r) { return _stable([r.url, r.category, r.clipped, r.img_file, r.img_url, _safeParseData(r.data)]); }
 
 // Add columns that ALTER can't add idempotently (ADD COLUMN throws if it exists).
 function ensureColumns(db) {
@@ -122,8 +125,22 @@ function cardToRow(card) {
   };
 }
 
+// A row's `data` JSON can be corrupt (disk-level bit rot, an interrupted write
+// that partially landed, etc). One bad row must degrade gracefully — return the
+// column fields with the JSON extras dropped — rather than throwing and losing
+// the ENTIRE library read (allCards/allSaved map every row through this).
+function _safeParseData(data) {
+  if (!data) return {};
+  try {
+    const parsed = JSON.parse(data);
+    return (parsed && typeof parsed === "object") ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
 function rowToCard(row) {
-  const base = row.data ? JSON.parse(row.data) : {};
+  const base = _safeParseData(row.data);
   base.id = row.id;
   base.url = row.url;
   base.platform = row.platform;
@@ -231,18 +248,19 @@ function pruneTombstones(db, olderThanMs) {
   db.prepare("DELETE FROM tombstones WHERE deletedAt < ?").run(cutoff);
 }
 
-function deleteCard(db, id) {
+function deleteCard(db, id, deletedAt) {
   db.prepare("DELETE FROM cards WHERE id=?").run(id);
-  addTombstone(db, id, "card");
+  addTombstone(db, id, "card", deletedAt);
 }
 
 // Saved column fields live in their own columns; everything else goes in `data` JSON.
 const SAVED_COLS = ["id", "url", "category", "clipped", "image", "updatedAt"];
 
 function savedToRow(item) {
+  const id = ensureId(item.id, "s_", [item.url, item.title, item.ts]);
   const image = item.image || "";
   let img_file = null, img_url = null;
-  if (image.indexOf("idb:") === 0) img_file = item.id + ".jpg";
+  if (image.indexOf("idb:") === 0) img_file = id + ".jpg";   // use the resolved id, not a possibly-undefined item.id
   else if (image.indexOf("http") === 0) img_url = image;
   const data = {};
   for (const k of Object.keys(item)) {
@@ -255,7 +273,7 @@ function savedToRow(item) {
   // persists clip images as files, so this is the last-resort net, not the norm.)
   if (!img_file && !img_url && image.indexOf("data:") === 0) data.image = image;
   return {
-    id: ensureId(item.id, "s_", [item.url, item.title, item.ts]),
+    id,
     url: item.url != null ? item.url : null,
     category: item.category != null ? item.category : null,
     clipped: item.clipped != null ? item.clipped : null,
@@ -266,7 +284,7 @@ function savedToRow(item) {
 }
 
 function rowToSaved(row) {
-  const base = row.data ? JSON.parse(row.data) : {};
+  const base = _safeParseData(row.data);
   base.id = row.id;
   base.url = row.url;
   base.category = row.category;
@@ -344,9 +362,9 @@ function replaceSaved(db, arr, opts) {
   }
 }
 
-function deleteSaved(db, id) {
+function deleteSaved(db, id, deletedAt) {
   db.prepare("DELETE FROM saved WHERE id=?").run(id);
-  addTombstone(db, id, "saved");
+  addTombstone(db, id, "saved", deletedAt);
 }
 
 function getFp(db, id) {

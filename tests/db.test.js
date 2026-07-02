@@ -326,5 +326,90 @@ t("replaceSaved without asOf keeps legacy full-replace semantics", () => {
   d.close();
 });
 
+// Task 5 / M1: savedToRow must derive img_file from the RESOLVED id (ensureId),
+// not the possibly-undefined item.id — an id-less saved item with an idb: image
+// used to write img_file "undefined.jpg" while returning a different real id.
+t("savedToRow: id-less item -> img_file uses the resolved stable id, not \"undefined.jpg\"", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertSaved(d, { url: "https://x.com/p", title: "t", image: "idb:whatever" });
+  const item = db.allSaved(d)[0];
+  assert.strictEqual(item.image, "idb:" + item.id, "returned image ref matches the resolved id");
+  const row = d.prepare("SELECT id,img_file FROM saved").get();
+  assert.strictEqual(row.img_file, item.id + ".jpg", "img_file derived from the resolved id");
+  assert.notStrictEqual(row.img_file, "undefined.jpg");
+  d.close();
+});
+
+// Task 5 / M3: deleteCard/deleteSaved must forward an optional deletedAt to the
+// tombstone instead of always stamping Date.now() — needed so applyMerge can
+// preserve a peer's original deletedAt across merge hops.
+t("deleteCard(db, id, deletedAt) stamps the tombstone with the given timestamp", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "x", url: "u" });
+  db.deleteCard(d, "x", 12345);
+  const tomb = db.allTombstones(d).find(t => t.id === "x" && t.kind === "card");
+  assert.ok(tomb, "tombstone exists");
+  assert.strictEqual(tomb.deletedAt, 12345);
+  d.close();
+});
+
+t("deleteCard(db, id) with no deletedAt keeps default (now-ish) behavior", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "y", url: "u" });
+  const before = Date.now();
+  db.deleteCard(d, "y");
+  const after = Date.now();
+  const tomb = db.allTombstones(d).find(t => t.id === "y" && t.kind === "card");
+  assert.ok(tomb.deletedAt >= before && tomb.deletedAt <= after, "defaults to Date.now()");
+  d.close();
+});
+
+t("deleteSaved(db, id, deletedAt) stamps the tombstone with the given timestamp", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertSaved(d, { id: "s1", url: "u" });
+  db.deleteSaved(d, "s1", 99999);
+  const tomb = db.allTombstones(d).find(t => t.id === "s1" && t.kind === "saved");
+  assert.ok(tomb, "tombstone exists");
+  assert.strictEqual(tomb.deletedAt, 99999);
+  d.close();
+});
+
+// Task 5 / L1: one corrupt `data` JSON row must not make allCards()/allSaved()
+// throw for the whole library — degrade that single row (column fields populated,
+// JSON extras absent) instead of losing every other row.
+t("allCards tolerates a corrupt data JSON in one row (degrades that row, doesn't throw)", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "good1", url: "u1", platform: "p", cat: "c", ts: 1, title: "fine" });
+  db.upsertCard(d, { id: "bad", url: "u2", platform: "p", cat: "c", ts: 2, title: "will corrupt" });
+  db.upsertCard(d, { id: "good2", url: "u3", platform: "p", cat: "c", ts: 3, title: "fine2" });
+  d.prepare("UPDATE cards SET data='{oops' WHERE id=?").run("bad");
+  let all;
+  assert.doesNotThrow(() => { all = db.allCards(d); }, "allCards must not throw on a corrupt row");
+  assert.strictEqual(all.length, 3, "all rows still returned, including the corrupt one");
+  const bad = all.find(c => c.id === "bad");
+  assert.ok(bad, "corrupt row still present");
+  assert.strictEqual(bad.url, "u2", "column fields still populated");
+  assert.strictEqual(bad.platform, "p");
+  assert.strictEqual(bad.title, undefined, "JSON extras absent (couldn't be parsed)");
+  const good = all.find(c => c.id === "good1");
+  assert.strictEqual(good.title, "fine", "other rows unaffected");
+  d.close();
+});
+
+t("allSaved tolerates a corrupt data JSON in one row (degrades that row, doesn't throw)", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertSaved(d, { id: "sgood", url: "u1", category: "c", clipped: 1, title: "fine" });
+  db.upsertSaved(d, { id: "sbad", url: "u2", category: "c", clipped: 2, title: "will corrupt" });
+  d.prepare("UPDATE saved SET data='{oops' WHERE id=?").run("sbad");
+  let all;
+  assert.doesNotThrow(() => { all = db.allSaved(d); }, "allSaved must not throw on a corrupt row");
+  assert.strictEqual(all.length, 2);
+  const bad = all.find(s => s.id === "sbad");
+  assert.ok(bad, "corrupt row still present");
+  assert.strictEqual(bad.url, "u2");
+  assert.strictEqual(bad.title, undefined, "JSON extras absent");
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

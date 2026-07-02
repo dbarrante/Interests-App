@@ -132,5 +132,42 @@ test("readSnapshot rejects a snapshot whose meta counts mismatch snapshot.json (
   d.close();
 });
 
+// Task 5 / M3: applyMerge must forward the peer's deletedAt into deleteCard/deleteSaved
+// instead of letting them re-stamp Date.now() — otherwise a merge-applied delete looks
+// newer at every hop and can swallow a legitimate re-add.
+test("applyMerge passes the peer's deletedAt through to the tombstone, not Date.now()", () => {
+  const store = tmpStore(); const d = dbm.openDb(store);
+  dbm.upsertCard(d, { id: "c_del", url: "https://a.com/del" });
+  const ctx = { db: d, storeDir: store };
+  const plan = {
+    upserts: [],
+    deletes: [{ id: "c_del", kind: "card", deletedAt: 777 }],
+    tombstones: [],
+    imageCopies: [],
+  };
+  sync.applyMerge(ctx, plan);
+  const tomb = dbm.allTombstones(d).find(t => t.id === "c_del" && t.kind === "card");
+  assert.ok(tomb, "tombstone created");
+  assert.strictEqual(tomb.deletedAt, 777, "deletedAt is the peer's original value, not Date.now()");
+  d.close();
+});
+
+test("applyMerge passes the peer's deletedAt through for a saved-item delete too", () => {
+  const store = tmpStore(); const d = dbm.openDb(store);
+  dbm.upsertSaved(d, { id: "s_del", url: "https://a.com/sdel" });
+  const ctx = { db: d, storeDir: store };
+  const plan = {
+    upserts: [],
+    deletes: [{ id: "s_del", kind: "saved", deletedAt: 555 }],
+    tombstones: [],
+    imageCopies: [],
+  };
+  sync.applyMerge(ctx, plan);
+  const tomb = dbm.allTombstones(d).find(t => t.id === "s_del" && t.kind === "saved");
+  assert.ok(tomb, "tombstone created");
+  assert.strictEqual(tomb.deletedAt, 555);
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

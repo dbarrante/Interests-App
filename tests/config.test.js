@@ -62,5 +62,47 @@ t("setStorePath merges, does not clobber other config keys", () => {
   assert.strictEqual(c.storePath, target);
 });
 
+// Task 5 / M4: saveConfig must write atomically (tmp + rename), same pattern as
+// core/sync.js _writeAtomic — a torn write on the real config.json would make the
+// app forget its configured storePath ("all my data is gone"). Assert end-state:
+// no leftover tmp sidecars after a save, and the file parses.
+t("saveConfig leaves no *.tmp* sidecar in the config dir after a save", () => {
+  cfg.saveConfig({ a: 1 });
+  const dir = cfg.appDataDir();
+  const leftovers = fs.readdirSync(dir).filter(n => n.indexOf(".tmp") !== -1);
+  assert.deepStrictEqual(leftovers, [], "no tmp sidecars should remain");
+  assert.deepStrictEqual(cfg.loadConfig(), { a: 1 }, "config.json parses to the saved value");
+});
+
+t("saveConfig writes via a tmp file next to configPath() then renames over it", () => {
+  const seenTmp = [];
+  const origRename = fs.renameSync;
+  fs.renameSync = function (src, dest) {
+    seenTmp.push(src);
+    return origRename(src, dest);
+  };
+  try {
+    cfg.saveConfig({ b: 2 });
+  } finally {
+    fs.renameSync = origRename;
+  }
+  assert.strictEqual(seenTmp.length, 1, "renameSync called exactly once");
+  assert.ok(seenTmp[0].indexOf(cfg.configPath()) === 0, "tmp file lives next to the real config path");
+  assert.notStrictEqual(seenTmp[0], cfg.configPath(), "tmp file is a distinct path from the real one");
+  assert.deepStrictEqual(cfg.loadConfig(), { b: 2 });
+});
+
+t("saveConfig round-trip still works after a simulated torn write is overwritten", () => {
+  // Simulate a torn write directly on the real config path...
+  fs.writeFileSync(cfg.configPath(), "{not json", "utf8");
+  assert.deepStrictEqual(cfg.loadConfig(), {}, "existing behavior: unparsable config -> {}");
+  // ...then a fresh saveConfig must cleanly replace it (atomic rename overwrites torn file).
+  cfg.saveConfig({ c: 3 });
+  assert.deepStrictEqual(cfg.loadConfig(), { c: 3 });
+  const dir = cfg.appDataDir();
+  const leftovers = fs.readdirSync(dir).filter(n => n.indexOf(".tmp") !== -1);
+  assert.deepStrictEqual(leftovers, [], "no tmp sidecars left after recovering from a torn write");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

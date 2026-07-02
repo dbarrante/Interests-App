@@ -25,9 +25,16 @@ function loadConfig() {
   }
 }
 
+// Atomic write: write to a tmp sidecar then rename into place (same pattern as
+// core/sync.js _writeAtomic). A torn write directly on config.json would make the
+// app forget its configured storePath — i.e. "all my data is gone" on next launch.
+// rename() is atomic on the same volume, so config.json is never observed half-written.
 function saveConfig(obj) {
   fs.mkdirSync(appDataDir(), { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(obj || {}, null, 2), "utf8");
+  const target = configPath();
+  const tmpFile = target + ".tmp." + process.pid;
+  fs.writeFileSync(tmpFile, JSON.stringify(obj || {}, null, 2), "utf8");
+  fs.renameSync(tmpFile, target);
 }
 
 function defaultStoreDir() {
