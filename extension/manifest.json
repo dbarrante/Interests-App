@@ -3,7 +3,7 @@
   "name": "Interests Capture",
   "version": "4.46",
   "description": "Captures screenshots and metadata for the Interests App",
-  "permissions": ["scripting", "tabs", "storage", "unlimitedStorage", "notifications", "webNavigation", "webRequest", "contextMenus", "alarms"],
+  "permissions": ["scripting", "tabs", "storage", "unlimitedStorage", "notifications", "webNavigation", "contextMenus", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

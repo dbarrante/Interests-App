@@ -5,9 +5,6 @@ const MAX_QUEUE = 20;
 
 let pendingRequest = null;
 let pendingTimer = null;
-let recentWatches = [];   // recently-opened card URLs, for unreachable-site detection
-const tabStatus = {};     // tabId -> last main-frame HTTP status for OUR capture tabs (so we skip
-                          // screenshotting a 4xx/5xx error page — e.g. Instagram's 429 rate-limit page)
 // Gentle Instagram bulk pacing — IG rate-limits (HTTP 429) bursts of rapid page loads, so space IG
 // captures out with a long, jittered gap and back off if several in a row come back empty.
 const IG_DELAY_MS = 12000;   // ~12s between Instagram captures (other sites keep the fast default)
@@ -570,17 +567,11 @@ async function captureTab(tab, delayMs, force, cardId) {
   setBadge("...");
 
   try {
-    // If the page came back as an HTTP error (esp. Instagram's 429 rate-limit page), do NOT
-    // screenshot it — that would overwrite the card with a "This page isn't working" image.
-    // Report a failed attempt instead (the batch driver uses this to back off when IG throttles).
-    const httpStatus = tabStatus[tabId];
-    if (httpStatus && httpStatus >= 400) {
-      log("Skipping capture — HTTP " + httpStatus + (httpStatus === 429 ? " (rate-limited)" : "") + " for " + tabUrl);
-      setBadge("!", 4000);
-      await setStatus("HTTP " + httpStatus + (httpStatus === 429 ? " (rate-limited)" : "") + " — not captured", false);
-      await deliverToApp({ url: tabUrl, id: cardId || "", attempt: true, ok: false, status: httpStatus, ts: Date.now() });
-      return false;
-    }
+    // NOTE (v1.8.0 / ext 4.47): the pre-capture HTTP-error skip that read the tab's
+    // main-frame status code was removed with the webRequest permission. An error page
+    // (incl. Instagram's 429) that yields no usable image is now handled downstream as a
+    // normal image-less capture. IG bulk pacing (the 12s spacing below) is the primary
+    // 429 mitigation and is unaffected.
     let meta = {};
     try {
       const metaResults = await chrome.scripting.executeScript({
@@ -777,10 +768,6 @@ async function handleCaptureRequest(req) {
   pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false, closeAfter: !!req.closeAfter };
   // B12: persist the claim so it survives a SW suspension before the page loads.
   await persistPending(pendingRequest);
-  // remember recently-opened cards so a navigation error can be matched even if
-  // it fires before/after the pending request is set
-  recentWatches.push({ url: req.url, id: req.id || "", ts: Date.now() });
-  recentWatches = recentWatches.filter(w => Date.now()-w.ts < 90000).slice(-12);
   setBadge("⏳");
   await setStatus("Waiting for page to load…", true);
 
@@ -835,12 +822,10 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   await finishPending(tab);
 });
 
-// Detect genuinely unreachable sites (DNS failure, connection refused, etc.)
-// and tell the app to remove that card. Only hard network errors — not 404s
-// (those "load" fine) and not user-side issues (offline, aborted).
-const HARD_ERR = /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_TIMED_OUT|ERR_ADDRESS_UNREACHABLE|ERR_SSL_PROTOCOL_ERROR|ERR_CERT_/i;
 // "Dead post" notices are ordinary capture objects (cap.dead) — deliver them the
-// same way, with the same HTTP + offline-queue fallback.
+// same way, with the same HTTP + offline-queue fallback. Now reached ONLY by the
+// popup's explicit "Remove card" action (passive dead-link auto-removal was retired
+// in v1.8.0 / ext 4.47 — the app's review-based "Check links" sweep owns dead links).
 async function deliverDead(dead) {
   return await deliverToApp(dead);
 }
@@ -856,24 +841,11 @@ async function closeTabSafe(tabId){
     log("Closed tab for removed card: " + t.url);
   } catch (e) {}
 }
-async function reportDead(url, reason, tabId){
-  const match = recentWatches.find(w => matchKey(w.url) === matchKey(url));   // query-aware: match the exact ?v= video we opened
-  if (!match) return;                                 // only cards the user just opened
-  log("Dead (" + reason + "): " + url);
-  recentWatches = recentWatches.filter(w => w !== match);
-  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(url)) { clearTimeout(pendingTimer); pendingRequest = null; await clearPendingPersist(); }   // B12: also drop persisted state so no stale timeout alarm fires
-  setBadge("✕", 5000);
-  await setStatus("Removing card + closing tab — " + reason, false);
-  await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
-  await closeTabSafe(tabId);
-  // settle the in-flight batch item for this tab (dead links are removed + counted)
-  settlePending(tabId, "dead");
-}
 /* ============ batch capture (one item per call) ============
    The LOOP is driven by the page-side bridge (a stable context). The service
    worker handles ONE captureOneTab per message — short enough to finish before
    the SW can be suspended. Up to `concurrency` run at once; `pendings` tracks
-   each in-flight tab so onCompleted/reportDead settle the right one. */
+   each in-flight tab so onCompleted settles the right one. */
 let pendings = {};   // tabId -> pending
 function settlePending(tabId, why) {
   const p = pendings[tabId];
@@ -1033,9 +1005,13 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
       else ok = await captureTab(t, p.delay, !!p.force, p.id);   // honor force; returns true=image, false=no image/error page
     }
   } catch (e) { ok = false; }
-  const rateLimited = !ok && tabStatus[tabId] === 429;   // 429 page → distinguish real throttling from a plain no-image/dead reel
+  // NOTE (v1.8.0 / ext 4.47): the HTTP-status probe that told a 429 rate-limit page
+  // apart from a plain no-image result went away with the webRequest permission, so we
+  // no longer emit "ratelimited" (the consecutive-429 backoff-and-stop in the SW batch
+  // driver won't proactively pause). The 12s IG spacing remains the primary throttling
+  // defense; a throttled load now just reports as a normal image-less capture.
   delete pendings[tabId];
-  p.resolve(rateLimited ? "ratelimited" : (ok ? "ok" : "noimg"));   // outcome flows up to the batch driver for pacing/back-off
+  p.resolve(ok ? "ok" : "noimg");   // outcome flows up to the batch driver for pacing
 }
 const batchTabs = new Set();   // every tab the batch opens — swept at end as a safety net
 async function captureOneTab(url, id, delay, render, force) {
@@ -1064,8 +1040,6 @@ async function captureOneTab(url, id, delay, render, force) {
   const tabId = tab.id;
   try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}  // belt & suspenders: never discard mid-capture
   batchTabs.add(tabId);
-  recentWatches.push({ url, id, ts: Date.now() });
-  recentWatches = recentWatches.filter(w => Date.now() - w.ts < 180000).slice(-60);
   const outcome = await new Promise((resolve) => {
     pendings[tabId] = {
       url, id, delay: delay || 0, force: !!force, settled: false, resolve,
@@ -1074,7 +1048,6 @@ async function captureOneTab(url, id, delay, render, force) {
     };
   });
   try { await chrome.tabs.remove(tabId); batchTabs.delete(tabId); } catch (e) { /* removal failed — leave it for the end-of-run sweep */ }
-  delete tabStatus[tabId];   // tab is gone — drop its remembered HTTP status
   if (outcome === "watchdog") await deliverToApp({ url, id, attempt: true, ok: false, ts: Date.now() });  // never loaded → mark attempted
   return outcome;
 }
@@ -1093,23 +1066,12 @@ async function sweepBatchTabs() {
   for (const tid of [...batchTabs]) { try { await chrome.tabs.remove(tid); } catch (e) {} batchTabs.delete(tid); }
 }
 
-// network-level failure (DNS, connection refused/reset/timeout, cert)
-chrome.webNavigation.onErrorOccurred.addListener((details) => {
-  if (details.frameId !== 0) return;                  // main frame only
-  if (!HARD_ERR.test(details.error || "")) return;    // only definitive "can't reach" errors
-  reportDead(details.url, details.error, details.tabId);
-});
-// HTTP-level "page gone" — 404 Not Found / 410 Gone (page loads, so the
-// navigation API can't see it; webRequest exposes the status code)
-const DEAD_STATUS = new Set([404, 410]);
-chrome.webRequest.onCompleted.addListener((details) => {
-  if (details.type !== "main_frame") return;
-  // Remember the final main-frame status for tabs WE opened to capture, so captureTab can skip
-  // screenshotting an error page (esp. Instagram's 429). The last main_frame completion wins (redirects).
-  if (pendings[details.tabId]) tabStatus[details.tabId] = details.statusCode;
-  if (!DEAD_STATUS.has(details.statusCode)) return;
-  reportDead(details.url, "HTTP " + details.statusCode, details.tabId);
-}, { urls: ["<all_urls>"], types: ["main_frame"] });
+// Passive dead-link auto-removal was retired in v1.8.0 / ext 4.47. The two
+// listeners that fed it — a main-frame navigation hard-error handler and an HTTP
+// 404/410 status handler — were removed along with the permission that only they
+// needed. Dead links are now found ONLY by the app's review-based "Check links"
+// sweep (core/linkcheck.js -> review modal), never by ordinary browsing. The
+// popup's explicit "Remove card" action is unaffected.
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "manualCapture") {

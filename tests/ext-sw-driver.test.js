@@ -7,6 +7,12 @@
 // localhost content-script matches (but KEEPS the social-sites block), and the
 // bridge files are absent. Plain-Node source-assertion style (same as
 // tests/ext-matchkey.test.js).
+//
+// v1.8.0 Task 2 (review D5a) adds assertions locking the RETIREMENT of passive
+// dead-link auto-removal: no webRequest permission, no chrome.webRequest /
+// onErrorOccurred / reportDead / recentWatches / tabStatus machinery — while the
+// pending-capture webNavigation.onCompleted flow and the popup's explicit
+// "Remove card" action are asserted to survive.
 const assert = require("assert");
 const fs = require("fs"), path = require("path");
 
@@ -112,6 +118,45 @@ t("manifest KEEPS the social-sites content_scripts block", () => {
     "social matches (facebook/instagram/pinterest/youtube) must remain");
   assert.deepStrictEqual(social.js, ["yt-save-trigger.js", "capture-configs.js", "capture-core.js"],
     "the social content-script js list is unchanged");
+});
+
+// ---- Task 2 (review D5a): passive dead-link auto-removal retired -----------
+// The extension no longer DELETES cards from ordinary browsing. The webRequest
+// 404/410 listener and the webNavigation.onErrorOccurred hard-error path (which
+// fed reportDead's auto-remove delivery) are gone, and the webRequest permission
+// was dropped with them. Dead links are found ONLY by the app's review-based
+// "Check links" sweep (core/linkcheck.js). The popup's explicit "Remove card"
+// action and the pending-capture onCompleted flow are unaffected.
+t("manifest has NO webRequest permission", () => {
+  assert.ok(Array.isArray(manifest.permissions), "permissions array present");
+  assert.ok(!manifest.permissions.includes("webRequest"), "webRequest permission must be removed");
+});
+t("manifest KEEPS the permissions the extension still needs", () => {
+  for (const p of ["scripting", "tabs", "storage", "unlimitedStorage", "notifications", "webNavigation", "contextMenus", "alarms"]) {
+    assert.ok(manifest.permissions.includes(p), p + " permission must survive");
+  }
+});
+t("background.js has NO chrome.webRequest reference", () => {
+  assert.ok(!/chrome\.webRequest/.test(bg), "no chrome.webRequest listener may remain");
+});
+t("background.js has NO webNavigation.onErrorOccurred auto-remove path", () => {
+  assert.ok(!/onErrorOccurred/.test(bg), "the onErrorOccurred hard-error auto-remove path must be gone");
+});
+t("the auto-dead-removal machinery (reportDead / recentWatches / HARD_ERR / tabStatus) is gone", () => {
+  assert.ok(!/function reportDead\b/.test(bg), "reportDead function removed");
+  assert.ok(!/\breportDead\s*\(/.test(bg), "no reportDead calls remain");
+  assert.ok(!/\brecentWatches\b/.test(bg), "recentWatches tracking removed (only auto-removal consumed it)");
+  assert.ok(!/\bHARD_ERR\b/.test(bg), "HARD_ERR regex removed");
+  assert.ok(!/\btabStatus\b/.test(bg), "tabStatus (fed only by the webRequest listener) removed");
+});
+t("webNavigation.onCompleted listener SURVIVES (pending-capture flow)", () => {
+  assert.ok(/chrome\.webNavigation\.onCompleted\.addListener/.test(bg),
+    "webNavigation.onCompleted must remain — the pending-capture flow depends on it");
+});
+t("popup 'removeCard' handler + deliverDead SURVIVE (explicit user removal)", () => {
+  assert.ok(/msg\.action === "removeCard"/.test(bg), "removeCard handler kept (popup explicit removal)");
+  assert.ok(/async function deliverDead\(/.test(bg), "deliverDead kept (used by removeCard)");
+  assert.ok(/removeActive:\s*true/.test(bg), "removeCard still delivers removeActive:true");
 });
 
 console.log(pass + " passed, " + fail + " failed");

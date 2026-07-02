@@ -99,12 +99,11 @@ t("webNavigation.onCompleted navigation match uses matchKey (site 3)", () => {
     "onCompleted must match the pending request by matchKey");
 });
 
-t("reportDead recentWatches match uses matchKey (site 4)", () => {
-  const i = bg.indexOf("async function reportDead(");
-  assert.ok(i >= 0, "reportDead present");
-  const body = bg.slice(i, i + 400);
-  assert.ok(/recentWatches\.find\(w\s*=>\s*matchKey\(w\.url\)\s*===\s*matchKey\(url\)\)/.test(body),
-    "reportDead must find the recent watch by matchKey");
+// v1.8.0 Task 2 (review D5a): reportDead (former matchKey "site 4") was retired with
+// the passive dead-link auto-removal path — it and its recentWatches store are gone.
+t("reportDead + recentWatches are retired (passive dead-link auto-removal removed)", () => {
+  assert.ok(bg.indexOf("async function reportDead(") < 0, "reportDead must be removed");
+  assert.ok(!/\brecentWatches\b/.test(bg), "recentWatches must be removed");
 });
 
 t("normalizeUrl still exists (untouched for its FB callers)", () => {

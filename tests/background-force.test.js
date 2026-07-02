@@ -64,33 +64,33 @@ t("the batch driver has a re-entrancy guard and is registered on the alarm + sta
   assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(iaPollAll)") >= 0, "runs on SW startup");
 });
 
-t("captureTab skips screenshotting an HTTP error page (e.g. Instagram 429) via tabStatus", () => {
-  assert.ok(/const tabStatus = \{\}/.test(bg), "tabStatus map declared");
-  // the webRequest listener records the main-frame status for our capture tabs
-  assert.ok(bg.indexOf("if (pendings[details.tabId]) tabStatus[details.tabId] = details.statusCode;") >= 0,
-    "main-frame status recorded for capture tabs");
+// v1.8.0 Task 2 (review D5a): the tabStatus / HTTP-status probe went away with the
+// webRequest permission (it was fed only by chrome.webRequest.onCompleted). These
+// assertions now lock that the probe is GONE — captureTab no longer branches on a
+// recorded status code, and capturePending no longer emits "ratelimited".
+t("captureTab no longer probes a recorded HTTP status (tabStatus retired with webRequest)", () => {
+  assert.ok(!/const tabStatus = \{\}/.test(bg), "tabStatus map must be gone");
+  assert.ok(!/\btabStatus\b/.test(bg), "no tabStatus reference may remain anywhere");
   const ci = bg.indexOf("async function captureTab(");
   const body = bg.slice(ci, ci + 1600);
-  assert.ok(body.indexOf("tabStatus[tabId]") >= 0 && body.indexOf(">= 400") >= 0, "captureTab checks status >= 400");
-  assert.ok(body.indexOf("attempt: true, ok: false, status: httpStatus") >= 0, "delivers a failed attempt, not the error-page screenshot");
+  assert.ok(body.indexOf("attempt: true, ok: false, status: httpStatus") < 0,
+    "the error-page pre-skip (which needed the status probe) must be gone");
 });
 
-t("capturePending propagates capture success ('ok'/'noimg') for the back-off", () => {
+t("capturePending resolves plain 'ok'/'noimg' (429 vs no-image distinction retired)", () => {
   const i = bg.indexOf("async function capturePending(");
   const body = bg.slice(i, bg.indexOf("\n}", i) + 2);
-  assert.ok(body.indexOf('p.resolve(rateLimited ? "ratelimited" : (ok ? "ok" : "noimg"))') >= 0, "resolves ratelimited/ok/noimg");
-  assert.ok(body.indexOf("tabStatus[tabId] === 429") >= 0, "detects a 429 to distinguish throttling from a plain no-image");
-  assert.ok(body.indexOf("ok = await captureTab(") >= 0, "captures captureTab's return");
+  assert.ok(body.indexOf('p.resolve(ok ? "ok" : "noimg")') >= 0, "resolves ok/noimg only");
+  assert.ok(!/p\.resolve\([^)]*ratelimited/.test(body), "resolve must not emit ratelimited (no status probe to detect a 429)");
+  assert.ok(body.indexOf("ok = await captureTab(") >= 0, "still captures captureTab's return");
 });
 
-t("batch driver paces Instagram gently + backs off only on real 429 rate-limiting", () => {
+t("batch driver still paces Instagram gently (the primary 429 mitigation survives)", () => {
   const i = bg.indexOf("async function pollBatchState(");
   const body = bg.slice(i, i + 4600);
-  assert.ok(/const IG_DELAY_MS = \d+/.test(bg) && /const IG_BACKOFF = \d+/.test(bg), "IG pacing/back-off constants defined");
+  assert.ok(/const IG_DELAY_MS = \d+/.test(bg), "IG pacing constant defined");
   assert.ok(body.indexOf("instagram\\.com") >= 0, "detects Instagram items for pacing");
   assert.ok(body.indexOf("IG_DELAY_MS + Math.floor(Math.random()") >= 0, "uses a long jittered gap for IG");
-  assert.ok(body.indexOf('outcome === "ratelimited"') >= 0 && body.indexOf("rlStreak") >= 0, "back-off keys off consecutive 429s, not plain no-image");
-  assert.ok(body.indexOf("rlStreak >= IG_BACKOFF") >= 0, "stops after a 429 streak");
 });
 
 console.log(pass + " passed, " + fail + " failed");
