@@ -608,6 +608,24 @@ function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
 function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); updateCounts(); }
+// Boot gate: true only after bootData() has finished loading persistent state.
+// Guards the capture-drain interval + autobackup so a queued capture can't trigger
+// a full-array save of a nearly-empty library before the real data is loaded (review A2).
+let _booted = false;
+// Awaited persistence for the cards array. Store.putCards returns a Promise, so the old
+// `if(!Store.putCards(...))` truthiness check was dead code and failures vanished silently (review B5).
+// On rejection, surface a toast; a 409 (Task 4 mass-delete guard) gets its own message.
+async function persistCards(){
+  try{ await Store.putCards(imported); }
+  catch(e){
+    const msg = (e && e.message) || String(e);
+    if(/409/.test(msg)){
+      toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data.", 10000);
+    }else{
+      toast("⚠ Saving failed — your last change may not be stored: " + msg, 8000);
+    }
+  }
+}
 
 /* ============ image store (Core service) ============
    Card images are now plain files served by the Core service at /api/img/<id>.
@@ -920,6 +938,7 @@ async function doBackup(manual){
   }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }
 }
 async function maybeAutoBackup(){
+  if(!_booted) return;   // gate: don't back up before bootData() has loaded the real library (review A2)
   const days = +S.autoBackup; if(!days) return;
   let last = 0; try{ last = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
   if(Date.now() - last < days*86400000) return;
@@ -3109,10 +3128,7 @@ function pasteImageToCard(idx, file){
   downscaleImage(file, d=>{
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
-    if(!Store.putCards(imported)){
-      toast("Storage is full — but the image was stored. Try again or reload.", 6000);
-      return;
-    }
+    persistCards();
     writeSavesFile();
     _impAnchorId=it.id||""; const el=document.querySelector('.imp-card[data-id="'+it.id+'"]'); _impAnchorTop=el?el.getBoundingClientRect().top:0;
     renderImported(); restoreImpScrollSettle();
@@ -3132,9 +3148,7 @@ function impEditSave(){
   if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
-  if(!Store.putCards(imported)){
-    toast("Storage is full — text saved. Try removing some items to free space.", 8000);
-  }
+  persistCards();
   writeSavesFile();
   closeGuide();
   // keep the edited card in place across the re-render (height may change)
@@ -4101,6 +4115,7 @@ async function runSafetyPass(cands, opts){
 // "Check links" sweep — checkDeadLinks runs runSafetyPass and merges unsafe rows into the dead-review modal.)
 const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 async function drainCaptures(){
+  if(!_booted) return;   // gate: don't drain into a nearly-empty library before bootData() loads real data (review A2)
   let queue;
   try{ queue = await Store.drainCaptures(); }catch(e){ return; }   // GET /api/captures returns AND clears the queue
   if(!Array.isArray(queue)||!queue.length) return;
@@ -4396,12 +4411,28 @@ async function bootData(){
   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
   try{ await initImageStore(); if(curTab==="imported") renderImported(); }catch(e){ console.warn("image store init failed", e); }
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
+  _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
   maybeAutoBackup();
 }
 bootData();
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ drainCaptures(); } });   // returning from the browser: ingest + refresh now
+// Renderer-global safety net for the many fire-and-forget Store.putCards/putSaved call sites (review B5).
+// After Task 4, a legit bulk shrink (e.g. a large Groom sweep) can reject with `PUT /api/cards -> 409`;
+// left unhandled that's a silent unhandledrejection. Surface a toast and swallow only recognized API-write
+// failures — everything else propagates untouched.
+window.addEventListener("unhandledrejection", (event)=>{
+  const msg = (event && event.reason && event.reason.message) || "";
+  if(/-> 409/.test(msg) && /cards|saved/.test(msg)){
+    toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data. If you meant to remove these items, use the flow's own confirm.", 10000);
+    event.preventDefault();
+  }else if(/\/api\//.test(msg) && /-> \d\d\d/.test(msg)){
+    toast("⚠ Saving failed — your last change may not be stored.", 8000);
+    event.preventDefault();
+  }
+  // anything else: let it propagate untouched
+});
 let _lastSyncChangedAt = 0;
 async function pollSyncChanged(){
   try{
