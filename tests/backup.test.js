@@ -284,5 +284,56 @@ t("restore ABORTS before overwriting the live store if the safety snapshot fails
   });
 });
 
+t("restore recovers ctx.db to a live handle when the swap step throws mid-restore", () => {
+  withBackupDir(function (bdir) {
+    // live store with ONE card + image
+    const store = newStore();
+    let db = openDb(store);
+    upsertCard(db, { id: "live", url: "https://x/live", platform: "fb", cat: "Saved", ts: 1, img: "idb:live" });
+    images.putImg(store, "live", TINY_JPG);
+
+    // a valid backup folder to restore FROM (must stay VALID — restore() validates
+    // isFile() on the backup's interests.db before doing anything else, so a
+    // corrupted backup would abort at that guard and never reach the swap step).
+    const bkStore = newStore();
+    let bdb = openDb(bkStore);
+    upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
+    images.putImg(bkStore, "a", TINY_JPG);
+    bdb.close();
+    const backupName = backup.runBackup(openDb(bkStore), bkStore).name;
+    const backupDbPath = path.join(bdir, backupName, "interests.db");
+
+    const ctx = {
+      db, storeDir: store,
+      getStorePath: function () { return store; },
+      setStorePath: function () {},
+      reopen: function () { return openDb(store); }
+    };
+
+    // Simulate a locked/online-only file at the EXACT line of step 3 (the swap):
+    // temporarily wrap fs.copyFileSync so it throws only when copying FROM the
+    // backup folder (the swap copy), leaving every other copyFileSync call
+    // (safety snapshot, runBackup, etc.) unaffected. Always restore the original.
+    const origCopyFileSync = fs.copyFileSync;
+    fs.copyFileSync = function (src, dst) {
+      if (src === backupDbPath) throw new Error("simulated locked/online-only file");
+      return origCopyFileSync.apply(fs, arguments);
+    };
+    let out;
+    try {
+      out = backup.restore(backupName, ctx);
+    } finally {
+      fs.copyFileSync = origCopyFileSync;
+    }
+
+    assert.strictEqual(out.ok, false, "restore reports failure, does not throw");
+    // ctx.db must be a LIVE handle again (not left closed) — routes read ctx.db
+    // at request time (Task 1), so a reopened handle is all that's needed to recover.
+    const row = ctx.db.prepare("SELECT COUNT(*) n FROM cards").get();
+    assert.ok(row && typeof row.n === "number", "ctx.db usable after failed restore");
+    ctx.db.close();
+  });
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

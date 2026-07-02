@@ -220,10 +220,17 @@ function restore(name, ctx) {
   // safety-snapshotted above, so clear the live images/ first (drop orphans from the
   // replaced db) and then overlay the backup's images — the live store ends up an
   // exact copy of the backup, not a union with stale images.
-  fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
-  const liveImages = path.join(ctx.storeDir, "images");
-  try { fs.rmSync(liveImages, { recursive: true, force: true }); } catch (e) {}
-  overlayImages(path.join(backupFolder, "images"), liveImages);
+  try {
+    fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
+    const liveImages = path.join(ctx.storeDir, "images");
+    try { fs.rmSync(liveImages, { recursive: true, force: true }); } catch (e) {}
+    overlayImages(path.join(backupFolder, "images"), liveImages);
+  } catch (e) {
+    // Swap failed (locked file, online-only placeholder, disk full). The live db
+    // file is still intact on disk — reopen it so the service keeps serving.
+    try { ctx.db = ctx.reopen(); } catch (e2) {}
+    return { ok: false, error: "restore swap failed: " + (e && e.message) };
+  }
 
   // 4) reopen
   ctx.db = ctx.reopen();
