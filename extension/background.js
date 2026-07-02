@@ -1,10 +1,11 @@
 const FB_CAP_VERSION = "4.46";   // stamped into deliveries so the APP console shows which code is actually running
-const REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
 
-let pendingRequest = null;
-let pendingTimer = null;
+// B12: true while THIS SW instance is actively dispatching a claimed single-capture
+// request (poller or restore re-dispatch). Guards restorePendingRequest so an alarm
+// wake never double-dispatches a claim the live run still owns.
+let pendingCaptureBusy = false;
 // Gentle Instagram bulk pacing — IG rate-limits (HTTP 429) bursts of rapid page loads, so space IG
 // captures out with a long, jittered gap and back off if several in a row come back empty.
 const IG_DELAY_MS = 12000;   // ~12s between Instagram captures (other sites keep the fast default)
@@ -415,14 +416,21 @@ async function pollCaptureRequest() {
   try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
   if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
   log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
+  // B12: the claim is now out of the app's mailbox and lives only in this SW run —
+  // persist it (persistPending also arms the suspension alarm) so an MV3 suspension
+  // mid-capture can't silently lose it: restorePendingRequest re-dispatches a fresh
+  // claim or marks a stale one attempted on the next wake.
+  pendingCaptureBusy = true;
+  await persistPending({ url: req.url, id: req.id || "", delay: req.delay || 0, render: !!req.render, force: !!req.force });
   // Use captureOneTab (opens its OWN tab, tracks it by tab-id through redirects, captures, closes)
-  // rather than handleCaptureRequest (which matched the app-opened tab by URL and hung on any
-  // cross-domain redirect, e.g. dead typepad.com -> networksolutions.com). This is also the single
-  // primitive the batch uses, so single + bulk converge on one redirect-safe path.
+  // — the single primitive the batch uses too, so single + bulk converge on one redirect-safe path.
   // Pass req.force through: a ⟳ refresh sets force:true so the app OVERWRITES the existing image
   // (without force, drainCaptures only fills empty/bad images and the real screenshot is discarded).
+  // captureOneTab delivers its own outcome (capture, attempt-failed, or dead) in every branch, so
+  // once it returns — success OR failure — the persisted claim has served its purpose: clear it.
   try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
   catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
+  finally { pendingCaptureBusy = false; await clearPendingPersist(); }
 }
 
 // ---- Batch driver (bulk): drain /api/batch-state through captureOneTab so a bulk
@@ -497,9 +505,10 @@ try {
   chrome.alarms.onAlarm.addListener((a) => {
     if (!a) return;
     if (a.name === "iaCapturePoll") iaPollAll();
-    // B12: the pending single-capture wait-timeout, alarm-backed so it still fires
-    // if the SW was suspended. Runs the same give-up path as the in-memory timer.
-    else if (a.name === PENDING_ALARM) { if (pendingRequest) runPendingTimeout().catch(() => {}); else restorePendingRequest().catch(() => {}); }
+    // B12: alarm-backed wake for a persisted-but-unfinished single-capture claim
+    // (survives SW suspension). restorePendingRequest re-dispatches a fresh claim,
+    // marks a stale one attempted, and no-ops if a live dispatch still owns it.
+    else if (a.name === PENDING_ALARM) restorePendingRequest().catch(() => {});
   });
 } catch (e) { log("alarms unavailable: " + (e && e.message)); }
 iaPollAll();   // poll once on SW spin-up
@@ -661,122 +670,77 @@ async function captureTab(tab, delayMs, force, cardId) {
 }
 
 // ---- B12: persist the claimed single-capture request across SW suspension ----
-// A claimed request lives only in-memory (pendingRequest) with a setTimeout. If
-// the MV3 service worker is suspended before the page loads, both vanish and the
-// capture — already claimed out of the app's mailbox — is silently lost, with the
-// card never even marked "attempted". Back it with chrome.storage.session and a
-// chrome.alarms alarm (both survive suspension) so the timeout still fires and the
-// pending state can be restored on the next SW wake.
-//
-// v1.8.0 review E note: persistPending's only caller (handleCaptureRequest, the
-// URL-matched single-capture claim path) was removed as dead code — it had zero
-// callers even before this cleanup (superseded by captureOneTab, proof(ext)
-// ffdfb70). That means PENDING_KEY is never written by any current code path, so
-// restorePendingRequest's restore branch below is currently a guaranteed no-op —
-// this was already true on HEAD, not something this cleanup broke. Left in place
-// (not deleted) because restorePendingRequest/finishPending/the onCompleted
-// listener are still wired per spec and this is a persistence layer, not a
-// pure-dead-code deletion; fixing the gap is out of scope for review E.
+// A claim POSTed out of the app's mailbox lives only in this SW run. If the MV3
+// service worker is suspended mid-capture, the claim vanishes and the capture is
+// silently lost, with the card never even marked "attempted". So the poller
+// persists the claim to chrome.storage.session and arms a chrome.alarms alarm
+// (both survive suspension); once captureOneTab returns — it delivers its own
+// outcome in every branch — the persisted claim is cleared. On the next SW wake
+// (init or the alarm), restorePendingRequest re-dispatches a fresh claim through
+// the same captureOneTab primitive, or marks a stale one attempted.
+// (Completed in v1.8.0 review E: the persistence was originally wired to
+// handleCaptureRequest, a URL-matched claim path that had been dead since the
+// captureOneTab poller replaced it in ffdfb70 — so it never protected the real
+// path until now.)
 const PENDING_KEY = "ia_pending_request";
 const PENDING_ALARM = "ia_pending_timeout";
 const PENDING_MAX_AGE_MS = 120000;   // on restore, older than this → treat as timed out
 
-// Persist the just-claimed request so a suspended SW can restore/complete it.
-// (Currently zero live callers — see note above.)
+// Persist the just-claimed request + arm the suspension alarm so a suspended SW
+// can pick the claim back up on its next wake.
 async function persistPending(reqLike) {
+  try { chrome.alarms.create(PENDING_ALARM, { delayInMinutes: 1 }); } catch (e) {}
   try { await chrome.storage.session.set({ [PENDING_KEY]: { req: reqLike, at: Date.now() } }); }
   catch (e) { console.warn("[IA] pending-claim persist failed (capture won't survive SW suspension):", e); }
 }
-// Drop the persisted pending state + its alarm (call on completion AND on timeout).
+// Drop the persisted pending state + its alarm (call once the dispatch returns,
+// success or failure, and after a stale claim's attempt-failed delivery).
 async function clearPendingPersist() {
   try { chrome.alarms.clear(PENDING_ALARM); } catch (e) {}
   try { await chrome.storage.session.remove(PENDING_KEY); } catch (e) {}
 }
-// The single timeout outcome, shared by the setTimeout-era path, the alarm, and a
-// stale restore: give up on the pending request and clear its persisted state.
-async function runPendingTimeout() {
-  clearTimeout(pendingTimer);
-  log("Capture request timed out: " + (pendingRequest && pendingRequest.url));
-  pendingRequest = null;
-  await clearPendingPersist();
-  setBadge("", 0);
-  await setStatus("Timed out waiting for the page", false);
-}
-// Arm the wait-timeout as an alarm (survives suspension). Keep the in-memory
-// setTimeout too as a fast path for when the SW stays alive the whole time.
-function armPendingTimeout() {
-  try { chrome.alarms.create(PENDING_ALARM, { delayInMinutes: 1 }); } catch (e) {}
-  pendingTimer = setTimeout(() => { runPendingTimeout().catch(() => {}); }, REQUEST_TIMEOUT_MS);
-}
 
-// On SW wake, restore a persisted pending request. Fresh (< PENDING_MAX_AGE_MS) →
-// restore pendingRequest + re-arm the alarm so onCompleted/finishPending can still
-// run it. Stale → run the timeout path so the card is marked attempted (delivered
-// by finishPending's callers), never silently dropped.
+// On SW wake (spin-up, onInstalled/onStartup via onExtensionInit, or the
+// PENDING_ALARM), pick up a persisted-but-unfinished claim. Fresh (< PENDING_MAX_AGE_MS)
+// → re-dispatch through captureOneTab, the same redirect-safe primitive the poller
+// uses, then clear. Stale → deliver the attempt-failed outcome (same as a live
+// failure would) so the card is never silently lost, then clear. The alarm is
+// re-armed WITHOUT refreshing the claim's age, so a capture that repeatedly dies
+// mid-run goes stale within PENDING_MAX_AGE_MS instead of re-dispatching forever.
 async function restorePendingRequest() {
+  if (pendingCaptureBusy) return;   // a live dispatch in this SW instance still owns the claim
   let saved;
   try { saved = (await chrome.storage.session.get(PENDING_KEY))[PENDING_KEY]; } catch (e) { return; }
   if (!saved || !saved.req || !saved.req.url) return;
-  if (pendingRequest) return;   // a live request already in flight — don't clobber it
+  const req = saved.req;
   const age = Date.now() - (saved.at || 0);
   if (age < PENDING_MAX_AGE_MS) {
-    pendingRequest = saved.req;
-    log("Restored pending capture after SW wake: " + saved.req.url + " (age " + Math.round(age / 1000) + "s)");
+    log("Restored pending capture after SW wake — re-dispatching: " + req.url + " (age " + Math.round(age / 1000) + "s)");
     try { chrome.alarms.create(PENDING_ALARM, { delayInMinutes: 1 }); } catch (e) {}
-    pendingTimer = setTimeout(() => { runPendingTimeout().catch(() => {}); }, REQUEST_TIMEOUT_MS);
-    // in case the page already finished loading while the SW was asleep
-    try {
-      const tabs = await chrome.tabs.query({});
-      const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && matchKey(t.url) === matchKey(saved.req.url));
-      if (tab && tab.status === "complete") await finishPending(tab);
-    } catch (e) {}
+    pendingCaptureBusy = true;
+    try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
+    catch (e) { log("Re-dispatched capture failed: " + (e && e.message)); }
+    finally { pendingCaptureBusy = false; await clearPendingPersist(); }
   } else {
     // Stale: the capture was claimed but never completed. Mark the card attempted
-    // (the same failed-attempt outcome a live timeout would eventually reach) so it
-    // isn't silently lost, then clear the persisted state.
-    log("Stale pending capture on wake (age " + Math.round(age / 1000) + "s) — marking attempted: " + saved.req.url);
-    pendingRequest = null;
-    try { await deliverToApp({ url: saved.req.url, id: saved.req.id || "", attempt: true, ok: false, ts: Date.now() }); } catch (e) {}
+    // (the same failed-attempt outcome a live failure would reach) so it isn't
+    // silently lost, then clear the persisted state.
+    log("Stale pending capture on wake (age " + Math.round(age / 1000) + "s) — marking attempted: " + req.url);
+    try { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); } catch (e) {}
     await clearPendingPersist();
   }
 }
 
-// run the pending request against a now-loaded tab (capture, or finish watch-only)
-async function finishPending(tab) {
-  if (!pendingRequest) return;
-  clearTimeout(pendingTimer);
-  await clearPendingPersist();   // B12: completed normally — drop persisted state + cancel the timeout alarm
-  const { url, delay, id, force, capture, closeAfter } = pendingRequest;
-  pendingRequest = null;
-  if (capture) {
-    // Facebook pages can't be screenshotted whole (chrome/login wall) — capture
-    // the POST AREA via the in-page engine, exactly like the FB batch does.
-    if (/facebook\.com|fb\.watch/i.test(url || tab.url || "")) await captureFbPost(tab, url, delay, id);
-    else await captureTab(tab, delay, force, id);
-  }
-  else { setBadge("", 0); await setStatus("Page reached — nothing to capture", true); }
-  // refresh requests ask us to close the page once we're done with it (the app
-  // opened it via window.open, but chrome.tabs.remove is far more reliable than
-  // a cross-origin window.close())
-  if (closeAfter && tab && tab.id != null) await closeTabSafe(tab.id);
-}
-
 // onCompleted fires reliably when the document finishes loading (more robust
-// than tab.status, which can stay "loading" on pages with open connections)
+// than tab.status, which can stay "loading" on pages with open connections).
+// Settles captureOneTab's in-flight tabs by TAB IDENTITY (not URL), so
+// cross-domain redirects can't stall a capture.
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   if (!details.url || /^(chrome|chrome-extension|about|edge):/.test(details.url)) return;
-  // batch capture: a tab we opened finished loading (match by tab identity,
-  // not URL, so redirects don't stall it)
   if (pendings[details.tabId] && !pendings[details.tabId].settled) {
     await capturePending(details.tabId);
-    return;
   }
-  if (!pendingRequest) return;
-  if (matchKey(details.url) !== matchKey(pendingRequest.url)) return;   // query-aware: a different ?v= load isn't ours
-  let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { return; }
-  log("Page loaded for pending request: " + details.url);
-  await finishPending(tab);
 });
 
 // close a browser tab, but never the app tab (localhost) or a browser page

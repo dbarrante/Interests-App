@@ -88,19 +88,23 @@ t("offline-queue dedupe uses matchKey (site 1)", () => {
     "the queue dedupe filter must key on matchKey, not normalizeUrl");
 });
 
-t("single-capture pending-tab match uses matchKey (site 2, review E: now in restorePendingRequest)", () => {
-  // v1.8.0 review E: handleCaptureRequest (the original site of this already-loaded
-  // race) was removed as dead code (zero callers, superseded by captureOneTab). The
-  // same matchKey(t.url) === matchKey(saved.req.url) pattern survives in
-  // restorePendingRequest's on-wake already-loaded check.
+t("URL-matched pending-tab machinery is retired (former sites 2+3, review E / B12 completion)", () => {
+  // v1.8.0 review E: handleCaptureRequest (the original URL-matched claim path) was
+  // dead code (superseded by the captureOneTab poller in ffdfb70) and was removed;
+  // the B12 completion then rewired the suspension persistence onto the real path,
+  // where a restored claim RE-DISPATCHES through captureOneTab (which tracks its own
+  // tab by TAB IDENTITY, redirect-safe) instead of URL-matching an existing tab. So
+  // former matchKey sites 2 (already-loaded tab race) and 3 (onCompleted pending
+  // match) are gone by design; matchKey's remaining caller is the queue dedupe.
   assert.ok(!/async function handleCaptureRequest\(/.test(bg), "handleCaptureRequest removed (dead code, review E)");
-  assert.ok(/matchKey\(t\.url\)\s*===\s*matchKey\(saved\.req\.url\)/.test(bg),
-    "restorePendingRequest's already-loaded pending-tab match must use matchKey(t.url) === matchKey(saved.req.url)");
-});
-
-t("webNavigation.onCompleted navigation match uses matchKey (site 3)", () => {
-  assert.ok(/matchKey\(details\.url\)\s*!==\s*matchKey\(pendingRequest\.url\)/.test(bg),
-    "onCompleted must match the pending request by matchKey");
+  assert.ok(!/\bfinishPending\b/.test(bg), "finishPending removed (only served the URL-matched flow)");
+  assert.ok(!/matchKey\(t\.url\)/.test(bg), "no already-loaded tab URL-match remains");
+  assert.ok(!/matchKey\(details\.url\)/.test(bg), "onCompleted no longer URL-matches a pending request");
+  // onCompleted still settles captureOneTab's in-flight tabs by tab identity
+  const oc = bg.indexOf("chrome.webNavigation.onCompleted.addListener");
+  assert.ok(oc >= 0, "onCompleted listener survives");
+  assert.ok(bg.slice(oc, oc + 600).indexOf("capturePending(details.tabId)") >= 0,
+    "onCompleted settles in-flight capture tabs by tab identity");
 });
 
 // v1.8.0 Task 2 (review D5a): reportDead (former matchKey "site 4") was retired with
@@ -156,13 +160,24 @@ t("pending single-capture request is persisted to storage.session (B12)", () => 
     "claiming a request must persist the pending request to storage.session");
   assert.ok(/chrome\.storage\.session\.remove\(PENDING_KEY\)/.test(bg),
     "completion/timeout must remove the persisted pending request");
-  // v1.8.0 review E: handleCaptureRequest (the claim path that called persistPending
-  // right after claiming) was removed as dead code — zero callers even before this
-  // cleanup (superseded by captureOneTab). persistPending itself is left in place
-  // (documented as currently unreachable) rather than deleted, since fixing the
-  // now-orphaned persistence gap is out of scope for this cleanup task.
+  // v1.8.0 B12 completion: the persistence is wired to the REAL claim path — the
+  // SW poller (pollCaptureRequest) persists right after claiming and clears once
+  // captureOneTab returns. (Its original caller, handleCaptureRequest, was dead
+  // code removed in review E; until this fix persistPending had no live caller.)
   assert.ok(!/async function handleCaptureRequest\(/.test(bg), "handleCaptureRequest removed (dead code, review E)");
-  assert.ok(/async function persistPending\(/.test(bg), "persistPending left in place (documented, not deleted)");
+  const pi = bg.indexOf("async function pollCaptureRequest(");
+  assert.ok(pi >= 0, "pollCaptureRequest present");
+  const pBody = bg.slice(pi, bg.indexOf("\n}", pi) + 2);
+  const iClaim = pBody.indexOf("request: null");             // the claim POST
+  const iWatch = pBody.indexOf("req.capture === false");     // watch-only early return
+  const iPersist = pBody.indexOf("await persistPending(");
+  const iDispatch = pBody.indexOf("await captureOneTab(");
+  const iClear = pBody.indexOf("clearPendingPersist()");
+  assert.ok(iPersist >= 0, "the poller persists the claim (B12 on the real path)");
+  assert.ok(iClear >= 0, "the poller clears the persisted claim after dispatch");
+  assert.ok(iClaim >= 0 && iClaim < iPersist, "persist happens AFTER the claim POST");
+  assert.ok(iWatch >= 0 && iWatch < iPersist, "watch-only requests return BEFORE persisting");
+  assert.ok(iPersist < iDispatch && iDispatch < iClear, "order: persist -> dispatch -> clear");
 });
 
 t("pending timeout uses a chrome.alarms alarm, not only setTimeout (B12)", () => {
@@ -183,6 +198,13 @@ t("SW init restores a fresh pending request and marks a stale one attempted (B12
   assert.ok(/PENDING_MAX_AGE_MS/.test(bg) && /age < PENDING_MAX_AGE_MS/.test(body),
     "restore must gate on a freshness window (PENDING_MAX_AGE_MS)");
   assert.ok(/attempt: true, ok: false/.test(body), "a stale restore must mark the card attempted");
+  // B12 completion: a FRESH restore re-dispatches through captureOneTab (the same
+  // redirect-safe primitive the poller uses), never the deleted URL-matched flow,
+  // and clears the persisted claim once the dispatch returns.
+  assert.ok(/captureOneTab\(req\.url,\s*req\.id\s*\|\|\s*""\s*,\s*\(req\.delay\s*\|\|\s*0\)\s*,\s*!!req\.render,\s*!!req\.force\)/.test(body),
+    "a fresh restore must re-dispatch via captureOneTab with the claim's render+force");
+  assert.ok(body.indexOf("clearPendingPersist()") >= 0, "restore clears the persisted claim");
+  assert.ok(/pendingCaptureBusy/.test(body), "restore is guarded so it never double-dispatches a live claim");
   // v1.8.0 review E: the standalone onStartup(() => restorePendingRequest()) listener
   // was consolidated into onExtensionInit() (also runs ensureContextMenu, flushQueue,
   // iaPollAll), which is registered on both onInstalled and onStartup.
