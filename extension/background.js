@@ -46,15 +46,6 @@ function matchKey(url) {
 
 // ---- HTTP delivery to the Interests app (replaces writing into a localhost tab) ----
 const IA_PORT_RANGE = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
-// The exact app-tab URL patterns (mirrors the manifest's bridge content-script
-// matches). The SW pollers defer to bridge.js ONLY when a tab on one of THESE
-// ports is open — an unrelated dev server on some other localhost port must not
-// park the poller (review B9). Kept in sync with IA_PORT_RANGE.
-const APP_TAB_URLS = (() => {
-  const u = [];
-  for (const p of IA_PORT_RANGE) { u.push("http://localhost:" + p + "/*"); u.push("http://127.0.0.1:" + p + "/*"); }
-  return u;
-})();
 let iaCachedPort = null;
 
 async function pingPort(port) {
@@ -410,18 +401,12 @@ chrome.runtime.onStartup.addListener(() => { flushQueue().catch(() => {}); });
 chrome.runtime.onInstalled.addListener(() => { flushQueue().catch(() => {}); });
 ensureContextMenu();   // also run when the service worker spins up
 
-// === SW-driven single-capture poller (v4.40 proof) ==========================
-// The capture DRIVER historically lived in bridge.js, a content script Chrome
-// injects ONLY into a localhost:3456 tab. The standalone desktop app is not a
-// Chrome tab, so bridge.js never runs and automated capture requests are never
-// drained. Drive them from the always-on background service worker instead:
-// poll the app's single-capture mailbox and run the EXISTING handleCaptureRequest
-// in-SW — the same path the popup already uses. Works whenever Chrome is open
-// with the extension, no localhost tab required.
+// === SW-driven single-capture poller (the ONLY capture driver) ==============
+// The capture driver runs entirely in the always-on background service worker:
+// poll the app's single-capture mailbox and drive the capture in-SW. The
+// standalone desktop app is not a Chrome tab, so this works whenever Chrome is
+// open with the extension — no localhost tab, no page-context bridge required.
 async function pollCaptureRequest() {
-  // If the app IS open as a Chrome localhost tab, bridge.js drives it (faster, 800ms);
-  // defer to it so we never double-claim/double-capture the same request.
-  try { const lt = await chrome.tabs.query({ url: APP_TAB_URLS }); if (lt && lt.length) return; } catch (e) {}
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
   let req = null;
@@ -444,19 +429,14 @@ async function pollCaptureRequest() {
 }
 
 // ---- Batch driver (bulk): drain /api/batch-state through captureOneTab so a bulk
-// recapture works in the STANDALONE desktop app (no localhost tab). Mirrors the
-// proven bridge.js driveBatch/pump loop, but runs in the always-on service worker
-// and passes force through (a unified "Recapture" sets force so existing images
-// are overwritten). Single (capture-request) + bulk (batch-state) now converge on
-// the same redirect-safe, force-aware captureOneTab primitive. Defers to bridge.js
-// when a localhost tab is open (same guard as the single poller) to avoid double-driving.
+// recapture works in the STANDALONE desktop app (no localhost tab). Runs in the
+// always-on service worker and passes force through (a unified "Recapture" sets
+// force so existing images are overwritten). Single (capture-request) + bulk
+// (batch-state) converge on the same redirect-safe, force-aware captureOneTab
+// primitive. This is the only batch driver — it runs unconditionally.
 let batchDriving = false;   // re-entrancy guard: the 30s alarm must not start a 2nd loop
-async function localhostTabOpen() {
-  try { const lt = await chrome.tabs.query({ url: APP_TAB_URLS }); return !!(lt && lt.length); } catch (e) { return false; }
-}
 async function pollBatchState() {
   if (batchDriving) return;
-  if (await localhostTabOpen()) return;   // a localhost tab is open → bridge.js drives it
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
   const base = "http://127.0.0.1:" + port;
@@ -483,11 +463,9 @@ async function pollBatchState() {
   let rlStreak = 0;   // consecutive captures that hit an HTTP 429 (rate-limited) — back off if it climbs
   try {
     while (next < total) {
-      // re-read state each item so the app's Stop (active:false/cancel) halts promptly,
-      // and re-check for a localhost tab appearing mid-run (then defer to bridge.js).
+      // re-read state each item so the app's Stop (active:false/cancel) halts promptly.
       const cur = await getState();
       if (!cur || !cur.items || cur.active === false || cur.cancel) { log("SW batch driver: stopped by app"); break; }
-      if (await localhostTabOpen()) { log("SW batch driver: localhost tab appeared — deferring to bridge.js"); break; }
       if (next >= cur.items.length) break;
       const it = cur.items[next] || {};
       const delay = (it.delay != null) ? it.delay : (cur.delay || 0);
@@ -518,7 +496,13 @@ async function pollBatchState() {
     }
     if (next >= total) { await postState(null); log("SW batch driver finished " + done + "/" + total); }   // fully done → clear the mailbox
     await postProg(done, total, false);   // mark progress inactive (app owns batch-state's active/cancel on a Stop)
-  } finally { batchDriving = false; }
+  } finally {
+    batchDriving = false;
+    // Safety-net cleanup the bridge's cleanupBatch message used to trigger, now that
+    // the SW is the only driver: close any capture tabs the batch left open and hand
+    // focus back to the app so the user lands on it during the pause.
+    try { await sweepBatchTabs(); await focusAppTab(); } catch (e) {}
+  }
 }
 
 function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); }
@@ -1128,23 +1112,6 @@ chrome.webRequest.onCompleted.addListener((details) => {
 }, { urls: ["<all_urls>"], types: ["main_frame"] });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === "captureRequest" && msg.data) {
-    handleCaptureRequest(msg.data);
-  }
-
-  if (msg.action === "captureOneTab" && msg.data) {
-    (async () => {
-      try { const outcome = await captureOneTab(msg.data.url, msg.data.id, msg.data.delay, msg.data.render); sendResponse({ ok: true, outcome }); }
-      catch (e) { sendResponse({ ok: false, error: e.message }); }
-    })();
-    return true;
-  }
-
-  if (msg.action === "cleanupBatch") {
-    (async () => { await sweepBatchTabs(); await focusAppTab(); sendResponse({ ok: true }); })();   // land back on the app after the batch
-    return true;
-  }
-
   if (msg.action === "manualCapture") {
     (async () => {
       try {
@@ -1227,14 +1194,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.action === "getQueue") {
-    (async () => {
-      const stored = await chrome.storage.local.get("ia_capture_queue");
-      sendResponse({ queue: stored.ia_capture_queue || [] });
-    })();
-    return true;
-  }
-
   if (msg.action === "getStatus") {
     (async () => {
       const stored = await chrome.storage.local.get(["ia_capture_queue", "ia_last_status"]);
@@ -1244,10 +1203,5 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     })();
     return true;
-  }
-
-  if (msg.action === "clearQueue") {
-    chrome.storage.local.set({ ia_capture_queue: [] });
-    log("Queue cleared by app");
   }
 });
