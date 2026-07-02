@@ -62,5 +62,5 @@
     blocked: isBlockedPage(),
   };
 
-  data;
+  return data;
 })();
