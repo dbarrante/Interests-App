@@ -9,7 +9,6 @@ let pendingTimer = null;
 // captures out with a long, jittered gap and back off if several in a row come back empty.
 const IG_DELAY_MS = 12000;   // ~12s between Instagram captures (other sites keep the fast default)
 const IG_JITTER_MS = 6000;   // + up to 6s random jitter so it's a human-like trickle, not a metronome
-const IG_BACKOFF = 3;        // this many HTTP 429s (rate-limited) in a row → stop the run (not plain no-image)
 // serialize the actual screenshot — captureVisibleTab can only grab one visible
 // tab at a time, even though batch page-loads run in parallel
 let captureLock = Promise.resolve();
@@ -271,13 +270,18 @@ async function blobToDataUrl(blob) {
 
 // captureVisibleTab serialized through the capture lock + with the target tab
 // activated first — otherwise a concurrent batch capture (which activates other
-// tabs) can hand back a screenshot of the WRONG tab.
+// tabs) can hand back a screenshot of the WRONG tab. Bounded by an 8s race so a
+// stuck tab can never hang the pipeline (unified from two near-duplicate copies
+// in review E; formerly captureTab had its own inline copy of this exact logic).
 async function lockedCaptureVisible(tab, quality) {
   return withCaptureLock(async () => {
     try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
     try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
     await new Promise((r) => setTimeout(r, 150));
-    return await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: quality || 70 });
+    return await Promise.race([
+      chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: quality || 70 }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("capture timeout")), 8000)),
+    ]);
   });
 }
 
@@ -392,10 +396,6 @@ function ensureContextMenu() {
     });
   } catch (e) { log("contextMenu setup failed: " + e.message); }
 }
-chrome.runtime.onInstalled.addListener(ensureContextMenu);
-chrome.runtime.onStartup.addListener(ensureContextMenu);
-chrome.runtime.onStartup.addListener(() => { flushQueue().catch(() => {}); });
-chrome.runtime.onInstalled.addListener(() => { flushQueue().catch(() => {}); });
 ensureContextMenu();   // also run when the service worker spins up
 
 // === SW-driven single-capture poller (the ONLY capture driver) ==============
@@ -457,7 +457,6 @@ async function pollBatchState() {
 
   batchDriving = true;
   log("SW batch driver: " + total + " item(s) from " + next + (st.force ? " (force/overwrite)" : ""));
-  let rlStreak = 0;   // consecutive captures that hit an HTTP 429 (rate-limited) — back off if it climbs
   try {
     while (next < total) {
       // re-read state each item so the app's Stop (active:false/cancel) halts promptly.
@@ -469,21 +468,11 @@ async function pollBatchState() {
       const render = (it.render != null) ? !!it.render : !!cur.render;
       const force = (it.force != null) ? !!it.force : !!cur.force;
       const isIG = /instagram\.com/i.test(it.url || "");
-      let outcome = "ok";
-      try { outcome = (await captureOneTab(it.url, it.id || "", delay, render, force)) || "ok"; }
-      catch (e) { outcome = "error"; log("SW batch item failed: " + (e && e.message)); }
+      try { await captureOneTab(it.url, it.id || "", delay, render, force); }
+      catch (e) { log("SW batch item failed: " + (e && e.message)); }
       next++; done++;
       // persist the cursor in PROGRESS only (never batch-state) so a SW suspension resumes here
       await postProg(done, total, true);
-      // Back off ONLY on real rate-limiting — consecutive HTTP 429s — not on plain image-less/dead
-      // pages, so a few private/deleted reels scattered in a mixed run don't stop the whole batch.
-      if (outcome === "ratelimited") rlStreak++; else if (outcome === "ok") rlStreak = 0;
-      if (rlStreak >= IG_BACKOFF) {
-        log("SW batch driver: " + rlStreak + " HTTP 429s in a row — backing off (rate-limited)");
-        notify("ratelimit-" + done, "Interests Capture", "A site (likely Instagram) is rate-limiting (HTTP 429) — paused the recapture at " + done + "/" + total + ". Try again in a little while (smaller batches help).");
-        await postState(null); await postProg(done, total, false);
-        return;
-      }
       if (next < total) {
         // Pace Instagram gently (long, jittered gap) so IG sees a human-like trickle, not a burst —
         // this is the main 429 mitigation. Other platforms keep the fast batch delay.
@@ -513,14 +502,24 @@ try {
     else if (a.name === PENDING_ALARM) { if (pendingRequest) runPendingTimeout().catch(() => {}); else restorePendingRequest().catch(() => {}); }
   });
 } catch (e) { log("alarms unavailable: " + (e && e.message)); }
-chrome.runtime.onStartup.addListener(iaPollAll);
-chrome.runtime.onInstalled.addListener(iaPollAll);
 iaPollAll();   // poll once on SW spin-up
 // B12: on every SW wake, restore a persisted pending capture (fresh → resume,
 // stale → mark attempted) so a claimed request is never silently lost.
-chrome.runtime.onStartup.addListener(() => { restorePendingRequest().catch(() => {}); });
-chrome.runtime.onInstalled.addListener(() => { restorePendingRequest().catch(() => {}); });
 restorePendingRequest().catch(() => {});   // also on plain SW spin-up (event-driven wake)
+
+// One startup function per Chrome lifecycle event (was 3 separate onInstalled +
+// 3 separate onStartup registrations scattered through the file — unified in
+// review E). All 4 init tasks must keep firing on both events: context menu,
+// offline-queue flush, the capture-request poll wake (iaPollAll), and the
+// pending-capture restore (B12 — must never be silently lost).
+function onExtensionInit() {
+  ensureContextMenu();
+  flushQueue().catch(() => {});
+  iaPollAll();
+  restorePendingRequest().catch(() => {});
+}
+chrome.runtime.onInstalled.addListener(onExtensionInit);
+chrome.runtime.onStartup.addListener(onExtensionInit);
 
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -591,16 +590,7 @@ async function captureTab(tab, delayMs, force, cardId) {
     } else {
       try {
         // serialize: only one tab can be the "visible" capture target at a time
-        screenshot = await withCaptureLock(async () => {
-          try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
-          try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
-          await new Promise((r) => setTimeout(r, 150));
-          // bound the capture so a stuck tab can never hang the pipeline
-          return await Promise.race([
-            chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 60 }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("capture timeout")), 8000)),
-          ]);
-        });
+        screenshot = await lockedCaptureVisible(tab, 60);
         log("Screenshot captured (" + Math.round(screenshot.length / 1024) + "KB)");
       } catch (e) {
         log("Screenshot failed: " + e.message);
@@ -677,11 +667,22 @@ async function captureTab(tab, delayMs, force, cardId) {
 // card never even marked "attempted". Back it with chrome.storage.session and a
 // chrome.alarms alarm (both survive suspension) so the timeout still fires and the
 // pending state can be restored on the next SW wake.
+//
+// v1.8.0 review E note: persistPending's only caller (handleCaptureRequest, the
+// URL-matched single-capture claim path) was removed as dead code — it had zero
+// callers even before this cleanup (superseded by captureOneTab, proof(ext)
+// ffdfb70). That means PENDING_KEY is never written by any current code path, so
+// restorePendingRequest's restore branch below is currently a guaranteed no-op —
+// this was already true on HEAD, not something this cleanup broke. Left in place
+// (not deleted) because restorePendingRequest/finishPending/the onCompleted
+// listener are still wired per spec and this is a persistence layer, not a
+// pure-dead-code deletion; fixing the gap is out of scope for review E.
 const PENDING_KEY = "ia_pending_request";
 const PENDING_ALARM = "ia_pending_timeout";
 const PENDING_MAX_AGE_MS = 120000;   // on restore, older than this → treat as timed out
 
 // Persist the just-claimed request so a suspended SW can restore/complete it.
+// (Currently zero live callers — see note above.)
 async function persistPending(reqLike) {
   try { await chrome.storage.session.set({ [PENDING_KEY]: { req: reqLike, at: Date.now() } }); }
   catch (e) { console.warn("[IA] pending-claim persist failed (capture won't survive SW suspension):", e); }
@@ -740,50 +741,6 @@ async function restorePendingRequest() {
   }
 }
 
-async function handleCaptureRequest(req) {
-  if (pendingRequest) {
-    log("Already have a pending request, ignoring");
-    return;
-  }
-
-  // Facebook: capture via og:image fetch — no rendered page needed. If it works
-  // we're done; close the tab the app opened for this URL (if any).
-  if (req.capture !== false && /facebook\.com|fb\.watch/i.test(req.url || "")) {
-    // render mode (single ↻ on a restricted post): open a focused popup window and
-    // render-capture it like a manual Save. og is tried first inside renderCaptureFb.
-    if (req.render) { await renderCaptureFb(req.url, req.id, req.delay); return; }
-    if (await captureFbByOg(req.url, req.id)) {
-      setBadge("✓", 3000); await setStatus("Facebook captured ✓ (no render needed)", true);
-    } else {
-      // no og:image (restricted) → mark attempted; never fall back to a tab/spinner
-      await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
-      setBadge("!", 3000); await setStatus("Facebook: no og:image (restricted post) — left for manual", false);
-    }
-    // close the tab only if this was a ↻ refresh (closeAfter) — not a card you opened to read
-    if (req.closeAfter) { try { const ts = await chrome.tabs.query({}); const t = ts.find(x => x.url && normalizeUrl(x.url) === normalizeUrl(req.url)); if (t) await closeTabSafe(t.id); } catch (e) {} }
-    return;
-  }
-
-  log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
-  pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false, closeAfter: !!req.closeAfter };
-  // B12: persist the claim so it survives a SW suspension before the page loads.
-  await persistPending(pendingRequest);
-  setBadge("⏳");
-  await setStatus("Waiting for page to load…", true);
-
-  // already-loaded race: the page may have finished before this request arrived
-  const tabs = await chrome.tabs.query({});
-  const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && matchKey(t.url) === matchKey(req.url));   // query-aware: don't match a different ?v= tab
-  if (tab && tab.status === "complete") {
-    log("Matching tab already loaded: " + tab.id);
-    await finishPending(tab);
-    return;
-  }
-
-  log("Waiting for page load (webNavigation.onCompleted)...");
-  armPendingTimeout();   // B12: alarm-backed timeout (survives suspension) + in-memory fast path
-}
-
 // run the pending request against a now-loaded tab (capture, or finish watch-only)
 async function finishPending(tab) {
   if (!pendingRequest) return;
@@ -822,13 +779,6 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   await finishPending(tab);
 });
 
-// "Dead post" notices are ordinary capture objects (cap.dead) — deliver them the
-// same way, with the same HTTP + offline-queue fallback. Now reached ONLY by the
-// popup's explicit "Remove card" action (passive dead-link auto-removal was retired
-// in v1.8.0 / ext 4.47 — the app's review-based "Check links" sweep owns dead links).
-async function deliverDead(dead) {
-  return await deliverToApp(dead);
-}
 // close a browser tab, but never the app tab (localhost) or a browser page
 async function closeTabSafe(tabId){
   if (typeof tabId !== "number" || tabId < 0) return;
@@ -997,7 +947,7 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
   const p = pendings[tabId];
   if (!p || p.settled) return;
   p.settled = true; clearTimeout(p.fb); clearTimeout(p.wd);
-  let ok = true;   // did this capture deliver a real image? (non-FB; used by the IG back-off)
+  let ok = true;   // did this capture deliver a real image? (non-FB)
   try {
     const t = await chrome.tabs.get(tabId);
     if (t && !/^(chrome|chrome-extension|about|edge):/.test(t.url || "")) {
@@ -1006,10 +956,11 @@ async function capturePending(tabId) {   // capture whatever's loaded, then sett
     }
   } catch (e) { ok = false; }
   // NOTE (v1.8.0 / ext 4.47): the HTTP-status probe that told a 429 rate-limit page
-  // apart from a plain no-image result went away with the webRequest permission, so we
-  // no longer emit "ratelimited" (the consecutive-429 backoff-and-stop in the SW batch
-  // driver won't proactively pause). The 12s IG spacing remains the primary throttling
-  // defense; a throttled load now just reports as a normal image-less capture.
+  // apart from a plain no-image result went away with the webRequest permission. The
+  // reactive consecutive-429 backoff-and-stop the SW batch driver used to run on that
+  // status was dead code (unreachable once the probe was gone) and was removed in
+  // review E. The 12s IG spacing remains the primary throttling defense; a throttled
+  // load now just reports as a normal image-less capture.
   delete pendings[tabId];
   p.resolve(ok ? "ok" : "noimg");   // outcome flows up to the batch driver for pacing
 }
@@ -1074,25 +1025,6 @@ async function sweepBatchTabs() {
 // popup's explicit "Remove card" action is unaffected.
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === "manualCapture") {
-    (async () => {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.url || /^(chrome|chrome-extension|about|edge):/.test(tab.url)) {
-          await setStatus("Cannot capture this page (browser page)", false);
-          sendResponse({ ok: false, error: "Cannot capture this page" });
-          return;
-        }
-        const ok = await captureTab(tab, 0, true);
-        sendResponse({ ok });
-      } catch (e) {
-        await setStatus("Failed: " + e.message, false);
-        sendResponse({ ok: false, error: e.message });
-      }
-    })();
-    return true;
-  }
-
   if (msg.action === "clipPage") {
     (async () => {
       try {
@@ -1107,7 +1039,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if ((msg.action === "clipFacebookPost" || msg.action === "clipSocialPost") && msg.data) {
+  if (msg.action === "clipSocialPost" && msg.data) {
     (async () => {
       try {
         const tab = sender.tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
@@ -1144,8 +1076,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const url = (tab && tab.url) || "";
         // remove the card matching this page's URL, or fall back to the
-        // last-opened ("active") card in the app
-        await deliverDead({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
+        // last-opened ("active") card in the app. "Dead post" notices are
+        // ordinary capture objects (cap.dead) — deliver them the same way,
+        // with the same HTTP + offline-queue fallback (deliverToApp).
+        await deliverToApp({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
         await setStatus("Removed card from Interests + closing tab", true);
         sendResponse({ ok: true });
         if (tab && tab.id != null) await closeTabSafe(tab.id);   // close the page tab

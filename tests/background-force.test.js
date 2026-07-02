@@ -61,7 +61,15 @@ t("the batch driver has a re-entrancy guard and is registered on the alarm + sta
   assert.ok(ip >= 0, "iaPollAll defined");
   assert.ok(bg.slice(ip, ip + 130).indexOf("pollBatchState()") >= 0, "iaPollAll runs pollBatchState");
   assert.ok(bg.indexOf('a.name === "iaCapturePoll") iaPollAll()') >= 0, "alarm fires iaPollAll");
-  assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(iaPollAll)") >= 0, "runs on SW startup");
+  // v1.8.0 review E: the standalone onInstalled/onStartup(iaPollAll) registrations
+  // were consolidated into one onExtensionInit() function (also runs ensureContextMenu,
+  // flushQueue, restorePendingRequest) fired from both lifecycle events.
+  const oi = bg.indexOf("function onExtensionInit()");
+  assert.ok(oi >= 0, "onExtensionInit defined");
+  const oiBody = bg.slice(oi, bg.indexOf("\n}", oi) + 2);
+  assert.ok(oiBody.indexOf("iaPollAll()") >= 0, "onExtensionInit runs iaPollAll");
+  assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(onExtensionInit)") >= 0, "runs on SW startup");
+  assert.ok(bg.indexOf("chrome.runtime.onInstalled.addListener(onExtensionInit)") >= 0, "runs on install");
 });
 
 // v1.8.0 Task 2 (review D5a): the tabStatus / HTTP-status probe went away with the
@@ -83,6 +91,19 @@ t("capturePending resolves plain 'ok'/'noimg' (429 vs no-image distinction retir
   assert.ok(body.indexOf('p.resolve(ok ? "ok" : "noimg")') >= 0, "resolves ok/noimg only");
   assert.ok(!/p\.resolve\([^)]*ratelimited/.test(body), "resolve must not emit ratelimited (no status probe to detect a 429)");
   assert.ok(body.indexOf("ok = await captureTab(") >= 0, "still captures captureTab's return");
+});
+
+t("v1.8.0 review E: the unreachable reactive-backoff consumer chain is gone", () => {
+  // Task 2 removed the only emitter of a "ratelimited" outcome; the consumer chain
+  // in pollBatchState (rlStreak, the outcome==="ratelimited" branch, IG_BACKOFF,
+  // the backoff notify/pause) was therefore dead and removed in review E. IG pacing
+  // (the 12s jittered delay) is unaffected and still runs unconditionally.
+  assert.ok(!/\bratelimited\b/.test(bg), "no \"ratelimited\" string may remain anywhere in background.js");
+  assert.ok(!/\brlStreak\b/.test(bg), "rlStreak removed");
+  assert.ok(!/\bIG_BACKOFF\b/.test(bg), "IG_BACKOFF constant removed");
+  const i = bg.indexOf("async function pollBatchState(");
+  const body = bg.slice(i, i + 3600);
+  assert.ok(!/backing off \(rate-limited\)/.test(body), "the backoff notify message is gone");
 });
 
 t("batch driver still paces Instagram gently (the primary 429 mitigation survives)", () => {

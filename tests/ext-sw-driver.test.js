@@ -153,9 +153,9 @@ t("webNavigation.onCompleted listener SURVIVES (pending-capture flow)", () => {
   assert.ok(/chrome\.webNavigation\.onCompleted\.addListener/.test(bg),
     "webNavigation.onCompleted must remain — the pending-capture flow depends on it");
 });
-t("popup 'removeCard' handler + deliverDead SURVIVE (explicit user removal)", () => {
+t("popup 'removeCard' handler SURVIVES (explicit user removal), deliverDead wrapper inlined", () => {
   assert.ok(/msg\.action === "removeCard"/.test(bg), "removeCard handler kept (popup explicit removal)");
-  assert.ok(/async function deliverDead\(/.test(bg), "deliverDead kept (used by removeCard)");
+  assert.ok(!/\bdeliverDead\b/.test(bg), "deliverDead wrapper removed — inlined into deliverToApp call (review E)");
   assert.ok(/removeActive:\s*true/.test(bg), "removeCard still delivers removeActive:true");
 });
 

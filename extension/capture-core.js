@@ -89,6 +89,26 @@
   if (!cfg) return;
   try { if (cfg.init) cfg.init(U); } catch (e) {}
 
+  // Build the clipSocialPost payload for a post: author/text via cfg.extract, the
+  // permalink (or the current URL for a specific post/photo page), the post's own
+  // photo (widened to a document-wide search only on a specific post/photo page —
+  // never on the feed, where that would grab an unrelated post's image), and the
+  // post rect for region/photo strategies (photo uses it as the crop fallback for
+  // text/video posts with no still photo). Shared by the click-driven doCapture
+  // flow and the right-click sendPostClip flow (extracted in review E — the two
+  // were near-duplicate blocks).
+  function buildClipInfo(post) {
+    const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
+    const author = (ex && ex.author) || "";
+    const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
+    const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
+    let image = U.largestImg(post, cfg.imageCdn);
+    if (!image && cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) image = U.largestImg(document, cfg.imageCdn);
+    const rect = (cfg.image !== "screenshot") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
+    const title = cfg.title ? cfg.title(author) : (author || "Saved post");
+    return { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
+  }
+
   let lastClipTs = 0;
   document.addEventListener("click", function (e) {
     try {
@@ -105,22 +125,9 @@
         try {
           // FB's virtualized feed can detach the post node during the delay — re-resolve it
           if (post && post.isConnected === false && cfg.findPost) { const re = cfg.findPost(trigger, U); if (re) post = re; }
-          const ex = (post && cfg.extract) ? cfg.extract(post, U) : { author: "", text: "" };
-          const author = (ex && ex.author) || "";
-          const perma = (post && cfg.findPermalink) ? cfg.findPermalink(post, U) : "";
-          const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
-          // The post's OWN photo. Only widen to a document-wide image search on a
-          // specific post/photo PAGE (the whole document is the post there) — never
-          // on the feed, where it would grab an unrelated post's image.
-          let image = U.largestImg(post, cfg.imageCdn);
-          if (!image && cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) image = U.largestImg(document, cfg.imageCdn);
-          // post rect for region/photo strategies (photo uses it as the fallback
-          // for text/video posts that have no still photo)
-          const rect = (cfg.image !== "screenshot") ? U.rectOf((post && post.closest && post.closest('[role="dialog"]')) || post) : null;
-          const title = cfg.title ? cfg.title(author) : (author || "Saved post");
-          const info = { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href };
-          console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(author),
-            "| url=", url, "| img=", image ? "yes" : "no", "| rect=", rect ? (Math.round(rect.w) + "x" + Math.round(rect.h)) : "none");
+          const info = buildClipInfo(post);
+          console.log("[Interests] " + cfg.id + " save | author=", JSON.stringify(info.author),
+            "| url=", info.url, "| img=", info.image ? "yes" : "no", "| rect=", info.rect ? (Math.round(info.rect.w) + "x" + Math.round(info.rect.h)) : "none");
           // the extension may have been reloaded while this tab kept the old
           // content script — bail quietly instead of throwing "context invalidated"
           if (!chrome.runtime || !chrome.runtime.id) { console.warn("[Interests] extension reloaded — refresh this tab to re-enable Save mirror"); return; }
@@ -165,16 +172,9 @@
   function sendPostClip(post) {
     if (!post) return false;
     try {
-      const ex = cfg.extract ? cfg.extract(post, U) : { author: "", text: "" };
-      const author = (ex && ex.author) || "";
-      const perma = cfg.findPermalink ? cfg.findPermalink(post, U) : "";
-      const url = (cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) ? location.href : (perma || location.href);
-      let image = U.largestImg(post, cfg.imageCdn);
-      if (!image && cfg.isSpecificUrl && cfg.isSpecificUrl(location.href)) image = U.largestImg(document, cfg.imageCdn);
-      const rect = (cfg.image !== "screenshot") ? U.rectOf((post.closest && post.closest('[role="dialog"]')) || post) : null;
-      const title = cfg.title ? cfg.title(author) : (author || "Saved post");
+      const info = buildClipInfo(post);
       if (!chrome.runtime || !chrome.runtime.id) return false;
-      chrome.runtime.sendMessage({ action: "clipSocialPost", data: { url: url, title: title, author: author, text: (ex && ex.text) || "", image: image, rect: rect, strategy: cfg.image, pageUrl: location.href } }, function () {
+      chrome.runtime.sendMessage({ action: "clipSocialPost", data: info }, function () {
         if (chrome.runtime && chrome.runtime.lastError) { /* ignore */ }
       });
       return true;

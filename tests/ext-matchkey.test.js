@@ -88,10 +88,14 @@ t("offline-queue dedupe uses matchKey (site 1)", () => {
     "the queue dedupe filter must key on matchKey, not normalizeUrl");
 });
 
-t("single-capture pending-tab match uses matchKey (site 2)", () => {
-  // the already-loaded race in handleCaptureRequest matches an open tab to req.url
-  assert.ok(/matchKey\(t\.url\)\s*===\s*matchKey\(req\.url\)/.test(bg),
-    "the already-loaded pending-tab match must use matchKey(t.url) === matchKey(req.url)");
+t("single-capture pending-tab match uses matchKey (site 2, review E: now in restorePendingRequest)", () => {
+  // v1.8.0 review E: handleCaptureRequest (the original site of this already-loaded
+  // race) was removed as dead code (zero callers, superseded by captureOneTab). The
+  // same matchKey(t.url) === matchKey(saved.req.url) pattern survives in
+  // restorePendingRequest's on-wake already-loaded check.
+  assert.ok(!/async function handleCaptureRequest\(/.test(bg), "handleCaptureRequest removed (dead code, review E)");
+  assert.ok(/matchKey\(t\.url\)\s*===\s*matchKey\(saved\.req\.url\)/.test(bg),
+    "restorePendingRequest's already-loaded pending-tab match must use matchKey(t.url) === matchKey(saved.req.url)");
 });
 
 t("webNavigation.onCompleted navigation match uses matchKey (site 3)", () => {
@@ -152,9 +156,13 @@ t("pending single-capture request is persisted to storage.session (B12)", () => 
     "claiming a request must persist the pending request to storage.session");
   assert.ok(/chrome\.storage\.session\.remove\(PENDING_KEY\)/.test(bg),
     "completion/timeout must remove the persisted pending request");
-  // the claim path must actually call persistPending
-  assert.ok(/pendingRequest = \{[^}]*\};\s*[\s\S]{0,120}persistPending\(pendingRequest\)/.test(bg),
-    "handleCaptureRequest must persistPending right after claiming");
+  // v1.8.0 review E: handleCaptureRequest (the claim path that called persistPending
+  // right after claiming) was removed as dead code — zero callers even before this
+  // cleanup (superseded by captureOneTab). persistPending itself is left in place
+  // (documented as currently unreachable) rather than deleted, since fixing the
+  // now-orphaned persistence gap is out of scope for this cleanup task.
+  assert.ok(!/async function handleCaptureRequest\(/.test(bg), "handleCaptureRequest removed (dead code, review E)");
+  assert.ok(/async function persistPending\(/.test(bg), "persistPending left in place (documented, not deleted)");
 });
 
 t("pending timeout uses a chrome.alarms alarm, not only setTimeout (B12)", () => {
@@ -175,8 +183,17 @@ t("SW init restores a fresh pending request and marks a stale one attempted (B12
   assert.ok(/PENDING_MAX_AGE_MS/.test(bg) && /age < PENDING_MAX_AGE_MS/.test(body),
     "restore must gate on a freshness window (PENDING_MAX_AGE_MS)");
   assert.ok(/attempt: true, ok: false/.test(body), "a stale restore must mark the card attempted");
-  assert.ok(/chrome\.runtime\.onStartup\.addListener\(\(\) => \{ restorePendingRequest\(\)/.test(bg),
-    "restore must run on SW startup");
+  // v1.8.0 review E: the standalone onStartup(() => restorePendingRequest()) listener
+  // was consolidated into onExtensionInit() (also runs ensureContextMenu, flushQueue,
+  // iaPollAll), which is registered on both onInstalled and onStartup.
+  const oi = bg.indexOf("function onExtensionInit()");
+  assert.ok(oi >= 0, "onExtensionInit defined");
+  const oiBody = bg.slice(oi, bg.indexOf("\n}", oi) + 2);
+  assert.ok(oiBody.indexOf("restorePendingRequest()") >= 0, "onExtensionInit runs restorePendingRequest");
+  assert.ok(bg.indexOf("chrome.runtime.onStartup.addListener(onExtensionInit)") >= 0,
+    "restore (via onExtensionInit) must run on SW startup");
+  assert.ok(bg.indexOf("chrome.runtime.onInstalled.addListener(onExtensionInit)") >= 0,
+    "restore (via onExtensionInit) must also run on install");
 });
 
 console.log(pass + " passed, " + fail + " failed");

@@ -12,7 +12,13 @@
 //   findPermalink(post, U)   -> url    scrape fallback (feed view)
 //   extract(post, U)         -> { author, text }
 //   title(author)            -> string
-//   image                    "region" (crop the post rect) | other
+//   image                    strategy for background.js's clipSocialPost handler:
+//                              "photo" (Facebook/Pinterest/YouTube) — try the post's own
+//                                photo/thumbnail first, crop the post rect as fallback
+//                              "region" (Instagram) — crop the post rect first, photo as
+//                                fallback (its own photo is often the "Save To" overlay)
+//                              "screenshot" — skip the rect (no crop; falls through to a
+//                                page screenshot)
 //   imageCdn                 RegExp for the image fallback
 //   preCaptureDelayMs        wait before measuring (let native menus close)
 //   hoverTimestamps          bool — coax lazy permalink hrefs (Facebook)
