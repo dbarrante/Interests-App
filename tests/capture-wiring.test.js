@@ -15,7 +15,11 @@ t("startBatchCapture drives capture via the Core (Store.captureMeta)", () => {
 t("startBatchCapture stamps capReason and supports retry-clear + id subset", () => {
   const i = html.indexOf("async function startBatchCapture");
   const body = html.slice(i, i + 2500);
-  assert.ok(body.indexOf("capReason") >= 0, "should stamp c.capReason");
+  // capReason is stamped by the shared applyCaptureResult helper the loop delegates to
+  const ai = html.indexOf("function applyCaptureResult(");
+  assert.ok(ai >= 0, "applyCaptureResult helper present");
+  assert.ok(html.slice(ai, ai + 900).indexOf("capReason") >= 0, "helper stamps c.capReason");
+  assert.ok(body.indexOf("applyCaptureResult(") >= 0, "loop applies results via the shared helper");
   assert.ok(body.indexOf("onlyIds") >= 0, "should accept an explicit id subset");
   assert.ok(body.indexOf("Store.imgDel") >= 0, "retry should clear the existing image");
   assert.ok(body.indexOf("BATCH_CAP") < 0 || body.indexOf("slice(0, BATCH_CAP)") < 0, "loop should be uncapped (no BATCH_CAP slice)");
@@ -116,9 +120,14 @@ t("enrichOnOpen enriches via the Core (no CORS proxy): uses Store.captureMeta, n
 });
 
 t("og-url fallback applied: startBatchCapture + enrichOnOpen handle r.imageUrl", () => {
+  // the r.imageUrl fallback now lives in the shared applyCaptureResult helper that
+  // startBatchCapture's loop delegates to
+  const ai = html.indexOf("function applyCaptureResult(");
+  assert.ok(ai >= 0, "applyCaptureResult helper present");
+  assert.ok(html.slice(ai, ai + 900).indexOf("imageUrl") >= 0, "helper applies r.imageUrl");
   const si = html.indexOf("async function startBatchCapture");
   const sb = html.slice(si, si + 3200);
-  assert.ok(sb.indexOf("imageUrl") >= 0, "startBatchCapture applies imageUrl");
+  assert.ok(sb.indexOf("applyCaptureResult(") >= 0, "startBatchCapture applies results via the helper");
   const ei = html.indexOf("async function enrichOnOpen(");
   const eb = html.slice(ei, ei + 2400);
   assert.ok(eb.indexOf("m.imageUrl") >= 0, "enrichOnOpen applies m.imageUrl");

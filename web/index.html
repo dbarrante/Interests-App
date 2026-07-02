@@ -721,8 +721,9 @@ function setFilter(k){
 }
 function applyFilter(list){
   if(!filterCat) return list;
-  const name = CATS.find(c=>c.key===filterCat).name;
-  return list.filter(i=>i.category===name);
+  const c = CATS.find(c=>c.key===filterCat);
+  if(!c){ filterCat=""; save("fcat",""); return list; }
+  return list.filter(i=>i.category===c.name);
 }
 
 /* ============ cards ============ */
@@ -2107,6 +2108,20 @@ function guessCat(title){
   if(/business|productivity|workflow|meeting|strategy|automation|enterprise|operator/i.test(title)) return "Work initiatives";
   return "Personal projects & hobbies";
 }
+// Shared filter predicate for the Imported view. Used by BOTH renderImported (what
+// gets rendered) and selectShown (what "Select all shown" picks) so the two never
+// drift — "shown" and "selected" must be the exact same set. Callers build the
+// savedUrls Set (saved cards that share a url) and pass it in.
+function impFilterPredicate(it, savedUrls){
+  return (!impQuery || it.title.toLowerCase().includes(impQuery) || (it.desc||"").toLowerCase().includes(impQuery)
+                 || (it.tags||[]).some(t=>t.includes(impQuery)))
+      && (!impSrc || platformOf(it)===impSrc)
+      && (!impTag || (impTag==="__none" ? !(it.tags&&it.tags.length) : (it.tags||[]).includes(impTag)))
+      && (!impUnreviewed || (!it.liked && !(it.url && savedUrls.has(it.url))))
+      && (!impFailed || needsRetry(it) || _refreshPins.has(it.id))
+      && (!impFbMiss || fbMiss(it) || _refreshPins.has(it.id))
+      && (!impBatchIds || impBatchIds.has(it.id));
+}
 function renderImported(){
   const v=document.getElementById("view-imported");
   if(!imported.length){
@@ -2115,14 +2130,7 @@ function renderImported(){
   }
   const savedUrls = new Set(saved.filter(s=>s.url).map(s=>s.url));
   const list = imported.map((it,idx)=>({it,idx}))
-    .filter(r=>(!impQuery || r.it.title.toLowerCase().includes(impQuery) || (r.it.desc||"").toLowerCase().includes(impQuery)
-                 || (r.it.tags||[]).some(t=>t.includes(impQuery)))
-            && (!impSrc || platformOf(r.it)===impSrc)
-            && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag)))
-            && (!impUnreviewed || (!r.it.liked && !(r.it.url && savedUrls.has(r.it.url))))
-            && (!impFailed || needsRetry(r.it) || _refreshPins.has(r.it.id))
-            && (!impFbMiss || fbMiss(r.it) || _refreshPins.has(r.it.id))
-            && (!impBatchIds || impBatchIds.has(r.it.id)))
+    .filter(r=>impFilterPredicate(r.it, savedUrls))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
   v.innerHTML = `
@@ -2828,11 +2836,9 @@ function renderImportedKeepFocus(){
   if(inp){ inp.focus(); if(pos!=null) inp.setSelectionRange(pos,pos); }
 }
 function selectShown(){
+  const savedUrls = new Set(saved.filter(s=>s.url).map(s=>s.url));
   imported.map((it,idx)=>({it,idx}))
-    .filter(r=>(!impQuery || r.it.title.toLowerCase().includes(impQuery) || (r.it.desc||"").toLowerCase().includes(impQuery)
-                 || (r.it.tags||[]).some(t=>t.includes(impQuery)))
-            && (!impSrc || platformOf(r.it)===impSrc)
-            && (!impTag || (impTag==="__none" ? !(r.it.tags&&r.it.tags.length) : (r.it.tags||[]).includes(impTag))))
+    .filter(r=>impFilterPredicate(r.it, savedUrls))
     .forEach(r=>selPicks.add(r.idx));
   renderImported();
 }
@@ -2847,25 +2853,22 @@ function ogParse(html){
 async function fetchSelectedInfo(){
   const targets = [...selPicks].map(i=>imported[i]).filter(it=>it && it.url).slice(0,40);
   if(!targets.length){ toast("Select some items with links first"); return; }
+  targets.forEach(it=>{ if(!it.id) it.id=newId(); });
   const btn=document.getElementById("fetchBtn");
   btn.disabled=true; btn.innerHTML='<span class="spin"></span> Fetching…';
   let gotImg=0, gotInfo=0;
   for(let i=0;i<targets.length;i+=6){
-    await Promise.all(targets.slice(i,i+6).map(async it=>{
-      try{
-        const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(), 9000);
-        const r=await fetch("https://api.allorigins.win/get?url="+encodeURIComponent(it.url), {signal:ctl.signal});
-        clearTimeout(tm);
-        if(!r.ok) return;
-        const d=await r.json();
-        if(!d.contents || typeof d.contents!=="string") return;
-        const og=ogParse(d.contents.slice(0,60000));
-        if(og.img && /^https?:/.test(og.img) && !it.img){ it.img=og.img; gotImg++; }
-        if(og.desc && og.desc.length>15 && /login|log in to facebook|see posts, photos/i.test(og.desc)===false && (!it.desc || it.desc.startsWith("Saved from") || it.desc.startsWith("From your"))){ it.desc=og.desc.slice(0,220); gotInfo++; }
-        if(og.title && og.title.length>10 && !/facebook|log in/i.test(og.title) && genericTitle(it.title)) it.title=og.title.slice(0,250);
-        it.fi=1;
-      }catch(e){}
-    }));
+    const chunk=targets.slice(i,i+6);
+    let results=[];
+    try{ results = await Store.captureMeta(chunk.map(c=>({id:c.id, url:c.url}))); }
+    catch(e){ console.warn("fetchSelectedInfo chunk failed", e); }
+    const byId={}; chunk.forEach(c=>{ byId[c.id]=c; });
+    results.forEach(r=>{
+      const c=r&&byId[r.id]; if(!c) return;
+      const hadDesc=!!(c.desc && !c.desc.startsWith("Saved from") && !c.desc.startsWith("From your"));
+      if(applyCaptureResult(c, r)) gotImg++;
+      if(!hadDesc && r.description) gotInfo++;
+    });
     toast("Fetched "+Math.min(i+6,targets.length)+" of "+targets.length+"…");
   }
   const noDesc = [...selPicks].map(i=>imported[i]).filter(it=>it && !it.desc).slice(0,40);
@@ -2882,7 +2885,7 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
         noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
     }catch(e){ console.warn(e); }
   }
-  Store.putCards(imported); writeSavesFile();
+  await persistCards(); writeSavesFile();
   selPicks.clear();
   renderImported();
   toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
@@ -3321,6 +3324,23 @@ function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }
 // via the extension on the real, logged-in page. Mirror of needsCapture, FB-only.
 function captureableFb(i){ return i.url && !i.capDone && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
 function needsFbCapture(i){ return captureableFb(i) && !i.lastUpdate && !i.captured; }
+// Apply one Store.captureMeta result to a card (shared by startBatchCapture and
+// fetchSelectedInfo so the mapping never drifts). Fills image (idb ref or og:image
+// URL), title (only over a blank/domain title), and description → .desc (NOT
+// .description — the UI reads .desc). Stamps lastUpdate/lastResult. Returns true if
+// a picture was gained, so callers can tally.
+function applyCaptureResult(c, r){
+  if(!c || !r) return false;
+  let gotImg=false;
+  if(r.hasImage){ c.img="idb:"+c.id; c.capReason=""; gotImg=true; }
+  else if(r.imageUrl){ setCardImage(c, r.imageUrl); c.capReason=""; gotImg=true; }   // og:image URL fallback — app displays it directly via <img>
+  else { c.capReason = r.reason || "unreachable"; }
+  const dom=domain(c.url)||"";
+  if(r.title && (!c.title || c.title===dom)) c.title=r.title;
+  if(r.description && !c.desc) c.desc=r.description;
+  c.lastUpdate=Date.now(); c.lastResult = (r.hasImage || r.imageUrl) ? "ok" : "fail";
+  return gotImg;
+}
 let _capStop = false;
 async function startBatchCapture(mode, onlyIds){
   if(batchUI.active){ toast("A capture run is already going"); return; }
@@ -3357,13 +3377,7 @@ async function startBatchCapture(mode, onlyIds){
       catch(e){ console.warn("capture-meta chunk failed", e); continue; }
       results.forEach(r=>{
         const c=r&&byId[r.id]; if(!c) return;
-        if(r.hasImage){ c.img="idb:"+c.id; c.capReason=""; got++; }
-        else if(r.imageUrl){ setCardImage(c, r.imageUrl); c.capReason=""; got++; }   // og:image URL fallback — app displays it directly via <img>
-        else { c.capReason = r.reason || "unreachable"; }
-        const dom=domain(c.url)||"";
-        if(r.title && (!c.title || c.title===dom)) c.title=r.title;
-        if(r.description && !c.description) c.description=r.description;
-        c.lastUpdate=Date.now(); c.lastResult = (r.hasImage || r.imageUrl) ? "ok" : "fail";
+        if(applyCaptureResult(c, r)) got++;
       });
       batchUI.done = Math.min(items.length, i+chunk.length);
       Store.putCards(imported);
