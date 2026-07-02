@@ -46,7 +46,9 @@ function listen(app) {
       db, storeDir: store,
       getStorePath: function () { return store; },
       setStorePath: function () {},
-      reopen: function () { return openDb(store); }
+      // Reopen against ctx.storeDir (not the original `store` var) — moveStore()
+      // repoints ctx.storeDir before calling reopen(), matching core/appctx.js.
+      reopen: function () { return openDb(ctx.storeDir); }
     };
     const app = createServer(ctx);
     const { srv, base } = await listen(app);
@@ -107,6 +109,68 @@ function listen(app) {
       assert.strictEqual(r.path, target);
       assert.strictEqual(ctx.storeDir, target, "ctx repointed");
       assert.ok(fs.existsSync(path.join(target, "interests.db")), "db at target");
+    });
+
+    await run(t("GET /api/cards after restore-over-HTTP still works (ctx.db not stale)"), async () => {
+      // write a new card live, back it up, mutate again, then restore that backup —
+      // all over HTTP — and confirm reads still work afterward (not a closed handle).
+      const putRes = await (await fetch(base + "/api/cards", {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cards: [{ id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" }] })
+      })).json();
+      assert.strictEqual(putRes.ok, true);
+
+      const backupRes = await (await fetch(base + "/api/backup", { method: "POST" })).json();
+      assert.strictEqual(backupRes.ok, true);
+      const freshBackupName = backupRes.name;
+
+      const putRes2 = await (await fetch(base + "/api/cards", {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cards: [
+            { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" },
+            { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "" }
+          ]
+        })
+      })).json();
+      assert.strictEqual(putRes2.ok, true);
+
+      const restoreRes = await (await fetch(base + "/api/restore", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: freshBackupName })
+      })).json();
+      assert.strictEqual(restoreRes.ok, true);
+
+      const getResp = await fetch(base + "/api/cards");
+      assert.strictEqual(getResp.status, 200, "GET /api/cards must not 500 after restore");
+      const got = await getResp.json();
+      assert.ok(Array.isArray(got.cards));
+      assert.strictEqual(got.cards.length, 1, "cards reflect the restored (1-card) backup");
+      assert.strictEqual(got.cards[0].id, "c1");
+    });
+
+    await run(t("PUT/GET /api/img/:id after a store move writes under the NEW store dir"), async () => {
+      const newDir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvbk-mv2-"));
+      const moveRes = await (await fetch(base + "/api/store-location/move", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: newDir })
+      })).json();
+      assert.strictEqual(moveRes.ok, true);
+      assert.strictEqual(ctx.storeDir, newDir);
+
+      const putImgRes = await (await fetch(base + "/api/img/c3", {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: TINY_JPG })
+      })).json();
+      assert.strictEqual(putImgRes.ok, true);
+
+      assert.ok(
+        fs.existsSync(path.join(newDir, "images", "c3.jpg")),
+        "image must be written under the NEW store dir, not the abandoned one"
+      );
+
+      const getImgResp = await fetch(base + "/api/img/c3");
+      assert.strictEqual(getImgResp.status, 200, "GET /api/img must find the image at the new store dir");
     });
 
     await new Promise(function (res) { srv.close(res); });

@@ -71,7 +71,10 @@ function createServer(ctx) {
 
   app.use(express.json({ limit: "64mb" }));
 
-  const { db, storeDir } = ctx;
+  // NOTE: do NOT destructure ctx.db/ctx.storeDir into locals here — backup.restore()
+  // and backup.moveStore() close and rebind ctx.db (and repoint ctx.storeDir) at
+  // runtime, so every route/helper below must read ctx.db / ctx.storeDir fresh at
+  // request time, not a value captured once at server-creation time.
 
   // Discovery endpoint — the extension probes [3456..3465] for this.
   app.get("/api/ping", (req, res) => {
@@ -80,56 +83,56 @@ function createServer(ctx) {
 
   // --- KV ---
   app.get("/api/kv/:key", (req, res) => {
-    res.json({ value: dbm.getKV(db, req.params.key) });
+    res.json({ value: dbm.getKV(ctx.db, req.params.key) });
   });
   app.put("/api/kv/:key", (req, res) => {
-    dbm.setKV(db, req.params.key, String(req.body && req.body.value != null ? req.body.value : ""));
+    dbm.setKV(ctx.db, req.params.key, String(req.body && req.body.value != null ? req.body.value : ""));
     res.json({ ok: true });
   });
 
   // --- Cards ---
   app.get("/api/cards", (req, res) => {
-    res.json({ cards: dbm.allCards(db) });
+    res.json({ cards: dbm.allCards(ctx.db) });
   });
   app.put("/api/cards", (req, res) => {
     ctx.syncDirty = true;
     const cards = (req.body && req.body.cards) || [];
-    dbm.replaceCards(db, cards);
+    dbm.replaceCards(ctx.db, cards);
     res.json({ ok: true, count: cards.length });
   });
   app.patch("/api/cards/:id", (req, res) => {
     ctx.syncDirty = true;
     const card = (req.body && req.body.card) || {};
     card.id = req.params.id;
-    dbm.upsertCard(db, card);
+    dbm.upsertCard(ctx.db, card);
     res.json({ ok: true });
   });
   app.delete("/api/cards/:id", (req, res) => {
     ctx.syncDirty = true;
-    dbm.deleteCard(db, req.params.id);
+    dbm.deleteCard(ctx.db, req.params.id);
     res.json({ ok: true });
   });
 
   // --- Saved ---
   app.get("/api/saved", (req, res) => {
-    res.json({ saved: dbm.allSaved(db) });
+    res.json({ saved: dbm.allSaved(ctx.db) });
   });
   app.put("/api/saved", (req, res) => {
     ctx.syncDirty = true;
     const saved = (req.body && req.body.saved) || [];
-    dbm.replaceSaved(db, saved);
+    dbm.replaceSaved(ctx.db, saved);
     res.json({ ok: true, count: saved.length });
   });
   app.patch("/api/saved/:id", (req, res) => {
     ctx.syncDirty = true;
     const item = (req.body && req.body.item) || {};
     item.id = req.params.id;
-    dbm.upsertSaved(db, item);
+    dbm.upsertSaved(ctx.db, item);
     res.json({ ok: true });
   });
   app.delete("/api/saved/:id", (req, res) => {
     ctx.syncDirty = true;
-    dbm.deleteSaved(db, req.params.id);
+    dbm.deleteSaved(ctx.db, req.params.id);
     res.json({ ok: true });
   });
 
@@ -139,7 +142,7 @@ function createServer(ctx) {
   function isInvalidImgId(e) { return e && e.code === "INVALID_IMG_ID"; }
   app.get("/api/img/:id", (req, res) => {
     let buf;
-    try { buf = images.getImg(storeDir, req.params.id); }
+    try { buf = images.getImg(ctx.storeDir, req.params.id); }
     catch (e) { if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" }); throw e; }
     if (!buf) { res.status(404).end(); return; }
     res.type("image/jpeg").send(buf);
@@ -147,7 +150,7 @@ function createServer(ctx) {
   app.put("/api/img/:id", (req, res) => {
     ctx.syncDirty = true;
     try {
-      const file = images.putImg(storeDir, req.params.id, String(req.body && req.body.data || ""));
+      const file = images.putImg(ctx.storeDir, req.params.id, String(req.body && req.body.data || ""));
       res.json({ ok: true, file });
     } catch (e) {
       if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
@@ -157,7 +160,7 @@ function createServer(ctx) {
   app.delete("/api/img/:id", (req, res) => {
     ctx.syncDirty = true;
     try {
-      images.delImg(storeDir, req.params.id);
+      images.delImg(ctx.storeDir, req.params.id);
       res.json({ ok: true });
     } catch (e) {
       if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
@@ -167,16 +170,16 @@ function createServer(ctx) {
 
   // --- Fingerprints ---
   app.get("/api/fp", (req, res) => {
-    res.json({ fp: dbm.allFp(db) });
+    res.json({ fp: dbm.allFp(ctx.db) });
   });
   app.put("/api/fp/:id", (req, res) => {
     ctx.syncDirty = true;
-    dbm.setFp(db, req.params.id, String(req.body && req.body.value != null ? req.body.value : ""));
+    dbm.setFp(ctx.db, req.params.id, String(req.body && req.body.value != null ? req.body.value : ""));
     res.json({ ok: true });
   });
   app.delete("/api/fp/:id", (req, res) => {
     ctx.syncDirty = true;
-    dbm.delFp(db, req.params.id);
+    dbm.delFp(ctx.db, req.params.id);
     res.json({ ok: true });
   });
 
@@ -184,7 +187,7 @@ function createServer(ctx) {
   // The app drains exactly like the old localStorage `ia_captures`: GET returns
   // the queued captures AND clears them, so each capture is delivered once.
   function readCaptureQueue() {
-    const raw = dbm.getKV(db, "ia_capture_queue");
+    const raw = dbm.getKV(ctx.db, "ia_capture_queue");
     if (!raw) return [];
     try { const q = JSON.parse(raw); return Array.isArray(q) ? q : []; }
     catch (e) { return []; }
@@ -198,19 +201,19 @@ function createServer(ctx) {
     }
     const q = readCaptureQueue();
     q.push(capture);
-    dbm.setKV(db, "ia_capture_queue", JSON.stringify(q));
+    dbm.setKV(ctx.db, "ia_capture_queue", JSON.stringify(q));
     res.json({ ok: true });
   });
 
   app.get("/api/captures", (req, res) => {
     const q = readCaptureQueue();
-    if (q.length) dbm.setKV(db, "ia_capture_queue", JSON.stringify([]));
+    if (q.length) dbm.setKV(ctx.db, "ia_capture_queue", JSON.stringify([]));
     res.json({ captures: q });
   });
 
   // --- Single capture request (kv ia_capture_request) ---
   function readJsonKV(key) {
-    const raw = dbm.getKV(db, key);
+    const raw = dbm.getKV(ctx.db, key);
     if (!raw) return null;
     try { return JSON.parse(raw); } catch (e) { return null; }
   }
@@ -220,8 +223,8 @@ function createServer(ctx) {
   });
   app.post("/api/capture-request", (req, res) => {
     const request = req.body && req.body.request;
-    if (request == null) dbm.setKV(db, "ia_capture_request", "");
-    else dbm.setKV(db, "ia_capture_request", JSON.stringify(request));
+    if (request == null) dbm.setKV(ctx.db, "ia_capture_request", "");
+    else dbm.setKV(ctx.db, "ia_capture_request", JSON.stringify(request));
     res.json({ ok: true });
   });
 
@@ -231,8 +234,8 @@ function createServer(ctx) {
   });
   app.post("/api/batch-state", (req, res) => {
     const state = req.body && req.body.state;
-    if (state == null) dbm.setKV(db, "ia_batch_state", "");
-    else dbm.setKV(db, "ia_batch_state", JSON.stringify(state));
+    if (state == null) dbm.setKV(ctx.db, "ia_batch_state", "");
+    else dbm.setKV(ctx.db, "ia_batch_state", JSON.stringify(state));
     res.json({ ok: true });
   });
 
@@ -242,8 +245,8 @@ function createServer(ctx) {
   });
   app.post("/api/batch-progress", (req, res) => {
     const progress = req.body && req.body.progress;
-    if (progress == null) dbm.setKV(db, "ia_batch_progress", "");
-    else dbm.setKV(db, "ia_batch_progress", JSON.stringify(progress));
+    if (progress == null) dbm.setKV(ctx.db, "ia_batch_progress", "");
+    else dbm.setKV(ctx.db, "ia_batch_progress", JSON.stringify(progress));
     res.json({ ok: true });
   });
 
@@ -447,7 +450,7 @@ function createServer(ctx) {
       const results = found.map((r) => {
         let hasImage = false;
         if (r && r.imageDataUrl) {
-          try { images.putImg(storeDir, r.id, r.imageDataUrl); hasImage = true; }
+          try { images.putImg(ctx.storeDir, r.id, r.imageDataUrl); hasImage = true; }
           catch (e) { console.error("capture-meta putImg failed:", e && e.message); }
         }
         const imageUrl = (!hasImage && r && /^https?:\/\//i.test(r.imageUrl || "")) ? r.imageUrl : "";
