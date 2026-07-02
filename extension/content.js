@@ -40,8 +40,15 @@
 
     const fullText = (document.body && document.body.innerText) || "";
     const body = fullText.slice(0, 4000).toLowerCase();
-    // innerText is visible-only, so this only fires on actual challenge screens
-    if (/you have been blocked|checking your browser before access|verify you are human|are you a human|press *(?:&|and) *hold|complete the security check|enable javascript and cookies to continue|performance & security by cloudflare|verifying you are human|confirm you are a human|slide to verify|drag the slider to/.test(body)) return true;
+    // innerText is visible-only, so this only fires on actual challenge screens.
+    // The last three phrases are Instagram's rate-limit / throttle interstitials
+    // ("Please wait a few minutes before you try again.", the "Action Blocked"
+    // dialog, "We restrict certain activity to protect our community") — since
+    // v1.8.0 dropped the webRequest HTTP-status probe, this visible-text check is
+    // what keeps a painted 429 page from overwriting a good card image. Kept
+    // deliberately specific (no bare "try again later") to avoid false positives
+    // on ordinary post text.
+    if (/you have been blocked|checking your browser before access|verify you are human|are you a human|press *(?:&|and) *hold|complete the security check|enable javascript and cookies to continue|performance & security by cloudflare|verifying you are human|confirm you are a human|slide to verify|drag the slider to|please wait a few minutes before you try again|action blocked|we restrict certain activity/.test(body)) return true;
 
     // full-page Cloudflare-style challenge containers only — must be VISIBLE.
     // We deliberately do NOT match captcha iframes/widgets here: sites like

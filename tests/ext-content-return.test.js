@@ -49,5 +49,43 @@ t("returned metadata carries og:image/desc extraction fields", () => {
   assert.ok("contentImage" in result, "result should carry contentImage");
 });
 
+// v1.8.0 Task 2 follow-up (review D5a): with the webRequest HTTP-status probe gone,
+// isBlockedPage()'s visible-text check is what stops a PAINTED Instagram rate-limit
+// page (429s render a real page, not a blank) from being screenshotted over a good
+// card image. Positive: IG throttle wording → blocked:true. Negative: ordinary post
+// text — including a benign "try again later" — stays blocked:false.
+t("Instagram rate-limit interstitial text is detected as blocked", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  const dom = makeDom();
+  dom.document.body = { innerText: "Please wait a few minutes before you try again." };
+  const result = vm.runInNewContext(src, dom);
+  assert.ok(result, "completion value should be truthy");
+  assert.strictEqual(result.blocked, true, "IG 'wait a few minutes' page must be blocked:true");
+});
+
+t("IG 'Action Blocked' / 'we restrict certain activity' wording is detected as blocked", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  for (const text of [
+    "Action Blocked\nThis action was blocked. Please try again later.",
+    "We restrict certain activity to protect our community.",
+  ]) {
+    const dom = makeDom();
+    dom.document.body = { innerText: text };
+    const result = vm.runInNewContext(src, dom);
+    assert.strictEqual(result.blocked, true, "must be blocked:true for: " + text.slice(0, 40));
+  }
+});
+
+t("ordinary post text (incl. a benign 'try again later') is NOT flagged as blocked", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  const dom = makeDom();
+  dom.document.body = { innerText:
+    "Fresh sourdough drop this Saturday! We sold out fast last week — if you miss out, " +
+    "try again later in the afternoon. Tag a friend who loves bread. #bakery #sourdough" };
+  const result = vm.runInNewContext(src, dom);
+  assert.ok(result, "completion value should be truthy");
+  assert.strictEqual(result.blocked, false, "ordinary post text must stay blocked:false");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
