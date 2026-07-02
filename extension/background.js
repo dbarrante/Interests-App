@@ -32,6 +32,15 @@ function normalizeUrl(url) {
 
 // ---- HTTP delivery to the Interests app (replaces writing into a localhost tab) ----
 const IA_PORT_RANGE = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
+// The exact app-tab URL patterns (mirrors the manifest's bridge content-script
+// matches). The SW pollers defer to bridge.js ONLY when a tab on one of THESE
+// ports is open — an unrelated dev server on some other localhost port must not
+// park the poller (review B9). Kept in sync with IA_PORT_RANGE.
+const APP_TAB_URLS = (() => {
+  const u = [];
+  for (const p of IA_PORT_RANGE) { u.push("http://localhost:" + p + "/*"); u.push("http://127.0.0.1:" + p + "/*"); }
+  return u;
+})();
 let iaCachedPort = null;
 
 async function pingPort(port) {
@@ -386,7 +395,7 @@ ensureContextMenu();   // also run when the service worker spins up
 async function pollCaptureRequest() {
   // If the app IS open as a Chrome localhost tab, bridge.js drives it (faster, 800ms);
   // defer to it so we never double-claim/double-capture the same request.
-  try { const lt = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] }); if (lt && lt.length) return; } catch (e) {}
+  try { const lt = await chrome.tabs.query({ url: APP_TAB_URLS }); if (lt && lt.length) return; } catch (e) {}
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
   let req = null;
@@ -417,7 +426,7 @@ async function pollCaptureRequest() {
 // when a localhost tab is open (same guard as the single poller) to avoid double-driving.
 let batchDriving = false;   // re-entrancy guard: the 30s alarm must not start a 2nd loop
 async function localhostTabOpen() {
-  try { const lt = await chrome.tabs.query({ url: ["http://localhost/*", "http://127.0.0.1/*"] }); return !!(lt && lt.length); } catch (e) { return false; }
+  try { const lt = await chrome.tabs.query({ url: APP_TAB_URLS }); return !!(lt && lt.length); } catch (e) { return false; }
 }
 async function pollBatchState() {
   if (batchDriving) return;

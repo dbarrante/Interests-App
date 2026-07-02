@@ -133,9 +133,22 @@
     // Server route reads req.body.progress — wrap the payload (plan correction).
     await postJson("/api/batch-progress", { progress: { done: done, total: total, active: active, ts: Date.now() } });
   }
+  // The app's Stop writes {active:false, cancel:true} to /api/batch-state. Like
+  // the SW driver (background.js), the bridge must NEVER write active:true — a
+  // write could resurrect a batch the user just cancelled (review B9+B10). This
+  // is the single source of truth for "the app pressed Stop".
+  function batchStopped(state) {
+    return !state || state.cancel === true || state.active === false;
+  }
   async function saveState() {
     if (!B) return;
-    await postJson("/api/batch-state", { state: { items: B.items, next: B.next, done: B.done, total: B.total, delay: B.delay, concurrency: B.conc, render: B.render, active: true } });
+    // Read-check first: if the app pressed Stop we must NOT resurrect the batch
+    // by re-writing state. Nulling B is the internal stop signal the loop reads.
+    const j = await getJson("/api/batch-state");
+    const st = j && j.state;
+    if (batchStopped(st)) { B = null; inFlight = 0; return; }
+    // Merge our cursor into the app-owned state; never touch `active`/`cancel`.
+    await postJson("/api/batch-state", { state: Object.assign({}, st, { items: B.items, next: B.next, done: B.done, total: B.total }) });
   }
   async function endBatch() {
     var done = B ? B.done : 0, total = B ? B.total : 0;
@@ -151,19 +164,23 @@
       const j = await getJson("/api/batch-state");
       const st = j && j.state;
       if (!st || !st.items || !st.items.length) return;
+      if (batchStopped(st)) return;   // app pressed Stop — do not start/adopt a cancelled batch
       var startAt = (typeof st.next === "number") ? st.next : (st.done || 0);
       if (startAt >= st.items.length) { await postJson("/api/batch-state", { state: null }); return; }
       B = { items: st.items, next: startAt, done: st.done || 0, total: st.items.length, delay: st.delay || 0, conc: Math.max(1, Math.min(10, st.concurrency || 1)), render: !!st.render };
       log("Batch start: " + B.total + " items, concurrency " + B.conc);
     }
-    pump();
+    await pump();
   }
-  function pump() {
+  async function pump() {
     if (!B) return;
-    if (B.next >= B.items.length && inFlight === 0) { endBatch(); return; }
+    if (B.next >= B.items.length && inFlight === 0) { await endBatch(); return; }
     while (B && inFlight < B.conc && B.next < B.items.length) {
       var item = B.items[B.next++];
-      saveState();
+      // saveState() re-reads state and nulls B if the app pressed Stop; await it
+      // so the stop-check completes before we dispatch this wave's item.
+      await saveState();
+      if (!B) return;   // Stop observed mid-wave — halt without dispatching
       inFlight++;
       dispatch(item);
     }
@@ -172,10 +189,21 @@
     chrome.runtime.sendMessage({ action: "captureOneTab", data: { url: item.url, id: item.id, delay: B ? B.delay : 0, render: B ? B.render : false } }, function (resp) {
       if (chrome.runtime.lastError && /invalidated|disconnected/i.test(chrome.runtime.lastError.message)) { die(chrome.runtime.lastError.message); B = null; inFlight = 0; return; }
       inFlight--;
-      if (B) { B.done++; saveState(); writeProg(B.done, B.total, true); }
-      pump();
+      if (!B) return;   // batch was stopped while this capture was in flight — do not resurrect
+      B.done++;
+      // saveState re-checks Stop (and nulls B if cancelled); pump then re-checks B.
+      saveState().then(function () { if (B) writeProg(B.done, B.total, true); pump(); });
     });
   }
+
+  // Publish the pure stop-check for Node tests (require("bridge.js").batchStopped).
+  // Guarded so it's harmless in the browser content-script context too.
+  try { if (typeof module !== "undefined" && module.exports) module.exports = { batchStopped: batchStopped }; } catch (e) {}
+
+  // Browser-only startup: only wire the polling loops when running as a Chrome
+  // content script (chrome + location present). Under Node (unit tests) we stop
+  // here so requiring this file for its batchStopped export never touches the DOM.
+  if (typeof chrome === "undefined" || typeof location === "undefined") return;
 
   log("HTTP bridge loaded on " + location.href);
   requestInterval = setInterval(checkForRequest, 800);
