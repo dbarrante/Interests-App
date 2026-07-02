@@ -3,6 +3,59 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.7.0 stability release (2026-07-02)
+
+Fixes from the full-review pass in `docs/full-review-2026-07-02.md` (four parallel review agents:
+Core service, Web UI, Extension, Data-model/Sync-for-iPhone). All Phase-1 findings fixed and tested.
+
+- [x] **A1** — legacy file-restore wrote to dead `localStorage` instead of the Core service; restore
+  silently restored nothing but images.
+- [x] **A2** — boot race: the capture-drain interval could fire before `bootData()` finished loading,
+  triggering a full-replace `putSaved([one clip])` that could wipe the entire Saved library.
+- [x] **A3** — `ctx.db`/`ctx.storeDir` went stale after a Restore or store Move because routes kept
+  destructured locals instead of reading through `ctx`.
+- [x] **A4** — extension `content.js`'s metadata IIFE was missing a `return`, making og:image/title/
+  description extraction and the blocked-page/CAPTCHA detector dead code for every capture.
+- [x] **A5** — full-array `PUT /api/cards` tombstoned any row missing from the payload; added an `asOf`
+  guard and a mass-delete 409 so a stale renderer array can't wipe synced rows.
+- [x] **B1** — restore mid-swap failure now reopens `ctx.db` on failure instead of leaving it closed.
+- [x] **B2** — un-awaited `shell.openExternal()` rejections no longer crash-quit the app.
+- [x] **B3** — sync enable/disable now takes effect without an app restart.
+- [x] **B4** — Settings "clear" link fixed to actually clear imported data (was a dead localStorage key).
+- [x] **B5** — persistence failures (`putCards`/`putSaved`/`kvSet`) are now surfaced via a toast instead
+  of being silently fire-and-forget.
+- [x] **B6** — "Fetch info" no longer calls the dead `allorigins` proxy.
+- [x] **B7** — a stale/foreign `filterCat` after restore or sync no longer crashes the Feed/Saved render.
+- [x] **B8** — "Select all shown" now uses the same filter predicate as the visible list, instead of
+  drifting from it.
+- [x] **B9/B10** — bridge batch driver no longer resurrects a cancelled ("Stop") batch, and bridge
+  injection is narrowed off unrelated localhost ports.
+- [x] **B11** — offline capture queue no longer silently drops captures on quota failure.
+- [x] **B12** — pending single-capture requests survive service-worker suspension instead of being lost.
+- [x] **B13** — capture/dedupe/dead-report matching now preserves query strings instead of collapsing
+  distinct URLs together.
+- [x] **M1/M3/M4/L1** — `savedToRow` id-less `idb:` item fix; atomic `config.json` write; tombstone
+  `deletedAt` passed through end-to-end instead of re-stamped; per-row corrupt-JSON resilience in
+  `db.js`; `c.description`/`.desc` display typo fixed.
+
+### Deferred to backlog (from v1.7.0 reviews)
+
+- [ ] `ia_theme` legacy-restore routing — same class as A1, lower stakes; not yet migrated off legacy
+  storage.
+- [ ] Partial-restore toast wording — clarify what was/wasn't restored when a restore partially fails.
+- [ ] `plan.skipped` surfacing — sync merge plan's skipped items aren't shown anywhere.
+- [ ] `ogParse` dead-code removal — leftover parsing path superseded by the A4 fix.
+- [ ] `saveConfig` tmp-orphan on rename-throw — atomic write can leave a stray tmp file if rename throws.
+- [ ] Ctrl+Shift+B pre-boot gate — guard the shortcut before boot/data load completes.
+- [ ] `persistCards`/net 409-regex unification — the new A5 409 handling and existing net-error regexes
+  should share one matcher.
+- [ ] Global net toast copy on GET failures — align wording with the new persistence-failure toasts (B5).
+- [ ] Bridge `saveState` GET→POST race + `reportDead` `normalizeUrl` asymmetry — both superseded by
+  Phase 2 D5 bridge-driving removal; no standalone fix planned.
+- [ ] Server-generated `asOf` (Phase 4) — client-supplied `asOf` is a stopgap until the server stamps it.
+- [ ] `syncDirty` cleared-before-publish note — a narrow ordering edge case flagged during A5/B3 work;
+  revisit once Phase 4 delta endpoints land.
+
 ## Requested 2026-06-30 (Dave)
 
 - [x] **(1) BUG — feed showed nothing but 404s. FIXED v1.6.3 (commit pending rebuild).** Root cause:
