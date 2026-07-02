@@ -30,6 +30,20 @@ function normalizeUrl(url) {
   } catch { return url.toLowerCase(); }
 }
 
+// Like normalizeUrl but PRESERVES the query string — only the hash is dropped.
+// normalizeUrl strips ?..., so different ?v= YouTube videos collapse to the same
+// key and collide in tab-matching, queue-dedupe and dead-report paths. matchKey
+// keeps them distinct (this is the repo's own "clipKey not normalizeUrl" lesson,
+// applied at the background.js identity sites). Host is lowercased + www.-stripped
+// and the path is trailing-slash-normalized, but the (case-sensitive) query stays.
+function matchKey(url) {
+  try {
+    const u = new URL(url);
+    const base = (u.hostname.replace(/^www\./, "") + u.pathname).replace(/\/$/, "").toLowerCase();
+    return base + u.search;   // u.search includes the leading "?" (or "" when none)
+  } catch { return (url || "").toLowerCase(); }
+}
+
 // ---- HTTP delivery to the Interests app (replaces writing into a localhost tab) ----
 const IA_PORT_RANGE = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
 // The exact app-tab URL patterns (mirrors the manifest's bridge content-script
@@ -137,12 +151,27 @@ async function deliverToApp(capture) {
     const stored = await chrome.storage.local.get("ia_capture_queue");
     let q = stored.ia_capture_queue || [];
     if (!Array.isArray(q)) q = [];
-    if (capture && capture.url) q = q.filter((c) => normalizeUrl(c.url) !== normalizeUrl(capture.url));
+    if (capture && capture.url) q = q.filter((c) => matchKey(c.url) !== matchKey(capture.url));   // query-aware: two ?v= videos are distinct captures
     q.push(capture);
     if (q.length > MAX_QUEUE) q = q.slice(-MAX_QUEUE);
     await chrome.storage.local.set({ ia_capture_queue: q });
     log("App not reachable — queued capture (" + q.length + " pending)");
-  } catch (e) {}
+  } catch (e) {
+    // Queued captures carry a full screenshot data-URL; without unlimitedStorage a
+    // burst can blow the chrome.storage.local quota and this set() rejects. A silent
+    // empty catch here dropped the capture with zero user feedback (B11). Surface it:
+    // log it and tell the user the capture wasn't queued (storage full) so it isn't
+    // silently lost. (unlimitedStorage is now requested in the manifest to make this rare.)
+    console.warn("[IA] queue write failed:", e);
+    try {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icon48.png",
+        title: "Interests Capture",
+        message: "A capture could not be queued (storage full) — it was not saved. Open the app and re-capture.",
+      });
+    } catch (_) {}
+  }
   return false;
 }
 
@@ -498,11 +527,22 @@ async function pollBatchState() {
 function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); }
 try {
   chrome.alarms.create("iaCapturePoll", { periodInMinutes: 0.5 });   // 30s is the MV3 minimum period
-  chrome.alarms.onAlarm.addListener((a) => { if (a && a.name === "iaCapturePoll") iaPollAll(); });
+  chrome.alarms.onAlarm.addListener((a) => {
+    if (!a) return;
+    if (a.name === "iaCapturePoll") iaPollAll();
+    // B12: the pending single-capture wait-timeout, alarm-backed so it still fires
+    // if the SW was suspended. Runs the same give-up path as the in-memory timer.
+    else if (a.name === PENDING_ALARM) { if (pendingRequest) runPendingTimeout().catch(() => {}); else restorePendingRequest().catch(() => {}); }
+  });
 } catch (e) { log("alarms unavailable: " + (e && e.message)); }
 chrome.runtime.onStartup.addListener(iaPollAll);
 chrome.runtime.onInstalled.addListener(iaPollAll);
 iaPollAll();   // poll once on SW spin-up
+// B12: on every SW wake, restore a persisted pending capture (fresh → resume,
+// stale → mark attempted) so a claimed request is never silently lost.
+chrome.runtime.onStartup.addListener(() => { restorePendingRequest().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => { restorePendingRequest().catch(() => {}); });
+restorePendingRequest().catch(() => {});   // also on plain SW spin-up (event-driven wake)
 
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -658,6 +698,75 @@ async function captureTab(tab, delayMs, force, cardId) {
   }
 }
 
+// ---- B12: persist the claimed single-capture request across SW suspension ----
+// A claimed request lives only in-memory (pendingRequest) with a setTimeout. If
+// the MV3 service worker is suspended before the page loads, both vanish and the
+// capture — already claimed out of the app's mailbox — is silently lost, with the
+// card never even marked "attempted". Back it with chrome.storage.session and a
+// chrome.alarms alarm (both survive suspension) so the timeout still fires and the
+// pending state can be restored on the next SW wake.
+const PENDING_KEY = "ia_pending_request";
+const PENDING_ALARM = "ia_pending_timeout";
+const PENDING_MAX_AGE_MS = 120000;   // on restore, older than this → treat as timed out
+
+// Persist the just-claimed request so a suspended SW can restore/complete it.
+async function persistPending(reqLike) {
+  try { await chrome.storage.session.set({ [PENDING_KEY]: { req: reqLike, at: Date.now() } }); } catch (e) {}
+}
+// Drop the persisted pending state + its alarm (call on completion AND on timeout).
+async function clearPendingPersist() {
+  try { chrome.alarms.clear(PENDING_ALARM); } catch (e) {}
+  try { await chrome.storage.session.remove(PENDING_KEY); } catch (e) {}
+}
+// The single timeout outcome, shared by the setTimeout-era path, the alarm, and a
+// stale restore: give up on the pending request and clear its persisted state.
+async function runPendingTimeout() {
+  clearTimeout(pendingTimer);
+  log("Capture request timed out: " + (pendingRequest && pendingRequest.url));
+  pendingRequest = null;
+  await clearPendingPersist();
+  setBadge("", 0);
+  await setStatus("Timed out waiting for the page", false);
+}
+// Arm the wait-timeout as an alarm (survives suspension). Keep the in-memory
+// setTimeout too as a fast path for when the SW stays alive the whole time.
+function armPendingTimeout() {
+  try { chrome.alarms.create(PENDING_ALARM, { delayInMinutes: 1 }); } catch (e) {}
+  pendingTimer = setTimeout(() => { runPendingTimeout().catch(() => {}); }, REQUEST_TIMEOUT_MS);
+}
+
+// On SW wake, restore a persisted pending request. Fresh (< PENDING_MAX_AGE_MS) →
+// restore pendingRequest + re-arm the alarm so onCompleted/finishPending can still
+// run it. Stale → run the timeout path so the card is marked attempted (delivered
+// by finishPending's callers), never silently dropped.
+async function restorePendingRequest() {
+  let saved;
+  try { saved = (await chrome.storage.session.get(PENDING_KEY))[PENDING_KEY]; } catch (e) { return; }
+  if (!saved || !saved.req || !saved.req.url) return;
+  if (pendingRequest) return;   // a live request already in flight — don't clobber it
+  const age = Date.now() - (saved.at || 0);
+  if (age < PENDING_MAX_AGE_MS) {
+    pendingRequest = saved.req;
+    log("Restored pending capture after SW wake: " + saved.req.url + " (age " + Math.round(age / 1000) + "s)");
+    try { chrome.alarms.create(PENDING_ALARM, { delayInMinutes: 1 }); } catch (e) {}
+    pendingTimer = setTimeout(() => { runPendingTimeout().catch(() => {}); }, REQUEST_TIMEOUT_MS);
+    // in case the page already finished loading while the SW was asleep
+    try {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && matchKey(t.url) === matchKey(saved.req.url));
+      if (tab && tab.status === "complete") await finishPending(tab);
+    } catch (e) {}
+  } else {
+    // Stale: the capture was claimed but never completed. Mark the card attempted
+    // (the same failed-attempt outcome a live timeout would eventually reach) so it
+    // isn't silently lost, then clear the persisted state.
+    log("Stale pending capture on wake (age " + Math.round(age / 1000) + "s) — marking attempted: " + saved.req.url);
+    pendingRequest = null;
+    try { await deliverToApp({ url: saved.req.url, id: saved.req.id || "", attempt: true, ok: false, ts: Date.now() }); } catch (e) {}
+    await clearPendingPersist();
+  }
+}
+
 async function handleCaptureRequest(req) {
   if (pendingRequest) {
     log("Already have a pending request, ignoring");
@@ -684,6 +793,8 @@ async function handleCaptureRequest(req) {
 
   log("Received capture request for: " + req.url + (req.force ? " (refresh)" : "") + (req.capture===false ? " (watch only)" : ""));
   pendingRequest = { url: req.url, delay: req.delay, id: req.id || "", force: !!req.force, capture: req.capture!==false, closeAfter: !!req.closeAfter };
+  // B12: persist the claim so it survives a SW suspension before the page loads.
+  await persistPending(pendingRequest);
   // remember recently-opened cards so a navigation error can be matched even if
   // it fires before/after the pending request is set
   recentWatches.push({ url: req.url, id: req.id || "", ts: Date.now() });
@@ -693,7 +804,7 @@ async function handleCaptureRequest(req) {
 
   // already-loaded race: the page may have finished before this request arrived
   const tabs = await chrome.tabs.query({});
-  const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && normalizeUrl(t.url) === normalizeUrl(req.url));
+  const tab = tabs.find(t => t.url && !/^(chrome|chrome-extension|about|edge):/.test(t.url) && matchKey(t.url) === matchKey(req.url));   // query-aware: don't match a different ?v= tab
   if (tab && tab.status === "complete") {
     log("Matching tab already loaded: " + tab.id);
     await finishPending(tab);
@@ -701,18 +812,14 @@ async function handleCaptureRequest(req) {
   }
 
   log("Waiting for page load (webNavigation.onCompleted)...");
-  pendingTimer = setTimeout(() => {
-    log("Capture request timed out: " + pendingRequest?.url);
-    pendingRequest = null;
-    setBadge("", 0);
-    setStatus("Timed out waiting for the page", false);
-  }, REQUEST_TIMEOUT_MS);
+  armPendingTimeout();   // B12: alarm-backed timeout (survives suspension) + in-memory fast path
 }
 
 // run the pending request against a now-loaded tab (capture, or finish watch-only)
 async function finishPending(tab) {
   if (!pendingRequest) return;
   clearTimeout(pendingTimer);
+  await clearPendingPersist();   // B12: completed normally — drop persisted state + cancel the timeout alarm
   const { url, delay, id, force, capture, closeAfter } = pendingRequest;
   pendingRequest = null;
   if (capture) {
@@ -740,7 +847,7 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
     return;
   }
   if (!pendingRequest) return;
-  if (normalizeUrl(details.url) !== normalizeUrl(pendingRequest.url)) return;
+  if (matchKey(details.url) !== matchKey(pendingRequest.url)) return;   // query-aware: a different ?v= load isn't ours
   let tab; try { tab = await chrome.tabs.get(details.tabId); } catch (e) { return; }
   log("Page loaded for pending request: " + details.url);
   await finishPending(tab);
@@ -768,11 +875,11 @@ async function closeTabSafe(tabId){
   } catch (e) {}
 }
 async function reportDead(url, reason, tabId){
-  const match = recentWatches.find(w => normalizeUrl(w.url) === normalizeUrl(url));
+  const match = recentWatches.find(w => matchKey(w.url) === matchKey(url));   // query-aware: match the exact ?v= video we opened
   if (!match) return;                                 // only cards the user just opened
   log("Dead (" + reason + "): " + url);
   recentWatches = recentWatches.filter(w => w !== match);
-  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(url)) { clearTimeout(pendingTimer); pendingRequest = null; }
+  if (pendingRequest && normalizeUrl(pendingRequest.url) === normalizeUrl(url)) { clearTimeout(pendingTimer); pendingRequest = null; await clearPendingPersist(); }   // B12: also drop persisted state so no stale timeout alarm fires
   setBadge("✕", 5000);
   await setStatus("Removing card + closing tab — " + reason, false);
   await deliverDead({ url: match.url, id: match.id, dead: true, error: reason, ts: Date.now() });
