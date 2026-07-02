@@ -13,6 +13,11 @@
 //   ia_batch_state,
 //   ia_batch_progress,
 //   ia_capture_request     -> plan.skipped  (machine-local; never restored)
+//   ia_theme               -> plan.theme  (localStorage-only key; the app reads
+//                             it via localStorage.getItem("ia_theme"), NOT the
+//                             store — the caller applies it with
+//                             localStorage.setItem. Stored raw ("dark"/"light"),
+//                             never JSON-encoded, so it is NOT decode()d.)
 //   everything else (ia_*) -> plan.kv  [{ key, value }]
 //
 // Value encoding: localStorage values were strings (usually JSON-stringified).
@@ -38,13 +43,16 @@
   }
 
   function planLegacyRestore(keys) {
-    var plan = { cards: null, saved: null, kv: [], skipped: [] };
+    var plan = { cards: null, saved: null, kv: [], skipped: [], theme: null };
     if (!keys || typeof keys !== "object") return plan;
     var names = Object.keys(keys);
     for (var i = 0; i < names.length; i++) {
       var k = names[i];
       if (k === "ia_imported") { plan.cards = decode(keys[k]); continue; }
       if (k === "ia_saved") { plan.saved = decode(keys[k]); continue; }
+      // ia_theme is a localStorage-only key (the app never reads it from the
+      // store). Keep the raw string value — setTheme stores it verbatim.
+      if (k === "ia_theme") { plan.theme = keys[k]; continue; }
       if (MACHINE_LOCAL.indexOf(k) !== -1) { plan.skipped.push(k); continue; }
       plan.kv.push({ key: k, value: decode(keys[k]) });
     }

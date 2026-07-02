@@ -335,7 +335,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   <div id="view-settings" style="display:none">
     <div class="panel">
       <h2>Settings</h2>
-      <div class="sub">Everything is stored locally in your browser — keys never leave this machine except to call the AI provider you choose.</div>
+      <div class="sub">Everything is stored on this computer in the app's data folder<span id="trustSync"></span> — keys never leave this machine except to call the AI provider you choose.</div>
 
       <div class="sec">
         <h3>Appearance</h3>
@@ -469,20 +469,12 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Notion &amp; Jarvis bridge</h3>
-        <div class="hint" style="margin-bottom:10px">Writes <b>saves.json</b> into the app's folder every time you save/hide something. Claude reads that file to sync your saves to Notion and build your morning briefing. Chrome/Edge only.</div>
-        <button class="btn btn-ghost" onclick="connectFolder()">Connect app folder</button>
-        <span class="hint" id="fsStatus" style="margin-left:10px">Not connected</span>
-      </div>
-
-      <div class="sec">
         <h3>Backup &amp; restore</h3>
-        <div class="hint" style="margin-bottom:10px">Download one file with <b>everything</b> — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history. Keep it somewhere safe.</div>
-        <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
-        <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
-        <button id="btnImportLegacy" class="btn btn-ghost" title="Import an old folder-style backup (contains data.json) from a previous version into this app. Reads only — your source folder is never modified.">Import legacy backup…</button>
-        <span id="importLegacyResult" class="hint" style="margin-left:6px"></span>
-        <span class="hint" id="backupInfo" style="margin-left:10px"></span>
+        <div class="hint" style="margin-bottom:10px">Full backups — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history — are written and verified by the app into its backups folder. Each one is kept so you can roll back.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
+          <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
+        </div>
         <div id="durStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
         <label style="margin-top:16px;display:block">Auto-backup</label>
         <select id="autoBackup" style="width:auto">
@@ -491,13 +483,19 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <option value="7">Weekly</option>
           <option value="30">Monthly</option>
         </select>
-        <div class="hint">Automatically downloads a full backup when the app is opened and this much time has passed. (Also: press <b>Ctrl+Shift+B</b> anytime to back up now.)</div>
+        <div class="hint">Writes a full, verified backup when you open the app and this much time has passed. (Also: press <b>Ctrl+Shift+B</b> anytime to back up now.)</div>
         <label style="margin-top:16px;display:block">Restore</label>
         <button class="btn btn-primary" onclick="restoreLatest()">&#8617; Restore latest backup</button>
         <div id="backupList"></div>
-        <label style="margin-top:16px;display:block">Restore from a file instead</label>
-        <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)">
-        <div class="hint">Replaces everything currently in the app. A safety copy of your current data is downloaded automatically before the restore runs.</div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Import legacy backup…</label>
+          <div class="hint" style="margin:4px 0 8px">Bring in data from an older version. Both paths replace everything currently in the app — a verified safety backup of your current data is taken first.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)" title="Import a single-file .json backup exported by an older version.">
+            <button id="btnImportLegacy" class="btn btn-ghost" title="Import an old folder-style backup (contains data.json) from a previous version. Reads only — your source folder is never modified.">Import from folder…</button>
+            <span id="importLegacyResult" class="hint"></span>
+          </div>
+        </div>
       </div>
 
       <div class="sec">
@@ -607,7 +605,7 @@ function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
-function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); writeSavesFile(); updateCounts(); }
+function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); updateCounts(); }
 // Boot gate: true only after bootData() has finished loading persistent state.
 // Guards the capture-drain interval + autobackup so a queued capture can't trigger
 // a full-array save of a nearly-empty library before the real data is loaded (review A2).
@@ -651,9 +649,6 @@ function setCardImage(it, src){
 }
 // resolve a card's stored image to something usable in an <img src>
 function resolveImg(v){ if(!v) return ""; return (""+v).indexOf("idb:")===0 ? Store.imgUrl((""+v).slice(4)) : v; }
-// image bytes are no longer preloaded; nothing to do at boot. Kept async so the
-// existing boot sequence (await initImageStore()) is unchanged.
-async function initImageStore(){ /* images are plain URLs now — no preload */ }
 
 /* ============ ui helpers ============ */
 function toast(msg, ms, onclick){
@@ -875,36 +870,8 @@ function backupCountsMatch(a, b){
   return (a.imported|0) === (b.imported|0) && (a.saved|0) === (b.saved|0) && (a.images|0) === (b.images|0);
 }
 // keys that are transient extension/runtime state — no point backing these up
-const BACKUP_SKIP = ["ia_captures","ia_capture_request","ia_last_opened"];
-// NOTE: full image-bearing backups are now written + verified by the Core service
-// (Store.backupNow). collectBackupMeta() below is a small localStorage-only export
-// still used for refs-only downloads / diagnostics.
-// Just the localStorage side (no images) — small, always JSON-stringifiable.
-function collectBackupMeta(){
-  const keys={};
-  for(let i=0;i<localStorage.length;i++){
-    const k=localStorage.key(i);
-    if(!k || !k.startsWith("ia_") || BACKUP_SKIP.includes(k)) continue;
-    keys[k]=localStorage.getItem(k);
-  }
-  return { _app:"interests-app", _version:3, _exported:new Date().toISOString(),
-           _counts:{imported:imported.length, saved:saved.length, likes:likes.length, images:0}, keys };
-}
-// Full image-bearing backups are now written + verified by the Core service
-// (Store.backupNow / Store.listBackups / Store.restore). The old folder-shard
-// writer/verifier (File System Access API) was removed in Phase 3.
-function downloadJSON(obj, name){
-  const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
-}
-function markBackupDone(counts, verified, where, name){
-  Store.kvSet("ia_lastbackup", Date.now());
-  Store.kvSet("ia_backup_last", { ts:Date.now(), counts:counts, verified:!!verified, where:where, name:name });
-  const info = document.getElementById("backupInfo");
-  if(info) info.textContent = "Last backup: "+counts.imported+" imported, "+counts.saved+" saved, "+counts.images+" images"+(verified?" ✓ verified":"")+" ("+where+")";
-  if(typeof renderDurabilityStatus === "function"){ try{ renderDurabilityStatus(); }catch(e){} }
-}
+// Full image-bearing backups are written + verified by the Core service
+// (Store.backupNow / Store.listBackups / Store.restore).
 // Blocking progress overlay for long backup/restore work (so it never looks frozen).
 function showBusyOverlay(msg){
   let o = document.getElementById("busyOverlay");
@@ -945,24 +912,19 @@ async function maybeAutoBackup(){
   if(Date.now() - last < days*86400000) return;
   await doBackup();
 }
+// Service-backed durability status only. Browser storage-quota / persistence
+// (navigator.storage) rows were removed with the SQLite/Core migration — the
+// store no longer lives in the browser, so those numbers were meaningless.
 async function storageHealthCheck(){
-  let persisted = null, usage = 0, quota = 0;
-  try{
-    if(navigator.storage && navigator.storage.persisted){
-      persisted = await navigator.storage.persisted();
-      if(!persisted && navigator.storage.persist){ persisted = await navigator.storage.persist(); }
-    }
-  }catch(e){}
-  try{ if(navigator.storage && navigator.storage.estimate){ const est = await navigator.storage.estimate(); usage = est.usage || 0; quota = est.quota || 0; } }catch(e){}
   // The Core service owns the store now — "connected" means the service is reachable.
   let folder = "none", storePath = "";
   try{ const loc = await Store.storeLocation(); folder = "connected"; storePath = (loc && loc.path) || ""; }catch(e){ folder = "none"; }
   let lastBackup = 0; try{ lastBackup = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
-  const health = { persisted: persisted, usage: usage, quota: quota, folder: folder, storePath: storePath, lastBackup: lastBackup, ts: Date.now() };
+  const health = { folder: folder, storePath: storePath, lastBackup: lastBackup, ts: Date.now() };
   Store.kvSet("ia_health", health);
   const days = +S.autoBackup || 0;
   const stale = days && lastBackup && (Date.now() - lastBackup > (days + 1) * 86400000);
-  const atRisk = (folder === "lapsed") || (folder === "none" && days) || (persisted === false && (!lastBackup || stale));
+  const atRisk = (folder === "lapsed") || (folder === "none" && days) || (days && (!lastBackup || stale));
   if(atRisk) showDurabilityBanner(folder);
   renderDurabilityStatus(health);
   return health;
@@ -971,30 +933,25 @@ function showDurabilityBanner(folder){
   if(document.getElementById("durBanner")) return;
   const b = document.createElement("div");
   b.className = "banner"; b.id = "durBanner";
-  const msg = folder === "lapsed"
-    ? "⚠ Automatic backups are paused — reconnect your backup folder."
-    : "⚠ No backup folder connected — your data lives only in this browser.";
-  b.innerHTML = "<span>" + msg + "</span><button class=\"btn btn-primary\" style=\"padding:6px 14px\">Connect folder</button>";
-  b.querySelector("button").onclick = function(){ connectFolder(); b.remove(); };
+  const msg = folder === "connected"
+    ? "⚠ Automatic backups are due — back up now to be safe."
+    : "⚠ The app service isn't reachable — backups can't run right now.";
+  b.innerHTML = "<span>" + msg + "</span><button class=\"btn btn-primary\" style=\"padding:6px 14px\">Back up now</button>";
+  b.querySelector("button").onclick = function(){ backupNow(); b.remove(); };
   const main = document.querySelector("main"); if(main) main.prepend(b);
 }
 async function renderDurabilityStatus(health){
   const el = document.getElementById("durStatus"); if(!el) return;
   let h = health;
   if(!h){ try{ h = await Store.kvGet("ia_health"); }catch(e){} }
-  h = h || { folder:"none", persisted:null, usage:0, quota:0 };
-  const mb = function(n){ return Math.round((n||0)/1048576); };
+  h = h || { folder:"none" };
   let last = "none yet";
   try{ const lb = await Store.kvGet("ia_backup_last"); if(lb) last = new Date(lb.ts).toLocaleString() + " · " + lb.counts.imported + " imported, " + lb.counts.images + " images" + (lb.verified ? " · ✓ verified" : "") + " (" + lb.where + ")"; }catch(e){}
   const folderTxt = h.folder === "connected" ? "✓ connected" : (h.folder === "lapsed" ? "⚠ reconnect needed" : "not connected");
-  const persistTxt = h.persisted === true ? "✓ granted" : (h.persisted === false ? "⚠ not granted (eviction possible)" : "unknown");
   el.innerHTML =
     "<div>App service: <b>" + folderTxt + "</b></div>" +
     (h.storePath ? ("<div>Data location: <b>" + esc(h.storePath) + "</b></div>") : "") +
-    "<div>Storage persistence: <b>" + persistTxt + "</b></div>" +
-    (h.quota ? ("<div>Storage used: <b>" + mb(h.usage) + " / " + mb(h.quota) + " MB</b></div>") : "") +
-    "<div>Last full backup: <b>" + last + "</b></div>" +
-    (h.folder !== "connected" ? "<button class=\"btn btn-primary\" style=\"margin-top:8px;padding:6px 14px\" onclick=\"connectFolder()\">&#128193; Connect backup folder</button>" : "");
+    "<div>Last verified backup: <b>" + last + "</b></div>";
 }
 // Ctrl+Shift+B = back up now
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
@@ -1019,19 +976,30 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   // back byte-identical to what save()/kvSet would have written (save("fcat",v) ==
   // Store.kvSet("ia_fcat",v); the store does not prefix internally).
   updateBusyOverlay("Writing your settings, cards & tags…");
+  const plan = planLegacyRestore(keys);
   try{
-    const plan = planLegacyRestore(keys);
     if(plan.cards){ updateBusyOverlay("Writing your cards…"); await Store.putCards(plan.cards, {confirm:true}); }
     if(plan.saved){ updateBusyOverlay("Writing your saved items…"); await Store.putSaved(plan.saved, {confirm:true}); }
     updateBusyOverlay("Writing your settings…");
     for(const e of plan.kv){ await Store.kvSet(e.key, e.value); }
-  }catch(e){ hideBusyOverlay(); toast("Restore failed: " + (e && e.message || e)); return false; }
+    // ia_theme is a localStorage-only key (setTheme writes it verbatim there, the
+    // store never holds it). Apply it directly so the restored theme survives.
+    if(plan.theme != null){ try{ localStorage.setItem("ia_theme", plan.theme); }catch(e){} }
+  }catch(e){
+    hideBusyOverlay();
+    // Some data may already have landed before this failure — but a verified
+    // safety backup of the previous state was taken first, so nothing is lost.
+    toast("Restore was partial — a safety backup of your previous data was taken first. (" + (e && e.message || e) + ")", 9000);
+    return false;
+  }
   updateBusyOverlay("Restoring images…");
   let imgCount = 0;
   try{ imgCount = await putAllImages(function(done, total){ updateBusyOverlay("Restoring images: " + done + (total ? (" / " + total) : "") + "…"); }); }
   catch(e){ console.warn("image restore failed", e); }
   updateBusyOverlay("Done — reloading…");
-  toast("Restored " + n + " data sets + " + imgCount + " images — reloading…");
+  const skipped = (plan.skipped && plan.skipped.length) || 0;
+  const skipNote = skipped ? (" · skipped " + skipped + " machine-only item" + (skipped===1?"":"s")) : "";
+  toast("Restored " + n + " data sets + " + imgCount + " images" + skipNote + " — reloading…");
   setTimeout(function(){ location.reload(); }, 1000);
   return true;
 }
@@ -1065,7 +1033,6 @@ async function restoreFromList(name){
     setTimeout(()=>location.reload(), 600);
   }catch(e){ toast("Restore failed: "+(e&&e.message||e)); }
 }
-async function restoreFromDir(name){ return restoreFromList(name); }
 async function restoreLatest(){
   const list = await Store.listBackups();
   if(!list || !list.length){ toast("No backups found"); return; }
@@ -1105,6 +1072,7 @@ async function renderSyncStatus(){
   let st = null; try{ st = await Store.syncStatus(); }catch(e){}
   if(!st){ el.textContent = "Sync status unavailable."; return; }
   const tog = document.getElementById("syncToggle"); if(tog) tog.checked = !!st.enabled;
+  const ts = document.getElementById("trustSync"); if(ts) ts.textContent = st.enabled ? ", and shared across your devices through Dropbox" : "";
   const fi = document.getElementById("syncFolderInfo");
   if(fi) fi.textContent = st.folder ? st.folder : (st.dropboxFound ? "(default Dropbox location)" : "Dropbox not found — install Dropbox or pick a folder.");
   const nm = document.getElementById("syncDeviceName"); if(nm && document.activeElement!==nm) nm.value = st.deviceLabel || "";
@@ -1949,7 +1917,7 @@ function ingestImported(found){
     }
   });
   imported = imported.slice(-10000);
-  Store.putCards(imported); writeSavesFile(); renderImportStatus();
+  Store.putCards(imported); renderImportStatus();
   const parts=[];
   if(added) parts.push(added+" new items imported");
   if(updated) parts.push(updated+" existing items enriched");
@@ -2070,7 +2038,7 @@ function clearFbPlaceholders(silent){
       cleared++;
     }
   }
-  if(cleared){ Store.putCards(imported); writeSavesFile(); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
+  if(cleared){ Store.putCards(imported); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
   else if(!silent) toast("No placeholder captures found");
   return cleared;
 }
@@ -2161,7 +2129,7 @@ function renderImported(){
         if(ph) out+=`<button class="btn btn-ghost" onclick="clearFbPlaceholders()" title="Some Facebook cards captured a loading spinner/placeholder instead of the photo. Clear them so they re-capture the real image.">&#129529; Fix ${ph} placeholder${ph>1?"s":""}</button>`;
         if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
           <div class="tag-menu" id="retryMenu">
-            ${fail?`<button onclick="closeRetryMenu();viewFailures()">&#128065; View failures</button>`:""}
+            ${fail?`<button onclick="closeRetryMenu();openFailReview()">&#128065; View failures</button>`:""}
             ${fail?`<button onclick="closeRetryMenu();retryAllFailed()">&#128260; Retry all ${fail}</button>`:""}
             ${impFailed?`<button onclick="closeRetryMenu();clearFailedFilter()">&#10005; Show all cards</button>`:""}
           </div></div>`;
@@ -2345,7 +2313,7 @@ async function enrichPins(){
   for(const p of pins.filter(x=>!x.img).slice(0,25)){
     p.pt=1; apply(p, await fetchMicrolink(p.url));
   }
-  Store.putCards(imported); writeSavesFile();
+  Store.putCards(imported);
   return got;
 }
 async function enrichImported(){
@@ -2372,7 +2340,7 @@ ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
       const arr = JSON.parse(t.slice(a,z+1));
       batch.forEach((b,i)=>{ if(typeof arr[i]==="string" && arr[i].trim()) b.desc=arr[i].trim().slice(0,220); });
       done += batch.length;
-      Store.putCards(imported); writeSavesFile();
+      Store.putCards(imported);
       toast(done+" described…");
     }
     const left = imported.filter(i=>!i.desc).length;
@@ -2387,7 +2355,6 @@ function toggleTagMenu(){ const m=document.getElementById("tagMenu"); const open
 function closeTagMenu(){ const m=document.getElementById("tagMenu"); if(m) m.classList.remove("open"); }
 function toggleRetryMenu(){ const m=document.getElementById("retryMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
 function closeRetryMenu(){ const m=document.getElementById("retryMenu"); if(m) m.classList.remove("open"); }
-function viewFailures(){ openFailReview(); }
 function _failLabel(reason){
   return ({ social:"Login-walled — open & Save from your browser", unreachable:"Couldn't reach — may be dead", "no-image":"No preview image on the page", "image-failed":"Preview image wouldn't download" })[reason] || "Couldn't capture";
 }
@@ -2640,7 +2607,7 @@ function canonicalTag(t){
 // Persist + update ONLY the edited card's tag row in place (no full re-render),
 // so the page never jumps while tagging.
 function _afterTagEdit(idx){
-  Store.putCards(imported); writeSavesFile();
+  Store.putCards(imported);
   const it=imported[idx];
   if(it && it.id){
     const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
@@ -2885,7 +2852,7 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
         noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
     }catch(e){ console.warn(e); }
   }
-  await persistCards(); writeSavesFile();
+  await persistCards();
   selPicks.clear();
   renderImported();
   toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
@@ -3132,7 +3099,6 @@ function pasteImageToCard(idx, file){
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
     persistCards();
-    writeSavesFile();
     _impAnchorId=it.id||""; const el=document.querySelector('.imp-card[data-id="'+it.id+'"]'); _impAnchorTop=el?el.getBoundingClientRect().top:0;
     renderImported(); restoreImpScrollSettle();
     toast("Image pasted to: "+(it.title||"card"));
@@ -3152,7 +3118,6 @@ function impEditSave(){
   else if(it.blocked) delete it.blocked;
   it.edited=Date.now();
   persistCards();
-  writeSavesFile();
   closeGuide();
   // keep the edited card in place across the re-render (height may change)
   _impScrollY=window.scrollY; _impAnchorId=it.id||"";
@@ -3235,7 +3200,6 @@ function impRefresh(idx){
   // the way a manual "Save to Interests" does, captures it, and closes the tab.
   // The app doesn't open the tab itself (the extension owns + closes it).
   Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:true, capture:true, closeAfter:true, render: isFb?1:undefined});
-  closeRefreshTab(it.id);   // clear any prior pending refresh for this card
   // The extension's background worker (capture-request poller) opens the page, captures it, and
   // closes the tab for EVERY platform — so the app no longer opens its own tab (that produced a
   // duplicate). The image was cleared above and the request carries force:true, so the capture
@@ -3243,14 +3207,6 @@ function impRefresh(idx){
   enrichOnOpen(it, idx);    // fast Core og/thumbnail fallback while the real screenshot lands
   renderImportedKeepFocus();   // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
   toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
-}
-// tabs opened by a manual refresh, keyed by card id, so they can be auto-closed
-let _refreshTabs = {};
-function closeRefreshTab(id){
-  const r = id && _refreshTabs[id]; if(!r) return;
-  delete _refreshTabs[id];
-  if(r.timer) clearTimeout(r.timer);
-  try{ if(r.win && !r.win.closed) r.win.close(); }catch(e){}
 }
 async function enrichOnOpen(it, idx){
   try{
@@ -3303,7 +3259,7 @@ async function enrichOnOpen(it, idx){
       }catch(e){ console.warn("AI desc failed",e); }
     }
     if(changed){
-      Store.putCards(imported); writeSavesFile();
+      Store.putCards(imported);
       if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
       toast("Card updated with article info");
       const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } };
@@ -3552,7 +3508,7 @@ function groomNoLink(){
   if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
   nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ Store.imgDel(it.id); } });
   imported = imported.filter(i=>i.url);
-  Store.putCards(imported, {confirm:true}); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
 }
@@ -3595,7 +3551,7 @@ function impDrop(idx){
   }
   const gone=imported.splice(idx,1)[0];
   if(gone && gone.img && (""+gone.img).indexOf("idb:")===0){ Store.imgDel(gone.id); } // free its stored image
-  Store.putCards(imported); writeSavesFile();
+  Store.putCards(imported);
   renderImported(); restoreImpScrollSettle();
   updateCounts();
 }
@@ -3702,7 +3658,7 @@ function addDiscovered(){
   if(!add.length) return;
   S.interests = S.interests.replace(/[,\s]+$/,"") + ", " + add.join(", ");
   document.getElementById("interestList").value = S.interests;
-  save("settings", S); writeSavesFile();
+  save("settings", S);
   discTags = discTags.filter(tg=>!tg.sel);
   renderDiscTags();
   toast(add.length+" interest"+(add.length>1?"s":"")+" added to your profile");
@@ -3749,21 +3705,8 @@ function cancelProfile(){ document.getElementById("profileReview").style.display
 
 /* ============ backups / store (Core service) ============ */
 // Folder picking via the File System Access API is gone — the Core service owns
-// the store and backups. "Connect" now just confirms the service is reachable and
-// triggers an initial backup.
-async function connectFolder(){
-  try{
-    await Store.storeLocation();           // reachable?
-    if(!(+S.autoBackup)){ S.autoBackup = 1; save("settings", S); const sel=document.getElementById("autoBackup"); if(sel) sel.value="1"; }
-    toast("Backups on — saving to Dropbox\\Interests App\\backups");
-    await doBackup(true);
-    try{ await storageHealthCheck(); }catch(e){}
-  }catch(e){ toast("Couldn't reach the app service"); }
-}
-// no browser folder handle to reconnect anymore — the service is always the store.
-async function restoreFolder(){ /* no-op: Core service owns the store */ }
-// saves.json export is now handled by the service's backup; nothing to write here.
-function writeSavesFile(){ /* no-op: backups handled by the Core service */ }
+// the store and backups. Backups run via "Back up now" (doBackup) / auto-backup;
+// there is no folder to connect anymore.
 
 // Capture a safety backup BEFORE a bulk-destructive op (dedup/groom), so a mistaken
 // removal is recoverable. The Core service writes + verifies a full backup.
@@ -3955,7 +3898,7 @@ async function applyDupeRemoval(){
   }
   if (rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
   if (rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); updateCounts();
   closeDupeReview();
   if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
@@ -4046,7 +3989,7 @@ async function checkDeadLinks(){
   }
 
   // Persist the lc/sb markers (so re-runs resume) via the normal bulk-replace path.
-  Store.putCards(imported); Store.putSaved(saved); writeSavesFile();
+  Store.putCards(imported); Store.putSaved(saved);
   if(dead.length) openDeadReview(dead);
   else toast(_deadStop ? "Stopped — nothing flagged so far" : (done ? "No dead or unsafe links found." : "Nothing to check"), 5000);
 }
@@ -4093,7 +4036,7 @@ function applyDeadRemoval(){
   gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
   if(rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
   if(rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); updateCounts();
   closeDeadReview();
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   toast(`Removed ${checked.size} dead link${checked.size===1?"":"s"}`, 5000);
@@ -4189,14 +4132,12 @@ async function drainCaptures(){
       const cur=match.img||"";
       if(isBadImg(cur) || cur.indexOf("data:")===0 || cur.indexOf("idb:")===0){ setCardImage(match,""); changed=true; }
       match.captured=now; match.blocked=now; match.lastUpdate=now; match.lastResult="blocked"; persisted=true;
-      closeRefreshTab(match.id);   // refresh attempt resolved (blocked) — close the page
       continue;
     }
     if(cap.attempt && !cap.ok){
       // page loaded but no usable image — record the failed attempt (no image change)
       console.log("[drainCaptures] failed attempt for "+cap.url);
       match.lastUpdate=now; match.lastResult="fail"; persisted=true;
-      closeRefreshTab(match.id);   // refresh attempt resolved (failed) — close the page
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
@@ -4209,7 +4150,6 @@ async function drainCaptures(){
     if(best && (best+"").indexOf("data:")===0 && _phFps.has(imgFp(best))){
       console.log("[drainCaptures] rejected known placeholder image for "+cap.url);
       match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
-      closeRefreshTab(match.id);
       continue;
     }
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
@@ -4233,14 +4173,13 @@ async function drainCaptures(){
       const nu=clipKey(match.url);   // FB-aware: only fill TRUE duplicates (same post id), never distinct /watch?v= posts sharing a path
       imported.forEach(o=>{ if(o!==match && o.url && clipKey(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
-    closeRefreshTab(match.id);   // a manual refresh opened this page — close it now the capture landed
   }
   // queue was drained server-side; re-enqueue anything we deliberately deferred
   if(remaining.length){ try{ await Promise.all(remaining.map(function(c){ return fetch("/api/captures",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({capture:c})}); })); }catch(e){} }
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ await Store.kvSet("ia_last_opened", {id:lastOpened.id, ts:Date.now()}); }catch(e){} }
   if(unmatched && !matched && !removedDead){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
-  if(changed || persisted){ await Store.putCards(imported); writeSavesFile(); updateCounts(); }
+  if(changed || persisted){ await Store.putCards(imported); updateCounts(); }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
     if(removedDead){
@@ -4378,7 +4317,7 @@ let _deadUndo=null;
 function undoDead(){
   if(!_deadUndo) return;
   imported.unshift(_deadUndo); _deadUndo=null;
-  Store.putCards(imported); writeSavesFile(); updateCounts();
+  Store.putCards(imported); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Card restored");
 }
@@ -4424,7 +4363,7 @@ async function bootData(){
   showTab(await load("tab","feed"));
 
   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
-  try{ await initImageStore(); if(curTab==="imported") renderImported(); }catch(e){ console.warn("image store init failed", e); }
+  try{ if(curTab==="imported") renderImported(); }catch(e){ console.warn("imported render failed", e); }
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
   _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
   maybeAutoBackup();

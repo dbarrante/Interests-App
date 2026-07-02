@@ -69,5 +69,17 @@ t("kv keys keep their full ia_ prefix (round-trips with load())", () => {
   assert.ok(containsKv(plan.kv, "ia_ph_fps", ["a", "b"]), "prefix preserved");
 });
 
+t("routes ia_theme to plan.theme (localStorage-only key), NOT plan.kv", () => {
+  const plan = planLegacyRestore({ ia_theme: "dark" });
+  assert.strictEqual(plan.theme, "dark", "theme routed to plan.theme");
+  assert.ok(!plan.kv.some(function (e) { return e.key === "ia_theme"; }), "ia_theme must not leak into kv");
+});
+
+t("ia_theme defaults to null when absent; other keys unaffected", () => {
+  const plan = planLegacyRestore({ ia_settings: JSON.stringify({ dark: true }) });
+  assert.strictEqual(plan.theme, null, "theme is null when ia_theme absent");
+  assert.ok(containsKv(plan.kv, "ia_settings", { dark: true }), "ia_settings still routed to kv");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
