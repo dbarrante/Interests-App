@@ -2527,7 +2527,7 @@ function removeFailSelected(){
   const gone=imported.filter(c=>c&&ids.has(c.id));
   gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
   imported = imported.filter(c=>!c||!ids.has(c.id));
-  Store.putCards(imported); updateCounts();
+  Store.putCards(imported, {confirm:true}); updateCounts();
   closeFailReview(); if(curTab==="imported") renderImported();
   toast(`Removed ${ids.size} card${ids.size===1?"":"s"}`, 5000);
 }
@@ -3552,7 +3552,7 @@ function groomNoLink(){
   if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
   nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ Store.imgDel(it.id); } });
   imported = imported.filter(i=>i.url);
-  Store.putCards(imported); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); writeSavesFile(); updateCounts();
   if(curTab==="imported") renderImported();
   toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
 }
@@ -3955,7 +3955,7 @@ async function applyDupeRemoval(){
   }
   if (rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
   if (rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported); Store.putSaved(saved); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); writeSavesFile(); updateCounts();
   closeDupeReview();
   if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
@@ -4093,7 +4093,7 @@ function applyDeadRemoval(){
   gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
   if(rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
   if(rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported); Store.putSaved(saved); writeSavesFile(); updateCounts();
+  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); writeSavesFile(); updateCounts();
   closeDeadReview();
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   toast(`Removed ${checked.size} dead link${checked.size===1?"":"s"}`, 5000);
@@ -4414,7 +4414,8 @@ async function bootData(){
   let wiped=0;
   imported.forEach(i=>{ if(i.desc && /\blikely\b/i.test(i.desc) && /\b(pin|post|video|image|idea|visual|interest)\b/i.test(i.desc)){ delete i.desc; wiped++; } });
   if(imported.length!==before || wiped){
-    await Store.putCards(imported);
+    try{ await Store.putCards(imported); }
+    catch(e){ console.warn("boot hygiene: putCards failed (likely mass-delete guard 409) — skipping persistence this run", e); }
     setTimeout(()=>toast("Cleaned up "+(before-imported.length)+" junk imports, reset "+wiped+" vague descriptions — re-import pinterest-import.json, then hit Enrich"), 800);
   }
   ensureIds();
