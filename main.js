@@ -5,6 +5,8 @@ const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
 const sync = require("./core/sync");
 const undiciGuard = require("./core/undici-guard");
+const { setKV } = require("./core/db");
+const { startSyncTimers } = require("./core/synctimers");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
 // from a cancelled/aborted response body during a link sweep) that would otherwise crash
@@ -20,8 +22,7 @@ undiciGuard.installCrashGuard({
 let mainWindow = null;
 let httpServer = null;
 let ctx = null;                 // hoisted so will-quit / timers can reach it
-let syncTimer = null;
-let publishTimer = null;
+let timers = null;              // { stop() } from core/synctimers — hoisted for will-quit
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -50,9 +51,13 @@ if (!gotLock) {
         if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
           const syncDir = sc.dir || sync.defaultSyncDir();
           sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
-          startSyncTimers(sc, syncDir);
         }
       } catch (e) { console.error("launch sync skipped:", e && e.message); }   // NEVER hard-fail launch
+
+      // Sync timers self-gate on live config (re-read every tick), so start them
+      // unconditionally — enabling/disabling Dropbox sync in Settings takes effect
+      // on the next tick with no app restart required.
+      timers = startSyncTimers({ ctx, config, sync, setKV, log: console.error });
 
       const { server, port } = await startServer(ctx, 3456);
       httpServer = server;
@@ -96,29 +101,11 @@ if (!gotLock) {
         }
       }
     } catch (e) { /* best-effort */ }
-    if (syncTimer) { try { clearInterval(syncTimer); } catch (e) {} }
-    if (publishTimer) { try { clearInterval(publishTimer); } catch (e) {} }
+    if (timers) { try { timers.stop(); } catch (e) {} }
     if (httpServer) {
       try { httpServer.close(); } catch (_) { /* ignore */ }
     }
   });
-}
-
-function startSyncTimers(sc, syncDir) {
-  // Periodic merge + publish (~3 min). On a change, signal the renderer via a kv flag.
-  syncTimer = setInterval(function () {
-    try {
-      const res = sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
-      if (res.changed) { try { require("./core/db").setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
-    } catch (e) { console.error("periodic sync error:", e && e.message); }
-  }, 3 * 60 * 1000);
-
-  // Debounced publish: every ~10s, if a write marked the store dirty, publish our snapshot.
-  publishTimer = setInterval(function () {
-    if (!ctx || !ctx.syncDirty) return;
-    ctx.syncDirty = false;
-    try { sync.publishSnapshot(ctx, syncDir, sc.deviceId, sc.deviceLabel); } catch (e) { console.error("debounced publish error:", e && e.message); }
-  }, 10 * 1000);
 }
 
 function createWindow(port) {
@@ -140,7 +127,7 @@ function createWindow(port) {
   // Open external article links (window.open / target=_blank) in the user's real
   // browser, never an in-app window. Deny everything else.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) { shell.openExternal(url); }
+    if (/^https?:/i.test(url)) { shell.openExternal(url).catch(() => {}); }
     return { action: "deny" };
   });
 
@@ -153,7 +140,7 @@ function createWindow(port) {
     try { u = new URL(url); } catch (e) { u = null; }
     if (u && u.origin === origin) return;   // same-origin nav within the app is fine
     event.preventDefault();
-    if (/^https?:/i.test(url)) { shell.openExternal(url); }
+    if (/^https?:/i.test(url)) { shell.openExternal(url).catch(() => {}); }
   });
 }
 
@@ -204,7 +191,7 @@ ipcMain.handle("ia:open-in-app", (_evt, url) => {
   // A link inside the viewer that opens a new window goes to the real browser (don't
   // spawn more in-app windows); deny non-http(s).
   linkWin.webContents.setWindowOpenHandler(({ url: u }) => {
-    if (/^https?:/i.test(u)) shell.openExternal(u);
+    if (/^https?:/i.test(u)) shell.openExternal(u).catch(() => {});
     return { action: "deny" };
   });
   // Keep the viewer http(s)-only: block a page/redirect that tries to load file:// etc.
