@@ -48,7 +48,11 @@
       });
 
       if (tomb && (!winner || tomb > winner.updatedAt)) {
-        if (localMap[id]) out.deletes.push({ kind: kind, id: id });
+        // Carry the winning tombstone's ORIGINAL deletedAt on the delete entry so
+        // applyMerge stamps it verbatim — without it, deleteCard/deleteSaved fall
+        // back to Date.now(), and (addTombstone keeps the MAX) the delete would
+        // look newer at every merge hop, able to swallow a legitimate re-add.
+        if (localMap[id]) out.deletes.push({ kind: kind, id: id, deletedAt: tomb });
         out.tombstones.push({ id: id, kind: kind, deletedAt: tomb });
         return;
       }

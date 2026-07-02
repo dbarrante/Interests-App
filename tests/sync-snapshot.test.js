@@ -169,5 +169,29 @@ test("applyMerge passes the peer's deletedAt through for a saved-item delete too
   d.close();
 });
 
+// Task 5 / M3 completion — REAL production path end-to-end: peer publishes a
+// tombstone with a known old deletedAt; local runs a full sync cycle
+// (readPeerSnapshots -> mergeSnapshots -> applyMerge). The local tombstone must
+// keep the peer's ORIGINAL deletedAt (777), not get re-stamped ~Date.now() —
+// note addTombstone keeps the MAX, so a Date.now() stamp anywhere in the path
+// would win over 777 and this assertion would catch it.
+test("full sync cycle keeps the peer tombstone's original deletedAt end-to-end", () => {
+  const syncDir = tmp();
+  // Peer B: no card, just a tombstone saying "c_x was deleted at t=777".
+  const storeB = tmpStore(); const dB = dbm.openDb(storeB);
+  dbm.addTombstone(dB, "c_x", "card", 777);
+  sync.publishSnapshot({ db: dB, storeDir: storeB }, syncDir, "dev_B", "Laptop"); dB.close();
+  // Device A still has the card, last updated BEFORE the delete (updatedAt 100 < 777).
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  dbm.upsertCardSynced(dA, { id: "c_x", url: "https://a.com/x" }, 100);
+  const res = sync.runSync({ db: dA, storeDir: storeA }, { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: false, backupFn: function () {} });
+  assert.ok(res.changed, "delete applied");
+  assert.ok(!dbm.allCards(dA).some(c => c.id === "c_x"), "card deleted locally");
+  const tomb = dbm.allTombstones(dA).find(t => t.id === "c_x" && t.kind === "card");
+  assert.ok(tomb, "tombstone recorded locally");
+  assert.strictEqual(tomb.deletedAt, 777, "tombstone keeps the peer's ORIGINAL deletedAt, not ~Date.now()");
+  dA.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

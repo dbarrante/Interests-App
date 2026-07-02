@@ -78,5 +78,32 @@ test("conflicts counts real overwrites only", () => {
   assert.strictEqual(r.conflicts, 1);
 });
 
+// Task 5 / M3 completion: the plan's delete entries must carry the winning
+// tombstone's deletedAt so applyMerge can stamp the ORIGINAL deletion time —
+// without it, deleteCard falls back to Date.now() and (addTombstone keeps MAX)
+// the delete looks newer at every merge hop.
+test("delete entries carry the winning tombstone's deletedAt", () => {
+  const local = L({ c_1: { id: "c_1", url: "x", updatedAt: 100 } });
+  const peers = [peer("B", [], [], [{ id: "c_1", kind: "card", deletedAt: 500 }])];
+  const r = mergeSnapshots(local, peers);
+  const d = r.deletes.find(d => d.kind === "card" && d.id === "c_1");
+  assert.ok(d, "delete planned");
+  assert.strictEqual(d.deletedAt, 500, "delete carries the peer tombstone's original deletedAt");
+  const t = r.tombstones.find(t => t.kind === "card" && t.id === "c_1");
+  assert.strictEqual(t.deletedAt, 500, "propagated tombstone also carries the original deletedAt");
+});
+
+test("delete entry carries the NEWEST deletedAt across peers", () => {
+  const local = L({ c_1: { id: "c_1", url: "x", updatedAt: 100 } });
+  const peers = [
+    peer("B", [], [], [{ id: "c_1", kind: "card", deletedAt: 400 }]),
+    peer("C", [], [], [{ id: "c_1", kind: "card", deletedAt: 600 }]),
+  ];
+  const r = mergeSnapshots(local, peers);
+  const d = r.deletes.find(d => d.kind === "card" && d.id === "c_1");
+  assert.ok(d, "delete planned");
+  assert.strictEqual(d.deletedAt, 600, "newest tombstone across peers wins");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);
