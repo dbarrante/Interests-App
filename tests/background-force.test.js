@@ -32,7 +32,9 @@ t("captureOneTab stores force on the pending entry", () => {
 t("capturePending passes the pending force into captureTab (not hardcoded false)", () => {
   const i = bg.indexOf("async function capturePending(");
   assert.ok(i >= 0, "capturePending present");
-  const body = bg.slice(i, i + 600);
+  // slice to the function's closing brace, not a fixed char count — comment growth
+  // upstream of the call pushed it past a fixed window once already (v1.7.0).
+  const body = bg.slice(i, bg.indexOf("\n}", i) + 2);
   assert.ok(/captureTab\(t,\s*p\.delay,\s*!!p\.force,\s*p\.id\)/.test(body),
     "capturePending must call captureTab(t, p.delay, !!p.force, p.id)");
   assert.ok(!/captureTab\(t,\s*p\.delay,\s*false,\s*p\.id\)/.test(body),
@@ -75,7 +77,7 @@ t("captureTab skips screenshotting an HTTP error page (e.g. Instagram 429) via t
 
 t("capturePending propagates capture success ('ok'/'noimg') for the back-off", () => {
   const i = bg.indexOf("async function capturePending(");
-  const body = bg.slice(i, i + 1000);
+  const body = bg.slice(i, bg.indexOf("\n}", i) + 2);
   assert.ok(body.indexOf('p.resolve(rateLimited ? "ratelimited" : (ok ? "ok" : "noimg"))') >= 0, "resolves ratelimited/ok/noimg");
   assert.ok(body.indexOf("tabStatus[tabId] === 429") >= 0, "detects a 429 to distinguish throttling from a plain no-image");
   assert.ok(body.indexOf("ok = await captureTab(") >= 0, "captures captureTab's return");
