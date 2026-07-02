@@ -118,17 +118,32 @@ t("manifest declares unlimitedStorage (B11)", () => {
     "manifest permissions must include unlimitedStorage");
 });
 
-t("queue-write failure is surfaced (console.warn + notifications.create), not swallowed (B11)", () => {
+t("queue-write failure is surfaced (console.warn + user notification), not swallowed (B11)", () => {
   const di = bg.indexOf("async function deliverToApp(");
   const end = bg.indexOf("async function fetchAsDataUrl(");   // deliverToApp ends just before this
   assert.ok(di >= 0 && end > di, "deliverToApp block bounded");
   const body = bg.slice(di, end);
   assert.ok(/console\.warn\(/.test(body), "queue-write catch must console.warn the failure");
-  assert.ok(/chrome\.notifications\.create\(/.test(body), "queue-write catch must notify the user");
+  // the user-facing notification goes through the notify() helper, which builds
+  // the iconUrl via chrome.runtime.getURL (a relative path is unreliable in an
+  // MV3 service worker) and swallows chrome's async icon-download rejection
+  assert.ok(/notify\(\s*["']queue-full-/.test(body), "queue-write catch must notify the user via notify()");
   assert.ok(/storage full/i.test(body), "the notification must mention storage being full");
+  assert.ok(/chrome\.runtime\.getURL\(/.test(bg.slice(bg.indexOf("function notify("), bg.indexOf("function notify(") + 500)),
+    "notify() must resolve its icon via chrome.runtime.getURL");
+  // no raw create call with a relative icon path anywhere in deliverToApp
+  assert.ok(!/iconUrl:\s*["']icon\d+\.png["']/.test(body), "no relative iconUrl in deliverToApp");
   // the old silent empty catch on the queue set() must be gone
   assert.ok(!/set\(\{ ia_capture_queue: q \}\);\s*\n\s*log\([^)]*\);\s*\n\s*\} catch \(e\) \{\}/.test(body),
     "the queue-write catch must not be an empty {}");
+});
+
+t("pending-claim persist failure is warned, not swallowed (review follow-up)", () => {
+  const i = bg.indexOf("async function persistPending(");
+  assert.ok(i >= 0, "persistPending present");
+  const body = bg.slice(i, i + 400);
+  assert.ok(/catch \(e\) \{ console\.warn\(/.test(body),
+    "persistPending's catch must console.warn the failed storage.session.set");
 });
 
 // ---- B12: pending request persisted across SW suspension -------------------

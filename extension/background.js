@@ -163,14 +163,11 @@ async function deliverToApp(capture) {
     // log it and tell the user the capture wasn't queued (storage full) so it isn't
     // silently lost. (unlimitedStorage is now requested in the manifest to make this rare.)
     console.warn("[IA] queue write failed:", e);
-    try {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icon48.png",
-        title: "Interests Capture",
-        message: "A capture could not be queued (storage full) — it was not saved. Open the app and re-capture.",
-      });
-    } catch (_) {}
+    // reuse notify(): it builds the iconUrl via chrome.runtime.getURL (a relative
+    // path is unreliable in an MV3 service worker — no document base URL) and
+    // swallows chrome's async icon-download rejection.
+    notify("queue-full-" + Date.now(), "Interests Capture",
+      "A capture could not be queued (storage full) — it was not saved. Open the app and re-capture.");
   }
   return false;
 }
@@ -711,7 +708,8 @@ const PENDING_MAX_AGE_MS = 120000;   // on restore, older than this → treat as
 
 // Persist the just-claimed request so a suspended SW can restore/complete it.
 async function persistPending(reqLike) {
-  try { await chrome.storage.session.set({ [PENDING_KEY]: { req: reqLike, at: Date.now() } }); } catch (e) {}
+  try { await chrome.storage.session.set({ [PENDING_KEY]: { req: reqLike, at: Date.now() } }); }
+  catch (e) { console.warn("[IA] pending-claim persist failed (capture won't survive SW suspension):", e); }
 }
 // Drop the persisted pending state + its alarm (call on completion AND on timeout).
 async function clearPendingPersist() {
