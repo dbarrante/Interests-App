@@ -165,7 +165,13 @@ function upsertCardSynced(db, card, updatedAt) {
 // The renderer persists by FULL-ARRAY replace, so removed/edited rows are observable
 // ONLY by diffing here: keep updatedAt for unchanged rows, bump it for changed/new rows,
 // tombstone every id present-before-but-absent-now, and clear tombstones for ids present now.
-function replaceCards(db, arr) {
+function replaceCards(db, arr, opts) {
+  // asOf = the ms timestamp at which the client loaded the array it's now persisting.
+  // A row absent from `arr` whose stored updatedAt > asOf changed AFTER the client
+  // loaded (e.g. a background sync merge) — the client never saw it, so its absence
+  // is staleness, not an intentional delete: keep it, don't tombstone it. No asOf ->
+  // legacy full-replace (unchanged behavior for old extension/renderer clients).
+  const asOf = opts && isFinite(opts.asOf) ? Math.trunc(Number(opts.asOf)) : null;
   const existing = {};
   for (const row of db.prepare("SELECT id,url,platform,cat,ts,img_file,img_url,data,updatedAt FROM cards").all()) {
     existing[row.id] = row;
@@ -183,7 +189,19 @@ function replaceCards(db, arr) {
       const updatedAt = (ex && cardSig(ex) === cardSig(r)) ? ex.updatedAt : now;
       _insertCardRow(ins, r, updatedAt);
     }
-    for (const id of Object.keys(existing)) if (!incoming.has(id)) addTombstone(db, id, "card", now);
+    for (const id of Object.keys(existing)) {
+      if (incoming.has(id)) continue;
+      if (asOf != null && Number(existing[id].updatedAt) > asOf) {
+        // Re-insert the concurrently-synced row untouched (keep its own updatedAt)
+        // and clear any stale tombstone for it — a live row shadowed by a tombstone
+        // would be resurrect-then-redeleted on the next merge (merge.js: newest
+        // tombstone vs updatedAt), so the tombstone must go.
+        _insertCardRow(ins, existing[id], existing[id].updatedAt);
+        delTombstone(db, id, "card");
+        continue;
+      }
+      addTombstone(db, id, "card", now);
+    }
     for (const id of incoming) delTombstone(db, id, "card");
     db.exec("COMMIT");
   } catch (e) {
@@ -289,7 +307,9 @@ function upsertSavedSynced(db, item, updatedAt) {
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
 // Symmetric to replaceCards: content-diff stamping + tombstone diff (kind "saved").
-function replaceSaved(db, arr) {
+function replaceSaved(db, arr, opts) {
+  // See replaceCards for the asOf contract — symmetric, kind "saved".
+  const asOf = opts && isFinite(opts.asOf) ? Math.trunc(Number(opts.asOf)) : null;
   const existing = {};
   for (const row of db.prepare("SELECT id,url,category,clipped,img_file,img_url,data,updatedAt FROM saved").all()) {
     existing[row.id] = row;
@@ -307,7 +327,15 @@ function replaceSaved(db, arr) {
       const updatedAt = (ex && savedSig(ex) === savedSig(r)) ? ex.updatedAt : now;
       _insertSavedRow(ins, r, updatedAt);
     }
-    for (const id of Object.keys(existing)) if (!incoming.has(id)) addTombstone(db, id, "saved", now);
+    for (const id of Object.keys(existing)) {
+      if (incoming.has(id)) continue;
+      if (asOf != null && Number(existing[id].updatedAt) > asOf) {
+        _insertSavedRow(ins, existing[id], existing[id].updatedAt);
+        delTombstone(db, id, "saved");
+        continue;
+      }
+      addTombstone(db, id, "saved", now);
+    }
     for (const id of incoming) delTombstone(db, id, "saved");
     db.exec("COMMIT");
   } catch (e) {

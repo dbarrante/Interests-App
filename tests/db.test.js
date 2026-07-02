@@ -252,5 +252,79 @@ t("replaceSaved also tolerates an id-less saved item", () => {
   d.close();
 });
 
+// A5: replaceCards/replaceSaved asOf guard — a row updated after the client last
+// loaded (e.g. a background Dropbox-sync merge) must NOT be tombstoned just because
+// the stale client's full-array persist omits it.
+t("replaceCards keeps (not tombstones) a row updated after the client's asOf", () => {
+  const d = db.openDb(tmpStore());
+  // client loads at t0
+  db.replaceCards(d, [{ id: "a", url: "ua", title: "A" }, { id: "b", url: "ub", title: "B" }]);
+  const t0 = Date.now();
+  // ... time passes; a sync merge adds card "c" with a newer updatedAt
+  db.upsertCardSynced(d, { id: "c", url: "uc", title: "from-peer" }, t0 + 5000);
+  // stale client persists its old array (a, b) with asOf = t0
+  db.replaceCards(d, [{ id: "a", url: "ua", title: "A" }, { id: "b", url: "ub", title: "B" }], { asOf: t0 });
+  const ids = db.allCards(d).map(c => c.id).sort();
+  assert.deepStrictEqual(ids, ["a", "b", "c"], '"c" survives the stale persist');
+  assert.ok(!db.allTombstones(d).some(t => t.id === "c"), '"c" is NOT tombstoned');
+  d.close();
+});
+
+t("replaceCards keep-path clears any stale tombstone so the kept row is not shadowed", () => {
+  const d = db.openDb(tmpStore());
+  // "c" was deleted once (tombstoned), then re-added by a peer with a NEWER updatedAt.
+  db.replaceCards(d, [{ id: "a", url: "ua" }]);
+  db.addTombstone(d, "c", "card", 1000);            // old tombstone lingers
+  const t0 = Date.now();
+  db.upsertCardSynced(d, { id: "c", url: "uc", title: "peer" }, t0 + 5000);  // resurrected by peer, newer
+  // stale client persists (a) only, with asOf = t0 → "c" must be KEPT and its tombstone cleared,
+  // else the next merge would see tomb>... only if newer, but a live row + live tombstone is unsafe.
+  db.replaceCards(d, [{ id: "a", url: "ua" }], { asOf: t0 });
+  assert.ok(db.allCards(d).some(c => c.id === "c"), "kept row present");
+  assert.ok(!db.allTombstones(d).some(t => t.id === "c" && t.kind === "card"),
+    "kept row must not be left shadowed by a tombstone");
+  d.close();
+});
+
+t("replaceCards without asOf keeps legacy full-replace semantics", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "a", url: "ua" }, { id: "b", url: "ub" }]);
+  db.replaceCards(d, [{ id: "a", url: "ua" }]);
+  assert.deepStrictEqual(db.allCards(d).map(c => c.id), ["a"]);
+  assert.ok(db.allTombstones(d).some(t => t.id === "b" && t.kind === "card"), "b tombstoned (legacy)");
+  d.close();
+});
+
+t("replaceCards with asOf still deletes rows the client intentionally removed", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "a", url: "ua" }, { id: "b", url: "ub" }]);
+  const t1 = Date.now() + 10;                        // client loaded AFTER b's last update
+  db.replaceCards(d, [{ id: "a", url: "ua" }], { asOf: t1 });
+  assert.deepStrictEqual(db.allCards(d).map(c => c.id), ["a"], "b removed: updatedAt <= asOf");
+  assert.ok(db.allTombstones(d).some(t => t.id === "b" && t.kind === "card"), "b tombstoned");
+  d.close();
+});
+
+t("replaceSaved keeps (not tombstones) a saved item updated after the client's asOf", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceSaved(d, [{ id: "a", url: "ua", title: "A" }, { id: "b", url: "ub", title: "B" }]);
+  const t0 = Date.now();
+  db.upsertSavedSynced(d, { id: "c", url: "uc", title: "from-peer" }, t0 + 5000);
+  db.replaceSaved(d, [{ id: "a", url: "ua", title: "A" }, { id: "b", url: "ub", title: "B" }], { asOf: t0 });
+  const ids = db.allSaved(d).map(s => s.id).sort();
+  assert.deepStrictEqual(ids, ["a", "b", "c"], '"c" survives the stale persist');
+  assert.ok(!db.allTombstones(d).some(t => t.id === "c" && t.kind === "saved"), '"c" is NOT tombstoned');
+  d.close();
+});
+
+t("replaceSaved without asOf keeps legacy full-replace semantics", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceSaved(d, [{ id: "a", url: "ua" }, { id: "b", url: "ub" }]);
+  db.replaceSaved(d, [{ id: "a", url: "ua" }]);
+  assert.deepStrictEqual(db.allSaved(d).map(s => s.id), ["a"]);
+  assert.ok(db.allTombstones(d).some(t => t.id === "b" && t.kind === "saved"), "b tombstoned (legacy)");
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

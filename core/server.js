@@ -95,9 +95,16 @@ function createServer(ctx) {
     res.json({ cards: dbm.allCards(ctx.db) });
   });
   app.put("/api/cards", (req, res) => {
-    ctx.syncDirty = true;
     const cards = (req.body && req.body.cards) || [];
-    dbm.replaceCards(ctx.db, cards);
+    const asOf = req.body && req.body.asOf;
+    // A5: block a stale full-array PUT that would wipe most of the library unless the
+    // client explicitly confirms. Read counts BEFORE mutating; no write on the 409 path.
+    const existing = dbm.counts(ctx.db).cards;
+    if (existing >= 20 && cards.length < existing / 2 && !(req.body && req.body.confirm)) {
+      return res.status(409).json({ ok: false, error: "mass_delete_blocked", existing, incoming: cards.length });
+    }
+    ctx.syncDirty = true;
+    dbm.replaceCards(ctx.db, cards, { asOf });
     res.json({ ok: true, count: cards.length });
   });
   app.patch("/api/cards/:id", (req, res) => {
@@ -118,9 +125,14 @@ function createServer(ctx) {
     res.json({ saved: dbm.allSaved(ctx.db) });
   });
   app.put("/api/saved", (req, res) => {
-    ctx.syncDirty = true;
     const saved = (req.body && req.body.saved) || [];
-    dbm.replaceSaved(ctx.db, saved);
+    const asOf = req.body && req.body.asOf;
+    const existing = dbm.counts(ctx.db).saved;
+    if (existing >= 20 && saved.length < existing / 2 && !(req.body && req.body.confirm)) {
+      return res.status(409).json({ ok: false, error: "mass_delete_blocked", existing, incoming: saved.length });
+    }
+    ctx.syncDirty = true;
+    dbm.replaceSaved(ctx.db, saved, { asOf });
     res.json({ ok: true, count: saved.length });
   });
   app.patch("/api/saved/:id", (req, res) => {

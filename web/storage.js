@@ -65,6 +65,11 @@
       });
     };
 
+    // A5: the "as-of" watermark for each full-array PUT — the moment the Store last
+    // saw the server's authoritative array. Sent on every PUT so the server keeps
+    // rows a background sync merge added after the client loaded (see core/db.js).
+    var _asOfCards = 0, _asOfSaved = 0;
+
     var Store = {
       // --- kv (replaces persistent ia_* localStorage) ---
       kvGet: function (key) {
@@ -78,14 +83,22 @@
       },
 
       // --- cards ---
-      getCards: function () { return jget(SE.cards()).then(function (j) { return (j && j.cards) || []; }); },
-      putCards: function (arr) { return jsend("PUT", SE.cards(), { cards: arr || [] }); },
+      getCards: function () { return jget(SE.cards()).then(function (j) { _asOfCards = Date.now(); return (j && j.cards) || []; }); },
+      putCards: function (arr, opts) {
+        var body = { cards: arr || [], asOf: _asOfCards };
+        if (opts && opts.confirm) body.confirm = true;
+        return jsend("PUT", SE.cards(), body).then(function (j) { _asOfCards = Date.now(); return j; });
+      },
       patchCard: function (card) { return jsend("PATCH", SE.card(card.id), { card: card }).then(function () {}); },
       delCard: function (id) { return jsend("DELETE", SE.card(id)).then(function () {}); },
 
       // --- saved ---
-      getSaved: function () { return jget(SE.saved()).then(function (j) { return (j && j.saved) || []; }); },
-      putSaved: function (arr) { return jsend("PUT", SE.saved(), { saved: arr || [] }); },
+      getSaved: function () { return jget(SE.saved()).then(function (j) { _asOfSaved = Date.now(); return (j && j.saved) || []; }); },
+      putSaved: function (arr, opts) {
+        var body = { saved: arr || [], asOf: _asOfSaved };
+        if (opts && opts.confirm) body.confirm = true;
+        return jsend("PUT", SE.saved(), body).then(function (j) { _asOfSaved = Date.now(); return j; });
+      },
       patchSaved: function (item) { return jsend("PATCH", SE.savedItem(item.id), { item: item }).then(function () {}); },
       delSaved: function (id) { return jsend("DELETE", SE.savedItem(id)).then(function () {}); },
 
