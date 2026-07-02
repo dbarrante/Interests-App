@@ -304,6 +304,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
+<script src="restore-legacy.js"></script>
 <script src="deadcheck-ai.js"></script>
 <script src="profile-analyze.js"></script>
 <script src="import-instagram.js"></script>
@@ -991,14 +992,20 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   showBusyOverlay("Saving a safety copy of your current data first…");
   // safety copy of current state — the Core service writes a verified backup first
   try{ await Store.backupNow(); }catch(e){}
-  // wipe + write keys back verbatim
+  // Write cards/saved/kv through the Core store. The legacy path used to write
+  // localStorage (which the app stopped reading after the Core migration), so a
+  // file restore silently restored nothing but images. planLegacyRestore routes
+  // each legacy ia_* key; kv keys keep their full ia_ prefix so load()/kvGet read
+  // back byte-identical to what save()/kvSet would have written (save("fcat",v) ==
+  // Store.kvSet("ia_fcat",v); the store does not prefix internally).
   updateBusyOverlay("Writing your settings, cards & tags…");
   try{
-    const existing = [];
-    for(let i=0;i<localStorage.length;i++){ const k = localStorage.key(i); if(k && k.startsWith("ia_")) existing.push(k); }
-    existing.forEach(function(k){ localStorage.removeItem(k); });
-    Object.keys(keys).forEach(function(k){ if(k.startsWith("ia_")){ const v = keys[k]; localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } });
-  }catch(e){ hideBusyOverlay(); toast("Restore failed: " + e.message + " — data may exceed this browser's storage limit"); return false; }
+    const plan = planLegacyRestore(keys);
+    if(plan.cards){ updateBusyOverlay("Writing your cards…"); await Store.putCards(plan.cards, {confirm:true}); }
+    if(plan.saved){ updateBusyOverlay("Writing your saved items…"); await Store.putSaved(plan.saved, {confirm:true}); }
+    updateBusyOverlay("Writing your settings…");
+    for(const e of plan.kv){ await Store.kvSet(e.key, e.value); }
+  }catch(e){ hideBusyOverlay(); toast("Restore failed: " + (e && e.message || e)); return false; }
   updateBusyOverlay("Restoring images…");
   let imgCount = 0;
   try{ imgCount = await putAllImages(function(done, total){ updateBusyOverlay("Restoring images: " + done + (total ? (" / " + total) : "") + "…"); }); }
@@ -1966,9 +1973,23 @@ function _bmImport(){
 function renderImportStatus(){
   const el=document.getElementById("impStatus"); if(!el) return;
   el.innerHTML = imported.length
-    ? `<b style="color:var(--chip-life)">&#10003; ${imported.length} imported items</b> shaping recommendations — browse them in the <b>Imported</b> tab &nbsp; <a href="#" onclick="imported=[];save('imported',imported);writeSavesFile();renderImportStatus();updateCounts();return false">clear</a>`
+    ? `<b style="color:var(--chip-life)">&#10003; ${imported.length} imported items</b> shaping recommendations — browse them in the <b>Imported</b> tab &nbsp; <a href="#" onclick="clearImportedAll();return false">clear</a>`
     : "Nothing imported yet.";
   updateCounts();
+}
+// Actually clear the imported library through the Core store. The old clear link
+// wrote imported=[] to a dead localStorage kv (save('imported',…) never persisted
+// after the Core migration) so the library never actually cleared. Take a safety
+// backup first, drop any idb: images, then PUT [] with confirm (Task 4's shrink
+// guard rejects a >=20-item library dropping below half unless confirm is passed).
+async function clearImportedAll(){
+  if(!confirm("Remove ALL " + imported.length + " imported items? A backup is taken first.")) return;
+  try{ await Store.backupNow(); }catch(e){}
+  for(const it of imported){ const im = it.img||""; if(im.indexOf("idb:")===0){ try{ Store.imgDel(im.slice(4)); }catch(e){} } }
+  imported = [];
+  try{ await Store.putCards([], {confirm:true}); }catch(e){ toast("Clear failed: "+(e&&e.message||e)); return; }
+  renderImportStatus(); updateCounts(); if(curTab==="imported") renderImported();
+  toast("Imported items cleared");
 }
 
 /* ============ imported tab ============ */
