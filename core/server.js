@@ -148,6 +148,26 @@ function createServer(ctx) {
     res.json({ ok: true });
   });
 
+  // --- Delta reads (phone-sync prep: poll instead of full-array GET) ---
+  // Read-only: no ctx.syncDirty. `now` is captured BEFORE the queries run so a
+  // concurrent write during the request window is still delivered on the NEXT
+  // poll (at-least-once, never-miss) — see the boundary-operator comment on
+  // cardsSince/savedSince/tombstonesSince in core/db.js for the full proof.
+  app.get("/api/changes", (req, res) => {
+    const since = req.query.since;
+    const now = Date.now();
+    const cards = dbm.cardsSince(ctx.db, since);
+    const saved = dbm.savedSince(ctx.db, since);
+    const tombstones = dbm.tombstonesSince(ctx.db, since);
+    res.json({ ok: true, now, cards, saved, tombstones });
+  });
+  app.get("/api/tombstones", (req, res) => {
+    const since = req.query.since;
+    const now = Date.now();
+    const tombstones = dbm.tombstonesSince(ctx.db, since);
+    res.json({ ok: true, now, tombstones });
+  });
+
   // --- Images ---
   // An invalid id (path-traversal attempt — see core/images.safeImgId) throws
   // INVALID_IMG_ID; map that to 400. A well-formed but absent image is 404.

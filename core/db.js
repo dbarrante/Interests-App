@@ -381,6 +381,46 @@ function allFp(db) {
   return out;
 }
 
+// Coerce a `since` watermark the same way asOf is coerced elsewhere: absent/0/
+// non-finite -> null (meaning "everything" — full-snapshot semantics for a
+// first-ever poll or a caller that doesn't track a watermark yet).
+function _sinceOrNull(since) {
+  return (since != null && isFinite(since) && Number(since) > 0) ? Math.trunc(Number(since)) : null;
+}
+
+// Delta reads for /api/changes and /api/tombstones. Boundary is STRICT `>`,
+// not `>=`. Reasoning: the caller (server.js) captures `now = Date.now()`
+// BEFORE running these queries, and every local write stamps updatedAt via
+// Date.now() at write time (upsertCard/upsertSaved/replaceCards/replaceSaved).
+// Because `now` is captured first, any write that lands during the request
+// window is stamped >= now+epsilon (wall clock only moves forward), so it can
+// never be stamped exactly `now` as observed by the read that follows it —
+// and if it raced in just before `now` was captured, strict `>` on the NEXT
+// poll (since = that `now`) still delivers it, because its updatedAt is <=
+// this `now`, making it visible in THIS response already. The only row that
+// could tie exactly `since` is one whose updatedAt was itself returned as a
+// previous poll's `now` and handed back as this poll's `since` — that row was
+// already delivered in the poll that produced that `now`, so excluding it
+// here (strict >) is correct and does not create a gap: at-least-once
+// delivery holds because `now` is always captured strictly before the reads
+// that observe writes up to and including that instant.
+function cardsSince(db, since) {
+  const s = _sinceOrNull(since);
+  if (s == null) return allCards(db);
+  return db.prepare("SELECT * FROM cards WHERE updatedAt > ?").all(s).map(rowToCard);
+}
+function savedSince(db, since) {
+  const s = _sinceOrNull(since);
+  if (s == null) return allSaved(db);
+  return db.prepare("SELECT * FROM saved WHERE updatedAt > ?").all(s).map(rowToSaved);
+}
+function tombstonesSince(db, since) {
+  const s = _sinceOrNull(since);
+  if (s == null) return allTombstones(db);
+  return db.prepare("SELECT id,kind,deletedAt FROM tombstones WHERE deletedAt > ?").all(s)
+    .map(r => ({ id: r.id, kind: r.kind, deletedAt: Number(r.deletedAt) }));
+}
+
 function serializeLibrary(db) {
   return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db) };
 }
@@ -391,5 +431,6 @@ module.exports = {
   rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   getFp, setFp, delFp, allFp,
   addTombstone, allTombstones, delTombstone, pruneTombstones,
+  cardsSince, savedSince, tombstonesSince,
   serializeLibrary,
 };
