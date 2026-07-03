@@ -97,8 +97,9 @@ t("Stumble refill is bounded and reports a partially filled 2/4-card deal", () =
     "first non-empty batch returns immediately instead of waiting to fill all four slots");
   const next = html.slice(html.indexOf("async function stumbleNext("), html.indexOf("\n}", html.indexOf("async function stumbleNext(")) + 2);
   assert.ok(next.indexOf("stDeal.length < need") >= 0, "partial deals show the not-enough-live-ideas message");
-  const refill = html.slice(html.indexOf("async function stumbleRefill("), html.indexOf("\n}", html.indexOf("async function stumbleRefill(")) + 2);
-  assert.ok(refill.indexOf("stumbleNext(true)") >= 0, "header New ideas forces a fresh spool refill");
+  // The redundant header "New ideas" button (stumbleRefill) was removed in v1.12.1;
+  // the on-surface 🎲 Stumble button (stumbleNext) is the only refill trigger now.
+  assert.ok(html.indexOf("function stumbleRefill(") < 0, "the redundant header refill button/handler is gone");
 });
 
 t("Feed runtime surface is removed, including inline handlers", () => {

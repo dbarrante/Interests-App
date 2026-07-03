@@ -3,6 +3,10 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.1 — Stumble polish (ext 4.50)
+- Browser 👍/👎 votes now carry the stumbled page's **category** (from the stumble result) so the app's learning is category-weighted, not title-only. Falls back to title-only if the page navigated away from the stumbled URL.
+- Removed the redundant header **⟳ New ideas** button — the on-surface **🎲 Stumble** button already deals a fresh set; cleaned up its dead helpers (`stumbleRefill`, `syncRefillBtn`) and updated the Help text.
+
 ## v1.12.0 — Browser Stumble (StumbleUpon-style)
 - Left-click the extension icon (ext 4.49) to stumble one fresh, app-validated page in a single reused browser tab.
 - On-page overlay: 👍 / 👎 / ★ Save / Stumble ⟳. 👍→liked, 👎→not-for-me feed the app's discovery AI; Save clips to Interests.

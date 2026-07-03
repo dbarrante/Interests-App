@@ -75,6 +75,7 @@ async function findAppPort() {
 // pipeline (via the /api/bstumble/* mailboxes); the extension never validates.
 const BSTUMBLE_BUFFER_KEY = "ia_bstumble_buffer";   // session-local queue of pages to open
 const BSTUMBLE_TAB_KEY = "ia_bstumble_tabid";       // the reused tab's id
+const BSTUMBLE_CURRENT_KEY = "ia_bstumble_current"; // the item now showing {url,title,category} — carries category into votes
 
 async function bstumbleGetSelectedInterests() {
   try { const s = await chrome.storage.local.get("ia_bstumble_interests"); return Array.isArray(s.ia_bstumble_interests) ? s.ia_bstumble_interests : []; }
@@ -134,6 +135,9 @@ async function bstumbleGo() {
   if (!buf.length) { notify("bstumble-" + Date.now(), "Stumble", "Finding you something… click again in a moment."); return; }
   const next = buf.shift();
   await bstumbleWriteBuffer(buf);
+  // Remember the item now showing so a vote can carry its category (the AI only
+  // knows the category from the stumble result — the tab itself can't tell us).
+  try { await chrome.storage.session.set({ [BSTUMBLE_CURRENT_KEY]: next || null }); } catch (e) {}
   if (next && next.url) await bstumbleOpen(next.url);
   if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
 }
@@ -146,7 +150,12 @@ async function bstumbleSendVote(vote) {
   let url = "", title = "";
   try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const t = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (t) { url = t.url || ""; title = t.title || ""; } } catch (e) {}
   if (!url) return;
-  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url, title, vote } }) }); } catch (e) {}
+  // Carry the stumbled page's category (only known from the stumble result) so the
+  // app's learning is category-weighted, not title-only. Use it only when the stored
+  // current item is the page actually showing (guards against a manual navigation).
+  let category = "";
+  try { const c = (await chrome.storage.session.get(BSTUMBLE_CURRENT_KEY))[BSTUMBLE_CURRENT_KEY]; if (c && c.url === url) { category = c.category || ""; if (c.title) title = title || c.title; } } catch (e) {}
+  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url, title, category, vote } }) }); } catch (e) {}
 }
 
 // Push every queued capture (taken while the app was closed) once it's reachable.
