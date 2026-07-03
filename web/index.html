@@ -3300,7 +3300,7 @@ async function startBatchCapture(mode, onlyIds){
   try{
     for(let i=0; i<items.length && !_capStop; i+=25){
       const chunk=items.slice(i, i+25);
-      toast(`Capturing… ${batchUI.done}/${items.length} — tap to stop`, 60000, ()=>{ _capStop=true; });
+      toast(`Capturing… ${batchUI.done}/${items.length} — tap to stop`, 60000, ()=>{ _capStop=true; _getpicAbort=true; });
       let results=[];
       try{ results = await Store.captureMeta(chunk); }
       catch(e){ console.warn("capture-meta chunk failed", e); continue; }
@@ -3451,6 +3451,7 @@ function scheduleFbAutoNext(){
 function cancelBatchCapture(){
   // tell the driver to stop, clear state/progress, and revert the button now
   try{ Store.setBatchState({active:false, cancel:true}); Store.setBatchProgress(null); }catch(e){}
+  _capStop=true; _getpicAbort=true;   // abort the whole Get-pictures sequence, not just the current stage
   _batchIgnoreUntil = Date.now()+8000;
   batchUI={active:false, done:batchUI.done, total:batchUI.total};
   toast("Capture run stopped"); renderImportedKeepFocus();
