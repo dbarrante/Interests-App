@@ -153,7 +153,7 @@ work (see Open Items).
   peer acks what it's seen). Not designed yet; tombstones stay forever until this
   lands.
 
-## 5. Write path — use PATCH/DELETE + Dropbox, not the full-array PUT
+## 5. Write path — Dropbox snapshots, never the full-array PUT
 
 **The phone must never call `PUT /api/cards` or `PUT /api/saved`.** Those full-array
 endpoints exist for the single desktop renderer and carry `asOf`/mass-delete-guard
