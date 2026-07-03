@@ -584,6 +584,7 @@ let CATS = [];
 function rebuildCats(){
   CATS = BASE_CATS.concat((S.extraCats||[]).map(c=>({key:c.key, name:c.name, chip:c.color, custom:true})));
   CATS.forEach(c=>{ if(S.weights[c.key]==null) S.weights[c.key]=5; });
+  try{ if(typeof Store!=="undefined" && Store.kvSet) Store.kvSet("ia_bstumble_cats", CATS.map(c=>({key:c.key, name:c.name}))); }catch(e){}
 }
 function catGrad(cat){ return GRADS[cat.key] || (cat.chip+","+cat.chip); }
 const PROVIDERS = {
@@ -4441,6 +4442,50 @@ async function bootData(){
 bootData();
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
+/* ===== Browser Stumble: drain the extension's mailboxes ===== */
+// One AI fetch per pending request; votes feed the same likes/hidden signals
+// buildPrompt already reads, so the next stumble weights them. Renderer-owned
+// writes only (persistAll is asOf-safe); the extension never writes app data.
+async function stumbleForInterests(interestKeys){
+  if(!IA_AI.hasAIKey()) return [];
+  try{
+    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble", interestKeys),{webSearch:true})))));
+    items.forEach(i=>{ i.id="bs_"+i.id; shown.push(i.url); });
+    if(shown.length>200) shown=shown.slice(-200);
+    persistAll();
+    return items.map(i=>({ url:i.url, title:i.title, category:i.category, image:i.image, liveCheckedAt:i.liveCheckedAt }));
+  }catch(e){ console.warn("browser stumble failed:", e && e.message); return []; }
+}
+let _bstumbleBusy = false;
+async function pollBrowserStumble(){
+  if(!_booted || _bstumbleBusy) return;
+  _bstumbleBusy = true;
+  try{
+    // 1) feedback → learning signals
+    let fb = [];
+    try{ fb = (await Store.drainBrowserStumbleFeedback()) || []; }catch(e){}
+    if(fb.length){
+      fb.forEach(v=>{
+        if(!v || !v.url) return;
+        const entry = { title: v.title || v.url, category: v.category || "", ts: Date.now() };
+        if(v.vote > 0) likes.push(entry);
+        else if(v.vote < 0) hidden.push(entry);
+        shown.push(v.url);   // never re-serve a page the user already rated
+      });
+      if(shown.length>200) shown=shown.slice(-200);
+      persistAll();
+    }
+    // 2) request → interest-scoped discovery → results
+    let req = null;
+    try{ req = await Store.getBrowserStumbleRequest(); }catch(e){}
+    if(req && req.nonce){
+      await Store.clearBrowserStumbleRequest();
+      const items = await stumbleForInterests(Array.isArray(req.interests) ? req.interests : []);
+      if(items.length){ try{ await Store.deliverBrowserStumbleResults(items); }catch(e){} }
+    }
+  } finally { _bstumbleBusy = false; }
+}
+setInterval(pollBrowserStumble, 3000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ drainCaptures(); } });   // returning from the browser: ingest + refresh now
 // Renderer-global safety net for the many fire-and-forget Store.putCards/putSaved call sites (review B5).
 // After Task 4, a legit bulk shrink (e.g. a large Groom sweep) can reject with `PUT /api/cards -> 409`;
