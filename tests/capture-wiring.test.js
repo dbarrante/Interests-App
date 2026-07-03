@@ -27,7 +27,9 @@ t("startBatchCapture stamps capReason and supports retry-clear + id subset", () 
 
 t("mark-done is durable: sets capDone and captureable excludes it", () => {
   assert.ok(html.indexOf("c.capDone=true") >= 0, "markFailDone sets capDone");
-  assert.ok(/function captureable\(i\)\{[^}]*!i\.capDone/.test(html), "captureable excludes capDone cards");
+  // captureable now lives in web/lib/capture-state.js (extracted in v1.9.0 T5).
+  const capState = fs.readFileSync(path.join(__dirname, "..", "web", "lib", "capture-state.js"), "utf8");
+  assert.ok(/function captureable\(i\)\s*\{[^}]*!i\.capDone/.test(capState), "captureable excludes capDone cards");
 });
 
 t("failed-capture triage is the Library-health 'Failed captures' tab and groups by reason with actions", () => {

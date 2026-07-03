@@ -30,5 +30,12 @@ total++;
 try { new Function(fs.readFileSync(urlkeyPath, "utf8")); }
 catch (x) { errors++; console.log("web/lib/urlkey.js: " + x.message); }
 
+for (const libFile of ["import-parsers.js", "capture-state.js"]) {
+  const p = path.join(__dirname, "..", "web", "lib", libFile);
+  total++;
+  try { new Function(fs.readFileSync(p, "utf8")); }
+  catch (x) { errors++; console.log("web/lib/" + libFile + ": " + x.message); }
+}
+
 console.log(i + " inline script block(s) + storage.js = " + total + " unit(s), " + errors + " error(s)");
 process.exit(errors ? 1 : 0);

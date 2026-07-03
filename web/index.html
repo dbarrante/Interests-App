@@ -328,6 +328,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
 <script src="lib/urlkey.js"></script>
+<script src="lib/import-parsers.js"></script>
+<script src="lib/capture-state.js"></script>
 <script src="restore-legacy.js"></script>
 <script src="deadcheck-ai.js"></script>
 <script src="profile-analyze.js"></script>
@@ -1560,170 +1562,18 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeGuide(); });
 
 /* ============ Facebook / Pinterest / YouTube import ============ */
 function fixTxt(s){ try{ return decodeURIComponent(escape(s)); }catch(e){ return s; } }
-function harvest(node, out, depth){
-  depth = depth||0; if(depth>12 || !node) return;
-  if(Array.isArray(node)){ node.forEach(n=>harvest(n,out,depth+1)); return; }
-  if(typeof node==="object"){
-    const title = typeof node.title==="string" ? node.title : (typeof node.name==="string" ? node.name : null);
-    const img = ["image","img","thumbnail"].map(k=>node[k]).find(v=>typeof v==="string" && /^https?:\/\//.test(v)) || null;
-    const desc = ["desc","description","details"].map(k=>node[k]).find(v=>typeof v==="string" && v.trim().length>10) || null;
-    let url = ["url","link","canonical","href"].map(k=>node[k]).find(v=>typeof v==="string" && /^https?:\/\//.test(v)) || null;
-    if(!url) for(const k in node){ const v=node[k]; if(typeof v==="string" && /^https?:\/\//.test(v) && v!==img){ url=v; break; } }
-    let ts=null;
-    for(const k of ["timestamp","time","date","created","created_time","createdAt","saved","saved_time","added","creation_time","pin_creation_time"]){ if(node[k]!=null){ const t=normTs(node[k]); if(t){ ts=t; break; } } }
-    if(title && title.trim().length>5 && title.length<400 && !/^https?:\/\//i.test(title.trim())) out.push({title:title.trim(), url, img, desc, ts});
-    for(const k in node) harvest(node[k], out, depth+1);
-  }
-}
-function splitCsv(line){
-  const out=[]; let cur="", q=false;
-  for(let i=0;i<line.length;i++){
-    const ch=line[i];
-    if(ch==='"'){ q=!q; continue; }
-    if(ch===','&&!q){ out.push(cur); cur=""; continue; }
-    cur+=ch;
-  }
-  out.push(cur); return out.map(s=>s.trim());
-}
-function parseCSV(text){
-  const items=[], ids=[];
-  const lines=(text||"").split(/\r?\n/).filter(l=>l.trim());
-  if(lines.length<2) return {items, ids};
-  const head=splitCsv(lines[0]).map(h=>h.toLowerCase());
-  const tIdx=head.findIndex(h=>h.includes("channel title"));
-  const vIdx=head.findIndex(h=>h.includes("video id"));
-  lines.slice(1).forEach(l=>{
-    const cols=splitCsv(l);
-    if(tIdx>-1 && cols[tIdx] && cols[tIdx].length>2){ items.push({title:"YouTube channel: "+cols[tIdx]}); }
-    else if(vIdx>-1 && /^[\w-]{8,16}$/.test(cols[vIdx]||"")){ ids.push(cols[vIdx]); }
-    else if(tIdx===-1 && vIdx===-1){
-      const t=cols.find(c=>c && c.length>10 && !/^https?:/.test(c));
-      const u=cols.find(c=>/^https?:\/\//.test(c));
-      if(t) items.push({title:t, url:u||null});
-    }
-  });
-  return {items, ids};
-}
-function parsePinterestSAR(text){
-  const items=[];
-  const parts = text.split(/<a href="(https:\/\/www\.pinterest\.com\/pin\/\d+\/)">/);
-  const decode = s=>{ const d=document.createElement("textarea"); d.innerHTML=s; return d.value; };
-  for(let i=1; i<parts.length; i+=2){
-    const pinUrl=parts[i], body=parts[i+1].slice(0,4000);
-    const fld = n=>{
-      const m=body.match(new RegExp(n+":\\s*([\\s\\S]*?)\\s*<br>"));
-      if(!m) return null;
-      const v=decode(m[1].replace(/<[^>]+>/g,"")).trim();
-      return (v==="No data"||!v)?null:v;
-    };
-    if(fld("Alive")==="No") continue;
-    const title=fld("Title"), details=fld("Details"), alt=fld("Alt Text"), img=fld("Image");
-    const canon=(body.match(/Canonical Link:\s*<a href="([^"]+)"/)||[])[1]||null;
-    const t = title || (details?details.slice(0,120):null) || alt;
-    if(!t || t.length<6) continue;
-    const it={title:t, url:canon||pinUrl, src:"pinterest"};
-    if(details && details!==t) it.desc=details;
-    if(img && /^[0-9a-f]{32}$/.test(img)) it.img=`https://i.pinimg.com/564x/${img.slice(0,2)}/${img.slice(2,4)}/${img.slice(4,6)}/${img}.jpg`;
-    items.push(it);
-  }
-  return items;
-}
-function fbDeepName(o){
-  if(Array.isArray(o)){ for(const v of o){ const r=fbDeepName(v); if(r) return r; } return null; }
-  if(o && typeof o==="object"){
-    if(o.label==="Name") return o.value||null;
-    for(const k in o){ const r=fbDeepName(o[k]); if(r) return r; }
-  }
-  return null;
-}
-function fbExtractMedia(node, imgs){
-  if(!node || typeof node!=="object") return;
-  if(Array.isArray(node)){ node.forEach(n=>fbExtractMedia(n, imgs)); return; }
-  const uri=node.uri||node.url||node.src;
-  if(typeof uri==="string" && /^https?:\/\//.test(uri) && /\.(jpg|jpeg|png|gif|webp)/i.test(uri)) imgs.push(uri);
-  if(typeof uri==="string" && /scontent|fbcdn/.test(uri)) imgs.push(uri);
-  for(const k in node) fbExtractMedia(node[k], imgs);
-}
-function fbExtractText(entry){
-  const texts=[];
-  if(entry.data) (Array.isArray(entry.data)?entry.data:[entry.data]).forEach(d=>{
-    if(d.post) texts.push(d.post);
-    if(d.comment && d.comment.comment) texts.push(d.comment.comment);
-    if(d.text) texts.push(d.text);
-  });
-  if(entry.title && !/saved|shared|liked/i.test(entry.title)) texts.push(entry.title);
-  return texts.map(t=>fixTxt(String(t)).trim()).filter(t=>t.length>10).join(" · ").slice(0,220);
-}
-function parseFacebookJSON(p){
-  const items=[];
-  if(p && Array.isArray(p.saves_v2)){
-    p.saves_v2.forEach(e=>{
-      const imgs=[];
-      fbExtractMedia(e, imgs);
-      const postText=fbExtractText(e);
-      const ts=normTs(e.timestamp);              // original "date saved" (Unix seconds)
-      const before=items.length;
-      (e.attachments||[]).forEach(a=>(a.data||[]).forEach(d=>{
-        const ec=d.external_context;
-        if(ec && ec.name && ec.name.length>5){
-          const it={title:String(ec.name).trim()};
-          if(/^https?:/.test(ec.source||"")) it.url=ec.source;
-          if(imgs.length) it.img=imgs[0];
-          if(postText && postText.slice(0,80)!==it.title.slice(0,80)) it.desc=postText;
-          if(ts) it.ts=ts;
-          items.push(it);
-        }
-        if(d.event && d.event.name) items.push({title:"Event: "+d.event.name, ts:ts||undefined});
-      }));
-      if(items.length===before || !(e.attachments||[]).some(a=>(a.data||[]).some(d=>d.external_context))){
-        if(postText && postText.length>10){
-          const it={title:postText.slice(0,120)};
-          if(imgs.length) it.img=imgs[0];
-          if(postText.length>120) it.desc=postText;
-          if(ts) it.ts=ts;
-          items.push(it);
-        }
-      }
-    });
-    return items;
-  }
-  if(Array.isArray(p) && p.length && p[0] && Array.isArray(p[0].label_values)){
-    p.forEach(col=>{
-      let cname="";
-      (col.label_values||[]).forEach(lv=>{ if(lv.label==="Title") cname=lv.value||""; });
-      (col.label_values||[]).forEach(lv=>{
-        if(lv.title!=="Saves" || !Array.isArray(lv.dict)) return;
-        lv.dict.forEach(item=>{
-          let url=null, f={}, group=null, author=null, img=null, ts=normTs(item.timestamp);
-          (item.dict||[]).forEach(ent=>{
-            if(ent.label==="URL" && /^https?:/.test(ent.value||"")) url=ent.value;
-            else if(["Name","Title","Description","Message"].includes(ent.label)) f[ent.label]=ent.value||"";
-            else if(ent.label==="Photo" || ent.label==="Image" || ent.label==="Thumbnail"){
-              if(/^https?:/.test(ent.value||"")) img=ent.value;
-            }
-            else if(/^(date|time|saved|created|timestamp)$/i.test(ent.label||"")){ const t=normTs(ent.value||ent.timestamp); if(t) ts=t; }
-            else if(ent.timestamp && !ts){ const t=normTs(ent.timestamp); if(t) ts=t; }
-            else if(ent.title==="Group") group=fbDeepName(ent);
-            else if(ent.title==="Author") author=fbDeepName(ent);
-            else if(!img){ const is=[]; fbExtractMedia(ent, is); if(is.length) img=is[0]; }
-          });
-          if(!url) return;
-          let title=f.Title||f.Name||(f.Message||"").slice(0,120)||(f.Description||"").slice(0,120);
-          if(!title || title.length<6) title=(group?group+" post":"Facebook post")+(author?" by "+author:"");
-          const it={title:title.trim(), url};
-          if(img) it.img=img;
-          if(ts) it.ts=ts;
-          const desc=f.Description||f.Message;
-          if(desc && desc.trim() && desc.slice(0,120)!==title.slice(0,120)) it.desc=desc.trim();
-          else if(group) it.desc="Saved from "+group+(cname?" · "+cname:"");
-          else if(cname) it.desc="From your '"+cname+"' Facebook collection";
-          items.push(it);
-        });
-      });
-    });
-  }
-  return items;
-}
+// Give web/lib/import-parsers.js its host helpers: the mojibake fixer + a DOM
+// entity decoder (parsePinterestSAR needs it; the module stays DOM-free itself).
+if(typeof IA_IMPORT!=="undefined") IA_IMPORT.configure({
+  fixTxt,
+  decode: s=>{ const d=document.createElement("textarea"); d.innerHTML=s; return d.value; }
+});
+// parseFacebookJSON, parsePinterestSAR, parseCSV, harvest, clean, normTs and the
+// FB helpers (fbDeepName/fbExtractMedia/fbExtractText) moved to
+// web/lib/import-parsers.js (root-attached bare names; IA_IMPORT.configure gives
+// it fixTxt + a DOM decode at boot). parseCSV now uses the doubled-quote-correct
+// splitCsvLine (old inline splitCsv is gone — YouTube CSV titles with quotes
+// import intact). parseImportText stays here (it touches DOMParser/parseGoogleSaved).
 function parseImportText(text, name){
   if(/\.csv$/i.test(name||"")) {
     const g=(typeof parseGoogleSaved==="function") ? parseGoogleSaved(text) : [];
@@ -1761,23 +1611,7 @@ function parseImportText(text, name){
   }
   return {items: out.map(clean), ids: []};
 }
-// normalize a timestamp (Unix seconds/ms or a date string) to ms, or null
-function normTs(v){
-  if(v==null||v==="") return null;
-  let n = typeof v==="number" ? v : (Date.parse(v) || Number(v));
-  if(!n || isNaN(n)) return null;
-  if(n < 1e12) n *= 1000;                       // seconds -> ms
-  if(n < 9.46e11 || n > 4.1e12) return null;    // sanity: ~2000..2100
-  return n;
-}
-function clean(i){
-  let title=fixTxt(i.title).replace(/^Watched\s+/,"").trim();
-  const o={title:title.slice(0,250), url:i.url||null, ts:Date.now()};
-  const sd=normTs(i.ts); if(sd) o.sdate=sd;   // real "date saved" from the export (only when known)
-  if(i.img) o.img=i.img;
-  if(i.desc) o.desc=fixTxt(i.desc).trim().slice(0,220);
-  return o;
-}
+// normTs + clean moved to web/lib/import-parsers.js (root-attached bare names).
 async function resolveYT(ids){
   ids=[...new Set(ids)].slice(0,60);
   const out=[];
@@ -1830,42 +1664,13 @@ async function handleImport(ev){
 // Dedup `found` items into `imported` cards (shared by file-import + bookmark-import).
 // Enriches existing (image/desc/url/sdate), appends new, never deletes. Returns {added,updated}.
 function ingestImported(found){
-  const byTitle = new Map(imported.map((it,i)=>[it.title.toLowerCase(), i]));
-  // Map URL -> real index in `imported` (filter().map() would store the FILTERED
-  // index and point matches at the wrong card when any earlier card has no url).
-  const byUrl = new Map(); imported.forEach((it,i)=>{ if(it.url) byUrl.set(it.url, i); });
-  const junk = /^(like|comment|share|save|home|menu|profile|settings|see more|watch|reels?|marketplace|groups?|notifications?)$/i;
-  let added=0, updated=0;
-  const seenThis = new Set();
-  found.forEach(i=>{
-    if(!i || !i.title) return;
-    const k=i.title.toLowerCase();
-    if(junk.test(k) || /^https?:\/\//i.test(i.title)) return;
-    // Identity = the URL when the item has one (so two distinct posts that share a
-    // caption/title each survive), else the title. Prevents same-account/same-caption
-    // collapse (e.g. Instagram) while still deduping true repeats by URL.
-    const dk = i.url || ("t:"+k);
-    if(seenThis.has(dk)) return;
-    seenThis.add(dk);
-    const existIdx = i.url ? (byUrl.has(i.url) ? byUrl.get(i.url) : -1)
-                           : (byTitle.has(k) ? byTitle.get(k) : -1);
-    if(existIdx>=0){
-      const ex=imported[existIdx]; let changed=false;
-      if(i.img && !ex.img){ ex.img=i.img; changed=true; }
-      if(i.desc && (!ex.desc || ex.desc.startsWith("Saved from") || ex.desc.startsWith("From your"))){ ex.desc=i.desc; changed=true; }
-      if(i.url && !ex.url){ ex.url=i.url; changed=true; }
-      // backfill the real saved date from the export (only when the export has one)
-      const sd=normTs(i.sdate); if(sd && ex.sdate!==sd){ ex.sdate=sd; changed=true; }
-      if(changed) updated++;
-    } else {
-      if(!i.id) i.id=newId();   // every card needs a stable id — the DB id is a PRIMARY KEY;
-                                // an id-less card makes the Core's replaceCards throw and roll
-                                // back the WHOLE import (it persisted nothing until this).
-      imported.push(i); added++;
-      byTitle.set(k, imported.length-1);
-      if(i.url) byUrl.set(i.url, imported.length-1);
-    }
-  });
+  // Pure decision (which items are new vs enrich an existing card) lives in
+  // web/lib/import-parsers.js (dedupeImported). Here we apply its plan: the
+  // impure half — mutating `imported`, persisting via Store, toasting.
+  const plan = dedupeImported(found, imported, {newId});
+  plan.enrich.forEach(e=>{ Object.assign(imported[e.idx], e.patch); });   // img/desc/url/sdate backfill
+  plan.append.forEach(c=>{ imported.push(c); });                          // ids already stamped by the core
+  const added=plan.added, updated=plan.updated;
   imported = imported.slice(-10000);
   Store.putCards(imported); renderImportStatus();
   const parts=[];
@@ -2000,7 +1805,7 @@ function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; _refreshPins.clear();
 // the ones automated og-fetch couldn't get (restricted/login-gated). Open each and
 // use the extension's "Save to Interests" to grab it manually.
 let impFbMiss = false;
-function fbMiss(it){ return it && it.url && /facebook\.com|fb\.watch/i.test(it.url) && isBadImg(it.img||"") && (it.lastResult==="fail" || it.lastUpdate || it.captured); }
+// fbMiss moved to web/lib/capture-state.js (root-attached bare name).
 function toggleFbMiss(){ impFbMiss=!impFbMiss; if(impFbMiss) impBatchIds=null; _refreshPins.clear(); renderImported(); }
 // keep the sticky source bar (#catBar) + imported toolbar (.imp-sticky) parked
 // right below the sticky header, accounting for their live heights.
@@ -3164,13 +2969,9 @@ let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress brief
 // a card worth auto-capturing: has a link, no real image, not blocked, not a
 // Facebook permalink, AND not already attempted (so the batch never re-does a
 // card unless you explicitly retry it)
-function captureable(i){ return i.url && !i.capDone && isBadImg(i.img||"") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
-function needsCapture(i){ return captureable(i) && !i.lastUpdate && !i.captured; }   // never tried
-function needsRetry(i){ return captureable(i) && (i.lastUpdate || i.captured); }      // tried but still no image (fail/blocked-cleared/lost result)
-// Facebook posts can't be captured by web proxies (login wall) — they're grabbed
-// via the extension on the real, logged-in page. Mirror of needsCapture, FB-only.
-function captureableFb(i){ return i.url && !i.capDone && isBadImg(i.img||"") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
-function needsFbCapture(i){ return captureableFb(i) && !i.lastUpdate && !i.captured; }
+// captureable/needsCapture/needsRetry/captureableFb/needsFbCapture moved to
+// web/lib/capture-state.js (root-attached bare names). captureable still excludes
+// capDone cards; FB variants are the login-walled mirror grabbed via the extension.
 // Apply one Store.captureMeta result to a card (shared by startBatchCapture and
 // fetchSelectedInfo so the mapping never drifts). Fills image (idb ref or og:image
 // URL), title (only over a blank/domain title), and description → .desc (NOT
@@ -3759,8 +3560,7 @@ function removeCards(ids, opts){
 // a bare site favicon / tab-icon masquerading as a card image — it's a tiny
 // placeholder, not a real thumbnail, so we treat it as "no image" and let the
 // extension capture a proper screenshot.
-function isFavicon(u){ return !!u && /favicon|apple-touch-icon|icons\.duckduckgo\.com\/ip3|\/s2\/favicons/i.test(u); }
-function isBadImg(u){ return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
+// isFavicon + isBadImg moved to web/lib/capture-state.js (root-attached bare names).
 // Fuzzy title key for duplicate detection. Returns "" for titles too short/generic
 // to group on safely (such a card can still match by link, just not by title).
 function normTitle(t){
