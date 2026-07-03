@@ -25,5 +25,10 @@ total++;
 try { new Function(fs.readFileSync(aiPath, "utf8")); }
 catch (x) { errors++; console.log("web/ai.js: " + x.message); }
 
+const urlkeyPath = path.join(__dirname, "..", "web", "lib", "urlkey.js");
+total++;
+try { new Function(fs.readFileSync(urlkeyPath, "utf8")); }
+catch (x) { errors++; console.log("web/lib/urlkey.js: " + x.message); }
+
 console.log(i + " inline script block(s) + storage.js = " + total + " unit(s), " + errors + " error(s)");
 process.exit(errors ? 1 : 0);

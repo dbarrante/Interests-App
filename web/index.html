@@ -327,6 +327,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script src="ai.js"></script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
+<script src="lib/urlkey.js"></script>
 <script src="restore-legacy.js"></script>
 <script src="deadcheck-ai.js"></script>
 <script src="profile-analyze.js"></script>
@@ -1316,13 +1317,13 @@ const parseJsonArray = (text) => IA_AI.parseJsonArray(text);
 IA_AI.configure(() => S);
 
 /* ============ response parsing & validation ============ */
-function urlKey(u){ return (u||"").toLowerCase().replace(/^https?:\/\/(www\.)?/,"").replace(/\/+$/,""); }
+// urlKey/normalizeUrl/dupeUrlKey/clipKey moved to web/lib/urlkey.js as feedKey/normUrl/dupeKey/clipKey.
 function titleKey(t){ return (t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
 function dropAlreadySaved(items){
-  const haveU = new Set(saved.map(s=>urlKey(s.url)));
+  const haveU = new Set(saved.map(s=>feedKey(s.url)));
   const haveT = saved.map(s=>titleKey(s.title)).filter(t=>t.length>10);
   return items.filter(i=>{
-    if(haveU.has(urlKey(i.url))) return false;
+    if(haveU.has(feedKey(i.url))) return false;
     const t = titleKey(i.title);
     return !haveT.some(h=>h===t || (t.length>12 && h.includes(t)) || (h.length>12 && t.includes(h)));
   });
@@ -2798,11 +2799,11 @@ function openUrlsInTabs(urls, opts){
   opts = opts || {};
   const skip = opts.skip || null;
   const seen=new Set(), distinct=[];
-  for(const u of (urls||[])){ if(!u) continue; const k=normalizeUrl(u); if(seen.has(k)) continue; seen.add(k); distinct.push(u); }
+  for(const u of (urls||[])){ if(!u) continue; const k=normUrl(u); if(seen.has(k)) continue; seen.add(k); distinct.push(u); }
   const httpUrls = distinct.filter(u=>/^https?:\/\//i.test(u));
   const unsafe = distinct.length - httpUrls.length;
   const note = unsafe ? " ("+unsafe+" non-web link"+(unsafe===1?"":"s")+" skipped)" : "";
-  const toOpen = skip ? httpUrls.filter(u=>!skip.has(normalizeUrl(u))) : httpUrls;
+  const toOpen = skip ? httpUrls.filter(u=>!skip.has(normUrl(u))) : httpUrls;
   if(!toOpen.length){
     if(unsafe && !httpUrls.length) toast("Those links can't be opened in a tab (not http/https).");
     else if(skip && httpUrls.length) toast("Already opened the selected link"+(httpUrls.length===1?"":"s")+" this session — click Done, then Select again to reopen."+note, 7000);
@@ -2812,7 +2813,7 @@ function openUrlsInTabs(urls, opts){
   // opening a lot of tabs at once can choke the browser / trip the pop-up blocker — confirm past a sane number
   if(toOpen.length>25 && !confirm("Open all "+toOpen.length+" links in new tabs?\n\nYour browser may block the pop-ups or slow down. If they don't all appear, allow pop-ups for this site and try again.")) return 0;
   let opened=0, blocked=0;
-  for(const u of toOpen){ let w=null; try{ w=window.open(u,"_blank"); }catch(e){} if(w){ try{ w.opener=null; }catch(e){} if(skip) skip.add(normalizeUrl(u)); opened++; } else blocked++; }
+  for(const u of toOpen){ let w=null; try{ w=window.open(u,"_blank"); }catch(e){} if(w){ try{ w.opener=null; }catch(e){} if(skip) skip.add(normUrl(u)); opened++; } else blocked++; }
   if(blocked && !opened){
     toast("Your browser blocked the pop-ups. Click the blocked-pop-up icon in the address bar, allow pop-ups for this site, then click Open again."+note, 9000);
   } else if(blocked){
@@ -3760,15 +3761,6 @@ function removeCards(ids, opts){
 // extension capture a proper screenshot.
 function isFavicon(u){ return !!u && /favicon|apple-touch-icon|icons\.duckduckgo\.com\/ip3|\/s2\/favicons/i.test(u); }
 function isBadImg(u){ return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
-function normalizeUrl(url){
-  try{
-    // decode Facebook redirect wrappers (l.facebook.com/l.php?u=…)
-    let m = /[?&]u=([^&]+)/.exec(url);
-    if(/l\.facebook\.com|lm\.facebook\.com/.test(url) && m){ url = decodeURIComponent(m[1]); }
-    const u=new URL(url); return (u.hostname.replace(/^www\./,"")+u.pathname).replace(/\/$/,"").toLowerCase();
-  }
-  catch(e){ return url.toLowerCase(); }
-}
 // Fuzzy title key for duplicate detection. Returns "" for titles too short/generic
 // to group on safely (such a card can still match by link, just not by title).
 function normTitle(t){
@@ -3804,17 +3796,6 @@ function dupePrimary(members){
     if (sc > bestScore || (sc === bestScore && older)) { best = members[k]; bestScore = sc; }
   }
   return best;
-}
-// Duplicate URL key: normalized host+path PLUS the identifying query param when the
-// id lives in the query (YouTube ?v=, FB ?v=/?story_fbid=/?fbid=, generic ?id=) —
-// otherwise normalizeUrl would collapse e.g. all youtube.com/watch?v=… into one group.
-function dupeUrlKey(url){
-  try{
-    const u = new URL(url);
-    const base = (u.hostname.replace(/^www\./,"") + u.pathname).replace(/\/$/,"").toLowerCase();
-    const id = u.searchParams.get("v") || u.searchParams.get("story_fbid") || u.searchParams.get("fbid") || u.searchParams.get("id") || "";
-    return id ? base + "?" + id : base;
-  }catch(e){ return (url||"").toLowerCase(); }
 }
 /* ============ Library health modal (review D2) ============
    ONE tabbed modal (Duplicates | Dead & unsafe | Failed captures | No link)
@@ -3980,7 +3961,7 @@ function scanDuplicates(){
   const byUrl = {}, byTitle = {};
   members.forEach((m,i)=>{
     const it = m.card;
-    if (it.url){ const k="u:"+dupeUrlKey(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
+    if (it.url){ const k="u:"+dupeKey(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
     const t = normTitle(it.title);
     if (t){ const k="t:"+t; if(byTitle[k]!=null) union(byTitle[k], i); else byTitle[k]=i; }
   });
@@ -4245,14 +4226,14 @@ async function drainCaptures(){
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
     if(!cap.url){ continue; }
-    const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl, domain, recapTarget:_recapTarget });
+    const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl:normUrl, domain, recapTarget:_recapTarget });
     console.log("[route] " + cap.url + " -> " + decision.action + " (" + decision.reason + ")");
 
     if(decision.action === "dead"){
       // remove the matching (or last-opened) card — existing dead-removal logic
       let di = cap.id ? imported.findIndex(it=>it.id===cap.id) : -1;
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url===cap.url);
-      if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normalizeUrl(it.url)===normalizeUrl(cap.url));
+      if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normUrl(it.url)===normUrl(cap.url));
       if(di<0 && cap.removeActive){ let lo=null; try{ lo=await Store.kvGet("ia_last_opened"); }catch(e){} if(lo&&lo.id) di=imported.findIndex(it=>it.id===lo.id); }
       if(di>=0){ const removed=imported.splice(di,1)[0]; _deadUndo=removed; removedDead++; changed=true;
         console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")"); }
@@ -4266,7 +4247,7 @@ async function drainCaptures(){
 
     if(decision.action === "unmatched" || decision.action === "skip"){
       unmatched++;
-      console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normalizeUrl(cap.url)+")");
+      console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normUrl(cap.url)+")");
       // keep briefly in case the item shows up, then drop
       if(!cap.ts || now-cap.ts < CAP_TTL_MS) remaining.push(cap);
       continue;
@@ -4370,19 +4351,7 @@ function setClipImageInline(item, dataUrl){
     if(curTab==="saved") renderSaved();
   });
 }
-// dedupe key for a clip: normalized URL, but for Facebook post identity lives in
-// the query (?story_fbid / ?v / ?fbid) which normalizeUrl strips — fold it in so
-// distinct /watch, /permalink.php, /photo.php posts don't collapse into one card.
-function clipKey(u){
-  const base=normalizeUrl(u||"");
-  try{ const q=new URL(u);
-    if(/facebook\.com|fb\.watch/i.test(q.hostname)){ const id=q.searchParams.get("story_fbid")||q.searchParams.get("v")||q.searchParams.get("fbid"); if(id) return base+"?"+id; }
-    // YouTube's video id lives in ?v= (/watch) or the /shorts/<id> path (or youtu.be/<id>),
-    // which normalizeUrl strips — fold it in so distinct videos don't collapse into one card.
-    if(/youtube\.com|youtu\.be/i.test(q.hostname)){ const id=q.searchParams.get("v") || (/\/shorts\/([^/?#]+)/.exec(q.pathname)||[])[1] || (/youtu\.be\/([^/?#]+)/.exec(u)||[])[1]; if(id) return base+"?"+id; }
-  }catch(e){}
-  return base;
-}
+// clipKey moved to web/lib/urlkey.js (dedupe key for a clip; FB/YouTube id folded in).
 // Extract an Instagram post shortcode from a /p|reel|reels|tv/<code> permalink (else ""). Lets a
 // freshly-captured IG post be matched to a failed imported card regardless of /p vs /reel(s) form.
 function igShortcode(url){
@@ -4416,7 +4385,7 @@ function dedupClipUrl(nu){
 }
 // "Clip this page": create (or update) a Saved card from an extension clip.
 function addClip(cap){
-  const nu=normalizeUrl(cap.url||"");
+  const nu=normUrl(cap.url||"");
   // Dedup a re-captured page against existing Saved cards. Path URLs and bare homepages dedup; bare
   // social-feed domains (e.g. "facebook.com") do NOT — distinct no-permalink feed posts must stay
   // separate. (Fixes homepage re-captures duplicating into new cards; see dedupClipUrl.)
