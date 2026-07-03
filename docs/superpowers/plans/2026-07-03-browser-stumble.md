@@ -106,7 +106,8 @@ function jpost(base, route, body) {
   await run("categories: empty by default, then reflects ia_bstumble_cats KV", async () => {
     let j = await jget(base, "/api/categories");
     assert.deepStrictEqual(j.categories, []);
-    await jpost(base, "/api/kv/ia_bstumble_cats", { value: JSON.stringify([{ key: "work", name: "Work initiatives" }]) });
+    // Seed the KV via PUT — /api/kv/:key supports GET/PUT only (no POST).
+    await fetch(base + "/api/kv/ia_bstumble_cats", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: JSON.stringify([{ key: "work", name: "Work initiatives" }]) }) });
     j = await jget(base, "/api/categories");
     assert.strictEqual(j.categories[0].key, "work");
   });
