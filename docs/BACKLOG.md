@@ -3,6 +3,13 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.0 — Browser Stumble (StumbleUpon-style)
+- Left-click the extension icon (ext 4.49) to stumble one fresh, app-validated page in a single reused browser tab.
+- On-page overlay: 👍 / 👎 / ★ Save / Stumble ⟳. 👍→liked, 👎→not-for-me feed the app's discovery AI; Save clips to Interests.
+- Interests picker on the extension Options page (synced from the app's categories) scopes discovery.
+- New Core mailboxes (`/api/categories`, `/api/bstumble/request|results|feedback`) drained by the renderer; extension never writes app data directly. Strict live-page validation unchanged.
+- Extension left-click no longer opens the old popup; Clip stays on right-click "Save to Interests", new right-click "Remove from Interests".
+
 ## v1.11.2 Grounded + faster Stumble (2026-07-03)
 
 v1.11.1 correctly rejected dead pages but could return no cards and took too long. Live diagnosis
