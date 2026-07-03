@@ -1274,10 +1274,11 @@ async function saveSafeBrowsingKey(){
 }
 
 /* ============ prompt ============ */
-function buildPrompt(mode){
+function buildPrompt(mode, interestKeys){
   const stumble = mode==="stumble";
   const count = stumble ? Math.max(4,Math.min(6,stSize+2)) : S.itemCount + 3;
-  const active = CATS.filter(c=>S.weights[c.key]>0);
+  let active = CATS.filter(c=>S.weights[c.key]>0);
+  if(interestKeys && interestKeys.length){ const set=new Set(interestKeys); const picked=active.filter(c=>set.has(c.key)); if(picked.length) active=picked; }
   const catLines = active.map(c=>`- "${c.name}" (importance ${S.weights[c.key]}/10)`).join("\n");
   const recentSaves = saved.slice(0,stumble?8:20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
   const liked = likes.slice(stumble?-8:-20).map(l=>`- [${l.category}] ${l.title}`).join("\n") || "(none yet)";
