@@ -81,8 +81,45 @@ t("stumbleFetch validates items before they enter the spool (refreshFeed is gone
   const i = html.indexOf("async function stumbleFetch(");
   assert.ok(i >= 0, "stumbleFetch present");
   const body = html.slice(i, html.indexOf("\n}", i) + 2);
-  assert.ok(body.indexOf("validateItems(") >= 0, "stumbleFetch validates items before spooling");
-  assert.ok(body.indexOf("dropAlreadySaved(") >= 0, "stumbleFetch drops already-saved before spooling");
+  const drop = body.indexOf("dropAlreadySaved(");
+  const validate = body.indexOf("validateItems(");
+  const rank = body.indexOf("rankFilter(");
+  assert.ok(drop >= 0, "stumbleFetch drops already-saved before spooling");
+  assert.ok(rank >= 0 && rank < validate && validate < drop,
+    "nested pipeline evaluates dropAlreadySaved, then validateItems, then rankFilter");
+});
+
+t("Stumble refill is bounded and reports a partially filled 2/4-card deal", () => {
+  const ensure = html.slice(html.indexOf("async function ensureSpool("), html.indexOf("\n}", html.indexOf("async function ensureSpool(")) + 2);
+  assert.ok(ensure.indexOf("attempts < 2") >= 0, "refill attempts are capped at two");
+  const next = html.slice(html.indexOf("async function stumbleNext("), html.indexOf("\n}", html.indexOf("async function stumbleNext(")) + 2);
+  assert.ok(next.indexOf("stDeal.length < need") >= 0, "partial deals show the not-enough-live-ideas message");
+  const refill = html.slice(html.indexOf("async function stumbleRefill("), html.indexOf("\n}", html.indexOf("async function stumbleRefill(")) + 2);
+  assert.ok(refill.indexOf("stumbleNext(true)") >= 0, "header New ideas forces a fresh spool refill");
+});
+
+t("Feed runtime surface is removed, including inline handlers", () => {
+  assert.ok(html.indexOf('id="view-feed"') < 0, "Feed view is gone");
+  assert.ok(!/\blet\s+feed\b/.test(html), "feed global is gone");
+  assert.ok(!/onclick\s*=\s*["'][^"']*(?:renderFeed|refreshFeed)/.test(html), "no removed Feed handler remains");
+  assert.ok(html.indexOf('data-tab="feed"') < 0, "Feed tab is gone");
+});
+
+t("Stumble saves user actions before awaiting replacement work", () => {
+  ["stumbleVote", "stumbleSave"].forEach(name => {
+    const start = html.indexOf("function "+name+"(");
+    const body = html.slice(start, html.indexOf("\n}", start) + 2);
+    const persist = body.indexOf("persistAll()");
+    const refill = Math.max(body.indexOf("stumbleNext()"), body.indexOf("stumbleReplace(idx)"));
+    assert.ok(persist >= 0 && refill > persist, name+" persists before asynchronous replacement");
+  });
+});
+
+t("Stumble cards retain the v1.10.4 imageChain/noshot rendering path", () => {
+  const start = html.indexOf("function stCardHTML(");
+  const body = html.slice(start, html.indexOf("\n}", start) + 2);
+  assert.ok(body.indexOf("imageChain(it)") >= 0, "Stumble renders through imageChain");
+  assert.ok(body.indexOf("nextImg(") >= 0, "Stumble retains image fallback handling");
 });
 
 console.log(passed + " passed, " + failed + " failed");

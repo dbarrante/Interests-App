@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Interests">
 <link rel="manifest" href="manifest.webmanifest">
-<title>Interests — Your AI Discovery Feed</title>
+<title>Interests — Your AI Discovery</title>
 <style>
 /* ============ design tokens ============ */
 :root{
@@ -90,7 +90,7 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
 @media(max-width:820px){.m-g4{column-count:2}.m-g2{column-count:1}.m-detail{column-count:1}}
 @media(max-width:540px){.m-g4,.m-g2,.m-detail{column-count:1}.m-list .thumb{width:110px}}
 
-/* ============ feed cards ============ */
+/* ============ discovery cards ============ */
 .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:16px;break-inside:avoid;overflow:hidden;position:relative;transition:transform .15s}
 .card:hover{transform:translateY(-2px)}
 .thumb{display:block;width:100%;cursor:pointer;position:relative;background:#ddd8d0}
@@ -722,7 +722,7 @@ function setView(v){
   else if(curTab==="imported") renderImported();
 }
 function gridClass(){ return "masonry m-"+viewMode; }
-function showTab(t){
+function showTab(t, deferStumble){
   curTab = t;
   _refreshPins.clear();
   save("tab", t);
@@ -733,7 +733,7 @@ function showTab(t){
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
   if(t==="imported") renderImported();
-  if(t==="stumble"){ if(!stDeal.length) stumbleNext(); else renderStumble(); }
+  if(t==="stumble"){ if(!stDeal.length && !deferStumble) stumbleNext(); else renderStumble(); }
 }
 // Open the app's own URL (the local Core service origin, e.g. http://127.0.0.1:3456/) in the
 // user's default browser. Same live data — the browser tab talks to the same local service the
@@ -812,7 +812,7 @@ function imageChain(item){
   if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)|youtube\.com|youtu\.be/i.test(item.url)){
     // mshots only. thum.io was removed: its free tier now returns an "Image not authorized /
     // paid account" ERROR IMAGE with HTTP 200, which defeats the onerror fallback and showed
-    // that error as the card picture. Feed items now carry the page's real og:image (set by
+    // that error as the card picture. Discovery items now carry the page's real og:image (set by
     // validateItems from the tier-2 content check), so item.image above covers most cards.
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
   }
@@ -1189,7 +1189,7 @@ function renderSettings(){
   document.getElementById("provFields").innerHTML = `${localExtra}
     <label>${esc(p.keyName)}</label>
     <input type="password" id="apiKey" value="${esc(S.keys[S.provider])}" placeholder="${S.provider==="local"?"Leave blank for Ollama":"Paste your key…"}">
-    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for the feed.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). No web search, so feed links can occasionally be stale — great for Enrich.`:""}</div>
+    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for Stumble.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). No web search, so Stumble links can occasionally be stale — great for Enrich.`:""}</div>
     <label>Model</label>
     <input type="text" id="modelName" value="${esc(S.models[S.provider])}">
     <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"e.g. openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-001, meta-llama/llama-3.3-70b-instruct:free — see openrouter.ai/models.":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
@@ -1285,7 +1285,7 @@ function buildPrompt(mode){
   const avoid = saved.map(s=>s.url).concat(shown.slice(-80)).filter(Boolean).join("\n") || "(none)";
   return `${stumble
   ? `You are ${userName()}'s StumbleUpon. Use web search to find ${count} REAL, currently-accessible, delightful rabbit-hole pages matched to their interests: fascinating articles, interactive sites, niche tools, brilliant project writeups, weird-and-wonderful corners of the web. Favor serendipity and surprise over the obvious — things they would never have searched for but will love.`
-  : `You are a personal discovery engine for ${userName()}, like a smart Pinterest/Facebook feed but actually useful. Use web search to find REAL, currently-accessible web pages: articles, guides, project ideas, tools, videos, courses, initiatives, and thought pieces.`}
+  : `You are a personal discovery engine for ${userName()}, like a smart Pinterest/Facebook discovery stream but actually useful. Use web search to find REAL, currently-accessible web pages: articles, guides, project ideas, tools, videos, courses, initiatives, and thought pieces.`}
 
 ABOUT THE USER:
 ${S.about}
@@ -1359,27 +1359,27 @@ function parseItems(text){
     image: (i.image && /^https?:\/\//.test(String(i.image))) ? String(i.image) : null
   }));
 }
-// Drop CONFIRMED-dead links before showing them in the feed. Uses the app's OWN Core probe
+// Drop CONFIRMED-dead links before adding them to discovery. Uses the app's OWN Core probe
 // (Store.checkLinks -> /api/check-links): server-side (no CORS), SSRF-guarded, conservative —
 // 404/410/451 + DNS/connection failures = "dead"; social hosts = "skipped"; everything else =
 // "alive"/"unknown". We drop ONLY status==="dead", so a live page is never hidden and social/
 // unknown links are kept. (Replaces the old api.allorigins.win proxy check, which returned HTTP
 // 500 / was CORS-blocked from the app and FAILED OPEN — so every dead AI URL slipped through,
-// which is why the feed showed nothing but 404s.) Fails open ONLY if the whole check errors, so
-// a checker hiccup can't empty the feed.
+// which is why discovery once showed nothing but 404s.) Fails open ONLY if the whole check errors,
+// so a checker hiccup can't empty Stumble.
 async function validateItems(items){
   if(!items.length) return items;
   // Tier 1 — HTTP status (Store.checkLinks): drops only CONFIRMED-dead (404/410/451 + DNS fails).
   let results;
   try{ results = await Store.checkLinks(items.map(i=>({ id:i.id, url:i.url }))); }
-  catch(e){ console.warn("Feed link check unavailable — showing unverified", e); return items; }
+  catch(e){ console.warn("Discovery link check unavailable — showing unverified", e); return items; }
   const dead = new Set((results||[]).filter(r=>r && r.status==="dead").map(r=>r.id));
   let live = items.filter(i=>!dead.has(i.id));
   // Tier 2 — page content (Store.checkContent): catches SOFT-404s — pages that answer HTTP 200
   // but whose body says "page not found" / "no longer available", or a deep link that redirects to
-  // the site homepage. Tier 1 passes these as alive, so without this the feed shows a live
+  // the site homepage. Tier 1 passes these as alive, so without this Stumble shows a live
   // mshots/thum.io SCREENSHOT of the not-found page (a "picture with a 404 on it") — the <img>
-  // onerror fallback never fires because the proxy itself returns HTTP 200. A feed item is
+  // onerror fallback never fires because the proxy itself returns HTTP 200. A discovery item is
   // disposable (one of many AI suggestions), so dropping a definitively-dead-content one is safe
   // here, unlike the Library sweep which defers such calls to its AI+review tier. We drop ONLY on
   // the strong signals (a dead phrase or redirect-home), never on the weak empty-body signal, so a
@@ -1406,7 +1406,7 @@ async function validateItems(items){
         if(!i.image && r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.image = r.ogImage;
       });
       if(drop.size) live = live.filter(i=>!drop.has(i.id));
-    }catch(e){ console.warn("Feed content check unavailable — keeping link-checked items", e); }
+    }catch(e){ console.warn("Discovery content check unavailable — keeping link-checked items", e); }
   }
   return live;
 }
@@ -1461,42 +1461,45 @@ function spoolTake(){
   return it;
 }
 // Ensure the spool can yield at least `need` cards, refilling (capped) if short.
-async function ensureSpool(need){
+// Returns the number of refill attempts so callers never exceed two for one action.
+async function ensureSpool(need, forceFresh){
   let attempts = 0;
-  while(applyFilter(spool).length < need && attempts < 2){
+  while((forceFresh || applyFilter(spool).length < need) && attempts < 2){
+    forceFresh = false;
     const added = await stumbleFetch();
     attempts++;
     if(!added && applyFilter(spool).length < need) break;   // bad AI day — stop looping
   }
-  return applyFilter(spool).length;
+  return attempts;
 }
 // Deal a fresh set of stSize cards. Refills the spool as needed.
-async function stumbleNext(){
+async function stumbleNext(forceFresh){
   const need = stSize;
-  await ensureSpool(need);
+  const attempts = await ensureSpool(need, !!forceFresh);
   const deal = [];
   for(let n=0;n<need;n++){ const it = spoolTake(); if(it) deal.push(it); }
   stDeal = deal;
   persistAll(); renderStumble();
-  if(!stDeal.length) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
+  if(stDeal.length < need) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
   // top the spool back up for the next deal, quietly
-  if(applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+  if(attempts < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
 }
 // Replace a single dealt card (index) with a fresh one from the spool.
 async function stumbleReplace(idx){
-  await ensureSpool(1);
+  const attempts = await ensureSpool(1);
   const it = spoolTake();
   if(it){ stDeal[idx] = it; }
   else { stDeal.splice(idx,1); }   // nothing live to deal — drop the slot
   persistAll(); renderStumble();
-  if(applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+  if(!it) toast("Couldn't find another live idea right now — try again in a moment.", 6000);
+  if(attempts < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
 }
 // Header "⟳ New ideas" button: replenish the spool and re-deal.
 async function stumbleRefill(){
   saveSettings(false);
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
-  if(curTab!=="stumble") showTab("stumble");
-  await stumbleNext();
+  if(curTab!=="stumble") showTab("stumble", true);
+  await stumbleNext(true);
 }
 function syncRefillBtn(){
   const btn = document.getElementById("refreshBtn");
@@ -1504,12 +1507,20 @@ function syncRefillBtn(){
   btn.disabled = stLoading;
   btn.innerHTML = stLoading ? '<span class="spin"></span> Thinking…' : "&#10227; New ideas";
 }
-function setStSize(n){
+async function setStSize(n){
+  if([1,2,4].indexOf(n)<0) return;
+  if(n===stSize) return;
   stSize = n; save("stsize", n);
-  renderStumble();
-  // grow the current deal up to the new size (deal extra) or trim down
-  if(stDeal.length < n){ stumbleNext(); }
-  else if(stDeal.length > n){ stDeal = stDeal.slice(0,n); persistAll(); renderStumble(); }
+  if(stDeal.length > n){
+    const returned = stDeal.splice(n);
+    returned.forEach(it=>{ if(it && !spool.some(p=>p.url===it.url)) spool.push(it); });
+  }else if(stDeal.length < n){
+    var attempts = await ensureSpool(n-stDeal.length);
+    while(stDeal.length < n){ const it=spoolTake(); if(!it) break; stDeal.push(it); }
+  }
+  persistAll(); renderStumble();
+  if(stDeal.length < n) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
+  if((attempts||0) < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
 }
 function stCardHTML(it, idx){
   const cat = catByName(it.category);
@@ -1567,6 +1578,7 @@ function stumbleVote(idx, up){
   (up?likes:hidden).push({title:it.title, category:it.category, ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   if(hidden.length>60) hidden=hidden.slice(-60);
+  persistAll();   // save the user's feedback before any asynchronous refill
   toast(up?"Noted — more like this":"Noted — less like that");
   if(stSize===1) stumbleNext(); else stumbleReplace(idx);
 }
@@ -1575,6 +1587,7 @@ function stumbleSave(idx){
   if(!saved.some(s=>s.url===it.url)) saved.unshift(it);
   likes.push({title:it.title, category:it.category, ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
+  persistAll();   // save the card before any asynchronous refill
   toast("Saved");
   if(stSize===1) stumbleNext(); else stumbleReplace(idx);
 }
@@ -1614,7 +1627,7 @@ const GUIDES = {
     <li>Verify your email and log in</li>
     <li>Your API key is shown on the dashboard — copy it</li>
     <li>Paste it into the key field here</li></ol>
-    <p>Open PageRank scores every domain 0–10 using open Common Crawl link data (Google's original PageRank idea, rebuilt on open data). With the popularity toggle on, the app checks each recommendation's domain in one batched call and drops anything scoring below ~3.5 — small unknown blogs and made-up domains never reach your feed. The free tier allows thousands of checks per hour, far more than this app will ever use.</p>`,
+    <p>Open PageRank scores every domain 0–10 using open Common Crawl link data (Google's original PageRank idea, rebuilt on open data). With the popularity toggle on, the app checks each recommendation's domain in one batched call and drops anything scoring below ~3.5 — small unknown blogs and made-up domains never reach Stumble. The free tier allows thousands of checks per hour, far more than this app will ever use.</p>`,
   sbkey: `<h2>Get a free Google Safe Browsing API key</h2><ol>
     <li>Go to <b>console.cloud.google.com</b> and sign in with your Google account</li>
     <li>Create a project (top bar project dropdown &rarr; <b>New Project</b>), or pick an existing one</li>
@@ -1628,7 +1641,7 @@ const GUIDES = {
     <li>Click <b>Create API Key</b>, give it any name (e.g. "Interests App")</li>
     <li>Copy the key immediately — it's shown only once</li>
     <li>Paste it into the key field here and you're done</li></ol>
-    <p>Groq runs open models (Llama, etc.) on custom hardware — extremely fast, generous free tier. One caveat: no web search, so recommendation links can occasionally be stale. It shines for the <b>&#10024; Enrich</b> descriptions and category/interest suggestions; many people keep Gemini for feed refreshes and switch to Groq for the heavy lifting.</p>`,
+    <p>Groq runs open models (Llama, etc.) on custom hardware — extremely fast, generous free tier. One caveat: no web search, so recommendation links can occasionally be stale. It shines for the <b>&#10024; Enrich</b> descriptions and category/interest suggestions; many people keep Gemini for Stumble and switch to Groq for the heavy lifting.</p>`,
   youtube: `<h2>Export your YouTube saves</h2><ol>
     <li>Go to <b>takeout.google.com</b> and sign in</li>
     <li><b>Deselect all</b>, then check only <b>YouTube and YouTube Music</b></li>
@@ -2016,7 +2029,7 @@ function attachCardImages(){
       if(im.getAttribute("src")) return;
       const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
       if(idbId){ im.loading="lazy"; im.src=Store.imgUrl(idbId); return; }
-      const sid = im.getAttribute("data-imgsrc");          // Feed/Saved card: resolve the item's image
+      const sid = im.getAttribute("data-imgsrc");          // Discovery/Saved card: resolve the item's image
       if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; im.src=Store.imgUrl(String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
     };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
@@ -3540,14 +3553,14 @@ async function suggestCategories(){
   btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Thinking…';
   try{
     const sample = imported.slice().sort(()=>Math.random()-.5).slice(0,40).map(i=>"- "+i.title).join("\n");
-    const prompt = `A discovery-feed app organizes recommendations into categories. Existing categories (do NOT repeat or near-duplicate these): ${CATS.map(c=>c.name).join("; ")}.
+    const prompt = `A discovery app organizes recommendations into interest categories. Existing categories (do NOT repeat or near-duplicate these): ${CATS.map(c=>c.name).join("; ")}.
 
 ABOUT THE USER: ${S.about}
 INTERESTS: ${S.interests}
 SAMPLE OF THINGS HE SAVES:
 ${sample||"(none)"}
 
-Suggest 6-10 NEW feed categories (2-4 words each, title case) that would usefully partition his interests — specific enough to be meaningful, broad enough to fill a feed section. Return ONLY a JSON array of strings.`;
+Suggest 6-10 NEW interest categories (2-4 words each, title case) that would usefully partition his interests — specific enough to be meaningful, broad enough to produce good Stumble ideas. Return ONLY a JSON array of strings.`;
     const text = await callAI(prompt);
     const arr = parseJsonArray(text);
     if(arr===null) throw new Error("No suggestions found in model response");
@@ -4372,7 +4385,11 @@ async function bootData(){
   likes  = (await load("likes",  [])) || [];
   spool  = (await load("spool",  [])) || [];
   stDeal = (await load("stdeal", [])) || [];
-  stSize = (await load("stsize", 1)) || 1;
+  if(!Array.isArray(stDeal)) stDeal = [];
+  const legacyStCur = await load("stcur", null);
+  if(!stDeal.length && legacyStCur) stDeal = [legacyStCur];
+  const storedStSize = Number(await load("stsize", 1));
+  stSize = [1,2,4].indexOf(storedStSize)>=0 ? storedStSize : 1;
   filterCat = (await load("fcat", "")) || "";
   viewMode  = (await load("view", "g4")) || "g4";
   impTag    = (await load("itag", "")) || "";
@@ -4387,7 +4404,11 @@ async function bootData(){
   // one-time data hygiene (was a synchronous IIFE)
   // Feed module removed in v1.11.0 — clear its stored kv (cheap tombstone; no schema change).
   save("feed", []);
-  spool = dropAlreadySaved(spool); save("spool", spool);
+  spool = dropAlreadySaved(Array.isArray(spool)?spool:[]);
+  stDeal = dropAlreadySaved(stDeal.filter(Boolean)).slice(0,stSize);
+  const dealtUrls = new Set(stDeal.map(i=>i.url));
+  spool = spool.filter(i=>!dealtUrls.has(i.url));
+  save("spool", spool); save("stdeal", stDeal); save("stsize", stSize); save("stcur", null);
   const before=imported.length;
   imported = imported.filter(i=>!/^https?:\/\//i.test(i.title));
   imported = imported.filter(i=>!/^.{2,40}\bsaved\b.{0,80}\b(link|post|video|event)\b\.?$/i.test(i.title));
