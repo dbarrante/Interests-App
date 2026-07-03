@@ -41,6 +41,12 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(by.ok.verdict, "likely-alive");
     assert.strictEqual(by.ig.verdict, "skipped");
     assert.strictEqual(by.priv.verdict, "skipped");
+    // The feed's soft-404 filter needs the raw signals to drop ONLY on strong signals
+    // (a dead phrase or redirect-home), never on the weak "empty" signal — so the chunk
+    // result must forward classifyContent's signals array.
+    assert.ok(Array.isArray(by.dead.signals) && by.dead.signals.some(s => s.indexOf("phrase:") === 0),
+      "chunk result must carry the signals array with the dead-phrase signal");
+    assert.ok(Array.isArray(by.ok.signals), "alive result must carry a (possibly empty) signals array");
   });
 
   await t("fetchContent guards the initial url (SSRF) without fetching", async () => {

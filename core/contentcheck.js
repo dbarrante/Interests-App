@@ -127,7 +127,9 @@ async function checkContentChunk(items, opts) {
     }
     var c = await fetchContent(url, opts);
     var cls = classifyContent({ originalUrl: url, finalUrl: c.finalUrl, status: c.status, title: c.title, text: c.snippet });
-    return { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason };
+    // Forward `signals` so a caller (e.g. the feed's soft-404 filter) can act on the
+    // STRONG signals (dead phrase / redirect-home) without dropping weak "empty"-only pages.
+    return { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason, signals: cls.signals };
   });
 }
 

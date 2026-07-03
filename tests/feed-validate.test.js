@@ -10,20 +10,34 @@ const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "u
 let passed = 0, failed = 0;
 function t(n, fn){ try { fn(); passed++; } catch(e){ failed++; console.error("FAIL: "+n+"\n  "+(e&&e.message)); } }
 
-t("validateItems uses the Core dead-link probe (Store.checkLinks), not allorigins", () => {
+// Slice the whole validateItems function body (to its column-0 closing brace) so assertions
+// see BOTH validation tiers, not just the first N chars.
+function validateItemsBody(){
   const i = html.indexOf("async function validateItems(");
   assert.ok(i >= 0, "validateItems present");
-  const body = html.slice(i, i + 900);
+  const end = html.indexOf("\n}", i);
+  return html.slice(i, end + 2);
+}
+
+t("validateItems uses the Core dead-link probe (Store.checkLinks), not allorigins", () => {
+  const body = validateItemsBody();
   assert.ok(body.indexOf("Store.checkLinks(") >= 0, "validateItems must call Store.checkLinks");
   assert.ok(body.indexOf("allorigins") < 0, "validateItems must NOT use the api.allorigins.win proxy");
 });
 
-t("validateItems drops only CONFIRMED-dead links (keeps alive/unknown/skipped-social)", () => {
-  const i = html.indexOf("async function validateItems(");
-  const body = html.slice(i, i + 900);
+t("validateItems drops only CONFIRMED-dead links from tier 1 (keeps alive/unknown/skipped-social)", () => {
+  const body = validateItemsBody();
   assert.ok(/status\s*===\s*"dead"|"dead"/.test(body), "filters on the 'dead' status");
-  // must NOT filter on 'skipped' (social hosts) or 'unknown' — those are kept
-  assert.ok(body.indexOf('"skipped"') < 0 && body.indexOf('"unknown"') < 0, "only 'dead' is dropped, not skipped/unknown");
+  // must NOT filter on the linkcheck 'skipped'/'unknown' STATUS values — those are kept
+  assert.ok(body.indexOf('status==="skipped"') < 0 && body.indexOf('status==="unknown"') < 0, "only 'dead' status is dropped");
+});
+
+t("validateItems also runs the content check to drop SOFT-404s (200 OK but 'not found' body)", () => {
+  const body = validateItemsBody();
+  assert.ok(body.indexOf("Store.checkContent(") >= 0, "validateItems must run the tier-2 content check");
+  // drops on the STRONG content signals only (dead phrase / redirect-home), never the weak 'empty'
+  assert.ok(body.indexOf('"phrase:"') >= 0 && body.indexOf('"redirect-home"') >= 0, "drops on phrase / redirect-home signals");
+  assert.ok(body.indexOf('"empty"') < 0, "must NOT drop on the weak 'empty' signal (would filter JS-heavy article pages)");
 });
 
 t("refreshFeed still runs validateItems before showing the feed", () => {

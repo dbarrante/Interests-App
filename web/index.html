@@ -347,6 +347,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" id="impCnt"></span></button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
+    <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
     <button class="btn btn-primary" id="refreshBtn" onclick="refreshFeed()">&#10227; New ideas</button>
   </div>
 </header>
@@ -725,6 +726,15 @@ function showTab(t){
   if(t==="settings") renderSettings();
   if(t==="imported") renderImported();
   if(t==="stumble"){ if(!stCur) stumbleNext(); else renderStumble(); }
+}
+// Open the app's own URL (the local Core service origin, e.g. http://127.0.0.1:3456/) in the
+// user's default browser. Same live data — the browser tab talks to the same local service the
+// desktop window does. In Electron we route through the native shell (window.ia.openExternal);
+// if already running in a plain browser, just open a new tab.
+function openInBrowser(){
+  const url = location.origin + "/";
+  if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
+  else { window.open(url, "_blank", "noopener"); }
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
@@ -1356,11 +1366,29 @@ function parseItems(text){
 // a checker hiccup can't empty the feed.
 async function validateItems(items){
   if(!items.length) return items;
+  // Tier 1 — HTTP status (Store.checkLinks): drops only CONFIRMED-dead (404/410/451 + DNS fails).
   let results;
   try{ results = await Store.checkLinks(items.map(i=>({ id:i.id, url:i.url }))); }
   catch(e){ console.warn("Feed link check unavailable — showing unverified", e); return items; }
   const dead = new Set((results||[]).filter(r=>r && r.status==="dead").map(r=>r.id));
-  return items.filter(i=>!dead.has(i.id));
+  let live = items.filter(i=>!dead.has(i.id));
+  // Tier 2 — page content (Store.checkContent): catches SOFT-404s — pages that answer HTTP 200
+  // but whose body says "page not found" / "no longer available", or a deep link that redirects to
+  // the site homepage. Tier 1 passes these as alive, so without this the feed shows a live
+  // mshots/thum.io SCREENSHOT of the not-found page (a "picture with a 404 on it") — the <img>
+  // onerror fallback never fires because the proxy itself returns HTTP 200. A feed item is
+  // disposable (one of many AI suggestions), so dropping a definitively-dead-content one is safe
+  // here, unlike the Library sweep which defers such calls to its AI+review tier. We drop ONLY on
+  // the strong signals (a dead phrase or redirect-home), never on the weak empty-body signal, so a
+  // legitimate JS-heavy article page (little raw-HTML text) is not falsely filtered out.
+  if(live.length){
+    try{
+      const cres = await Store.checkContent(live.map(i=>({ id:i.id, url:i.url })));
+      const soft = new Set((cres||[]).filter(r=>((r&&r.signals)||[]).some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")).map(r=>r.id));
+      if(soft.size) live = live.filter(i=>!soft.has(i.id));
+    }catch(e){ console.warn("Feed content check unavailable — keeping link-checked items", e); }
+  }
+  return live;
 }
 async function rankFilter(items){
   if(!S.popularOnly || !S.oprKey || !items.length) return items;
