@@ -5,6 +5,7 @@
 "use strict";
 
 var linkcheck = require("./linkcheck");
+var capturemeta = require("./capturemeta");   // extractOg only (pure); no require cycle — capturemeta needs linkcheck/guardedfetch, never this module
 
 function extractTitle(html) {
   var m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html || ""));
@@ -106,11 +107,19 @@ async function fetchContent(url, opts) {
   if (walk.stopReason === "terminal") {
     var r = walk.result;
     var body = (r.buffer || Buffer.alloc(0)).toString("utf8");
-    return { finalUrl: walk.current, status: r.status, title: extractTitle(body), snippet: extractText(body) };
+    // og:image from the page we already read — callers (the feed) use it as the card's
+    // REAL image instead of a third-party screenshot proxy. Resolved absolute against the
+    // final URL (og content is often a relative path); http(s) only; "" when absent.
+    var ogImage = "";
+    try {
+      var og = capturemeta.extractOg(body).image;
+      if (og) { var abs = new URL(og, walk.current).href; if (/^https?:\/\//i.test(abs)) ogImage = abs; }
+    } catch (e) { ogImage = ""; }
+    return { finalUrl: walk.current, status: r.status, title: extractTitle(body), snippet: extractText(body), ogImage: ogImage };
   }
   // blocked / badloc -> report the last 3xx status with no content; maxhops -> status 0.
-  if (walk.stopReason === "maxhops") return { finalUrl: walk.current, status: 0, title: "", snippet: "" };
-  return { finalUrl: walk.current, status: walk.result.status, title: "", snippet: "" };
+  if (walk.stopReason === "maxhops") return { finalUrl: walk.current, status: 0, title: "", snippet: "", ogImage: "" };
+  return { finalUrl: walk.current, status: walk.result.status, title: "", snippet: "", ogImage: "" };
 }
 
 // Probe a chunk of {id,url} with a concurrency cap. Social/SSRF/non-probable urls are
@@ -123,13 +132,14 @@ async function checkContentChunk(items, opts) {
     var it = item || {};
     var url = it.url;
     if (typeof url !== "string" || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
-      return { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "" };
+      return { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "", ogImage: "" };
     }
     var c = await fetchContent(url, opts);
     var cls = classifyContent({ originalUrl: url, finalUrl: c.finalUrl, status: c.status, title: c.title, text: c.snippet });
     // Forward `signals` so a caller (e.g. the feed's soft-404 filter) can act on the
-    // STRONG signals (dead phrase / redirect-home) without dropping weak "empty"-only pages.
-    return { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason, signals: cls.signals };
+    // STRONG signals (dead phrase / redirect-home) without dropping weak "empty"-only pages,
+    // and `ogImage` so the feed can show the article's real image instead of a screenshot proxy.
+    return { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason, signals: cls.signals, ogImage: c.ogImage || "" };
   });
 }
 

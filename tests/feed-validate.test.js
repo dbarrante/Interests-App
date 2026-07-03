@@ -40,6 +40,20 @@ t("validateItems also runs the content check to drop SOFT-404s (200 OK but 'not 
   assert.ok(body.indexOf('"empty"') < 0, "must NOT drop on the weak 'empty' signal (would filter JS-heavy article pages)");
 });
 
+t("validateItems attaches the page's real og:image to kept items (replaces screenshot proxies)", () => {
+  const body = validateItemsBody();
+  assert.ok(body.indexOf("ogImage") >= 0, "uses the content check's ogImage");
+  assert.ok(/i\.image\s*=/.test(body), "attaches it as the item's image");
+});
+
+t("thum.io is banned — its free tier serves an 'Image not authorized' ERROR IMAGE with HTTP 200", () => {
+  assert.ok(html.indexOf("image.thum.io/get") < 0, "no thum.io fetch URL may remain in index.html");
+});
+
+t("boot hygiene purges persisted thum.io error-image URLs from cards and clips", () => {
+  assert.ok(html.indexOf('indexOf("image.thum.io")') >= 0, "one-time thum.io purge present in bootData");
+});
+
 t("refreshFeed still runs validateItems before showing the feed", () => {
   const i = html.indexOf("async function refreshFeed(");
   assert.ok(i >= 0, "refreshFeed present");

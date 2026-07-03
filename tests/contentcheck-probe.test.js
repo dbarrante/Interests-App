@@ -13,7 +13,7 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     const u = String(url);
     const body = /\/dead/.test(u)
       ? "<html><head><title>Page Not Found</title></head><body>404</body></html>"
-      : "<html><head><title>Good Article</title></head><body><p>"+"lots of real content ".repeat(10)+"</p></body></html>";
+      : "<html><head><title>Good Article</title><meta property=\"og:image\" content=\"/img/hero.jpg\"></head><body><p>"+"lots of real content ".repeat(10)+"</p></body></html>";
     return {
       status: 200,
       url: u,
@@ -27,6 +27,15 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.title, "Good Article");
     assert.ok(r.snippet.indexOf("real content") >= 0);
+  });
+
+  await t("fetchContent extracts og:image and resolves it absolute against the final URL", async () => {
+    // The feed uses this as the card's REAL image (replacing the thum.io screenshot proxy,
+    // which now serves an 'Image not authorized / paid account' error image with HTTP 200).
+    const r = await cc.fetchContent("https://example.test/ok");
+    assert.strictEqual(r.ogImage, "https://example.test/img/hero.jpg", "relative og:image resolved against finalUrl");
+    const d = await cc.fetchContent("https://example.test/dead");
+    assert.strictEqual(d.ogImage, "", "no og:image -> empty string, not undefined");
   });
 
   await t("checkContentChunk classifies dead vs alive and skips social/SSRF", async () => {
@@ -47,6 +56,7 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.ok(Array.isArray(by.dead.signals) && by.dead.signals.some(s => s.indexOf("phrase:") === 0),
       "chunk result must carry the signals array with the dead-phrase signal");
     assert.ok(Array.isArray(by.ok.signals), "alive result must carry a (possibly empty) signals array");
+    assert.strictEqual(by.ok.ogImage, "https://example.test/img/hero.jpg", "chunk result forwards the resolved og:image");
   });
 
   await t("fetchContent guards the initial url (SSRF) without fetching", async () => {

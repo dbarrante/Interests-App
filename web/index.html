@@ -773,8 +773,11 @@ function imageChain(item){
   // public screenshot proxies can't see auth-walled sites — they'd return a
   // login wall / "content not available". Skip them for FB/IG (matches impThumb).
   if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)|youtube\.com|youtu\.be/i.test(item.url)){
+    // mshots only. thum.io was removed: its free tier now returns an "Image not authorized /
+    // paid account" ERROR IMAGE with HTTP 200, which defeats the onerror fallback and showed
+    // that error as the card picture. Feed items now carry the page's real og:image (set by
+    // validateItems from the tier-2 content check), so item.image above covers most cards.
     c.push(`https://s0.wp.com/mshots/v1/${encodeURIComponent(item.url)}?w=640`);
-    c.push(`https://image.thum.io/get/width/640/crop/700/${item.url}`);
   }
   return c;
 }
@@ -1386,6 +1389,12 @@ async function validateItems(items){
       const cres = await Store.checkContent(live.map(i=>({ id:i.id, url:i.url })));
       const soft = new Set((cres||[]).filter(r=>((r&&r.signals)||[]).some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")).map(r=>r.id));
       if(soft.size) live = live.filter(i=>!soft.has(i.id));
+      // Bonus from the same fetch: the page's og:image. Use it as the card's REAL image —
+      // far better than a screenshot proxy (thum.io now serves an "Image not authorized /
+      // paid account" error image with HTTP 200, so it was REMOVED from the fallback chain).
+      const ogById = {};
+      (cres||[]).forEach(r=>{ if(r && r.ogImage && /^https?:\/\//i.test(r.ogImage)) ogById[r.id]=r.ogImage; });
+      live.forEach(i=>{ if(!i.image && ogById[i.id]) i.image = ogById[i.id]; });
     }catch(e){ console.warn("Feed content check unavailable — keeping link-checked items", e); }
   }
   return live;
@@ -2992,8 +3001,9 @@ async function enrichOnOpen(it, idx){
         if(ml && ml.img && /^https?:/.test(ml.img)){ it.img=ml.img; changed=true; }
       }catch(e){}
       if(!it.img){
+        // mshots only — thum.io removed (free tier serves an "Image not authorized" ERROR
+        // IMAGE with HTTP 200 that passed the >50px size check and got PERSISTED onto cards).
         const thumbChain = [
-          `https://image.thum.io/get/width/640/crop/400/${it.url}`,
           `https://s0.wp.com/mshots/v1/${encodeURIComponent(it.url)}?w=640`
         ];
         for(const src of thumbChain){
@@ -4334,7 +4344,18 @@ async function bootData(){
   imported = imported.filter(i=>!/^.{2,40}\bsaved\b.{0,80}\b(link|post|video|event)\b\.?$/i.test(i.title));
   let wiped=0;
   imported.forEach(i=>{ if(i.desc && /\blikely\b/i.test(i.desc) && /\b(pin|post|video|image|idea|visual|interest)\b/i.test(i.desc)){ delete i.desc; wiped++; } });
-  if(imported.length!==before || wiped){
+  // Purge persisted thum.io URLs: the enrichment chain once stored them as card images, and
+  // thum.io's free tier now serves an "Image not authorized / paid account" ERROR IMAGE with
+  // HTTP 200 — so those cards show the error forever. Clearing the field lets the normal
+  // fallbacks (favicon/placeholder, or a future capture) take over. Same for saved clips.
+  let thumWiped=0;
+  imported.forEach(i=>{ if(i.img && String(i.img).indexOf("image.thum.io")>=0){ delete i.img; thumWiped++; } });
+  saved.forEach(s=>{ if(s.image && String(s.image).indexOf("image.thum.io")>=0){ delete s.image; thumWiped++; } });
+  if(thumWiped){
+    try{ await Store.putSaved(saved); }catch(e){ console.warn("boot hygiene: putSaved (thum.io purge) failed", e); }
+    setTimeout(()=>toast("Cleared "+thumWiped+" broken thum.io card image(s) — they'll use fallbacks now"), 1200);
+  }
+  if(imported.length!==before || wiped || thumWiped){
     try{ await Store.putCards(imported); }
     catch(e){ console.warn("boot hygiene: putCards failed (likely mass-delete guard 409) — skipping persistence this run", e); }
     setTimeout(()=>toast("Cleaned up "+(before-imported.length)+" junk imports, reset "+wiped+" vague descriptions — re-import pinterest-import.json, then hit Enrich"), 800);
