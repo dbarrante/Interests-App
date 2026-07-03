@@ -1173,7 +1173,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.action === "bstumbleVote") { bstumbleSendVote(msg.vote).then(() => bstumbleGo()).catch(() => {}); return false; }
+  // 👎 (not-for-me) dismisses and advances; 👍 (like) records and STAYS so the user can read/Save it.
+  if (msg.action === "bstumbleVote") { bstumbleSendVote(msg.vote).then(() => { if (msg.vote < 0) bstumbleGo(); }).catch(() => {}); return false; }
   if (msg.action === "bstumbleNext") { bstumbleGo().catch(() => {}); return false; }
   if (msg.action === "bstumbleSave") {
     (async () => {

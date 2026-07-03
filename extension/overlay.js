@@ -32,7 +32,7 @@
   status.style.cssText = "min-width:70px;text-align:center;color:#cbe8dc";
   status.textContent = "Stumble";
 
-  bar.appendChild(mkBtn("👍", "Like — more like this", "#0d9488", function () { send({ action: "bstumbleVote", vote: 1 }); flash("Liked →"); }));
+  bar.appendChild(mkBtn("👍", "Like — more like this (stays here so you can Save)", "#0d9488", function () { send({ action: "bstumbleVote", vote: 1 }); flash("Liked ✓"); }));
   bar.appendChild(mkBtn("👎", "Not for me — fewer like this", "#7c2d2d", function () { send({ action: "bstumbleVote", vote: -1 }); flash("Skipped →"); }));
   bar.appendChild(mkBtn("★ Save", "Save to Interests", "#b45309", function () { send({ action: "bstumbleSave" }); flash("Saved ✓"); }));
   bar.appendChild(mkBtn("Stumble ⟳", "Next page", "#334155", function () { send({ action: "bstumbleNext" }); flash("Finding…"); }));

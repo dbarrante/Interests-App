@@ -3,6 +3,9 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.2 — Thumbs-up stays (ext 4.51, extension-only)
+- 👍 (like) now records the vote and **stays on the page** so you can read it or ★ Save it; only 👎 (not-for-me) auto-advances to the next page. Extension-only — no app rebuild.
+
 ## v1.12.1 — Stumble polish (ext 4.50)
 - Browser 👍/👎 votes now carry the stumbled page's **category** (from the stumble result) so the app's learning is category-weighted, not title-only. Falls back to title-only if the page navigated away from the stumbled URL.
 - Removed the redundant header **⟳ New ideas** button — the on-surface **🎲 Stumble** button already deals a fresh set; cleaned up its dead helpers (`stumbleRefill`, `syncRefillBtn`) and updated the Help text.
