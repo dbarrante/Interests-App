@@ -97,8 +97,17 @@ t("Stumble refill is bounded and reports a partially filled 2/4-card deal", () =
     "first non-empty batch returns immediately instead of waiting to fill all four slots");
   const next = html.slice(html.indexOf("async function stumbleNext("), html.indexOf("\n}", html.indexOf("async function stumbleNext(")) + 2);
   assert.ok(next.indexOf("stDeal.length < need") >= 0, "partial deals show the not-enough-live-ideas message");
-  const refill = html.slice(html.indexOf("async function stumbleRefill("), html.indexOf("\n}", html.indexOf("async function stumbleRefill(")) + 2);
-  assert.ok(refill.indexOf("stumbleNext(true)") >= 0, "header New ideas forces a fresh spool refill");
+});
+
+t("Stumble hides collection view controls and has no redundant header refill button", () => {
+  const start = html.indexOf("function renderCatBar(");
+  const body = html.slice(start, html.indexOf("\n}", start) + 2);
+  assert.ok(body.indexOf('curTab==="stumble" ? ""') >= 0,
+    "shared 1x1/2x2/4x4/Detail/List controls are omitted only on Stumble");
+  assert.ok(html.indexOf('id="refreshBtn"') < 0, "New ideas header button is removed");
+  assert.ok(html.indexOf("stumbleRefill") < 0, "header refill handler has no remaining references");
+  assert.ok(html.indexOf("syncRefillBtn") < 0, "header button state helper has no remaining references");
+  assert.ok(html.indexOf("New ideas") < 0, "Stumble help and comments no longer mention the removed button");
 });
 
 t("Feed runtime surface is removed, including inline handlers", () => {

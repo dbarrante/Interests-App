@@ -359,7 +359,6 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
     </nav>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
-    <button class="btn btn-primary" id="refreshBtn" onclick="stumbleRefill()">&#10227; New ideas</button>
   </div>
 </header>
 
@@ -757,7 +756,7 @@ async function openHelp(){
     <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
     <h3 style="margin:12px 0 6px">Quick tour</h3>
     <ul style="margin:0 0 10px 18px;line-height:1.7">
-      <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. <b>&#10227; New ideas</b> refills the spool.</li>
+      <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. The <b>&#127922; Stumble</b> button deals the next batch.</li>
       <li><b>Saved</b> — things you saved here or clipped from the browser extension.</li>
       <li><b>Imported</b> — your library from Facebook / Pinterest / YouTube / bookmarks imports. <b>&#128247; Get pictures &amp; info</b> fills missing images and descriptions; <b>&#129656; Library health</b> finds duplicates, dead links, and failed captures.</li>
       <li><b>Settings</b> — AI provider &amp; key, your profile, imports, backup &amp; restore, Dropbox sync.</li>
@@ -779,11 +778,11 @@ function renderCatBar(){
     : pills.map(c=>
     `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
       onclick="setFilter('${c.key}')">${c.name}</button>`).join("");
-  document.getElementById("catBar").innerHTML = catHtml
-    + `<span style="flex:1"></span>`
+  const viewHtml = curTab==="stumble" ? "" : `<span style="flex:1"></span>`
     + VIEWS.map(([v,label])=>
     `<button class="catpill${viewMode===v?" on":""}" style="${viewMode===v?"background:var(--ink)":""}" title="View"
       onclick="setView('${v}')">${label}</button>`).join("");
+  document.getElementById("catBar").innerHTML = catHtml + viewHtml;
   requestAnimationFrame(setStickyOffsets);
 }
 function setFilter(k){
@@ -1414,7 +1413,7 @@ let stLoading = false;
 async function stumbleFetch(){
   if(stLoading) return 0;
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
-  stLoading = true; renderStumble(); syncRefillBtn();
+  stLoading = true; renderStumble();
   try{
     const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"),{webSearch:true})))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
@@ -1426,7 +1425,7 @@ async function stumbleFetch(){
     persistAll();
     return fresh.length;
   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return 0; }
-  finally{ stLoading=false; syncRefillBtn(); }
+  finally{ stLoading=false; }
 }
 // Old persisted recommendations can die after validation. Never deal one after its
 // 30-minute live-check window; a refill will re-check the URL and its page content.
@@ -1478,19 +1477,6 @@ async function stumbleReplace(idx){
   persistAll(); renderStumble();
   if(!it) toast("Couldn't find another live idea right now — try again in a moment.", 6000);
   if(attempts < 2 && usableSpool().length < stSize && !stLoading) stumbleFetch();
-}
-// Header "⟳ New ideas" button: replenish the spool and re-deal.
-async function stumbleRefill(){
-  saveSettings(false);
-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
-  if(curTab!=="stumble") showTab("stumble", true);
-  await stumbleNext(true);
-}
-function syncRefillBtn(){
-  const btn = document.getElementById("refreshBtn");
-  if(!btn) return;
-  btn.disabled = stLoading;
-  btn.innerHTML = stLoading ? '<span class="spin"></span> Thinking…' : "&#10227; New ideas";
 }
 async function setStSize(n){
   if([1,2,4].indexOf(n)<0) return;
@@ -4429,7 +4415,6 @@ async function bootData(){
   let bootTab = await load("tab","stumble");
   if(bootTab==="feed") bootTab = "stumble";   // Feed removed in v1.11.0 — a persisted "feed" maps home
   showTab(bootTab);
-  syncRefillBtn();
 
   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
   try{ if(curTab==="imported") renderImported(); }catch(e){ console.warn("imported render failed", e); }
