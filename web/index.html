@@ -160,17 +160,28 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 
 /* ============ stumble tab ============ */
 .stumble{max-width:860px;margin:0 auto}
-.st-card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.stumble.deal-2,.stumble.deal-4{max-width:1080px}
+.st-deal{display:grid;gap:20px;grid-template-columns:1fr}
+.st-deal.deal-2{grid-template-columns:1fr 1fr}
+.st-deal.deal-4{grid-template-columns:1fr 1fr}
+@media(max-width:720px){.st-deal.deal-2,.st-deal.deal-4{grid-template-columns:1fr}}
+.st-card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
 .st-card .thumb img{max-height:440px}
 .st-card .thumb .ph{height:300px;font-size:18px}
-.st-body{padding:20px 24px}
+.st-deal.deal-2 .st-card .thumb img,.st-deal.deal-4 .st-card .thumb img{max-height:260px}
+.st-deal.deal-2 .st-card .thumb .ph,.st-deal.deal-4 .st-card .thumb .ph{height:190px}
+.st-body{padding:20px 24px;flex:1}
 .st-title{font-size:21px;font-weight:800;line-height:1.25;cursor:pointer}
+.st-deal.deal-2 .st-title,.st-deal.deal-4 .st-title{font-size:18px}
 .st-title:hover{color:var(--accent)}
 .st-actions{display:flex;gap:10px;padding:14px 24px 20px;flex-wrap:wrap}
 .st-actions .act{flex:1;min-width:110px;font-size:14px;padding:11px 0;border-radius:11px}
 .st-actions .act.big{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:800}
-.st-bar{display:flex;justify-content:center;margin:18px 0}
+.st-bar{display:flex;justify-content:center;align-items:center;gap:16px;margin:18px 0;flex-wrap:wrap}
 .st-bar .btn{font-size:16px;padding:13px 34px}
+.st-size{display:inline-flex;gap:4px;background:#efeae2;border-radius:999px;padding:4px}
+.st-size button{border:0;background:none;font:inherit;font-weight:700;color:var(--muted);padding:6px 14px;border-radius:999px;cursor:pointer}
+.st-size button.on{background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
 
 /* ============ discovery chips ============ */
 .tagwrap{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
@@ -341,22 +352,20 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   <div class="bar">
     <div class="logo">Inter<span>ests</span></div>
     <nav>
-      <button class="tab active" data-tab="feed" onclick="showTab('feed')">Feed</button>
-      <button class="tab" data-tab="stumble" onclick="showTab('stumble')">Stumble</button>
+      <button class="tab active" data-tab="stumble" onclick="showTab('stumble')">Stumble</button>
       <button class="tab" data-tab="saved" onclick="showTab('saved')">Saved <span class="cnt" id="savedCnt"></span></button>
       <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" id="impCnt"></span></button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
-    <button class="btn btn-primary" id="refreshBtn" onclick="refreshFeed()">&#10227; New ideas</button>
+    <button class="btn btn-primary" id="refreshBtn" onclick="stumbleRefill()">&#10227; New ideas</button>
   </div>
 </header>
 
 <main>
   <div id="catBar" class="catbar"></div>
-  <div id="view-feed"><div class="masonry" id="feedGrid"></div><div id="feedEmpty"></div></div>
-  <div id="view-stumble" style="display:none"></div>
+  <div id="view-stumble"></div>
   <div id="view-saved" style="display:none"><div class="masonry" id="savedGrid"></div><div id="savedEmpty"></div></div>
   <div id="view-imported" style="display:none"></div>
 
@@ -398,14 +407,14 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Feed sections</h3>
-        <div class="hint" style="margin-bottom:12px">These are the sections your feed is organized into. Higher = more of the feed devoted to it. Set to 0 to turn a section off. Custom sections can be removed with &#10005;.</div>
+        <h3>Interest categories</h3>
+        <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off. Custom categories can be removed with &#10005;.</div>
         <div id="sliders"></div>
         <div class="row2" style="margin-top:14px;align-items:center">
-          <div><input type="text" id="newCatName" placeholder="Add your own feed section, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
+          <div><input type="text" id="newCatName" placeholder="Add your own category, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
           <div style="flex:0 0 auto;display:flex;gap:8px">
             <button class="btn btn-ghost" onclick="addCategory()">+ Add</button>
-            <button class="btn btn-ghost" id="catSugBtn" onclick="suggestCategories()">&#10024; Suggest feed sections</button>
+            <button class="btn btn-ghost" id="catSugBtn" onclick="suggestCategories()">&#10024; Suggest categories</button>
           </div>
         </div>
         <div id="catSuggest" class="tagwrap"></div>
@@ -414,10 +423,10 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 
       <div class="sec">
         <h3>Your profile</h3>
-        <div class="hint" style="margin-bottom:10px">Your profile is what the feed learns from — separate from your <strong>feed sections</strong> (set above) and the <strong>tags</strong> that came in with your imports.</div>
+        <div class="hint" style="margin-bottom:10px">Your profile is what Stumble learns from — separate from your <strong>interest categories</strong> (set above) and the <strong>tags</strong> that came in with your imports.</div>
         <label>About you</label>
         <textarea id="aboutMe"></textarea>
-        <label>Interests (comma-separated — the feed learns and you can prune anytime)</label>
+        <label>Interests (comma-separated — Stumble learns and you can prune anytime)</label>
         <textarea id="interestList" style="min-height:120px"></textarea>
         <label style="margin-top:14px;display:block">Optional — describe what you're into (blends with your library below)</label>
         <textarea id="discInput" placeholder="e.g. I've been curious about welding, smart irrigation, maybe restoring an old arcade cabinet…"></textarea>
@@ -619,7 +628,7 @@ S.weights = Object.assign({}, DEFAULTS.weights, S.weights||{});
 S.extraCats = S.extraCats||[];
 rebuildCats();
 
-let feed=[], saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stCur=null;
+let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
 
 // Persistent app state now lives in the Core service kv store (key "ia_<k>").
 // load() returns a Promise; the few synchronous-default call sites use loadKVSync's
@@ -630,7 +639,7 @@ function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
-function persistAll(){ save("feed",feed); Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); updateCounts(); }
+function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
 // Boot gate: true only after bootData() has finished loading persistent state.
 // Guards the capture-drain interval + autobackup so a queued capture can't trigger
 // a full-array save of a nearly-empty library before the real data is loaded (review A2).
@@ -702,7 +711,7 @@ function domain(u){ try{ return new URL(u).hostname.replace(/^www\./,""); }catch
 function catByName(n){ return CATS.find(c=>c.name===n) || CATS.find(c=> n && n.toLowerCase().includes(c.key)) || CATS[0]; }
 function userName(){ return (S.about.split(/[—\-,.;:]/)[0]||"").trim() || "there"; }
 
-let curTab = "feed";
+let curTab = "stumble";
 let filterCat = "";        // hydrated from Store.kv in bootData()
 let viewMode = "g4";       // hydrated from Store.kv in bootData()
 const VIEWS = [["g1","&#9634; 1&times;1"],["g2","&#9635; 2&times;2"],["g4","&#9638; 4&times;4"],["detail","&#9645; Detail"],["list","&#9776; List"]];
@@ -711,7 +720,6 @@ function setView(v){
   renderCatBar();
   if(curTab==="saved") renderSaved();
   else if(curTab==="imported") renderImported();
-  else renderFeed();
 }
 function gridClass(){ return "masonry m-"+viewMode; }
 function showTab(t){
@@ -719,14 +727,13 @@ function showTab(t){
   _refreshPins.clear();
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
-  ["feed","stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
+  ["stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
   document.getElementById("catBar").style.display = t==="settings"?"none":"";
   renderCatBar();
-  if(t==="feed") renderFeed();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
   if(t==="imported") renderImported();
-  if(t==="stumble"){ if(!stCur) stumbleNext(); else renderStumble(); }
+  if(t==="stumble"){ if(!stDeal.length) stumbleNext(); else renderStumble(); }
 }
 // Open the app's own URL (the local Core service origin, e.g. http://127.0.0.1:3456/) in the
 // user's default browser. Same live data — the browser tab talks to the same local service the
@@ -749,8 +756,7 @@ async function openHelp(){
     <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
     <h3 style="margin:12px 0 6px">Quick tour</h3>
     <ul style="margin:0 0 10px 18px;line-height:1.7">
-      <li><b>Feed</b> — AI-suggested articles matched to your profile. <b>&#10227; New ideas</b> refreshes; every suggestion is link- and content-checked so dead pages are filtered out.</li>
-      <li><b>Stumble</b> — the feed one card at a time; vote to teach it your taste.</li>
+      <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. <b>&#10227; New ideas</b> refills the spool.</li>
       <li><b>Saved</b> — things you saved here or clipped from the browser extension.</li>
       <li><b>Imported</b> — your library from Facebook / Pinterest / YouTube / bookmarks imports. <b>&#128247; Get pictures &amp; info</b> fills missing images and descriptions; <b>&#129656; Library health</b> finds duplicates, dead links, and failed captures.</li>
       <li><b>Settings</b> — AI provider &amp; key, your profile, imports, backup &amp; restore, Dropbox sync.</li>
@@ -783,7 +789,7 @@ function setFilter(k){
   filterCat = k;
   save("fcat", k);
   renderCatBar();
-  if(curTab==="saved") renderSaved(); else renderFeed();
+  if(curTab==="saved") renderSaved(); else if(curTab==="stumble") renderStumble();
 }
 function applyFilter(list){
   if(!filterCat) return list;
@@ -855,31 +861,9 @@ function cardHTML(item, mode){
       ${mode==="saved"?tagRow(item.tags):""}
     </div>
     <div class="actions">
-      ${mode==="feed"
-        ? `<button class="act" onclick="saveItem('${id}')">&#128278; Save</button>
-           <button class="act" onclick="hideItem('${id}')">&#10005; Not for me</button>`
-        : `<button class="act saved" onclick="unsaveItem('${id}')">&#10003; Saved — remove</button>`}
+      <button class="act saved" onclick="unsaveItem('${id}')">&#10003; Saved — remove</button>
     </div>
   </div>`;
-}
-function renderFeed(){
-  const grid = document.getElementById("feedGrid");
-  grid.className = gridClass();
-  const list = applyFilter(feed);
-  grid.innerHTML = list.map(i=>cardHTML(i,"feed")).join("");
-  attachCardImages();
-  const empty = document.getElementById("feedEmpty");
-  if(feed.length && !list.length){ empty.innerHTML = `<div class="empty"><h2>Nothing here right now</h2><p>No current ideas in this category — hit <b>New ideas</b> or raise its importance in Settings.</p></div>`; }
-  else if(feed.length){ empty.innerHTML=""; }
-  else{
-    const hasKey = S.provider==="local" || !!S.keys[S.provider];
-    empty.innerHTML = `<div class="empty"><h2>${hasKey?"Ready when you are":"Welcome, "+userName()}</h2>
-      <p>${hasKey
-        ? "Hit <b>New ideas</b> up top and your AI will go find articles, projects, and initiatives matched to your interests."
-        : "One quick step: open <b>Settings</b>, pick your AI provider, and paste an API key. Then hit <b>New ideas</b> and the feed fills with recommendations matched to your interests. Every save teaches it what you like."}</p>
-      <button class="btn btn-primary" onclick="${hasKey?"refreshFeed()":"showTab('settings')"}">${hasKey?"&#10227; New ideas":"Open Settings"}</button></div>`;
-  }
-  updateCounts();
 }
 function renderSaved(){
   const list = applyFilter(saved);
@@ -887,11 +871,11 @@ function renderSaved(){
   g.className = gridClass();
   g.innerHTML = list.map(i=>cardHTML(i,"saved")).join("");
   attachCardImages();
-  document.getElementById("savedEmpty").innerHTML = list.length?"":`<div class="empty"><h2>Nothing saved${filterCat?" in this category":" yet"}</h2><p>Save items from your feed and they collect here — and every save teaches the AI what to bring you next.</p></div>`;
+  document.getElementById("savedEmpty").innerHTML = list.length?"":`<div class="empty"><h2>Nothing saved${filterCat?" in this category":" yet"}</h2><p>Save items from Stumble and they collect here — and every save teaches the AI what to bring you next.</p></div>`;
 }
 
 /* ============ item actions ============ */
-function findItem(id){ return feed.find(i=>i.id===id) || saved.find(i=>i.id===id); }
+function findItem(id){ return saved.find(i=>i.id===id) || spool.find(i=>i.id===id) || stDeal.find(i=>i.id===id); }
 // Open a link the user clicked. With the "reuse window" setting on, route it to one
 // reused in-app window (window.ia.openInApp); otherwise the normal new-browser-tab path.
 function openLink(url){
@@ -906,24 +890,9 @@ function openItem(id,mode){
   persistAll();
   openLink(it.url);
 }
-function saveItem(id){
-  const it=feed.find(i=>i.id===id); if(!it) return;
-  if(!saved.some(s=>s.url===it.url)) saved.unshift(it);
-  feed = feed.filter(i=>i.id!==id);
-  persistAll(); renderFeed();
-  toast("Saved — the feed just learned something about you");
-}
 function unsaveItem(id){
   saved = saved.filter(i=>i.id!==id);
-  persistAll(); renderSaved(); renderFeed();
-}
-function hideItem(id){
-  const it=feed.find(i=>i.id===id); if(!it) return;
-  hidden.push({title:it.title, category:it.category, ts:Date.now()});
-  if(hidden.length>60) hidden=hidden.slice(-60);
-  feed = feed.filter(i=>i.id!==id);
-  persistAll(); renderFeed();
-  toast("Got it — fewer like that");
+  persistAll(); renderSaved();
 }
 function resetLearning(){
   if(!confirm("Clear save/click/hide history the AI learns from? (Your saved items list stays.)")) return;
@@ -1277,7 +1246,7 @@ function saveSettings(notify){
   S.interests = document.getElementById("interestList").value;
   S.itemCount = Math.max(4, Math.min(24, +document.getElementById("itemCount").value || 12));
   save("settings", S);
-  if(notify){ toast("Settings saved"); showTab("feed"); }
+  if(notify){ toast("Settings saved"); showTab("stumble"); }
 }
 const SB_MASK = "••••••••••••••••••••••••";
 async function loadSafetyKeyStatus(){
@@ -1306,7 +1275,7 @@ async function saveSafeBrowsingKey(){
 /* ============ prompt ============ */
 function buildPrompt(mode){
   const stumble = mode==="stumble";
-  const count = (stumble ? 10 : S.itemCount) + 3;
+  const count = (stumble ? 12 : S.itemCount) + 3;
   const active = CATS.filter(c=>S.weights[c.key]>0);
   const catLines = active.map(c=>`- "${c.name}" (importance ${S.weights[c.key]}/10)`).join("\n");
   const recentSaves = saved.slice(0,20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
@@ -1460,125 +1429,161 @@ async function rankFilter(items){
   }catch(e){ console.warn("Popularity check unavailable:",e); return items; }
 }
 
-/* ============ feed refresh ============ */
-async function refreshFeed(){
-  saveSettings(false);
-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
-  const btn=document.getElementById("refreshBtn");
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Thinking…';
-  try{
-    const prompt = buildPrompt();
-    const text = await callAI(prompt);
-    let items = dropAlreadySaved(parseItems(text));
-    if(!items.length) throw new Error("Model returned no usable items");
-    btn.innerHTML='<span class="spin"></span> Checking links…';
-    const before=items.length;
-    items = (await rankFilter(await validateItems(items))).slice(0, S.itemCount);
-    if(!items.length) throw new Error("All suggested links failed the live check — try again");
-    items.forEach(i=>shown.push(i.url));
-    if(shown.length>200) shown=shown.slice(-200);
-    feed = items;
-    persistAll();
-    if(curTab==="feed") renderFeed(); else updateCounts();
-    toast(items.length+" new ideas from "+PROVIDERS[S.provider].label+(before-items.length>Math.min(3,before-S.itemCount)?" ("+(before-items.length)+" dead links filtered)":""));
-  }catch(e){
-    console.error(e);
-    toast("Hmm: "+e.message, 6000);
-  }finally{
-    btn.disabled=false; btn.innerHTML="&#10227; New ideas";
-  }
-}
-
-/* ============ stumble ============ */
+/* ============ stumble — validated-spool discovery surface ============ */
+// Stumble is the app's home surface. One AI call requests ~12 candidates
+// (buildPrompt("stumble")); they pass dropAlreadySaved → validateItems (tier-1
+// dead-link + tier-2 soft-404/challenge/title-mismatch) → rankFilter, and survivors
+// go into `spool`. A "deal" of N cards (1/2/4) is dealt from the spool into `stDeal`.
 let stLoading = false;
+// Pull one fresh batch into the spool. Returns the number of NEW survivors added.
 async function stumbleFetch(){
-  if(stLoading) return false;
-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return false; }
-  stLoading = true; renderStumble();
+  if(stLoading) return 0;
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
+  stLoading = true; renderStumble(); syncRefillBtn();
   try{
     const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"))))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
     if(shown.length>200) shown=shown.slice(-200);
-    spool = spool.concat(items.filter(i=>!spool.some(p=>p.url===i.url)));
+    const dealtUrls = new Set(stDeal.map(d=>d && d.url));
+    const fresh = items.filter(i=>!spool.some(p=>p.url===i.url) && !dealtUrls.has(i.url));
+    spool = spool.concat(fresh);
     persistAll();
-    return items.length>0;
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return false; }
-  finally{ stLoading=false; }
+    return fresh.length;
+  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return 0; }
+  finally{ stLoading=false; syncRefillBtn(); }
 }
+// Take one card from the spool (respecting the category filter). null if empty.
+function spoolTake(){
+  const c = applyFilter(spool);
+  if(!c.length) return null;
+  const it = c[Math.floor(Math.random()*c.length)];
+  spool = spool.filter(p=>p.url!==it.url);
+  return it;
+}
+// Ensure the spool can yield at least `need` cards, refilling (capped) if short.
+async function ensureSpool(need){
+  let attempts = 0;
+  while(applyFilter(spool).length < need && attempts < 2){
+    const added = await stumbleFetch();
+    attempts++;
+    if(!added && applyFilter(spool).length < need) break;   // bad AI day — stop looping
+  }
+  return applyFilter(spool).length;
+}
+// Deal a fresh set of stSize cards. Refills the spool as needed.
 async function stumbleNext(){
-  let pick = ()=>{ const c=applyFilter(spool); return c.length?c[Math.floor(Math.random()*c.length)]:null; };
-  let it = pick();
-  if(!it){
-    const ok = await stumbleFetch();
-    it = ok ? pick() : null;
-  }
-  stCur = it;
-  save("stcur", stCur);
-  if(stCur) spool = spool.filter(p=>p.url!==stCur.url);
-  if(spool.length<3 && !stLoading && stCur) stumbleFetch();
+  const need = stSize;
+  await ensureSpool(need);
+  const deal = [];
+  for(let n=0;n<need;n++){ const it = spoolTake(); if(it) deal.push(it); }
+  stDeal = deal;
   persistAll(); renderStumble();
+  if(!stDeal.length) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
+  // top the spool back up for the next deal, quietly
+  if(applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
 }
-function renderStumble(){
-  const v = document.getElementById("view-stumble");
-  if(stLoading && !stCur){
-    v.innerHTML = `<div class="empty"><h2>Stumbling…</h2><p>Hunting down corners of the web you didn't know you needed.</p><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent);width:26px;height:26px"></span></div>`;
-    return;
-  }
-  if(!stCur){
-    v.innerHTML = `<div class="empty"><h2>Ready to stumble?</h2><p>One page at a time, picked for your interests. Thumbs up or down to teach it your taste — use the category pills above to stumble within one area.</p><button class="btn btn-primary" onclick="stumbleNext()">&#127922; Stumble</button></div>`;
-    return;
-  }
-  const it = stCur;
+// Replace a single dealt card (index) with a fresh one from the spool.
+async function stumbleReplace(idx){
+  await ensureSpool(1);
+  const it = spoolTake();
+  if(it){ stDeal[idx] = it; }
+  else { stDeal.splice(idx,1); }   // nothing live to deal — drop the slot
+  persistAll(); renderStumble();
+  if(applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+}
+// Header "⟳ New ideas" button: replenish the spool and re-deal.
+async function stumbleRefill(){
+  saveSettings(false);
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
+  if(curTab!=="stumble") showTab("stumble");
+  await stumbleNext();
+}
+function syncRefillBtn(){
+  const btn = document.getElementById("refreshBtn");
+  if(!btn) return;
+  btn.disabled = stLoading;
+  btn.innerHTML = stLoading ? '<span class="spin"></span> Thinking…' : "&#10227; New ideas";
+}
+function setStSize(n){
+  stSize = n; save("stsize", n);
+  renderStumble();
+  // grow the current deal up to the new size (deal extra) or trim down
+  if(stDeal.length < n){ stumbleNext(); }
+  else if(stDeal.length > n){ stDeal = stDeal.slice(0,n); persistAll(); renderStumble(); }
+}
+function stCardHTML(it, idx){
   const cat = catByName(it.category);
   const dom = domain(it.url);
   const fav = dom ? `https://www.google.com/s2/favicons?domain=${dom}&sz=64` : "";
   const grad = catGrad(cat);
   const chain = imageChain(it);
   imgChains[it.id] = chain.slice(1);
-  v.innerHTML = `<div class="stumble">
-    <div class="st-bar"><button class="btn btn-primary" onclick="stumbleNext()" ${stLoading?"disabled":""}>&#127922; Stumble ${stLoading?'<span class="spin"></span>':"&rarr;"}</button></div>
-    <div class="st-card">
-      <a class="thumb" onclick="stumbleOpen()" title="Open page">
+  return `<div class="st-card">
+      <a class="thumb" onclick="stumbleOpen(${idx})" title="Open page">
         ${chain[0]?`<img src="${esc(chain[0])}" data-grad="${grad}" data-fav="${esc(fav)}" data-dom="${esc(dom)}" onerror="nextImg(this,'${esc(it.id)}')" onload="mshotsRetry(this)">`
                   :`<div class="ph" style="background:linear-gradient(135deg,${grad})">${fav?`<img src="${esc(fav)}">`:""}${esc(dom||"idea")}</div>`}
       </a>
       <div class="st-body">
         <span class="chip" style="background:${cat.chip}">${esc(cat.name)}</span>
-        <div class="st-title" onclick="stumbleOpen()">${esc(it.title)}</div>
+        <div class="st-title" onclick="stumbleOpen(${idx})">${esc(it.title)}</div>
         <div class="src">${esc(it.source||dom)}</div>
         <div class="benefit"><b>Why for you:</b> ${esc(it.benefit)}</div>
       </div>
       <div class="st-actions">
-        <button class="act" onclick="stumbleVote(false)">&#128078; Not my thing</button>
-        <button class="act" onclick="stumbleVote(true)">&#128077; More like this</button>
-        <button class="act" onclick="stumbleSave()">&#128278; Save</button>
-        <button class="act big" onclick="stumbleOpen()">Open page &#8599;</button>
+        <button class="act" onclick="stumbleVote(${idx},false)">&#128078; Not for me</button>
+        <button class="act" onclick="stumbleVote(${idx},true)">&#128077; More like this</button>
+        <button class="act" onclick="stumbleSave(${idx})">&#128278; Save</button>
+        <button class="act big" onclick="stumbleOpen(${idx})">Open &#8599;</button>
       </div>
+    </div>`;
+}
+function sizeSelector(){
+  return `<div class="st-size">${[1,2,4].map(n=>`<button class="${stSize===n?"on":""}" onclick="setStSize(${n})">${n}</button>`).join("")}</div>`;
+}
+function renderStumble(){
+  const v = document.getElementById("view-stumble");
+  if(stLoading && !stDeal.length){
+    v.innerHTML = `<div class="empty"><h2>Stumbling…</h2><p>Hunting down corners of the web you didn't know you needed.</p><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent);width:26px;height:26px"></span></div>`;
+    return;
+  }
+  if(!stDeal.length){
+    v.innerHTML = `<div class="stumble"><div class="st-bar">
+      <button class="btn btn-primary" onclick="stumbleNext()">&#127922; Stumble</button>${sizeSelector()}</div>
+      <div class="empty"><h2>Ready to stumble?</h2><p>Deal 1, 2, or 4 validated pages at a time, picked for your interests. Save or pass on each, and vote to teach it your taste — use the category pills above to stumble within one area.</p></div></div>`;
+    return;
+  }
+  v.innerHTML = `<div class="stumble deal-${stSize}">
+    <div class="st-bar">
+      <button class="btn btn-primary" onclick="stumbleNext()" ${stLoading?"disabled":""}>&#127922; Stumble ${stLoading?'<span class="spin"></span>':"&rarr;"}</button>
+      ${sizeSelector()}
+    </div>
+    <div class="st-deal deal-${stSize}">
+      ${stDeal.map((it,idx)=>stCardHTML(it,idx)).join("")}
     </div>
   </div>`;
 }
-function stumbleVote(up){
-  if(!stCur) return;
-  (up?likes:hidden).push({title:stCur.title, category:stCur.category, ts:Date.now()});
+function stumbleVote(idx, up){
+  const it = stDeal[idx]; if(!it) return;
+  (up?likes:hidden).push({title:it.title, category:it.category, ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   if(hidden.length>60) hidden=hidden.slice(-60);
   toast(up?"Noted — more like this":"Noted — less like that");
-  stumbleNext();
+  if(stSize===1) stumbleNext(); else stumbleReplace(idx);
 }
-function stumbleSave(){
-  if(!stCur) return;
-  if(!saved.some(s=>s.url===stCur.url)) saved.unshift(stCur);
-  likes.push({title:stCur.title, category:stCur.category, ts:Date.now()});
+function stumbleSave(idx){
+  const it = stDeal[idx]; if(!it) return;
+  if(!saved.some(s=>s.url===it.url)) saved.unshift(it);
+  likes.push({title:it.title, category:it.category, ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   toast("Saved");
-  stumbleNext();
+  if(stSize===1) stumbleNext(); else stumbleReplace(idx);
 }
-function stumbleOpen(){
-  if(!stCur) return;
-  clicks.push({title:stCur.title, category:stCur.category, ts:Date.now()});
+function stumbleOpen(idx){
+  const it = stDeal[idx]; if(!it) return;
+  clicks.push({title:it.title, category:it.category, ts:Date.now()});
   if(clicks.length>60) clicks=clicks.slice(-60);
   persistAll();
-  openLink(stCur.url);
+  openLink(it.url);
 }
 
 /* ============ export guides modal ============ */
@@ -3468,7 +3473,7 @@ function impLike(idx){
   likes.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   Store.putCards(imported); persistAll(); renderImportedKeepFocus();
-  toast("Liked — more like this in your feed");
+  toast("Liked — more like this in Stumble");
 }
 function impSave(idx){
   const it=imported[idx]; if(!it||!it.url) return;
@@ -3552,7 +3557,7 @@ Suggest 6-10 NEW feed categories (2-4 words each, title case) that would usefull
     renderCatSugs();
     if(!catSugs.length) toast("Nothing new suggested — your categories already cover it");
   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
-  finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest feed sections"; }
+  finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest categories"; }
 }
 function renderCatSugs(){
   document.getElementById("catSuggest").innerHTML = catSugs.map((s,i)=>
@@ -4361,13 +4366,13 @@ async function bootData(){
   // pull all persistent state from the Core service before first render
   imported = await Store.getCards();
   saved    = await Store.getSaved();
-  feed   = (await load("feed",   [])) || [];
   hidden = (await load("hidden", [])) || [];
   clicks = (await load("clicks", [])) || [];
   shown  = (await load("shown",  [])) || [];
   likes  = (await load("likes",  [])) || [];
   spool  = (await load("spool",  [])) || [];
-  stCur  = await load("stcur", null);
+  stDeal = (await load("stdeal", [])) || [];
+  stSize = (await load("stsize", 1)) || 1;
   filterCat = (await load("fcat", "")) || "";
   viewMode  = (await load("view", "g4")) || "g4";
   impTag    = (await load("itag", "")) || "";
@@ -4380,7 +4385,9 @@ async function bootData(){
   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
 
   // one-time data hygiene (was a synchronous IIFE)
-  feed = dropAlreadySaved(feed); save("feed", feed);
+  // Feed module removed in v1.11.0 — clear its stored kv (cheap tombstone; no schema change).
+  save("feed", []);
+  spool = dropAlreadySaved(spool); save("spool", spool);
   const before=imported.length;
   imported = imported.filter(i=>!/^https?:\/\//i.test(i.title));
   imported = imported.filter(i=>!/^.{2,40}\bsaved\b.{0,80}\b(link|post|video|event)\b\.?$/i.test(i.title));
@@ -4405,7 +4412,10 @@ async function bootData(){
   ensureIds();
   save("settings", S);
   updateCounts();
-  showTab(await load("tab","feed"));
+  let bootTab = await load("tab","stumble");
+  if(bootTab==="feed") bootTab = "stumble";   // Feed removed in v1.11.0 — a persisted "feed" maps home
+  showTab(bootTab);
+  syncRefillBtn();
 
   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
   try{ if(curTab==="imported") renderImported(); }catch(e){ console.warn("imported render failed", e); }

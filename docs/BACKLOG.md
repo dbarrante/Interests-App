@@ -3,6 +3,31 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.11.0 Stumble-first — Feed removed (2026-07-03)
+
+**Feed module removed.** Rationale: the Feed asked the AI for N articles and rendered them as a
+grid, but AI-hallucinated deep URLs mostly don't exist. After v1.10.2–1.10.4 the validation
+pipeline (tier-1 `/api/check-links` + tier-2 `/api/check-content` soft-404 / entity / challenge /
+title-mismatch detection) correctly kills most of those suggestions — so the honest Feed rendered
+nearly empty or full of drops. Rather than water down validation, we killed the Feed and made
+**Stumble the primary discovery surface**.
+
+- **Removed:** Feed tab + `view-feed` + `renderFeed`/`refreshFeed`, feed-only empty states, the
+  `feed` global + its persistence. Boot writes a one-time `save("feed",[])` tombstone (no schema
+  change). A persisted `tab==="feed"` migrates to `"stumble"`; boot default is now `"stumble"`.
+- **Kept (shared):** categories/importance sliders → `buildPrompt` (UI relabeled "feed sections" →
+  "interest categories"), cat-bar filtering for Saved, `dropAlreadySaved`, `parseItems`,
+  `validateItems` + `rankFilter` (now feed the spool), `shown` history, per-card save flows.
+- **Stumble now deals 1 / 2 / 4 validated cards** from a `spool`. One AI call requests ~12
+  candidates (`buildPrompt("stumble")`) → `dropAlreadySaved` → `validateItems` → `rankFilter` →
+  survivors spool. `stDeal` (persisted, replaces `stCur`) holds the current deal; `stSize`
+  (persisted kv `stsize`, default 1) is the deal size. Deal-size selector (1/2/4 toggle) on the
+  view. Auto-refill when the spool is short, capped at 2 attempts/deal → friendly "couldn't find
+  enough live ideas" instead of looping. In multi-card mode, Save / "Not for me" replaces just that
+  one card (single replacement). Header "⟳ New ideas" repoints to `stumbleRefill`.
+- Layout: 1 = single card, 2 = side-by-side, 4 = 2×2 grid, reusing the existing card/thumb/ph
+  markup and `imageChain`/noshot machinery.
+
 ## v1.10.0 iPhone-sync prep release (2026-07-03)
 
 Phase 4 of the full-review pass in `docs/full-review-2026-07-02.md` (section G): the

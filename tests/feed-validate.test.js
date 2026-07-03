@@ -72,11 +72,17 @@ t("boot hygiene purges persisted thum.io error-image URLs from cards and clips",
   assert.ok(html.indexOf('indexOf("image.thum.io")') >= 0, "one-time thum.io purge present in bootData");
 });
 
-t("refreshFeed still runs validateItems before showing the feed", () => {
-  const i = html.indexOf("async function refreshFeed(");
-  assert.ok(i >= 0, "refreshFeed present");
-  const body = html.slice(i, i + 1400);
-  assert.ok(body.indexOf("validateItems(") >= 0, "refreshFeed validates items before rendering");
+// Feed module was removed in v1.11.0 — Stumble is now the home surface. The spool
+// refill (stumbleFetch) is the sole path that fills the deal, and it MUST still run
+// validateItems (+ rankFilter, dropAlreadySaved) before any card can be dealt.
+t("stumbleFetch validates items before they enter the spool (refreshFeed is gone)", () => {
+  assert.ok(html.indexOf("async function refreshFeed(") < 0, "refreshFeed must be removed");
+  assert.ok(html.indexOf("function renderFeed(") < 0, "renderFeed must be removed");
+  const i = html.indexOf("async function stumbleFetch(");
+  assert.ok(i >= 0, "stumbleFetch present");
+  const body = html.slice(i, html.indexOf("\n}", i) + 2);
+  assert.ok(body.indexOf("validateItems(") >= 0, "stumbleFetch validates items before spooling");
+  assert.ok(body.indexOf("dropAlreadySaved(") >= 0, "stumbleFetch drops already-saved before spooling");
 });
 
 console.log(passed + " passed, " + failed + " failed");
