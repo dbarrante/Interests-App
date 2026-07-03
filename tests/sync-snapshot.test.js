@@ -193,5 +193,96 @@ test("full sync cycle keeps the peer tombstone's original deletedAt end-to-end",
   dA.close();
 });
 
+// --- Task 4: clock-skew snapshot guard ---------------------------------------
+// Hand-write a peer folder with a chosen publishedAt so we can drive the guard.
+function writeRawPeer(syncDir, name, publishedAt, cards) {
+  const folder = path.join(syncDir, name);
+  fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+  const snap = {
+    schemaVersion: dbm.SCHEMA_VERSION, deviceId: name, deviceLabel: name,
+    publishedAt: publishedAt, cards: cards || [], saved: [], tombstones: [],
+  };
+  if (publishedAt === "OMIT") { delete snap.publishedAt; }
+  fs.writeFileSync(path.join(folder, "snapshot.json"), JSON.stringify(snap));
+  const meta = { schemaVersion: dbm.SCHEMA_VERSION, deviceId: name, deviceLabel: name,
+    counts: { cards: (cards || []).length, saved: 0, images: 0 } };
+  if (publishedAt !== "OMIT") meta.publishedAt = publishedAt;
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify(meta));
+}
+
+test("clock-skew: peer 25h in the future is SKIPPED, counted, not merged", () => {
+  const syncDir = tmp();
+  const now = Date.now();
+  writeRawPeer(syncDir, "dev_FUTURE", now + 25 * 3600 * 1000,
+    [{ id: "c_future", url: "https://f.com", updatedAt: now + 25 * 3600 * 1000 }]);
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA },
+    { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: false, backupFn: function () {} });
+  assert.strictEqual(res.skewSkipped, 1, "skewSkipped incremented");
+  assert.ok(!dbm.allCards(dA).some(c => c.id === "c_future"), "future-skewed card must NOT be merged");
+  dA.close();
+});
+
+test("clock-skew: peer 23h in the future is merged normally (within tolerance)", () => {
+  const syncDir = tmp();
+  const now = Date.now();
+  writeRawPeer(syncDir, "dev_NEAR", now + 23 * 3600 * 1000,
+    [{ id: "c_near", url: "https://n.com", updatedAt: now + 23 * 3600 * 1000 }]);
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA },
+    { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: false, backupFn: function () {} });
+  assert.strictEqual(res.skewSkipped, 0, "23h peer not skipped");
+  assert.ok(dbm.allCards(dA).some(c => c.id === "c_near"), "23h-future card merged normally");
+  dA.close();
+});
+
+test("clock-skew: peer with NO publishedAt is trusted (merged, not skipped)", () => {
+  const syncDir = tmp();
+  writeRawPeer(syncDir, "dev_OLD", "OMIT",
+    [{ id: "c_old", url: "https://o.com", updatedAt: Date.now() }]);
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  const res = sync.runSync({ db: dA, storeDir: storeA },
+    { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: false, backupFn: function () {} });
+  assert.strictEqual(res.skewSkipped, 0, "absent publishedAt not counted as skew");
+  assert.ok(dbm.allCards(dA).some(c => c.id === "c_old"), "publishedAt-less peer is trusted and merged");
+  dA.close();
+});
+
+// --- Task 4: fp de-published ------------------------------------------------
+test("publishSnapshot writes NO fp key into snapshot.json", () => {
+  const store = tmpStore(); const d = dbm.openDb(store);
+  dbm.upsertCard(d, { id: "c_1", url: "https://a.com" });
+  dbm.setFp(d, "c_1", "somefingerprint");   // fp exists in DB…
+  const syncDir = tmp();
+  sync.publishSnapshot({ db: d, storeDir: store }, syncDir, "dev_A", "Desktop");
+  const raw = JSON.parse(fs.readFileSync(path.join(syncDir, "dev_A", "snapshot.json"), "utf8"));
+  assert.ok(!("fp" in raw), "published snapshot must not contain an fp key");
+  d.close();
+});
+
+test("an OLD snapshot that still carries an fp key merges without error (fp ignored)", () => {
+  const syncDir = tmp();
+  const folder = path.join(syncDir, "dev_LEGACY");
+  fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+  const snap = {
+    schemaVersion: dbm.SCHEMA_VERSION, deviceId: "dev_LEGACY", deviceLabel: "Legacy",
+    publishedAt: Date.now(),
+    cards: [{ id: "c_legacy", url: "https://legacy.com", updatedAt: Date.now() }],
+    saved: [], fp: { c_legacy: "oldfp" }, tombstones: [],   // legacy fp key present
+  };
+  fs.writeFileSync(path.join(folder, "snapshot.json"), JSON.stringify(snap));
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({
+    schemaVersion: dbm.SCHEMA_VERSION, deviceId: "dev_LEGACY", deviceLabel: "Legacy",
+    publishedAt: snap.publishedAt, counts: { cards: 1, saved: 0, images: 0 },
+  }));
+  const storeA = tmpStore(); const dA = dbm.openDb(storeA);
+  assert.doesNotThrow(function () {
+    sync.runSync({ db: dA, storeDir: storeA },
+      { syncDir, deviceId: "dev_A", deviceLabel: "Desktop", publish: false, backupFn: function () {} });
+  }, "legacy fp-bearing snapshot must merge without error");
+  assert.ok(dbm.allCards(dA).some(c => c.id === "c_legacy"), "legacy card merged despite fp key");
+  dA.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

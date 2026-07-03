@@ -479,7 +479,7 @@ function createServer(ctx) {
     try { defaultDir = sync.defaultSyncDir(); dropboxFound = !!defaultDir; } catch (e) {}
     const syncDir = sc.dir || defaultDir;
     let peers = [];
-    try { if (syncDir) peers = sync.readPeerSnapshots(syncDir, sc.deviceId).map(function (p) { return { deviceLabel: p.deviceLabel, deviceId: p.deviceId, publishedAt: p.publishedAt }; }); } catch (e) {}
+    try { if (syncDir) peers = sync.readPeerSnapshots(syncDir, sc.deviceId).peers.map(function (p) { return { deviceLabel: p.deviceLabel, deviceId: p.deviceId, publishedAt: p.publishedAt }; }); } catch (e) {}
     let changedAt = 0; try { changedAt = +(dbm.getKV(ctx.db, "ia_sync_changed_at") || 0); } catch (e) {}
     res.json({
       enabled: sc.enabled, folder: syncDir, dropboxFound: dropboxFound,

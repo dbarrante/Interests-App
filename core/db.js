@@ -241,6 +241,16 @@ function delTombstone(db, id, kind) {
   db.prepare("DELETE FROM tombstones WHERE id=? AND kind=?").run(id, kind);
 }
 // Delete tombstones older than (now - olderThanMs). Retention pruning.
+//
+// RETENTION POLICY — KEEP FOREVER (intentionally never called automatically).
+// This function exists but is deliberately not wired into any scheduled/prod path.
+// A deleted card is represented ONLY by its tombstone; merge.js resurrects any card
+// a peer still holds unless a NEWER tombstone outranks it. An occasionally-offline
+// peer (e.g. a phone that syncs weeks apart) still carries the pre-delete card, so
+// pruning ANY tombstone on a TTL would let that stale peer resurrect the deleted
+// card on its next sync. There is no safe TTL without knowing every peer has already
+// seen the delete. Revisit ONLY when per-peer sync cursors let us prove a tombstone
+// has propagated to all peers; until then, keep tombstones forever. Delete nothing.
 function pruneTombstones(db, olderThanMs) {
   const cutoff = Date.now() - (Number(olderThanMs) || 0);
   db.prepare("DELETE FROM tombstones WHERE deletedAt < ?").run(cutoff);

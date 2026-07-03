@@ -52,6 +52,13 @@ function publishSnapshot(ctx, syncDir, deviceId, deviceLabel) {
   }
 
   // 2) snapshot.json (atomic)
+  // NOTE: `fp` (placeholder fingerprints) is deliberately NOT published. It is
+  // machine-local, re-derivable state that mergeSnapshots never consumes — writing
+  // it was dead weight and an asymmetry (published but ignored on read). Old
+  // snapshots that still carry an `fp` key remain readable and merge fine: readSnapshot
+  // tolerates its absence and merge simply never looks at it (forward-compat additive
+  // rule — see the schemaVersion gate in readPeerSnapshots). fp still lives in the DB
+  // and is captured by DB-file backups; only the sync JSON drops it.
   const snapshot = {
     schemaVersion: db.SCHEMA_VERSION,
     deviceId: deviceId,
@@ -59,7 +66,6 @@ function publishSnapshot(ctx, syncDir, deviceId, deviceLabel) {
     publishedAt: Date.now(),
     cards: lib.cards,
     saved: lib.saved,
-    fp: lib.fp,
     tombstones: lib.tombstones,
   };
   _writeAtomic(path.join(folder, "snapshot.json"), JSON.stringify(snapshot));
@@ -105,13 +111,46 @@ function readSnapshot(folder) {
   };
 }
 
+// Max clock skew we tolerate on a peer's meta.publishedAt before we distrust the
+// whole snapshot. A peer whose clock is far in the FUTURE stamps every item's
+// updatedAt in the future too, so it would win every LWW conflict and steamroll
+// real edits from correctly-clocked devices (review §1.2). 24h absorbs ordinary
+// timezone/DST/NTP wobble while still catching a genuinely broken clock.
+const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+
+// Returns { peers, skewSkipped }. A snapshot whose meta.publishedAt is more than
+// 24h in the FUTURE (relative to our own now) is dropped WHOLE — snapshot-level
+// gate only; we do NOT clamp individual item timestamps (too invasive for Phase 4).
+// A MISSING publishedAt is treated as TRUSTED (not skipped): older snapshots
+// predate the field, and absence is not evidence of a bad clock.
 function readPeerSnapshots(syncDir, selfDeviceId) {
-  return peerDirs(syncDir, selfDeviceId)
+  var skewSkipped = 0;
+  var now = Date.now();
+  var peers = peerDirs(syncDir, selfDeviceId)
     // Thread the REAL on-disk folder path (p.dir) — NOT the snapshot's
     // self-asserted deviceId — so mergeSnapshots/applyMerge copy images from the
     // trustworthy folder we actually read, never a JSON-controlled redirection.
     .map(function (p) { var s = readSnapshot(p.dir); return s ? Object.assign({}, s, { dir: p.dir }) : null; })
-    .filter(function (s) { return s && (s.schemaVersion | 0) <= db.SCHEMA_VERSION; });
+    // FORWARD-COMPAT CONTRACT (schemaVersion gate): a peer at or below our
+    // SCHEMA_VERSION is mergeable. Additive fields at the SAME version are always
+    // safe — merge reads only the keys it knows and ignores the rest (e.g. an old
+    // `fp` key). A BREAKING change (renamed/removed field, changed semantics) MUST
+    // bump SCHEMA_VERSION and ship app-first: every peer must be running the new
+    // app before any peer publishes the new version, so older peers cleanly skip
+    // (schemaVersion > ours) rather than mis-merging.
+    .filter(function (s) { return s && (s.schemaVersion | 0) <= db.SCHEMA_VERSION; })
+    .filter(function (s) {
+      // Absent publishedAt (older snapshots) => trusted, keep.
+      if (s.publishedAt == null || !isFinite(s.publishedAt)) return true;
+      if (Number(s.publishedAt) - now > MAX_FUTURE_SKEW_MS) {
+        skewSkipped++;
+        console.error("sync: skipping future-skewed peer snapshot (clock skew) deviceId=" +
+          s.deviceId + " dir=" + s.dir + " publishedAt=" + s.publishedAt + " now=" + now);
+        return false;
+      }
+      return true;
+    });
+  return { peers: peers, skewSkipped: skewSkipped };
 }
 
 function buildLocal(ctx) {
@@ -181,7 +220,9 @@ function runSync(ctx, opts) {
   const syncDir = opts.syncDir;
   const backupFn = opts.backupFn || function () { backup.runBackup(ctx.db, ctx.storeDir); };
   let changed = false, conflicts = 0;
-  const peers = readPeerSnapshots(syncDir, opts.deviceId);
+  const rp = readPeerSnapshots(syncDir, opts.deviceId);
+  const peers = rp.peers;
+  const skewSkipped = rp.skewSkipped;
   if (peers.length) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0) {
@@ -199,7 +240,7 @@ function runSync(ctx, opts) {
     publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
     publishedAt = Date.now();
   }
-  return { changed: changed, conflicts: conflicts, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
+  return { changed: changed, conflicts: conflicts, skewSkipped: skewSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }
 
 module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot, readPeerSnapshots, buildLocal, applyMerge, runSync };
