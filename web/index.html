@@ -392,14 +392,14 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Category importance</h3>
-        <div class="hint" style="margin-bottom:12px">Higher = more of the feed devoted to it. Set to 0 to turn a category off. Custom categories can be removed with &#10005;.</div>
+        <h3>Feed sections</h3>
+        <div class="hint" style="margin-bottom:12px">These are the sections your feed is organized into. Higher = more of the feed devoted to it. Set to 0 to turn a section off. Custom sections can be removed with &#10005;.</div>
         <div id="sliders"></div>
         <div class="row2" style="margin-top:14px;align-items:center">
-          <div><input type="text" id="newCatName" placeholder="Add your own category, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
+          <div><input type="text" id="newCatName" placeholder="Add your own feed section, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
           <div style="flex:0 0 auto;display:flex;gap:8px">
             <button class="btn btn-ghost" onclick="addCategory()">+ Add</button>
-            <button class="btn btn-ghost" id="catSugBtn" onclick="suggestCategories()">&#10024; Suggest categories</button>
+            <button class="btn btn-ghost" id="catSugBtn" onclick="suggestCategories()">&#10024; Suggest feed sections</button>
           </div>
         </div>
         <div id="catSuggest" class="tagwrap"></div>
@@ -407,18 +407,16 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
-        <h3>Your interests</h3>
+        <h3>Your profile</h3>
+        <div class="hint" style="margin-bottom:10px">Your profile is what the feed learns from — separate from your <strong>feed sections</strong> (set above) and the <strong>tags</strong> that came in with your imports.</div>
         <label>About you</label>
         <textarea id="aboutMe"></textarea>
         <label>Interests (comma-separated — the feed learns and you can prune anytime)</label>
         <textarea id="interestList" style="min-height:120px"></textarea>
-        <label style="margin-top:14px;display:block">Or describe what you're into — get suggestions</label>
+        <label style="margin-top:14px;display:block">Optional — describe what you're into (blends with your library below)</label>
         <textarea id="discInput" placeholder="e.g. I've been curious about welding, smart irrigation, maybe restoring an old arcade cabinet…"></textarea>
-        <button class="btn btn-ghost" id="discBtn" onclick="discoverInterests()" style="margin-top:10px">&#10024; Suggest interest categories</button>
-        <div id="discResults" class="tagwrap"></div>
-        <button id="discAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addDiscovered()">Add selected to my profile</button>
         <div style="margin-top:12px">
-          <button class="btn btn-ghost" id="analyzeLibBtn" onclick="analyzeLibrary()" title="Let your AI read your whole library and suggest interests + an About-you draft">&#129504; Analyze my library</button>
+          <button class="btn btn-ghost" id="analyzeLibBtn" onclick="buildMyProfile()" title="Reads your whole library (plus anything you type above) and suggests interests + an About-you draft">&#129504; Build my profile</button>
           <div id="profileReview" style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:11px;padding:12px">
             <div class="s" style="opacity:.7;margin-bottom:8px">Topics from your library — uncheck any you don't want, edit the About-you draft, then Accept.</div>
             <div id="profileChips" class="tagwrap"></div>
@@ -641,7 +639,7 @@ async function persistCards(opts){
   try{ await Store.putCards(imported, (opts && opts.confirm) ? {confirm:true} : undefined); }
   catch(e){
     const msg = (e && e.message) || String(e);
-    if(/409/.test(msg)){
+    if(/-> 409/.test(msg)){
       toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data.", 10000);
     }else{
       toast("⚠ Saving failed — your last change may not be stored: " + msg, 8000);
@@ -2788,14 +2786,6 @@ function selectShown(){
     .forEach(r=>selPicks.add(r.idx));
   renderImported();
 }
-function ogParse(html){
-  const pick = p=>{
-    let m = html.match(new RegExp('<meta[^>]+(?:property|name)=["\'](?:og:'+p+'|twitter:'+p+')["\'][^>]*content=["\']([^"\']+)','i'))
-         || html.match(new RegExp('<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\'](?:og:'+p+'|twitter:'+p+')','i'));
-    return m ? m[1].replace(/&amp;/g,"&").replace(/&#0?39;/g,"'").replace(/&quot;/g,'"').trim() : null;
-  };
-  return {img:pick("image"), title:pick("title"), desc:pick("description")};
-}
 // Select-mode "Fetch info": og:image/title/desc for SELECTED cards via the app's own
 // Core (Store.captureMeta) — no tabs, no forced re-screenshot. Kept as a manual override
 // alongside Select→Recapture (the heavier render+force worker path): the two are NOT
@@ -3743,7 +3733,7 @@ Suggest 6-10 NEW feed categories (2-4 words each, title case) that would usefull
     renderCatSugs();
     if(!catSugs.length) toast("Nothing new suggested — your categories already cover it");
   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
-  finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest categories"; }
+  finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest feed sections"; }
 }
 function renderCatSugs(){
   document.getElementById("catSuggest").innerHTML = catSugs.map((s,i)=>
@@ -3757,62 +3747,27 @@ function addSelectedCats(){
   renderCatSugs();
 }
 
-/* ============ interest discovery ============ */
-let discTags = [];
-async function discoverInterests(){
-  const txt = document.getElementById("discInput").value.trim();
-  if(!txt){ toast("Type a few words about what you might be into first"); return; }
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" first"); return; }
-  const btn=document.getElementById("discBtn");
-  btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Thinking…';
-  try{
-    const prompt = `The user is exploring new interests. Their existing interest profile:
-${S.interests}
-
-He just typed this rough musing about things he might be into:
-"${txt}"
-
-Suggest 10-14 concise interest categories (2-5 words each) he could add to his profile. Make them specific and feed-able (good topics for finding articles/projects), expand on what he typed, include a few adjacent ideas he didn't think of, and do NOT duplicate anything already in his profile. Return ONLY a JSON array of strings, e.g. ["MIG welding basics","drip irrigation automation"]`;
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-    const text = await call(prompt);
-    const t = text.replace(/```json|```/g,"").trim();
-    const a=t.indexOf("["), b=t.lastIndexOf("]");
-    if(a===-1||b===-1) throw new Error("No suggestions found in model response");
-    const arr = JSON.parse(t.slice(a,b+1));
-    discTags = arr.filter(x=>typeof x==="string" && x.trim()).slice(0,16).map(x=>({name:x.trim(), sel:false}));
-    renderDiscTags();
-    if(!discTags.length) toast("No suggestions came back — try rephrasing");
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
-  finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest interest categories"; }
-}
-function renderDiscTags(){
-  document.getElementById("discResults").innerHTML = discTags.map((tg,i)=>
-    `<button class="tagchip${tg.sel?" sel":""}" onclick="toggleTag(${i})">${tg.sel?"&#10003; ":""}${esc(tg.name)}</button>`).join("");
-  document.getElementById("discAdd").style.display = discTags.some(tg=>tg.sel)?"":"none";
-}
-function toggleTag(i){ discTags[i].sel=!discTags[i].sel; renderDiscTags(); }
-function addDiscovered(){
-  const add = discTags.filter(tg=>tg.sel).map(tg=>tg.name);
-  if(!add.length) return;
-  S.interests = S.interests.replace(/[,\s]+$/,"") + ", " + add.join(", ");
-  document.getElementById("interestList").value = S.interests;
-  save("settings", S);
-  discTags = discTags.filter(tg=>!tg.sel);
-  renderDiscTags();
-  toast(add.length+" interest"+(add.length>1?"s":"")+" added to your profile");
-}
-// ---- Analyze my library → interest profile (reuses the provider dispatch; chips like Discover;
-// non-destructive: interests appended de-duped, About you = the reviewed/edited box) ----
+// ---- Build my profile: one flow merging the old "Suggest interest categories"
+// (free-text → chips) and "Analyze my library" (library → chips + about draft).
+// Always uses the library when present; an optional free-text box (discInput) is
+// blended in via buildProfilePrompt's extraSources seam the way discoverInterests
+// used to incorporate what the user typed. Non-destructive: interests appended
+// de-duped on Accept, About you = the reviewed/edited box. Reuses the provider
+// dispatch and the profile-analyze.js pure helpers (wired, not rewritten). ----
 let _profileTags = [];
-async function analyzeLibrary(){
+async function buildMyProfile(){
+  // No-key guard (preserved from both old tools).
   if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" first"); showTab("settings"); return; }
+  const txt = (document.getElementById("discInput").value || "").trim();
   const all = imported.concat(saved);
-  if(!all.length){ toast("No cards to analyze yet"); return; }
+  // Need SOMETHING to work from: a library, or free text the user typed.
+  if(!all.length && !txt){ toast("Type a few words about what you're into, or import some cards first"); return; }
   const btn=document.getElementById("analyzeLibBtn");
-  btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Analyzing…';
+  btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Building…';
   try{
     const summary = summarizeLibrary(all);
-    const prompt = buildProfilePrompt(summary, { about:S.about, interests:S.interests }, []);
+    const extraSources = txt ? [{ label:"what they typed about their interests", text:txt }] : [];
+    const prompt = buildProfilePrompt(summary, { about:S.about, interests:S.interests }, extraSources);
     const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const res = parseProfileResult(await call(prompt));
     if(!res.interests.length && !res.about){ toast("The AI didn't return usable results — try again", 6000); return; }
@@ -3821,7 +3776,7 @@ async function analyzeLibrary(){
     renderProfileChips();
     document.getElementById("profileReview").style.display = "";
   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
-  finally{ btn.disabled=false; btn.innerHTML="&#129504; Analyze my library"; }
+  finally{ btn.disabled=false; btn.innerHTML="&#129504; Build my profile"; }
 }
 function renderProfileChips(){
   document.getElementById("profileChips").innerHTML = _profileTags.map((tg,i)=>
@@ -4668,7 +4623,7 @@ window.addEventListener("unhandledrejection", (event)=>{
   if(/-> 409/.test(msg) && /cards|saved/.test(msg)){
     toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data. If you meant to remove these items, use the flow's own confirm.", 10000);
     event.preventDefault();
-  }else if(/\/api\//.test(msg) && /-> \d\d\d/.test(msg)){
+  }else if(/^(PUT|PATCH|DELETE) /.test(msg) && /\/api\//.test(msg) && /-> \d\d\d/.test(msg)){
     toast("⚠ Saving failed — your last change may not be stored.", 8000);
     event.preventDefault();
   }
