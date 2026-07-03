@@ -3,6 +3,47 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.10.0 iPhone-sync prep release (2026-07-03)
+
+Phase 4 of the full-review pass in `docs/full-review-2026-07-02.md` (section G): the
+DESKTOP-side prerequisites for a future iPhone companion app. No iOS code — the
+deliverable is an API + sync layer a phone client can safely use, plus a written
+handoff design doc. Extension untouched this phase (stays 4.48).
+
+- [x] **T1** `GET /api/changes?since=` — delta read API (cards/saved/tombstones,
+  `now` watermark, at-least-once poll semantics); `GET /api/tombstones?since=` cheap
+  poll variant. `core/db.js` gains `cardsSince`/`savedSince`/`tombstonesSince`.
+- [x] **T2** Host-header allowlist (closes a DNS-rebinding hole; runs before the
+  Origin guard) + dormant pairing-token auth scaffolding (`ensurePairingToken`/
+  `getPairingToken` in `core/config.js`, `requireToken` middleware gated on a future
+  `lanEnabled` config flag, `GET /api/pair-status` capability probe). Bind stays
+  `127.0.0.1` regardless of the flag — asserted by test.
+- [x] **T3** Image manifest (`GET /api/images` → id/size/sniffed-type) and honest
+  content types on `GET /api/img/:id` (magic-byte sniff instead of hardcoded
+  `image/jpeg`).
+- [x] **T4** Sync robustness: clock-skew guard (peer snapshots >24h in the future are
+  skipped + counted as `skewSkipped` + logged), `fp` table no longer published in
+  snapshots (still merge-tolerant of old snapshots that have it), tombstone retention
+  policy documented as "keep forever" (an occasionally-offline phone peer makes any
+  TTL unsafe).
+- [x] **T5** `itemImg`/`setItemImg` accessor helpers in `web/index.html` remove
+  `scope==="saved" ? it.image : it.img`-shaped conditionals from renderer code. The
+  storage/wire format is UNCHANGED by design — cards keep `img`, saved keeps `image`;
+  a real schema rename would need an iOS-driven schema-version bump.
+- [x] **T6** `docs/iphone-sync-design.md` — handoff doc for the iOS build (architecture
+  decision, API surface, schema notes, open items). This BACKLOG entry.
+
+**Out of scope / deferred to the iOS phase** (see `docs/iphone-sync-design.md` section
+4 for the anchor):
+- Thumbnails — no server-side image-processing support yet.
+- Binary (non-base64) image upload — `PUT /api/img/:id` stays base64-in-JSON.
+- Settings/kv sync split — `kv` table stays entirely machine-local/unsynced until user
+  settings are separated from capture-queue/store-path state.
+- LAN fast-path enablement — the delta API + token/Host-allowlist infra exists, but
+  the bind-address change, TLS decision, and pairing UX are unbuilt; `lanEnabled`
+  stays off.
+- Per-peer sync cursors — needed before tombstones can ever be pruned; not designed.
+
 ## v1.9.0 tightening release (2026-07-03)
 
 Phase 3 duplication-collapse and module-extraction pass across core, web, and extension, plus a
