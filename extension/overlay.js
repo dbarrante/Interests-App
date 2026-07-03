@@ -12,10 +12,11 @@
   var bar = document.createElement("div");
   bar.id = "ia-bstumble-bar";
   bar.style.cssText = [
-    "position:fixed", "left:50%", "bottom:18px", "transform:translateX(-50%)",
+    "position:fixed", "left:50%", "top:12px", "transform:translateX(-50%)",
     "z-index:2147483647", "display:flex", "gap:8px", "align-items:center",
-    "background:rgba(26,24,21,.96)", "color:#f6f5f3", "padding:8px 12px",
-    "border-radius:12px", "box-shadow:0 6px 24px rgba(0,0,0,.4)",
+    "background:rgba(26,24,21,.97)", "color:#f6f5f3", "padding:8px 12px",
+    "border-radius:12px", "box-shadow:0 6px 24px rgba(0,0,0,.45)",
+    "border:1px solid rgba(255,255,255,.12)",
     "font:600 13px/1 system-ui,sans-serif", "pointer-events:auto"
   ].join(";");
 

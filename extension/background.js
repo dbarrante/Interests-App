@@ -110,12 +110,18 @@ async function bstumbleOpen(url) {
   bstumbleInjectOverlayWhenReady(bstumbleTabId);
 }
 function bstumbleInjectOverlayWhenReady(tabId) {
+  const inject = () => chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] }).catch(() => {});
   function onUpd(tid, info) {
     if (tid !== tabId || info.status !== "complete") return;
     try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {}
-    chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] }).catch(() => {});
+    inject();
   }
   try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
+  // Fallback: the "complete" event can fire before the listener attaches (fast
+  // loads / reused tab), which would leave the page with no bar. overlay.js is
+  // idempotent — it removes any existing bar first — so a redundant inject just
+  // redraws the same bar. This guarantees the bar appears within ~1.5s.
+  setTimeout(inject, 1500);
   setTimeout(() => { try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} }, 30000);
 }
 // The core action: open the next page, keeping the buffer topped up.
