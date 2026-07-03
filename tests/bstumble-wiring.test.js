@@ -13,6 +13,7 @@ ok("drain loop gated on _booted", /pollBrowserStumble[\s\S]{0,120}?_booted/.test
 ok("thumbs-up maps to likes", /v\.vote\s*>\s*0[\s\S]{0,60}?likes\.push/.test(src));
 ok("thumbs-down maps to hidden", /v\.vote\s*<\s*0[\s\S]{0,80}?hidden\.push/.test(src));
 ok("rated pages are suppressed via shown", /shown\.push\(v\.url\)/.test(src));
+ok("caps likes/hidden like the rest of the file", /likes\.length>60\) likes=likes\.slice\(-60\)/.test(src) && /hidden\.length>60\) hidden=hidden\.slice\(-60\)/.test(src));
 ok("stumbleForInterests scopes the prompt", /buildPrompt\(\s*["']stumble["']\s*,\s*interestKeys\s*\)/.test(src));
 ok("publishes categories", /ia_bstumble_cats/.test(src));
 

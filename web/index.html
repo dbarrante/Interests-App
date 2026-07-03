@@ -4472,6 +4472,8 @@ async function pollBrowserStumble(){
         else if(v.vote < 0) hidden.push(entry);
         shown.push(v.url);   // never re-serve a page the user already rated
       });
+      if(likes.length>60) likes=likes.slice(-60);
+      if(hidden.length>60) hidden=hidden.slice(-60);
       if(shown.length>200) shown=shown.slice(-200);
       persistAll();
     }
