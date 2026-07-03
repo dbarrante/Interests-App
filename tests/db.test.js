@@ -3,6 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const db = require("../core/db");
+const merge = require("../core/merge");
 
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + (e && e.message)); } }
@@ -408,6 +409,32 @@ t("allSaved tolerates a corrupt data JSON in one row (degrades that row, doesn't
   assert.ok(bad, "corrupt row still present");
   assert.strictEqual(bad.url, "u2");
   assert.strictEqual(bad.title, undefined, "JSON extras absent");
+  d.close();
+});
+
+// Task 2 item 1: db.js requires _stable from merge.js instead of defining its own —
+// assert the two signature paths (db's cardSig, which uses _stable internally, and
+// merge.js's exported _stable used directly) agree on a sample card in scrambled
+// key order. If they ever drift, content signatures would disagree between local
+// diffing (db.js) and sync merging (merge.js), causing phantom conflicts.
+t("db's cardSig path and merge.js's exported _stable agree on scrambled key order", () => {
+  const cardA = { b: 2, a: 1, nested: { y: "two", x: "one" }, arr: [3, 1, 2] };
+  const cardB = { nested: { x: "one", y: "two" }, arr: [3, 1, 2], a: 1, b: 2 };
+  // merge.js's _stable is key-order independent.
+  assert.strictEqual(merge._stable(cardA), merge._stable(cardB));
+
+  // db.js's cardSig (built on the SAME _stable, required from merge.js) must
+  // likewise be insensitive to the stored `data` JSON's key order.
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "c1", url: "u", platform: "p", cat: "cat", ts: 1, title: "t", extra: cardA });
+  const rowA = d.prepare("SELECT url,platform,cat,ts,img_file,img_url,data,updatedAt FROM cards WHERE id=?").get("c1");
+  // Re-parse and re-serialize `data` with scrambled key order, simulating a
+  // renderer round-trip, and confirm the signature is unchanged.
+  const parsed = JSON.parse(rowA.data);
+  const scrambled = {};
+  Object.keys(parsed).reverse().forEach(k => { scrambled[k] = parsed[k]; });
+  const rowB = Object.assign({}, rowA, { data: JSON.stringify(scrambled) });
+  assert.strictEqual(db.cardSig(rowA), db.cardSig(rowB), "cardSig unaffected by key order (via shared _stable)");
   d.close();
 });
 

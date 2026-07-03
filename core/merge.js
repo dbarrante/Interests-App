@@ -75,6 +75,6 @@
     return out;
   }
 
-  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots };
-  if (root) root.mergeSnapshots = mergeSnapshots;
+  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, _stable: _stable };
+  if (root) { root.mergeSnapshots = mergeSnapshots; root._iaStable = _stable; }
 })(typeof self !== "undefined" ? self : this);

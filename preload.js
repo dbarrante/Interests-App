@@ -9,8 +9,4 @@ const api = {
   openInApp: (url) => ipcRenderer.invoke("ia:open-in-app", url),
 };
 
-// Expose under BOTH names: the renderer references window.ia in some places and
-// window.app in others. Aliasing prevents a namespace mismatch from breaking the
-// native folder picker (Import legacy backup / Move data location).
 contextBridge.exposeInMainWorld("ia", api);
-contextBridge.exposeInMainWorld("app", api);

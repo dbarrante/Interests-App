@@ -104,5 +104,58 @@ t("saveConfig round-trip still works after a simulated torn write is overwritten
   assert.deepStrictEqual(leftovers, [], "no tmp sidecars left after recovering from a torn write");
 });
 
+// Task 2 item 4: getSyncConfig() split into a pure read + ensureSyncConfig() write.
+t("getSyncConfig() does NOT write config.json (no file created, no mtime change)", () => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-appdata2-"));
+  process.env.APPDATA = target;
+  delete require.cache[require.resolve("../core/config.js")];
+  const cfg2 = require("../core/config.js");
+
+  assert.ok(!fs.existsSync(cfg2.configPath()), "no config.json before first call");
+  const sc1 = cfg2.getSyncConfig();
+  assert.ok(!fs.existsSync(cfg2.configPath()), "getSyncConfig must not create config.json");
+  assert.ok(sc1.deviceId, "still returns an in-memory default deviceId");
+  assert.ok(sc1.deviceLabel, "still returns an in-memory default deviceLabel");
+
+  // Seed a config file, then confirm a bare get leaves content/mtime unchanged.
+  cfg2.saveConfig({ syncEnabled: true });
+  const before = fs.readFileSync(cfg2.configPath(), "utf8");
+  const mtimeBefore = fs.statSync(cfg2.configPath()).mtimeMs;
+  cfg2.getSyncConfig();
+  const after = fs.readFileSync(cfg2.configPath(), "utf8");
+  const mtimeAfter = fs.statSync(cfg2.configPath()).mtimeMs;
+  assert.strictEqual(before, after, "getSyncConfig must not modify config.json content");
+  assert.strictEqual(mtimeBefore, mtimeAfter, "getSyncConfig must not touch config.json mtime");
+
+  process.env.APPDATA = tmpAppData;
+  delete require.cache[require.resolve("../core/config.js")];
+});
+
+t("ensureSyncConfig() writes deviceId/deviceLabel defaults once, persists them", () => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-appdata3-"));
+  process.env.APPDATA = target;
+  delete require.cache[require.resolve("../core/config.js")];
+  const cfg3 = require("../core/config.js");
+
+  assert.ok(!fs.existsSync(cfg3.configPath()), "no config.json before ensureSyncConfig");
+  const sc = cfg3.ensureSyncConfig();
+  assert.ok(fs.existsSync(cfg3.configPath()), "ensureSyncConfig creates config.json");
+  const onDisk = cfg3.loadConfig();
+  assert.strictEqual(onDisk.deviceId, sc.deviceId, "deviceId persisted");
+  assert.strictEqual(onDisk.deviceLabel, sc.deviceLabel, "deviceLabel persisted");
+
+  // Second call is idempotent — same values, and getSyncConfig() afterward agrees
+  // (reads the now-persisted values) without writing again.
+  const sc2 = cfg3.ensureSyncConfig();
+  assert.strictEqual(sc2.deviceId, sc.deviceId);
+  assert.strictEqual(sc2.deviceLabel, sc.deviceLabel);
+  const read = cfg3.getSyncConfig();
+  assert.strictEqual(read.deviceId, sc.deviceId);
+  assert.strictEqual(read.deviceLabel, sc.deviceLabel);
+
+  process.env.APPDATA = tmpAppData;
+  delete require.cache[require.resolve("../core/config.js")];
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

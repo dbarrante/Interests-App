@@ -85,7 +85,25 @@ function setStorePath(p) {
   saveConfig(cfg);
 }
 
+// Pure read: applies in-memory defaults for deviceId/deviceLabel if missing but
+// does NOT persist them. Safe to call on every timer tick (core/synctimers.js
+// calls this every ~10s) without touching disk. Call ensureSyncConfig() once at
+// startup to persist the generated deviceId/deviceLabel so they stay stable
+// across restarts.
 function getSyncConfig() {
+  const cfg = loadConfig();
+  return {
+    enabled: !!cfg.syncEnabled,
+    dir: cfg.syncDir || null,
+    deviceId: cfg.deviceId || ("dev_" + require("crypto").randomUUID()),
+    deviceLabel: cfg.deviceLabel || (require("os").hostname() || "device"),
+  };
+}
+
+// Write-defaults side effect, split out of getSyncConfig(): generates and
+// persists deviceId/deviceLabel the first time they're missing. Call once at
+// startup (before anything reads sync config) so the device identity is stable.
+function ensureSyncConfig() {
   const cfg = loadConfig();
   let changed = false;
   if (!cfg.deviceId) { cfg.deviceId = "dev_" + require("crypto").randomUUID(); changed = true; }
@@ -130,6 +148,7 @@ module.exports = {
   getStorePath,
   setStorePath,
   getSyncConfig,
+  ensureSyncConfig,
   setSyncConfig,
   getSafeBrowsingKey,
   setSafeBrowsingKey,

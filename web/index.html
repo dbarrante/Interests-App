@@ -1077,7 +1077,7 @@ async function moveDataLocation(){
   let cur = {};
   try{ cur = await Store.storeLocation(); }catch(e){}
   let target = null;
-  const pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+  const pf = window.ia && window.ia.pickFolder;
   if (pf) { try { target = await pf(); } catch(e){ target = null; } }
   else { target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||""); }
   if(!target || target === cur.path) return;
@@ -1105,7 +1105,7 @@ async function renderSyncStatus(){
     "<div>Other devices: <b>" + peers + "</b></div>";
 }
 async function chooseSyncFolder(){
-  const pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+  const pf = window.ia && window.ia.pickFolder;
   let target = null;
   if(pf){ try{ target = await pf(); }catch(e){ target = null; } }
   else { target = prompt("Full path of the Dropbox sync folder:"); }
@@ -1128,7 +1128,7 @@ async function syncNowClick(){
     var out = document.getElementById("importLegacyResult");
     var srcDir = null;
     try {
-      var pf = (window.ia && window.ia.pickFolder) || (window.app && window.app.pickFolder);
+      var pf = window.ia && window.ia.pickFolder;
       if (pf) {
         srcDir = await pf();
       } else {

@@ -37,6 +37,10 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     try {
+      // Persist device identity (deviceId/deviceLabel) once, before anything reads
+      // sync config — getSyncConfig() is a pure read from here on and must not write.
+      config.ensureSyncConfig();
+
       const storeDir = config.getStorePath();
 
       // ctx for the Core service: opens the live DB at the resolved store path and

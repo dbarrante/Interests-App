@@ -125,8 +125,8 @@ function buildLocal(ctx) {
 
 function applyMerge(ctx, plan) {
   // Index imageCopies by id so each upsert can pair with its (single) copy.
-  const copyByeId = {};
-  for (const ic of plan.imageCopies) copyByeId[ic.id] = ic;
+  const copyById = {};
+  for (const ic of plan.imageCopies) copyById[ic.id] = ic;
 
   let upsertsApplied = 0, imageCopiesDone = 0;
   for (const u of plan.upserts) {
@@ -144,7 +144,7 @@ function applyMerge(ctx, plan) {
       // present locally — otherwise DEFER (skip) so a later cycle retries once the
       // image propagates (local keeps its lower updatedAt → self-heals).
       if (typeof ref === "string" && ref.indexOf("idb:") === 0) {
-        const ic = copyByeId[id];
+        const ic = copyById[id];
         if (ic) {
           try {
             fs.copyFileSync(path.join(ic.fromDir, "images", id + ".jpg"), path.join(images.imagesDir(ctx.storeDir), id + ".jpg"));
@@ -196,9 +196,8 @@ function runSync(ctx, opts) {
   let publishedAt = null;
   if (opts.publish !== false) {
     fs.mkdirSync(syncDir, { recursive: true });
-    const out = publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
+    publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
     publishedAt = Date.now();
-    void out;
   }
   return { changed: changed, conflicts: conflicts, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }

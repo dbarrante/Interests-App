@@ -6,11 +6,11 @@ const path = require("path");
 const http = require("http");
 const express = require("express");
 const dbm = require("./db");
+const { counts } = dbm;
 const images = require("./images");
+const { imageCount } = images;
 const { importLegacyBackup } = require("./importer");
-const backup = require("./backup.js");
-const { counts } = require("./db.js");
-const { imageCount } = require("./images.js");
+const backup = require("./backup");
 const config = require("./config");
 const sync = require("./sync");
 const bookmarks = require("./bookmarks");
@@ -223,44 +223,31 @@ function createServer(ctx) {
     res.json({ captures: q });
   });
 
-  // --- Single capture request (kv ia_capture_request) ---
+  // --- Single capture request / batch driver state / batch progress ---
+  // These three routes are byte-identical GET/POST kv pairs that differ only in
+  // the URL segment, the kv storage key, and the request/response body field
+  // name (request / state / progress). GET reads+JSON-parses the stored value
+  // (null if absent/corrupt); POST stores JSON.stringify(value), or clears the
+  // key to "" when value is null/undefined (mirrors the original per-route bodies).
   function readJsonKV(key) {
     const raw = dbm.getKV(ctx.db, key);
     if (!raw) return null;
     try { return JSON.parse(raw); } catch (e) { return null; }
   }
-
-  app.get("/api/capture-request", (req, res) => {
-    res.json({ request: readJsonKV("ia_capture_request") });
-  });
-  app.post("/api/capture-request", (req, res) => {
-    const request = req.body && req.body.request;
-    if (request == null) dbm.setKV(ctx.db, "ia_capture_request", "");
-    else dbm.setKV(ctx.db, "ia_capture_request", JSON.stringify(request));
-    res.json({ ok: true });
-  });
-
-  // --- Batch driver state (kv ia_batch_state) ---
-  app.get("/api/batch-state", (req, res) => {
-    res.json({ state: readJsonKV("ia_batch_state") });
-  });
-  app.post("/api/batch-state", (req, res) => {
-    const state = req.body && req.body.state;
-    if (state == null) dbm.setKV(ctx.db, "ia_batch_state", "");
-    else dbm.setKV(ctx.db, "ia_batch_state", JSON.stringify(state));
-    res.json({ ok: true });
-  });
-
-  // --- Batch progress (kv ia_batch_progress) ---
-  app.get("/api/batch-progress", (req, res) => {
-    res.json({ progress: readJsonKV("ia_batch_progress") });
-  });
-  app.post("/api/batch-progress", (req, res) => {
-    const progress = req.body && req.body.progress;
-    if (progress == null) dbm.setKV(ctx.db, "ia_batch_progress", "");
-    else dbm.setKV(ctx.db, "ia_batch_progress", JSON.stringify(progress));
-    res.json({ ok: true });
-  });
+  function jsonKvEndpoints(app, route, kvKey, field) {
+    app.get(route, (req, res) => {
+      res.json({ [field]: readJsonKV(kvKey) });
+    });
+    app.post(route, (req, res) => {
+      const value = req.body && req.body[field];
+      if (value == null) dbm.setKV(ctx.db, kvKey, "");
+      else dbm.setKV(ctx.db, kvKey, JSON.stringify(value));
+      res.json({ ok: true });
+    });
+  }
+  jsonKvEndpoints(app, "/api/capture-request", "ia_capture_request", "request");
+  jsonKvEndpoints(app, "/api/batch-state", "ia_batch_state", "state");
+  jsonKvEndpoints(app, "/api/batch-progress", "ia_batch_progress", "progress");
 
   // One-time legacy backup import. READ-ONLY on srcDir.
   app.post("/api/import", (req, res) => {
@@ -521,6 +508,17 @@ function createServer(ctx) {
   // 404 for unmatched API routes (static already returns 404 for missing files).
   app.use("/api", (req, res) => {
     res.status(404).json({ error: "not_found" });
+  });
+
+  // JSON error middleware — MUST be registered LAST. Catches anything that falls
+  // through to Express's default handler (an uncaught throw in a route not already
+  // wrapped in its own try/catch). Sanctioned behavior change: the response body
+  // no longer leaks a stack trace — the real error is logged server-side only.
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    console.error("unhandled route error:", err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ ok: false, error: "internal" });
   });
 
   return app;

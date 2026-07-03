@@ -5,6 +5,7 @@
 const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
+const { _stable } = require("./merge.js");
 
 // A row's id is a TEXT PRIMARY KEY and is bound positionally, so a missing id
 // (undefined) makes the bind THROW and rolls back the whole replaceCards/replaceSaved
@@ -45,11 +46,8 @@ const SCHEMA_VERSION = 2;   // bump whenever the schema below changes
 
 // Stable, key-order-independent stringify so content comparison doesn't churn
 // updatedAt when the renderer round-trips a card and re-serializes `data`.
-function _stable(v) {
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(_stable).join(",") + "]";
-  return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + _stable(v[k])).join(",") + "}";
-}
+// Shared with core/merge.js (content signatures drive both local diffing and
+// sync merging — drift between the two copies would cause phantom conflicts).
 // Content signature of a stored-or-to-be-stored row (EXCLUDES id + updatedAt).
 // Guarded the same way as rowToCard/rowToSaved: a corrupt stored `data` must not
 // throw here either (cardSig/savedSig run against EXISTING rows read from the DB
