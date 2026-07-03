@@ -40,6 +40,24 @@ t("validateItems also runs the content check to drop SOFT-404s (200 OK but 'not 
   assert.ok(body.indexOf('"empty"') < 0, "must NOT drop on the weak 'empty' signal (would filter JS-heavy article pages)");
 });
 
+t("validateItems keeps bot-challenged items but flags them noshot (no challenge-page screenshots)", () => {
+  const body = validateItemsBody();
+  assert.ok(body.indexOf('"challenge"') >= 0, "reads the challenge signal");
+  assert.ok(/noshot\s*=\s*1/.test(body), "flags noshot instead of dropping");
+  assert.ok(/403|429|503/.test(body), "also treats hard bot-wall statuses as challenge");
+});
+
+t("validateItems drops wrong-article URLs via titleMismatch (hallucinated IDs serving other pages)", () => {
+  const body = validateItemsBody();
+  assert.ok(body.indexOf("titleMismatch(") >= 0, "uses the titleMismatch predicate");
+});
+
+t("imageChain never screenshot-proxies a noshot item", () => {
+  const i = html.indexOf("function imageChain(");
+  const body = html.slice(i, html.indexOf("\n}", i) + 2);
+  assert.ok(/noshot/.test(body), "imageChain honors the noshot flag");
+});
+
 t("validateItems attaches the page's real og:image to kept items (replaces screenshot proxies)", () => {
   const body = validateItemsBody();
   assert.ok(body.indexOf("ogImage") >= 0, "uses the content check's ogImage");

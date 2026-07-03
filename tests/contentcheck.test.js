@@ -44,6 +44,27 @@ t("extractText default cap is >= 4000 so dead phrases deep in content-stuffed 40
   const html = "<p>" + "filler content words here ".repeat(80) + " Sorry Page not found</p>";  // phrase lands past 1500 chars
   assert.ok(cc.extractText(html).indexOf("Sorry Page not found") >= 0, "phrase beyond 1500 chars must survive the default cap");
 });
+t("classifyContent: HTML-ENTITY apostrophes in the title still match dead phrases (live makezine bug)", () => {
+  // The live page serves the apostrophe as &#039; — the 1.10.3 phrase fix missed it because
+  // nothing decoded entities before matching (verified against the RUNNING service 2026-07-03:
+  // verdict came back likely-alive with title "This is not the page you&#039;re looking for...").
+  const r = cc.classifyContent({ originalUrl:"https://makezine.com/2023/08/x/", finalUrl:"https://makezine.com/2023/08/x/", status:200,
+    title:"This is not the page you&#039;re looking for... | Make: DIY", text:"nav text and shop promos ".repeat(6) });
+  assert.strictEqual(r.verdict, "suspect");
+  assert.ok(r.signals.some(s => s.indexOf("phrase:") === 0));
+});
+t("extractTitle decodes common HTML entities", () => {
+  assert.strictEqual(cc.extractTitle("<title>You&#039;re here &amp; now &#x2019;ok&#x2019;</title>"), "You're here & now ’ok’");
+});
+t("classifyContent: bot-challenge pages get a 'challenge' signal but stay likely-alive (not dropped)", () => {
+  // 403 + "Just a moment..." (Cloudflare) — the page may be fine for a real browser, so the feed
+  // must KEEP the item; the signal exists so callers suppress the screenshot-proxy image (which
+  // would otherwise show the challenge page as the card picture).
+  const r = cc.classifyContent({ originalUrl:"https://x.com/a", finalUrl:"https://x.com/a", status:403,
+    title:"Just a moment...", text:"Verifying you are human. This may take a few seconds. ".repeat(2) });
+  assert.strictEqual(r.verdict, "likely-alive", "challenge is NOT dead");
+  assert.ok(r.signals.indexOf("challenge") >= 0, "carries the challenge signal");
+});
 t("classifyContent: normal page -> likely-alive", () => {
   const r = cc.classifyContent({ originalUrl:"https://blog.com/post/good", finalUrl:"https://blog.com/post/good", status:200, title:"How to bake bread", text:"A long and useful article about baking sourdough bread at home with tips." });
   assert.strictEqual(r.verdict, "likely-alive");

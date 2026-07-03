@@ -7,9 +7,22 @@
 var linkcheck = require("./linkcheck");
 var capturemeta = require("./capturemeta");   // extractOg only (pure); no require cycle — capturemeta needs linkcheck/guardedfetch, never this module
 
+// Decode the common HTML entities before any phrase matching. Live bug (2026-07-03):
+// makezine's 404 title arrives as "you&#039;re", which silently missed the phrase list —
+// nothing decoded entities anywhere in the pipeline. Numeric first, then named; decoding
+// &amp; in the named pass (last) means "&amp;#039;" becomes "&#039;" and is NOT re-decoded.
+var NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“", hellip: "…", mdash: "—", ndash: "–" };
+function decodeEntities(s) {
+  return String(s || "")
+    .replace(/&#(\d+);/g, function (m, n) { return String.fromCodePoint(+n); })
+    .replace(/&#x([0-9a-f]+);/gi, function (m, h) { return String.fromCodePoint(parseInt(h, 16)); })
+    .replace(/&([a-z]+);/gi, function (m, name) { var v = NAMED_ENTITIES[name.toLowerCase()]; return v != null ? v : m; });
+}
+
 function extractTitle(html) {
   var m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html || ""));
-  return m ? m[1].replace(/\s+/g, " ").trim() : "";
+  return m ? decodeEntities(m[1]).replace(/\s+/g, " ").trim() : "";
 }
 
 function extractText(html, maxChars) {
@@ -51,13 +64,29 @@ function hostOf(url) {
   try { return new URL(url).hostname || ""; } catch (e) { return ""; }
 }
 
+// Bot-challenge wording (Cloudflare, PerimeterX, generic WAFs). A challenge page is NOT
+// dead — it usually renders fine for a real human browser — so this contributes a separate
+// "challenge" signal that never flips the verdict to suspect; callers use it to suppress
+// screenshot-proxy images (which would otherwise show the challenge page as the card image).
+var CHALLENGE_PHRASES = [
+  "just a moment", "attention required", "access is temporarily restricted",
+  "performing security verification", "checking your browser", "verify you are human",
+  "verifying you are human", "are you a robot", "enable javascript and cookies to continue",
+  "security check to access", "detected unusual activity"
+];
+
 function classifyContent(info) {
   info = info || {};
   var title = String(info.title || "");
   var text = String(info.text || "");
-  // Normalize curly apostrophes (U+2018/U+2019) to straight so dead phrases match
-  // regardless of which apostrophe a page uses. \u escapes keep the source ASCII-only.
-  var hay = (title + " " + text).toLowerCase().replace(/[‘’]/g, "'");
+  // Decode HTML entities FIRST (a raw-HTML title may carry &#039; etc.), then normalize
+  // curly apostrophes (U+2018/U+2019) to straight so dead phrases match regardless of
+  // which apostrophe form a page uses.
+  var hay = decodeEntities(title + " " + text).toLowerCase().replace(/[‘’]/g, "'");
+  var challenge = false;
+  for (var ci = 0; ci < CHALLENGE_PHRASES.length; ci++) {
+    if (hay.indexOf(CHALLENGE_PHRASES[ci]) >= 0) { challenge = true; break; }
+  }
   var signals = [];
 
   for (var i = 0; i < DEAD_PHRASES.length; i++) {
@@ -74,14 +103,22 @@ function classifyContent(info) {
   // Almost no readable text.
   if (text.trim().length < 40) signals.push("empty");
 
+  // A challenge page is naturally near-empty — that emptiness is expected, not a
+  // removed-content signal, so drop "empty" when the page is a bot check.
+  if (challenge) signals = signals.filter(function (s) { return s !== "empty"; });
+
   var reasonMap = { "redirect-home": "redirected to homepage", "empty": "page is nearly empty" };
-  var reason = "looks alive";
+  var reason = challenge ? "bot-challenge page" : "looks alive";
   if (signals.length) {
     var first = signals[0];
     if (first.indexOf("phrase:") === 0) reason = 'page text says "' + first.slice(7) + '"';
     else reason = reasonMap[first] || "looks removed";
   }
-  return { verdict: signals.length ? "suspect" : "likely-alive", reason: reason, signals: signals };
+  // Verdict is decided by the DEAD signals only; "challenge" is appended after so callers
+  // can see it without it ever flipping a page to suspect.
+  var verdict = signals.length ? "suspect" : "likely-alive";
+  if (challenge) signals = signals.concat(["challenge"]);
+  return { verdict: verdict, reason: reason, signals: signals };
 }
 
 var gf = require("./guardedfetch");

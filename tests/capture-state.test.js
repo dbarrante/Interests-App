@@ -96,5 +96,21 @@ t("fbMiss: FB card never tried -> false; web card -> false; good img -> false", 
   assert.ok(!CS.fbMiss({ url: FB, img: "https://cdn/x.jpg", lastUpdate: 1 }));
 });
 
+// titleMismatch: the feed uses this to drop AI-hallucinated article IDs that resolve to a
+// DIFFERENT real article (live case 2026-07-03: thekitchn.com/how-to-meal-prep-229363 serves
+// "How To Make Braided Pesto Bread"). Conservative: only fires on ZERO content-word overlap
+// with enough signal on both sides.
+t("titleMismatch: wrong article (zero content-word overlap) -> true", () => {
+  assert.ok(CS.titleMismatch("How to Meal Prep Like a Pro", "How To Make Braided Pesto Bread | The Kitchn"));
+});
+t("titleMismatch: matching/related titles -> false", () => {
+  assert.ok(!CS.titleMismatch("Building Your Own 3D Printer from Scratch", "How I built a 3D printer from scratch - Make:"));
+  assert.ok(!CS.titleMismatch("The Future of Remote Work: Trends and Predictions", "Remote work is the future, report predicts"));
+});
+t("titleMismatch: too little signal (short/generic titles) -> false (never over-drop)", () => {
+  assert.ok(!CS.titleMismatch("Meal Prep", "The Kitchn"));          // <2 content words on a side
+  assert.ok(!CS.titleMismatch("How to Meal Prep Like a Pro", ""));  // no page title
+});
+
 console.log("capture-state.test.js: " + passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

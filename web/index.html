@@ -799,6 +799,10 @@ function imageChain(item){
   if(item.image){ const r = (""+item.image).indexOf("idb:")===0 ? Store.imgUrl((""+item.image).slice(4)) : item.image; if(r) c.push(r); }
   // public screenshot proxies can't see auth-walled sites — they'd return a
   // login wall / "content not available". Skip them for FB/IG (matches impThumb).
+  // noshot: validateItems flagged this url as bot-challenged (Cloudflare wall etc.) — a
+  // screenshot proxy would render the CHALLENGE PAGE as the card image. Keep item.image
+  // (if any) and fall straight to the gradient placeholder instead.
+  if(item.noshot) return c;
   if(item.url && !/facebook\.com|fb\.watch|instagram\.com|pinterest\.(com|ca|co\.uk|com\.au)|youtube\.com|youtu\.be/i.test(item.url)){
     // mshots only. thum.io was removed: its free tier now returns an "Image not authorized /
     // paid account" ERROR IMAGE with HTTP 200, which defeats the onerror fallback and showed
@@ -1414,14 +1418,25 @@ async function validateItems(items){
   if(live.length){
     try{
       const cres = await Store.checkContent(live.map(i=>({ id:i.id, url:i.url })));
-      const soft = new Set((cres||[]).filter(r=>((r&&r.signals)||[]).some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")).map(r=>r.id));
-      if(soft.size) live = live.filter(i=>!soft.has(i.id));
-      // Bonus from the same fetch: the page's og:image. Use it as the card's REAL image —
-      // far better than a screenshot proxy (thum.io now serves an "Image not authorized /
-      // paid account" error image with HTTP 200, so it was REMOVED from the fallback chain).
-      const ogById = {};
-      (cres||[]).forEach(r=>{ if(r && r.ogImage && /^https?:\/\//i.test(r.ogImage)) ogById[r.id]=r.ogImage; });
-      live.forEach(i=>{ if(!i.image && ogById[i.id]) i.image = ogById[i.id]; });
+      const byId = {}; (cres||[]).forEach(r=>{ if(r) byId[r.id]=r; });
+      const drop = new Set();
+      live.forEach(i=>{
+        const r = byId[i.id]; if(!r) return;
+        const sigs = r.signals||[];
+        // Soft-404: page body/title says the content is gone (entities are decoded server-side).
+        if(sigs.some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")){ drop.add(i.id); return; }
+        // Bot-challenge (Cloudflare "Just a moment…", 403/429/503 walls): the page may be FINE
+        // for a real browser, so KEEP the item — but flag it so imageChain never screenshot-
+        // proxies it (mshots would render the challenge page as the card picture).
+        if(sigs.indexOf("challenge")>=0 || r.status===403 || r.status===429 || r.status===503){ i.noshot=1; return; }
+        // Wrong article: the URL serves a real page whose title shares ZERO content words with
+        // the suggested article (hallucinated article IDs, e.g. thekitchn /how-to-meal-prep-229363
+        // serving "Braided Pesto Bread"). The promised article is missing -> drop.
+        if(r.title && titleMismatch(i.title, r.title)){ drop.add(i.id); return; }
+        // Verified page: use its real og:image as the card image (better than any proxy).
+        if(!i.image && r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.image = r.ogImage;
+      });
+      if(drop.size) live = live.filter(i=>!drop.has(i.id));
     }catch(e){ console.warn("Feed content check unavailable — keeping link-checked items", e); }
   }
   return live;

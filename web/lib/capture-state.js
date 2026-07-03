@@ -31,11 +31,35 @@
   function needsFbCapture(i) { return captureableFb(i) && !i.lastUpdate && !i.captured; }
   function fbMiss(it) { return it && it.url && /facebook\.com|fb\.watch/i.test(it.url) && isBadImg(it.img || "") && (it.lastResult === "fail" || it.lastUpdate || it.captured); }
 
+  // titleMismatch(suggestedTitle, pageTitle): true when an AI-suggested article's title shares
+  // ZERO content words with the page the URL actually serves — the hallucinated-article-ID case
+  // (live 2026-07-03: thekitchn.com/how-to-meal-prep-229363 serves "Braided Pesto Bread").
+  // Conservative by design: needs >= 2 content words (4+ letters, non-stopword) on BOTH sides,
+  // so short/generic titles can never over-drop a real article.
+  var TM_STOP = { this: 1, that: 1, with: 1, your: 1, from: 1, have: 1, like: 1, what: 1, when: 1,
+    will: 1, they: 1, them: 1, were: 1, been: 1, into: 1, over: 1, more: 1, most: 1, some: 1,
+    then: 1, than: 1, "guide": 1, "tips": 1 };
+  function _tmTokens(s) {
+    var out = {};
+    String(s || "").toLowerCase().split(/[^a-z0-9]+/).forEach(function (w) {
+      if (w.length >= 4 && !TM_STOP[w]) out[w] = 1;
+    });
+    return out;
+  }
+  function titleMismatch(suggested, actual) {
+    var a = _tmTokens(suggested), b = _tmTokens(actual);
+    var ak = Object.keys(a), bk = Object.keys(b);
+    if (ak.length < 2 || bk.length < 2) return false;   // not enough signal — never over-drop
+    for (var i = 0; i < ak.length; i++) if (b[ak[i]]) return false;
+    return true;
+  }
+
   var api = {
     isFavicon: isFavicon, isBadImg: isBadImg,
     captureable: captureable, captureableFb: captureableFb,
     needsCapture: needsCapture, needsRetry: needsRetry,
-    needsFbCapture: needsFbCapture, fbMiss: fbMiss
+    needsFbCapture: needsFbCapture, fbMiss: fbMiss,
+    titleMismatch: titleMismatch
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -50,5 +74,6 @@
     root.needsRetry = needsRetry;
     root.needsFbCapture = needsFbCapture;
     root.fbMiss = fbMiss;
+    root.titleMismatch = titleMismatch;
   }
 })(typeof self !== "undefined" ? self : this);
