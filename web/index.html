@@ -347,6 +347,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" id="impCnt"></span></button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
+    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
     <button class="btn btn-primary" id="refreshBtn" onclick="refreshFeed()">&#10227; New ideas</button>
   </div>
@@ -735,6 +736,32 @@ function openInBrowser(){
   const url = location.origin + "/";
   if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
   else { window.open(url, "_blank", "noopener"); }
+}
+// Help & About — version from the Core service's own discovery endpoint (/api/ping,
+// the source of truth: it reports the RUNNING service's version, not a baked-in string),
+// data location from /api/store-location, plus a quick tour of the main surfaces.
+async function openHelp(){
+  let ver = "?", store = "", cnt = null;
+  try{ const r = await fetch("/api/ping"); const j = await r.json(); ver = j && j.version || "?"; }catch(e){}
+  try{ const sl = await Store.storeLocation(); store = (sl && sl.path) || ""; cnt = sl && sl.counts; }catch(e){}
+  document.getElementById("modalBody").innerHTML = `
+    <h2>Interests App</h2>
+    <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
+    <h3 style="margin:12px 0 6px">Quick tour</h3>
+    <ul style="margin:0 0 10px 18px;line-height:1.7">
+      <li><b>Feed</b> — AI-suggested articles matched to your profile. <b>&#10227; New ideas</b> refreshes; every suggestion is link- and content-checked so dead pages are filtered out.</li>
+      <li><b>Stumble</b> — the feed one card at a time; vote to teach it your taste.</li>
+      <li><b>Saved</b> — things you saved here or clipped from the browser extension.</li>
+      <li><b>Imported</b> — your library from Facebook / Pinterest / YouTube / bookmarks imports. <b>&#128247; Get pictures &amp; info</b> fills missing images and descriptions; <b>&#129656; Library health</b> finds duplicates, dead links, and failed captures.</li>
+      <li><b>Settings</b> — AI provider &amp; key, your profile, imports, backup &amp; restore, Dropbox sync.</li>
+    </ul>
+    <h3 style="margin:12px 0 6px">Handy</h3>
+    <ul style="margin:0 0 4px 18px;line-height:1.7">
+      <li><b>Ctrl+Shift+B</b> — back up now &middot; <b>Ctrl+V</b> over a card — paste a screenshot onto it</li>
+      <li><b>&#127760; Open in browser</b> — same app, same live data, in your default browser</li>
+      <li>Browser extension pairs automatically with this app on this computer (Chrome &rarr; Interests Capture)</li>
+    </ul>`;
+  document.getElementById("modal").classList.add("open");
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);

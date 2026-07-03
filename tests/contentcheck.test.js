@@ -31,6 +31,19 @@ t("classifyContent: near-empty body -> suspect", () => {
   assert.strictEqual(r.verdict, "suspect");
   assert.ok(r.signals.indexOf("empty") >= 0);
 });
+t("classifyContent: creative not-found titles -> suspect (real-world: makezine's custom 404)", () => {
+  // makezine.com serves HTTP 200 for missing articles with this title and a content-stuffed
+  // body (nav/promos), which slipped both the phrase list and the old 1500-char text cap —
+  // the feed then showed an mshots screenshot OF the 404 page (reported 2026-07-03).
+  const r = cc.classifyContent({ originalUrl:"https://makezine.com/2023/08/x/", finalUrl:"https://makezine.com/2023/08/x/", status:200,
+    title:"This is not the page you’re looking for... | Make: DIY Projects", text:"lots of nav text and shop promos ".repeat(5) });
+  assert.strictEqual(r.verdict, "suspect");
+  assert.ok(r.signals.some(s => s.indexOf("phrase:") === 0));
+});
+t("extractText default cap is >= 4000 so dead phrases deep in content-stuffed 404 pages are seen", () => {
+  const html = "<p>" + "filler content words here ".repeat(80) + " Sorry Page not found</p>";  // phrase lands past 1500 chars
+  assert.ok(cc.extractText(html).indexOf("Sorry Page not found") >= 0, "phrase beyond 1500 chars must survive the default cap");
+});
 t("classifyContent: normal page -> likely-alive", () => {
   const r = cc.classifyContent({ originalUrl:"https://blog.com/post/good", finalUrl:"https://blog.com/post/good", status:200, title:"How to bake bread", text:"A long and useful article about baking sourdough bread at home with tips." });
   assert.strictEqual(r.verdict, "likely-alive");

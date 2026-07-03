@@ -73,6 +73,22 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(by.noimg.imageUrl, "");                            // no og -> no fallback url
   });
 
+  await t("captureMetaChunk: a 200 not-found page never yields an image (no misleading og harvest)", async () => {
+    // Real case (2026-07-03): makezine's HTTP-200 custom 404 carries a real og:image of an
+    // UNRELATED article — capturing it stamped wrong images onto dead cards. The chunk must
+    // detect the 404-shaped page (strong contentcheck signals) and return reason "notfound".
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.jpg/.test(u)) return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "image/jpeg" : null }, arrayBuffer: async () => new Uint8Array([1]).buffer };
+      return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () =>
+        '<title>This is not the page you’re looking for... | Make:</title><meta property="og:image" content="https://img.test/unrelated.jpg"><body>'+ "nav shop promo text ".repeat(10) +'</body>' };
+    };
+    const out = await cm.captureMetaChunk([{ id:"nf", url:"https://example.test/gone-article" }]);
+    assert.strictEqual(out[0].imageDataUrl, "", "must not harvest the 404 page's og image");
+    assert.strictEqual(out[0].imageUrl, "", "must not return the og url fallback either");
+    assert.strictEqual(out[0].reason, "notfound");
+  });
+
   global.fetch = realFetch;
   require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");

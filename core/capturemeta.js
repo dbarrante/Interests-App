@@ -76,6 +76,18 @@ async function captureMetaChunk(items, opts) {
         return { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "", reason: skipReason };
       }
       var page = await _fetchHtml(url, opts);
+      // 404-shaped page gate: an HTTP-200 "not found" page (creative title, content-stuffed
+      // body) often carries a real og:image of an UNRELATED article — harvesting it stamps a
+      // wrong image onto a dead card. Detect via contentcheck's STRONG signals only (dead
+      // phrase / redirect-home; never the weak "empty" one) and bail with reason "notfound".
+      // Lazy require: contentcheck requires this module for extractOg, so a top-level require
+      // here would be a load-time cycle; at call time both modules are fully initialized.
+      if (page.html) {
+        var cc = require("./contentcheck");
+        var cls = cc.classifyContent({ originalUrl: url, finalUrl: page.finalUrl, title: cc.extractTitle(page.html), text: cc.extractText(page.html) });
+        var strong = (cls.signals || []).some(function (s) { return String(s).indexOf("phrase:") === 0 || s === "redirect-home"; });
+        if (strong) return { id: it.id, imageDataUrl: "", imageUrl: "", title: "", description: "", reason: "notfound" };
+      }
       var og = extractOg(page.html);
       var imageDataUrl = "";
       var abs = "";

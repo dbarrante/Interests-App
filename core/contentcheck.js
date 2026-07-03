@@ -13,7 +13,9 @@ function extractTitle(html) {
 }
 
 function extractText(html, maxChars) {
-  var max = maxChars || 1500;
+  // Default raised 1500 -> 4000: content-stuffed custom 404 pages (nav bars, shop promos)
+  // can push the "page not found" wording past 1500 chars (real case: makezine.com).
+  var max = maxChars || 4000;
   var s = String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -34,7 +36,11 @@ var DEAD_PHRASES = [
   "doesn't exist", "does not exist",
   "has been removed", "been deleted", "this listing has ended",
   "item is no longer", "product is no longer", "sorry, this page",
-  "the page you requested", "domain is for sale", "buy this domain"
+  "the page you requested", "domain is for sale", "buy this domain",
+  // Creative not-found titles (Star Wars-style). Real case: makezine.com's HTTP-200 404
+  // titled "This is not the page you're looking for..." slipped the list (2026-07-03).
+  "not the page you're looking for", "not the page you are looking for",
+  "sorry page not found", "page cannot be found", "page could not be found"
 ];
 
 function pathOf(url) {
