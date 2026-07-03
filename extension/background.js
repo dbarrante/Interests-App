@@ -430,6 +430,9 @@ async function pollCaptureRequest() {
   // once it returns — success OR failure — the persisted claim has served its purpose: clear it.
   try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
   catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
+  // A suspension between captureOneTab's delivery and this clear can leave the persisted
+  // claim around for restorePendingRequest to re-dispatch — at most one redundant re-capture,
+  // safe because delivery is card-id-keyed and the app overwrites on the next delivery.
   finally { pendingCaptureBusy = false; await clearPendingPersist(); }
 }
 
@@ -499,7 +502,7 @@ async function pollBatchState() {
   }
 }
 
-function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); }
+function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); flushQueue().catch(() => {}); }
 try {
   chrome.alarms.create("iaCapturePoll", { periodInMinutes: 0.5 });   // 30s is the MV3 minimum period
   chrome.alarms.onAlarm.addListener((a) => {
@@ -519,11 +522,11 @@ restorePendingRequest().catch(() => {});   // also on plain SW spin-up (event-dr
 // One startup function per Chrome lifecycle event (was 3 separate onInstalled +
 // 3 separate onStartup registrations scattered through the file — unified in
 // review E). All 4 init tasks must keep firing on both events: context menu,
-// offline-queue flush, the capture-request poll wake (iaPollAll), and the
-// pending-capture restore (B12 — must never be silently lost).
+// offline-queue flush (now folded into iaPollAll — also runs on the 30s alarm,
+// not just init, for faster offline-queue delivery), the capture-request poll
+// wake (iaPollAll), and the pending-capture restore (B12 — must never be silently lost).
 function onExtensionInit() {
   ensureContextMenu();
-  flushQueue().catch(() => {});
   iaPollAll();
   restorePendingRequest().catch(() => {});
 }
@@ -756,10 +759,11 @@ async function closeTabSafe(tabId){
   } catch (e) {}
 }
 /* ============ batch capture (one item per call) ============
-   The LOOP is driven by the page-side bridge (a stable context). The service
-   worker handles ONE captureOneTab per message — short enough to finish before
-   the SW can be suspended. Up to `concurrency` run at once; `pendings` tracks
-   each in-flight tab so onCompleted settles the right one. */
+   The LOOP is driven by pollBatchState, entirely inside the always-on service
+   worker (no page-side bridge — see the "SW-driven single-capture poller" note
+   above). The service worker handles ONE captureOneTab per iteration — short
+   enough to finish before the SW can be suspended. Up to `concurrency` run at
+   once; `pendings` tracks each in-flight tab so onCompleted settles the right one. */
 let pendings = {};   // tabId -> pending
 function settlePending(tabId, why) {
   const p = pendings[tabId];

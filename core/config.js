@@ -34,7 +34,14 @@ function saveConfig(obj) {
   const target = configPath();
   const tmpFile = target + ".tmp." + process.pid;
   fs.writeFileSync(tmpFile, JSON.stringify(obj || {}, null, 2), "utf8");
-  fs.renameSync(tmpFile, target);
+  try {
+    fs.renameSync(tmpFile, target);
+  } catch (e) {
+    // Rename failed (e.g. cross-device, locked file) — the tmp sidecar would otherwise
+    // linger forever. Clean it up before rethrowing so the caller sees the real error.
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
+    throw e;
+  }
 }
 
 function defaultStoreDir() {

@@ -1,6 +1,6 @@
 const assert = require("assert");
 const { loadFns } = require("./_extract");
-const { pickBackupsToDelete, backupCountsMatch } = loadFns(["pickBackupsToDelete", "backupCountsMatch"]);
+const { pickBackupsToDelete } = loadFns(["pickBackupsToDelete"]);
 
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + e.message); } }
@@ -40,16 +40,10 @@ t("empty / undefined input → []", () => {
   assert.deepStrictEqual(pickBackupsToDelete(undefined, 3), []);
 });
 
-t("counts equal → true", () => {
-  assert.strictEqual(backupCountsMatch({ imported: 5500, saved: 18, images: 4301 }, { imported: 5500, saved: 18, images: 4301 }), true);
-});
-t("any count differs → false", () => {
-  assert.strictEqual(backupCountsMatch({ imported: 5500, saved: 18, images: 4301 }, { imported: 5500, saved: 18, images: 4300 }), false);
-});
-t("missing operand → false", () => {
-  assert.strictEqual(backupCountsMatch(null, { imported: 1, saved: 1, images: 1 }), false);
-  assert.strictEqual(backupCountsMatch({ imported: 1, saved: 1, images: 1 }, undefined), false);
-});
+// backupCountsMatch's web-side (index.html) copy was a dead orphan (zero callers —
+// the live copy is core/backup.js, exercised by tests/backup.test.js) and was
+// removed in the v1.9.0 Task 7 deferred-minors sweep. Its cases lived here too;
+// they're covered by tests/backup.test.js now, so they're not duplicated here.
 
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -104,6 +104,24 @@ t("saveConfig round-trip still works after a simulated torn write is overwritten
   assert.deepStrictEqual(leftovers, [], "no tmp sidecars left after recovering from a torn write");
 });
 
+// Task 7 item 12: a failed rename (e.g. cross-device link, locked file) must not
+// leave the tmp sidecar behind forever, and the caller must still see the error.
+t("saveConfig cleans up the tmp sidecar and rethrows when renameSync fails", () => {
+  const origRename = fs.renameSync;
+  let seenTmp = null;
+  fs.renameSync = function (src, dest) {
+    seenTmp = src;
+    throw new Error("simulated rename failure");
+  };
+  try {
+    assert.throws(() => cfg.saveConfig({ d: 4 }), /simulated rename failure/);
+  } finally {
+    fs.renameSync = origRename;
+  }
+  assert.ok(seenTmp, "renameSync should have been attempted");
+  assert.ok(!fs.existsSync(seenTmp), "tmp sidecar should be removed after the failed rename");
+});
+
 // Task 2 item 4: getSyncConfig() split into a pure read + ensureSyncConfig() write.
 t("getSyncConfig() does NOT write config.json (no file created, no mtime change)", () => {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-appdata2-"));

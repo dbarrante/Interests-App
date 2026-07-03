@@ -889,12 +889,6 @@ function pickBackupsToDelete(names, keep){
     .sort(function(a, b){ return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
   return dated.slice(Math.max(0, keep)).map(function(d){ return d.name; });
 }
-// True when two _counts objects agree on imported/saved/images. Used to verify a
-// freshly-written backup before older ones are rotated away.
-function backupCountsMatch(a, b){
-  if(!a || !b) return false;
-  return (a.imported|0) === (b.imported|0) && (a.saved|0) === (b.saved|0) && (a.images|0) === (b.images|0);
-}
 // keys that are transient extension/runtime state — no point backing these up
 // Full image-bearing backups are written + verified by the Core service
 // (Store.backupNow / Store.listBackups / Store.restore).
@@ -1336,7 +1330,7 @@ function parseItems(text){
   if(arr===null) throw new Error("No JSON array found in model response");
   if(!Array.isArray(arr)) throw new Error("Model did not return a list");
   return arr.filter(i=>i && i.title && i.url).map((i,n)=>({
-    id: Date.now().toString(36)+"_"+n,
+    id: Date.now().toString(36)+"_"+n+"_"+Math.random().toString(36).slice(2,8),
     title:String(i.title), url:String(i.url),
     source:i.source?String(i.source):domain(i.url),
     category: catByName(String(i.category||"")).name,
@@ -1488,6 +1482,7 @@ function stumbleSave(){
   if(!stCur) return;
   if(!saved.some(s=>s.url===stCur.url)) saved.unshift(stCur);
   likes.push({title:stCur.title, category:stCur.category, ts:Date.now()});
+  if(likes.length>60) likes=likes.slice(-60);
   toast("Saved");
   stumbleNext();
 }
@@ -1558,7 +1553,6 @@ const GUIDES = {
 };
 function showGuide(p){ document.getElementById("modalBody").innerHTML=GUIDES[p]; document.getElementById("modal").classList.add("open"); }
 function closeGuide(){ document.getElementById("modal").classList.remove("open"); }
-document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeGuide(); });
 
 /* ============ Facebook / Pinterest / YouTube import ============ */
 function fixTxt(s){ try{ return decodeURIComponent(escape(s)); }catch(e){ return s; } }
@@ -2055,8 +2049,6 @@ async function enrichPins(){
   return got;
 }
 async function enrichImported(){
-  const btn=document.getElementById("enrichBtn");
-  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Enriching…'; }
   try{
     const gotPins = await enrichPins();
     if(gotPins) toast(gotPins+" Pinterest pin image"+(gotPins>1?"s":"")+" fetched");
@@ -3257,7 +3249,6 @@ function openGetPics(){
 }
 function closeGetPics(){ document.getElementById("getpicModal").classList.remove("open"); }
 document.getElementById("getpicModal").addEventListener("click", e=>{ if(e.target.id==="getpicModal") closeGetPics(); });
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && document.getElementById("getpicModal").classList.contains("open")) closeGetPics(); });
 
 function renderGetPics(){
   const host=document.getElementById("getpicBody"); if(!host) return;
@@ -3648,7 +3639,16 @@ function closeHealth(){
 function healthSwitch(tab){ if(tab===_healthTab) return; _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
 document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && document.getElementById("healthModal").classList.contains("open")) closeHealth(); });
+// Unified Escape handler for all three overlay surfaces (was three separate keydown
+// listeners each closing independently — a single Esc could close more than one at
+// once). Topmost-first priority: getpic modal, then health modal, then the guide
+// modal. One Esc closes exactly one surface.
+document.addEventListener("keydown", e=>{
+  if(e.key!=="Escape") return;
+  if(document.getElementById("getpicModal").classList.contains("open")) closeGetPics();
+  else if(document.getElementById("healthModal").classList.contains("open")) closeHealth();
+  else if(document.getElementById("modal").classList.contains("open")) closeGuide();
+});
 // Count badges on the tab strip (cheap, computed from in-memory state — no network).
 function _healthCounts(){
   const nolink = imported.filter(i=>!i.url).length;

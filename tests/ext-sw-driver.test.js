@@ -159,5 +159,34 @@ t("popup 'removeCard' handler SURVIVES (explicit user removal), deliverDead wrap
   assert.ok(/removeActive:\s*true/.test(bg), "removeCard still delivers removeActive:true");
 });
 
+// ---- v1.9.0 Task 7 (deferred minors): pollCaptureRequest re-entrancy guard --
+t("pollCaptureRequest is guarded by pendingCaptureBusy on every exit path", () => {
+  assert.ok(/pendingCaptureBusy = true;/.test(bg), "pollCaptureRequest sets the busy guard before dispatching");
+  assert.ok(/finally \{ pendingCaptureBusy = false; await clearPendingPersist\(\); \}/.test(bg),
+    "the guard is cleared in a finally alongside clearPendingPersist — every exit path clears it");
+});
+t("restorePendingRequest bails early when pendingCaptureBusy is already set", () => {
+  assert.ok(/if \(pendingCaptureBusy\) return;/.test(bg),
+    "an alarm-driven restore must not double-dispatch a claim a live poll run still owns");
+});
+t("iaPollAll includes flushQueue for faster offline-queue delivery", () => {
+  const m = bg.match(/function iaPollAll\(\)[^\n]*\n/);
+  assert.ok(m, "iaPollAll function found");
+  // flushQueue must run on the 30s alarm path (iaPollAll), not just on init, so a
+  // queued offline delivery doesn't wait for the next SW spin-up/onInstalled event.
+  assert.ok(/flushQueue\(\)\.catch/.test(m[0]),
+    "flushQueue() should be invoked inside iaPollAll's single-line body");
+});
+t("the poller's finally documents the suspension/redundant-recapture window", () => {
+  assert.ok(/redundant re-capture/.test(bg),
+    "a one-line comment should explain the delivery-then-clear suspension window is safe (card-id-keyed, overwrites)");
+});
+t("the batch-capture section comment no longer claims a page-side bridge drives the loop", () => {
+  assert.ok(!/driven by the page-side bridge/.test(bg),
+    "stale comment from the pre-B12/pre-poller architecture must be gone");
+  assert.ok(/pollBatchState/.test(bg.slice(bg.indexOf("batch capture (one item per call)"))),
+    "the corrected comment should reference the real driver, pollBatchState");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
