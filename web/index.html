@@ -2255,7 +2255,7 @@ async function enrichImported(){
     const gotPins = await enrichPins();
     if(gotPins) toast(gotPins+" Pinterest pin image"+(gotPins>1?"s":"")+" fetched");
   }catch(e){ console.warn(e); }
-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); renderImportedKeepFocus(); return; }
+  if(!IA_AI.hasAIKey()){ toast("Pin data done — add your "+PROVIDERS[S.provider].keyName+" in Settings for AI descriptions"); renderImportedKeepFocus(); return; }
   try{
     let done=0;
     while(done<120){
@@ -4458,7 +4458,7 @@ async function categorizeClip(item){
   try{
     const cats = CATS.map(c=>c.name).join(" | ");
     const prompt = `A user clipped this web page to keep.\nTitle: "${item.title}"\nNotes: "${(item.benefit||"").slice(0,200)}"\nURL: ${item.url}\n\nReturn ONLY strict JSON, no prose:\n{"category": one of [${cats}], "tags": [up to 4 short lowercase topic tags], "why": "one short sentence (<20 words) on why it's worth keeping"}`;
-    const text = await call(prompt);
+    const text = await callAI(prompt);
     const m = text.match(/\{[\s\S]*\}/); if(!m) return;
     const j = JSON.parse(m[0]);
     let changed=false;
