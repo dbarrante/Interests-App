@@ -60,6 +60,11 @@ function hostnameOf(hostHeader) {
   if (h[0] === "[") {                 // IPv6 literal: [::1] or [::1]:port
     const close = h.indexOf("]");
     if (close === -1) return null;
+    // Strict tail (reviewer minor #3): a bracketed Host is `[ipv6]` optionally
+    // followed by `:port` and NOTHING else. Trailing junk like `[::1]junk` is
+    // malformed and rejected rather than tolerated.
+    const rest = h.slice(close + 1);
+    if (rest !== "" && !/^:\d+$/.test(rest)) return null;
     return h.slice(1, close);         // inside the brackets, port dropped
   }
   const colon = h.indexOf(":");       // hostname:port (single colon → IPv4/name)
@@ -133,7 +138,15 @@ function createServer(ctx) {
       if (req.path === "/api/pair-status") return next();   // capability probe is exempt
       const auth = req.headers.authorization || "";
       const token = getPairingToken();
-      if (token && auth === "Bearer " + token) return next();
+      // Constant-time compare (reviewer minor): a plain === short-circuits at the
+      // first differing byte, leaking token prefixes via response timing. Check
+      // lengths first — crypto.timingSafeEqual throws on unequal-length Buffers.
+      if (token && auth.indexOf("Bearer ") === 0) {
+        const presented = Buffer.from(auth.slice("Bearer ".length), "utf8");
+        const expected = Buffer.from(token, "utf8");
+        if (presented.length === expected.length &&
+            require("crypto").timingSafeEqual(presented, expected)) return next();
+      }
       return res.status(401).json({ ok: false, error: "unauthorized" });
     };
   }

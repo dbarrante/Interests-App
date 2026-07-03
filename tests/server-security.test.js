@@ -162,7 +162,18 @@ async function post(base, route, body, headers) {
     // with a NON-loopback socket cannot be simulated here (the test connection is
     // always loopback) — documented in the report; the absent-Host accept case
     // above exercises the loopback-socket branch of the same code path.
-    for (const host of ["evil.com", "evil.com:3456", "127.0.0.1.evil.com", "127.0.0.1.evil.com:3456"]) {
+    // Probe cases (review T2 hardening): case-insensitivity, strict bracketed-IPv6
+    // tail, subdomain-of-localhost, userinfo trick, malformed brackets.
+    for (const host of ["LOCALHOST", "LOCALHOST:3456", "[::1]:9999"]) {
+      await t("Host: " + host + " -> 200 (probe accept)", async () => {
+        const r = await rawGet(secPort, host, "/api/ping");
+        assert.strictEqual(r.status, 200);
+      });
+    }
+    // `[::1]junk` is REJECTED by decision (reviewer minor #3, tightened): a
+    // bracketed Host must be `[ipv6]` + optional `:port` and nothing else.
+    for (const host of ["evil.com", "evil.com:3456", "127.0.0.1.evil.com", "127.0.0.1.evil.com:3456",
+                        "localhost.evil.com", "user@localhost", "[::1]junk", "[::1"]) {
       await t("Host: " + host + " -> 403 forbidden host (rebinding rejected)", async () => {
         const r = await rawGet(secPort, host, "/api/ping");
         assert.strictEqual(r.status, 403);
