@@ -675,6 +675,14 @@ function setCardImage(it, src){
 }
 // resolve a card's stored image to something usable in an <img src>
 function resolveImg(v){ if(!v) return ""; return (""+v).indexOf("idb:")===0 ? Store.imgUrl((""+v).slice(4)) : v; }
+// Renderer-only accessor boundary for the two persisted image field names (imported
+// cards keep .img, saved clips keep .image — the STORAGE/WIRE format is unchanged;
+// see docs/superpowers/plans/2026-07-03-v1.10.0-iphone-prep.md Task 5). These just
+// remove the scope-conditional ternaries scattered through code paths that handle
+// both kinds of items; call sites that already know their type may keep using the
+// field directly.
+function itemImg(it, scope){ return scope==="saved" ? it.image : it.img; }
+function setItemImg(it, scope, v){ return scope==="saved" ? setSavedImage(it, v) : setCardImage(it, v); }
 
 /* ============ ui helpers ============ */
 function toast(msg, ms, onclick){
@@ -3593,7 +3601,7 @@ function normTitle(t){
 function dupePrimary(members){
   const score = (mem)=>{
     const it = mem.card;
-    const img = mem.scope==="saved" ? it.image : it.img;
+    const img = itemImg(it, mem.scope);
     let s = 0;
     if (img && (String(img).indexOf("idb:")===0 || !isBadImg(resolveImg(img)))) s += 16;   // has a real picture (an idb capture counts even when not in the bounded cache)
     if (it.desc && it.desc.length > 8) s += 8;             // has a description
@@ -3799,7 +3807,7 @@ function scanDuplicates(){
 let _dupeGroups = [];
 function dupeThumb(mem){
   const it = mem.card;
-  const v = mem.scope==="saved" ? it.image : it.img;
+  const v = itemImg(it, mem.scope);
   if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
   const src = resolveImg(v);
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy">`;
@@ -3838,10 +3846,10 @@ async function applyDupeRemoval(){
     for (const mem of g.members){
       if (mem===keep) continue;
       if (!checked.has(mem.scope+":"+mem.card.id)) continue;   // user spared it
-      const src = mem.scope==="saved" ? mem.card.image : mem.card.img;
+      const src = itemImg(mem.card, mem.scope);
       const k = keep.card;
       // merge best fields into the kept card
-      const keepImg = keepIsSaved ? k.image : k.img;
+      const keepImg = itemImg(k, keep.scope);
       const keepHasImg = keepImg && (String(keepImg).indexOf("idb:")===0 || !isBadImg(resolveImg(keepImg)));
       const srcIsIdb = src && String(src).indexOf("idb:")===0;
       const srcHasImg = src && (srcIsIdb || !isBadImg(resolveImg(src)));
@@ -3851,7 +3859,7 @@ async function applyDupeRemoval(){
         // for an idb source just point the kept card at the SAME image ref (no byte copy),
         // and don't delete that file below. For http(s)/data sources, store inline as before.
         if (srcIsIdb){ if(keepIsSaved) k.image = src; else k.img = src; keptSrcImg = true; }
-        else { keepIsSaved ? setSavedImage(k, resolveImg(src)) : setCardImage(k, resolveImg(src)); }
+        else { setItemImg(k, keep.scope, resolveImg(src)); }
       }
       if (!k.desc && mem.card.desc) k.desc = mem.card.desc;
       if (!k.sdate && mem.card.sdate) k.sdate = mem.card.sdate;
