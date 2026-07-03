@@ -380,6 +380,51 @@ function createServer(ctx) {
   jsonKvEndpoints(app, "/api/batch-state", "ia_batch_state", "state");
   jsonKvEndpoints(app, "/api/batch-progress", "ia_batch_progress", "progress");
 
+  // --- Browser Stumble (StumbleUpon-style discovery in the browser) ---------
+  // Loopback mailboxes bridging the extension and the renderer. The extension
+  // never writes app data directly: it POSTs a request / drains results /
+  // POSTs feedback here, and the renderer (the only place the AI runs and app
+  // state is written) drains them on a timer. No outbound network here.
+  function readJsonArr(key) { const v = readJsonKV(key); return Array.isArray(v) ? v : []; }
+
+  // Categories for the extension's interest picker (renderer publishes CATS at boot).
+  app.get("/api/categories", (req, res) => {
+    res.json({ categories: readJsonArr("ia_bstumble_cats") });
+  });
+
+  // Request mailbox: extension asks for pages in {interests, nonce}; renderer drains.
+  jsonKvEndpoints(app, "/api/bstumble/request", "ia_bstumble_request", "request");
+
+  // Results queue: renderer appends verified pages; extension GET returns + clears.
+  app.post("/api/bstumble/results", (req, res) => {
+    const items = req.body && req.body.items;
+    if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: "items array required" });
+    let q = readJsonArr("ia_bstumble_results").concat(items);
+    if (q.length > 20) q = q.slice(-20);
+    dbm.setKV(ctx.db, "ia_bstumble_results", JSON.stringify(q));
+    res.json({ ok: true, count: q.length });
+  });
+  app.get("/api/bstumble/results", (req, res) => {
+    const q = readJsonArr("ia_bstumble_results");
+    if (q.length) dbm.setKV(ctx.db, "ia_bstumble_results", JSON.stringify([]));
+    res.json({ results: q });
+  });
+
+  // Feedback queue: extension appends 👍/👎 votes; renderer GET returns + clears.
+  app.post("/api/bstumble/feedback", (req, res) => {
+    const vote = req.body && req.body.vote;
+    if (!vote || typeof vote !== "object") return res.status(400).json({ ok: false, error: "missing vote" });
+    let q = readJsonArr("ia_bstumble_feedback").concat([vote]);
+    if (q.length > 50) q = q.slice(-50);
+    dbm.setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify(q));
+    res.json({ ok: true, count: q.length });
+  });
+  app.get("/api/bstumble/feedback", (req, res) => {
+    const q = readJsonArr("ia_bstumble_feedback");
+    if (q.length) dbm.setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify([]));
+    res.json({ feedback: q });
+  });
+
   // One-time legacy backup import. READ-ONLY on srcDir.
   app.post("/api/import", (req, res) => {
     let srcDir = req.body && req.body.srcDir;
