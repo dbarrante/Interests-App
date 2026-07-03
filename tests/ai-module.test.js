@@ -103,6 +103,29 @@ t("callAI opts.provider overrides the configured provider (groq)", async () => {
   } finally { delete global.fetch; }
 });
 
+t("callAI enables OpenRouter web search only when requested by Stumble", async () => {
+  const settings = {
+    provider:"openrouter",
+    keys:{ openrouter:"ORKEY" }, models:{ openrouter:"openai/gpt-4o-mini" }, localUrl:""
+  };
+  IA_AI.configure(() => settings);
+  const bodies = [];
+  global.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return { ok:true, json: async () => ({ choices:[{ message:{ content:"[]" } }] }) };
+  };
+  try {
+    await IA_AI.callAI("STUMBLE", { webSearch:true });
+    await IA_AI.callAI("ENRICH");
+    assert.deepStrictEqual(bodies[0].tools, [{
+      type:"openrouter:web_search",
+      parameters:{ max_results:6, max_total_results:6, search_context_size:"low" }
+    }], "Stumble request gets grounded OpenRouter search");
+    assert.strictEqual(bodies[0].max_tokens, 2500, "grounded JSON response is bounded");
+    assert.ok(!("tools" in bodies[1]), "ordinary OpenRouter calls do not incur web-search cost");
+  } finally { delete global.fetch; }
+});
+
 t("callAI unknown provider -> throws", () => {
   IA_AI.configure(() => ({ provider:"nope", keys:{}, models:{}, localUrl:"" }));
   assert.throws(() => IA_AI.callAI("x"), /Unknown AI provider/);

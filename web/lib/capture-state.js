@@ -56,8 +56,7 @@
 
   // Recommendations are disposable, so Stumble admits only pages positively
   // verified by both probes. The library's delete checks remain conservative.
-  function isVerifiedDiscoveryResult(item, linkResult, contentResult) {
-    if (!linkResult || linkResult.status !== "alive") return false;
+  function isVerifiedDiscoveryResult(item, contentResult) {
     if (!contentResult || contentResult.verdict !== "likely-alive") return false;
     var status = Number(contentResult.status);
     if (!(status >= 200 && status < 300)) return false;

@@ -3,6 +3,29 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.11.2 Grounded + faster Stumble (2026-07-03)
+
+v1.11.1 correctly rejected dead pages but could return no cards and took too long. Live diagnosis
+found the configured OpenRouter model was being told to search without actually receiving a search
+tool, so it invented URLs; strict validation then rejected them. The pipeline also fetched every
+candidate up to three times and waited for a second AI batch when the first batch had fewer than the
+requested 1/2/4 deal size.
+
+- OpenRouter Stumble calls now enable the official `openrouter:web_search` server tool. Other
+  OpenRouter tasks (Enrich, categorization, etc.) do not pay for search.
+- Search is capped at 4–6 candidates based on deal size, six total results, low search context, and
+  bounded output. Stumble's taste-history prompt is trimmed; local duplicate removal still checks
+  the complete Saved collection.
+- Validation now uses one SSRF-guarded `/api/check-content` fetch per page. It already returns the
+  final HTTP status, soft-404 signals, page title, and `og:image`, so the prior status and image URL
+  probes were redundant. Strict 2xx/content/title acceptance remains unchanged.
+- The extracted `og:image` renders immediately; a broken/missing image naturally falls through to
+  mShots for a screenshot of the already-verified live page.
+- Any cached survivor is dealt immediately. The first non-empty AI batch is also shown immediately;
+  missing slots refill quietly in the background instead of blocking the user.
+- Measured on the configured OpenRouter model: old path 30.4 seconds for 9 cards; new path 14.7
+  seconds for 6 candidates, with 5 verified survivors—enough for the current four-card deal.
+
 ## v1.11.1 Strict-live Stumble + verified card images (2026-07-03)
 
 Live evidence from the user's persisted Stumble deal/spool showed 10 of 11 candidates were dead or

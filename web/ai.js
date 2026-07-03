@@ -79,15 +79,24 @@
     var d = await r.json();
     return (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
   }
-  async function callOpenRouter(prompt) {
+  async function callOpenRouter(prompt, opts) {
     var s = S();
+    opts = opts || {};
+    var body = { model: s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: prompt }] };
+    if (opts.webSearch) {
+      body.max_tokens = 2500;
+      body.tools = [{
+        type: "openrouter:web_search",
+        parameters: { max_results: 6, max_total_results: 6, search_context_size: "low" }
+      }];
+    }
     var r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json", "Authorization": "Bearer " + s.keys.openrouter,
         "HTTP-Referer": "http://localhost:3456", "X-Title": "Interests App"
       },
-      body: JSON.stringify({ model: s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error("OpenRouter API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
@@ -121,7 +130,7 @@
     var provider = opts.provider || S().provider;
     var call = PROVIDER_CALLERS[provider];
     if (!call) throw new Error("Unknown AI provider: " + provider);
-    return call(prompt);
+    return call(prompt, opts);
   }
 
   // hasAIKey() — the ONE no-key guard. True when the configured (or opts.provider)

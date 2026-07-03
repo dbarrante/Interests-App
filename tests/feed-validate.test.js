@@ -19,26 +19,18 @@ function validateItemsBody(){
   return html.slice(i, end + 2);
 }
 
-t("validateItems uses the Core dead-link probe (Store.checkLinks), not allorigins", () => {
+t("validateItems uses one Core content probe, not redundant link or proxy probes", () => {
   const body = validateItemsBody();
-  assert.ok(body.indexOf("Store.checkLinks(") >= 0, "validateItems must call Store.checkLinks");
+  assert.ok(body.indexOf("Store.checkContent(") >= 0, "validateItems must call Store.checkContent");
+  assert.ok(body.indexOf("Store.checkLinks(") < 0, "content fetch already proves final HTTP status");
   assert.ok(body.indexOf("allorigins") < 0, "validateItems must NOT use the api.allorigins.win proxy");
 });
 
-t("validateItems admits only explicitly alive links and fails closed when tier 1 errors", () => {
+t("validateItems fails closed when its single content probe errors", () => {
   const body = validateItemsBody();
-  assert.ok(/status\s*===\s*"alive"/.test(body), "only linkcheck status alive is admitted");
-  // A recommendation is disposable: skipped/unknown is not proof that it is live.
-  assert.ok(/catch\s*\([^)]*\)\s*\{[\s\S]*?return\s*\[\]/.test(body), "link-check failure returns no unverified cards");
-});
-
-t("validateItems requires clean 2xx content and fails closed when tier 2 errors", () => {
-  const body = validateItemsBody();
-  assert.ok(body.indexOf("Store.checkContent(") >= 0, "validateItems must run the tier-2 content check");
-  // Empty/challenge/non-2xx results are rejected by the tested pure predicate.
   assert.ok(body.indexOf("isVerifiedDiscoveryResult(") >= 0, "strict pure predicate gates every result");
   const catches = body.match(/catch\s*\([^)]*\)\s*\{[\s\S]*?return\s*\[\]/g) || [];
-  assert.ok(catches.length >= 2, "both validation tiers fail closed");
+  assert.strictEqual(catches.length, 1, "single page probe fails closed");
 });
 
 t("validateItems no longer admits bot-challenged or non-2xx pages", () => {
@@ -59,12 +51,12 @@ t("imageChain never screenshot-proxies a noshot item", () => {
   assert.ok(/noshot/.test(body), "imageChain honors the noshot flag");
 });
 
-t("validateItems discards AI image guesses and keeps only live page-extracted og:image URLs", () => {
+t("validateItems immediately uses page-extracted og:image with screenshot fallback", () => {
   const body = validateItemsBody();
   assert.ok(body.indexOf("ogImage") >= 0, "uses the content check's ogImage");
   assert.ok(/i\.image\s*=\s*null/.test(body), "AI-provided image is cleared first");
-  assert.ok(body.indexOf("Store.checkLinks(") >= 0, "page-extracted image URLs get their own live check");
-  assert.ok(/i\.image\s*=\s*i\.imageCandidate/.test(body), "only a verified page og:image is attached");
+  assert.ok(/i\.image\s*=\s*r\.ogImage/.test(body), "page-provided image is attached without another blocking probe");
+  assert.ok(body.indexOf("imageCandidate") < 0, "no temporary image validation round-trip remains");
   assert.ok(/liveCheckedAt\s*=\s*Date\.now/.test(body), "accepted cards carry a freshness timestamp");
 });
 
@@ -85,17 +77,24 @@ t("stumbleFetch validates items before they enter the spool (refreshFeed is gone
   const i = html.indexOf("async function stumbleFetch(");
   assert.ok(i >= 0, "stumbleFetch present");
   const body = html.slice(i, html.indexOf("\n}", i) + 2);
+  assert.ok(body.indexOf("webSearch:true") >= 0, "Stumble asks capable providers for grounded web search");
   const drop = body.indexOf("dropAlreadySaved(");
   const validate = body.indexOf("validateItems(");
   const rank = body.indexOf("rankFilter(");
   assert.ok(drop >= 0, "stumbleFetch drops already-saved before spooling");
   assert.ok(rank >= 0 && rank < validate && validate < drop,
     "nested pipeline evaluates dropAlreadySaved, then validateItems, then rankFilter");
+  assert.ok(/Math\.max\(4,Math\.min\(6,stSize\+2\)\)/.test(html),
+    "Stumble asks for only 4-6 grounded candidates based on deal size");
 });
 
 t("Stumble refill is bounded and reports a partially filled 2/4-card deal", () => {
   const ensure = html.slice(html.indexOf("async function ensureSpool("), html.indexOf("\n}", html.indexOf("async function ensureSpool(")) + 2);
   assert.ok(ensure.indexOf("attempts < 2") >= 0, "refill attempts are capped at two");
+  assert.ok(/!forceFresh\s*&&\s*usableSpool\(\)\.length\s*>\s*0[\s\S]*?return attempts/.test(ensure),
+    "cached survivors deal immediately while refill happens in the background");
+  assert.ok(/usableSpool\(\)\.length\s*>\s*0[\s\S]*?break/.test(ensure),
+    "first non-empty batch returns immediately instead of waiting to fill all four slots");
   const next = html.slice(html.indexOf("async function stumbleNext("), html.indexOf("\n}", html.indexOf("async function stumbleNext(")) + 2);
   assert.ok(next.indexOf("stDeal.length < need") >= 0, "partial deals show the not-enough-live-ideas message");
   const refill = html.slice(html.indexOf("async function stumbleRefill("), html.indexOf("\n}", html.indexOf("async function stumbleRefill(")) + 2);

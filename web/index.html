@@ -1190,7 +1190,7 @@ function renderSettings(){
   document.getElementById("provFields").innerHTML = `${localExtra}
     <label>${esc(p.keyName)}</label>
     <input type="password" id="apiKey" value="${esc(S.keys[S.provider])}" placeholder="${S.provider==="local"?"Leave blank for Ollama":"Paste your key…"}">
-    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for Stumble.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). No web search, so Stumble links can occasionally be stale — great for Enrich.`:""}</div>
+    <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for Stumble.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). Stumble automatically uses OpenRouter web search to ground its links.`:""}</div>
     <label>Model</label>
     <input type="text" id="modelName" value="${esc(S.models[S.provider])}">
     <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"e.g. openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-001, meta-llama/llama-3.3-70b-instruct:free — see openrouter.ai/models.":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
@@ -1276,14 +1276,15 @@ async function saveSafeBrowsingKey(){
 /* ============ prompt ============ */
 function buildPrompt(mode){
   const stumble = mode==="stumble";
-  const count = (stumble ? 12 : S.itemCount) + 3;
+  const count = stumble ? Math.max(4,Math.min(6,stSize+2)) : S.itemCount + 3;
   const active = CATS.filter(c=>S.weights[c.key]>0);
   const catLines = active.map(c=>`- "${c.name}" (importance ${S.weights[c.key]}/10)`).join("\n");
-  const recentSaves = saved.slice(0,20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
-  const liked = likes.slice(-20).map(l=>`- [${l.category}] ${l.title}`).join("\n") || "(none yet)";
-  const recentClicks = clicks.slice(-15).map(c=>`- [${c.category}] ${c.title}`).join("\n") || "(none yet)";
-  const dismissed = hidden.slice(-25).map(h=>`- [${h.category}] ${h.title}`).join("\n") || "(none yet)";
-  const avoid = saved.map(s=>s.url).concat(shown.slice(-80)).filter(Boolean).join("\n") || "(none)";
+  const recentSaves = saved.slice(0,stumble?8:20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
+  const liked = likes.slice(stumble?-8:-20).map(l=>`- [${l.category}] ${l.title}`).join("\n") || "(none yet)";
+  const recentClicks = clicks.slice(stumble?-5:-15).map(c=>`- [${c.category}] ${c.title}`).join("\n") || "(none yet)";
+  const dismissed = hidden.slice(stumble?-8:-25).map(h=>`- [${h.category}] ${h.title}`).join("\n") || "(none yet)";
+  const avoidSaved = stumble?saved.slice(0,30):saved;
+  const avoid = avoidSaved.map(s=>s.url).concat(shown.slice(stumble?-30:-80)).filter(Boolean).join("\n") || "(none)";
   return `${stumble
   ? `You are ${userName()}'s StumbleUpon. Use web search to find ${count} REAL, currently-accessible, delightful rabbit-hole pages matched to their interests: fascinating articles, interactive sites, niche tools, brilliant project writeups, weird-and-wonderful corners of the web. Favor serendipity and surprise over the obvious — things they would never have searched for but will love.`
   : `You are a personal discovery engine for ${userName()}, like a smart Pinterest/Facebook discovery stream but actually useful. Use web search to find REAL, currently-accessible web pages: articles, guides, project ideas, tools, videos, courses, initiatives, and thought pieces.`}
@@ -1307,7 +1308,7 @@ ${recentClicks}
 DISMISSED as "not for me" (avoid similar):
 ${dismissed}
 IMPORTED SAVES from his Facebook/Pinterest history (broader taste signal, weight moderately):
-${imported.length ? imported.slice().sort(()=>Math.random()-.5).slice(0,25).map(i=>"- "+i.title).join("\n") : "(none)"}
+${imported.length ? imported.slice().sort(()=>Math.random()-.5).slice(0,stumble?12:25).map(i=>"- "+i.title).join("\n") : "(none)"}
 
 DO NOT recommend any of these URLs again:
 ${avoid}
@@ -1360,18 +1361,12 @@ function parseItems(text){
     image: (i.image && /^https?:\/\//.test(String(i.image))) ? String(i.image) : null
   }));
 }
-// Stumble is fail-closed: candidates are disposable, so only pages positively verified by BOTH
-// Core probes are admitted. Unknown/skipped/errored/non-2xx/empty/challenge/soft-404/wrong-article
-// results are rejected. Library cleanup remains conservative because it handles user-owned data.
+// Stumble is fail-closed: candidates are disposable, so only pages positively verified by Core's
+// guarded content fetch are admitted. That one GET already supplies the final HTTP status, page
+// text/title, and og:image, avoiding the old status GET + content GET + image GET waterfall.
 async function validateItems(items){
   if(!items.length) return items;
-  // Tier 1: require an explicit alive result. Unknown/skipped/error is not proof of life.
-  let results;
-  try{ results = await Store.checkLinks(items.map(i=>({ id:i.id, url:i.url }))); }
-  catch(e){ console.warn("Discovery link check unavailable — rejecting unverified batch", e); return []; }
-  const byLink={}; (results||[]).forEach(r=>{ if(r) byLink[r.id]=r; });
-  let live=items.filter(i=>byLink[i.id]&&byLink[i.id].status==="alive");
-  // Tier 2: require a clean 2xx page with readable content and the promised article identity.
+  let live=items;
   if(live.length){
     try{
       const cres = await Store.checkContent(live.map(i=>({ id:i.id, url:i.url })));
@@ -1379,30 +1374,15 @@ async function validateItems(items){
       const drop = new Set();
       live.forEach(i=>{
         const r = byId[i.id]; if(!r){ drop.add(i.id); return; }
-        if(!isVerifiedDiscoveryResult(i,byLink[i.id],r)){ drop.add(i.id); return; }
+        if(!isVerifiedDiscoveryResult(i,r)){ drop.add(i.id); return; }
         i.image=null;
         i.liveCheckedAt=Date.now();
-        const sigs = r.signals||[];
-        // Defense-in-depth mirrors the pure gate for the strongest content signals.
-        if(sigs.some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")){ drop.add(i.id); return; }
-        // Bot walls cannot be positively verified, so they do not enter Stumble.
-        if(sigs.indexOf("challenge")>=0 || r.status===403 || r.status===429 || r.status===503){ drop.add(i.id); return; }
-        // Hold the page-provided image for its own live probe below.
-        if(r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.imageCandidate = r.ogImage;
+        // A broken og:image naturally falls through to mShots via the <img> onerror chain.
+        if(r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.image=r.ogImage;
       });
       if(drop.size) live = live.filter(i=>!drop.has(i.id));
     }catch(e){ console.warn("Discovery content check unavailable — rejecting unverified batch", e); return []; }
   }
-  const imageCandidates=live.filter(i=>/^https?:\/\//i.test(i.imageCandidate||""))
-    .map(i=>({id:i.id,url:i.imageCandidate}));
-  if(imageCandidates.length){
-    try{
-      const imageResults=await Store.checkLinks(imageCandidates);
-      const imageAlive=new Set((imageResults||[]).filter(r=>r&&r.status==="alive").map(r=>r.id));
-      live.forEach(i=>{ if(imageAlive.has(i.id)) i.image=i.imageCandidate; });
-    }catch(e){ console.warn("Discovery image check unavailable — using verified-page screenshots",e); }
-  }
-  live.forEach(i=>{ delete i.imageCandidate; });
   return live;
 }
 async function rankFilter(items){
@@ -1436,7 +1416,7 @@ async function stumbleFetch(){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
   stLoading = true; renderStumble(); syncRefillBtn();
   try{
-    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"))))));
+    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"),{webSearch:true})))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
     if(shown.length>200) shown=shown.slice(-200);
     usableSpool();
@@ -1467,10 +1447,12 @@ function spoolTake(){
 // Returns the number of refill attempts so callers never exceed two for one action.
 async function ensureSpool(need, forceFresh){
   let attempts = 0;
+  if(!forceFresh && usableSpool().length>0) return attempts;   // deal cached survivors immediately
   while((forceFresh || usableSpool().length < need) && attempts < 2){
     forceFresh = false;
     const added = await stumbleFetch();
     attempts++;
+    if(usableSpool().length>0) break;   // show survivors now; top up quietly after rendering
     if(!added && usableSpool().length < need) break;   // bad AI day — stop looping
   }
   return attempts;
