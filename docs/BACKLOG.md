@@ -3,6 +3,27 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.11.1 Strict-live Stumble + verified card images (2026-07-03)
+
+Live evidence from the user's persisted Stumble deal/spool showed 10 of 11 candidates were dead or
+unverifiable: six real 404s (including the reported Verge card), two 403/error pages, one
+Cloudflare challenge, one empty TLS failure, and only one positively verified page with a live
+page-provided image. The Core probes already recognized these results; the renderer was still
+fail-open on batch errors and deliberately kept unknown/challenged pages.
+
+- Stumble is now **fail-closed**: a candidate must receive `alive` from `/api/check-links`, then a
+  clean 2xx `likely-alive` result from `/api/check-content`. Unknown, skipped, errored, empty,
+  challenged, soft-404, redirect-home, and wrong-article results never enter the spool.
+- AI-supplied image URLs are no longer trusted. A kept card uses the page's extracted `og:image`
+  only after that image URL also passes `/api/check-links`; otherwise the card falls back to an
+  mShots capture of the already-verified live page.
+- Accepted cards carry a live-check timestamp. Spool entries expire after 30 minutes, and a
+  one-time validation-version migration clears v1.11.0's persisted fail-open deal/spool so the
+  reported 404 card cannot survive the upgrade.
+- Pure tests pin the exact Verge failure plus 403/404/500, skipped/unknown, empty, challenge,
+  wrong-article, homepage, and freshness boundaries; renderer assertions pin fail-closed wiring,
+  image verification, and cache migration.
+
 ## v1.11.0 Stumble-first — Feed removed (2026-07-03)
 
 **Feed module removed.** Rationale: the Feed asked the AI for N articles and rendered them as a

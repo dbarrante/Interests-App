@@ -629,6 +629,7 @@ S.extraCats = S.extraCats||[];
 rebuildCats();
 
 let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
+const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
 
 // Persistent app state now lives in the Core service kv store (key "ia_<k>").
 // load() returns a Promise; the few synchronous-default call sites use loadKVSync's
@@ -1359,55 +1360,49 @@ function parseItems(text){
     image: (i.image && /^https?:\/\//.test(String(i.image))) ? String(i.image) : null
   }));
 }
-// Drop CONFIRMED-dead links before adding them to discovery. Uses the app's OWN Core probe
-// (Store.checkLinks -> /api/check-links): server-side (no CORS), SSRF-guarded, conservative —
-// 404/410/451 + DNS/connection failures = "dead"; social hosts = "skipped"; everything else =
-// "alive"/"unknown". We drop ONLY status==="dead", so a live page is never hidden and social/
-// unknown links are kept. (Replaces the old api.allorigins.win proxy check, which returned HTTP
-// 500 / was CORS-blocked from the app and FAILED OPEN — so every dead AI URL slipped through,
-// which is why discovery once showed nothing but 404s.) Fails open ONLY if the whole check errors,
-// so a checker hiccup can't empty Stumble.
+// Stumble is fail-closed: candidates are disposable, so only pages positively verified by BOTH
+// Core probes are admitted. Unknown/skipped/errored/non-2xx/empty/challenge/soft-404/wrong-article
+// results are rejected. Library cleanup remains conservative because it handles user-owned data.
 async function validateItems(items){
   if(!items.length) return items;
-  // Tier 1 — HTTP status (Store.checkLinks): drops only CONFIRMED-dead (404/410/451 + DNS fails).
+  // Tier 1: require an explicit alive result. Unknown/skipped/error is not proof of life.
   let results;
   try{ results = await Store.checkLinks(items.map(i=>({ id:i.id, url:i.url }))); }
-  catch(e){ console.warn("Discovery link check unavailable — showing unverified", e); return items; }
-  const dead = new Set((results||[]).filter(r=>r && r.status==="dead").map(r=>r.id));
-  let live = items.filter(i=>!dead.has(i.id));
-  // Tier 2 — page content (Store.checkContent): catches SOFT-404s — pages that answer HTTP 200
-  // but whose body says "page not found" / "no longer available", or a deep link that redirects to
-  // the site homepage. Tier 1 passes these as alive, so without this Stumble shows a live
-  // mshots/thum.io SCREENSHOT of the not-found page (a "picture with a 404 on it") — the <img>
-  // onerror fallback never fires because the proxy itself returns HTTP 200. A discovery item is
-  // disposable (one of many AI suggestions), so dropping a definitively-dead-content one is safe
-  // here, unlike the Library sweep which defers such calls to its AI+review tier. We drop ONLY on
-  // the strong signals (a dead phrase or redirect-home), never on the weak empty-body signal, so a
-  // legitimate JS-heavy article page (little raw-HTML text) is not falsely filtered out.
+  catch(e){ console.warn("Discovery link check unavailable — rejecting unverified batch", e); return []; }
+  const byLink={}; (results||[]).forEach(r=>{ if(r) byLink[r.id]=r; });
+  let live=items.filter(i=>byLink[i.id]&&byLink[i.id].status==="alive");
+  // Tier 2: require a clean 2xx page with readable content and the promised article identity.
   if(live.length){
     try{
       const cres = await Store.checkContent(live.map(i=>({ id:i.id, url:i.url })));
       const byId = {}; (cres||[]).forEach(r=>{ if(r) byId[r.id]=r; });
       const drop = new Set();
       live.forEach(i=>{
-        const r = byId[i.id]; if(!r) return;
+        const r = byId[i.id]; if(!r){ drop.add(i.id); return; }
+        if(!isVerifiedDiscoveryResult(i,byLink[i.id],r)){ drop.add(i.id); return; }
+        i.image=null;
+        i.liveCheckedAt=Date.now();
         const sigs = r.signals||[];
-        // Soft-404: page body/title says the content is gone (entities are decoded server-side).
+        // Defense-in-depth mirrors the pure gate for the strongest content signals.
         if(sigs.some(s=>String(s).indexOf("phrase:")===0||s==="redirect-home")){ drop.add(i.id); return; }
-        // Bot-challenge (Cloudflare "Just a moment…", 403/429/503 walls): the page may be FINE
-        // for a real browser, so KEEP the item — but flag it so imageChain never screenshot-
-        // proxies it (mshots would render the challenge page as the card picture).
-        if(sigs.indexOf("challenge")>=0 || r.status===403 || r.status===429 || r.status===503){ i.noshot=1; return; }
-        // Wrong article: the URL serves a real page whose title shares ZERO content words with
-        // the suggested article (hallucinated article IDs, e.g. thekitchn /how-to-meal-prep-229363
-        // serving "Braided Pesto Bread"). The promised article is missing -> drop.
-        if(r.title && titleMismatch(i.title, r.title)){ drop.add(i.id); return; }
-        // Verified page: use its real og:image as the card image (better than any proxy).
-        if(!i.image && r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.image = r.ogImage;
+        // Bot walls cannot be positively verified, so they do not enter Stumble.
+        if(sigs.indexOf("challenge")>=0 || r.status===403 || r.status===429 || r.status===503){ drop.add(i.id); return; }
+        // Hold the page-provided image for its own live probe below.
+        if(r.ogImage && /^https?:\/\//i.test(r.ogImage)) i.imageCandidate = r.ogImage;
       });
       if(drop.size) live = live.filter(i=>!drop.has(i.id));
-    }catch(e){ console.warn("Discovery content check unavailable — keeping link-checked items", e); }
+    }catch(e){ console.warn("Discovery content check unavailable — rejecting unverified batch", e); return []; }
   }
+  const imageCandidates=live.filter(i=>/^https?:\/\//i.test(i.imageCandidate||""))
+    .map(i=>({id:i.id,url:i.imageCandidate}));
+  if(imageCandidates.length){
+    try{
+      const imageResults=await Store.checkLinks(imageCandidates);
+      const imageAlive=new Set((imageResults||[]).filter(r=>r&&r.status==="alive").map(r=>r.id));
+      live.forEach(i=>{ if(imageAlive.has(i.id)) i.image=i.imageCandidate; });
+    }catch(e){ console.warn("Discovery image check unavailable — using verified-page screenshots",e); }
+  }
+  live.forEach(i=>{ delete i.imageCandidate; });
   return live;
 }
 async function rankFilter(items){
@@ -1444,6 +1439,7 @@ async function stumbleFetch(){
     const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"))))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
     if(shown.length>200) shown=shown.slice(-200);
+    usableSpool();
     const dealtUrls = new Set(stDeal.map(d=>d && d.url));
     const fresh = items.filter(i=>!spool.some(p=>p.url===i.url) && !dealtUrls.has(i.url));
     spool = spool.concat(fresh);
@@ -1452,9 +1448,16 @@ async function stumbleFetch(){
   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return 0; }
   finally{ stLoading=false; syncRefillBtn(); }
 }
-// Take one card from the spool (respecting the category filter). null if empty.
+// Old persisted recommendations can die after validation. Never deal one after its
+// 30-minute live-check window; a refill will re-check the URL and its page content.
+function usableSpool(){
+  const now=Date.now();
+  spool=spool.filter(i=>isFreshDiscoveryItem(i,now,ST_LIVE_TTL));
+  return applyFilter(spool);
+}
+// Take one card from the fresh spool (respecting the category filter). null if empty.
 function spoolTake(){
-  const c = applyFilter(spool);
+  const c = usableSpool();
   if(!c.length) return null;
   const it = c[Math.floor(Math.random()*c.length)];
   spool = spool.filter(p=>p.url!==it.url);
@@ -1464,11 +1467,11 @@ function spoolTake(){
 // Returns the number of refill attempts so callers never exceed two for one action.
 async function ensureSpool(need, forceFresh){
   let attempts = 0;
-  while((forceFresh || applyFilter(spool).length < need) && attempts < 2){
+  while((forceFresh || usableSpool().length < need) && attempts < 2){
     forceFresh = false;
     const added = await stumbleFetch();
     attempts++;
-    if(!added && applyFilter(spool).length < need) break;   // bad AI day — stop looping
+    if(!added && usableSpool().length < need) break;   // bad AI day — stop looping
   }
   return attempts;
 }
@@ -1482,7 +1485,7 @@ async function stumbleNext(forceFresh){
   persistAll(); renderStumble();
   if(stDeal.length < need) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
   // top the spool back up for the next deal, quietly
-  if(attempts < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+  if(attempts < 2 && usableSpool().length < stSize && !stLoading) stumbleFetch();
 }
 // Replace a single dealt card (index) with a fresh one from the spool.
 async function stumbleReplace(idx){
@@ -1492,7 +1495,7 @@ async function stumbleReplace(idx){
   else { stDeal.splice(idx,1); }   // nothing live to deal — drop the slot
   persistAll(); renderStumble();
   if(!it) toast("Couldn't find another live idea right now — try again in a moment.", 6000);
-  if(attempts < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+  if(attempts < 2 && usableSpool().length < stSize && !stLoading) stumbleFetch();
 }
 // Header "⟳ New ideas" button: replenish the spool and re-deal.
 async function stumbleRefill(){
@@ -1520,7 +1523,7 @@ async function setStSize(n){
   }
   persistAll(); renderStumble();
   if(stDeal.length < n) toast("Couldn't find enough live ideas right now — try again in a moment.", 6000);
-  if((attempts||0) < 2 && applyFilter(spool).length < stSize && !stLoading) stumbleFetch();
+  if((attempts||0) < 2 && usableSpool().length < stSize && !stLoading) stumbleFetch();
 }
 function stCardHTML(it, idx){
   const cat = catByName(it.category);
@@ -4386,8 +4389,9 @@ async function bootData(){
   spool  = (await load("spool",  [])) || [];
   stDeal = (await load("stdeal", [])) || [];
   if(!Array.isArray(stDeal)) stDeal = [];
+  const stValVersion = Number(await load("stvalver", 0)) || 0;
   const legacyStCur = await load("stcur", null);
-  if(!stDeal.length && legacyStCur) stDeal = [legacyStCur];
+  if(stValVersion>=ST_VALIDATION_VERSION && !stDeal.length && legacyStCur) stDeal = [legacyStCur];
   const storedStSize = Number(await load("stsize", 1));
   stSize = [1,2,4].indexOf(storedStSize)>=0 ? storedStSize : 1;
   filterCat = (await load("fcat", "")) || "";
@@ -4404,11 +4408,18 @@ async function bootData(){
   // one-time data hygiene (was a synchronous IIFE)
   // Feed module removed in v1.11.0 — clear its stored kv (cheap tombstone; no schema change).
   save("feed", []);
-  spool = dropAlreadySaved(Array.isArray(spool)?spool:[]);
-  stDeal = dropAlreadySaved(stDeal.filter(Boolean)).slice(0,stSize);
+  // v2 is fail-closed. Purge the old fail-open cache once; on later boots retain only cards
+  // whose successful live/content check is still inside the 30-minute freshness window.
+  if(stValVersion<ST_VALIDATION_VERSION){ spool=[]; stDeal=[]; }
+  else{
+    const now=Date.now();
+    spool = dropAlreadySaved(Array.isArray(spool)?spool:[]).filter(i=>isFreshDiscoveryItem(i,now,ST_LIVE_TTL));
+    stDeal = dropAlreadySaved(stDeal.filter(Boolean)).filter(i=>isFreshDiscoveryItem(i,now,ST_LIVE_TTL)).slice(0,stSize);
+  }
   const dealtUrls = new Set(stDeal.map(i=>i.url));
   spool = spool.filter(i=>!dealtUrls.has(i.url));
-  save("spool", spool); save("stdeal", stDeal); save("stsize", stSize); save("stcur", null);
+  save("spool", spool); save("stdeal", stDeal); save("stsize", stSize);
+  save("stvalver", ST_VALIDATION_VERSION); save("stcur", null);
   const before=imported.length;
   imported = imported.filter(i=>!/^https?:\/\//i.test(i.title));
   imported = imported.filter(i=>!/^.{2,40}\bsaved\b.{0,80}\b(link|post|video|event)\b\.?$/i.test(i.title));

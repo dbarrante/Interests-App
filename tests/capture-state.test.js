@@ -112,5 +112,52 @@ t("titleMismatch: too little signal (short/generic titles) -> false (never over-
   assert.ok(!CS.titleMismatch("How to Meal Prep Like a Pro", ""));  // no page title
 });
 
+/* ---------- strict Stumble validation ---------- */
+const LIVE_LINK = { status: "alive", code: 200 };
+const LIVE_PAGE = { status: 200, verdict: "likely-alive", signals: [], title: "A Real Woodworking Project" };
+
+t("isVerifiedDiscoveryResult: requires both an alive link and a clean 2xx content result", () => {
+  assert.ok(CS.isVerifiedDiscoveryResult(
+    { url: "https://example.com/projects/woodworking", title: "A Real Woodworking Project" },
+    LIVE_LINK, LIVE_PAGE));
+  ["dead", "unknown", "skipped"].forEach(status => {
+    assert.ok(!CS.isVerifiedDiscoveryResult(
+      { url: "https://example.com/projects/woodworking", title: "A Real Woodworking Project" },
+      { status }, LIVE_PAGE), status+" must not enter Stumble");
+  });
+  [0, 403, 404, 500].forEach(status => {
+    assert.ok(!CS.isVerifiedDiscoveryResult(
+      { url: "https://example.com/projects/woodworking", title: "A Real Woodworking Project" },
+      LIVE_LINK, Object.assign({}, LIVE_PAGE, { status })), "HTTP "+status+" must not enter Stumble");
+  });
+});
+
+t("isVerifiedDiscoveryResult: rejects suspect, empty, challenge, and wrong-article pages", () => {
+  const item = { url: "https://www.theverge.com/2020/1/1/21078720/the-power-of-habit-review", title: "The Power of Habit" };
+  assert.ok(!CS.isVerifiedDiscoveryResult(item, LIVE_LINK,
+    { status:404, verdict:"suspect", signals:["phrase:page not found"], title:"404 Not Found | The Verge" }));
+  assert.ok(!CS.isVerifiedDiscoveryResult(item, LIVE_LINK,
+    { status:200, verdict:"suspect", signals:["empty"], title:"" }));
+  assert.ok(!CS.isVerifiedDiscoveryResult(item, LIVE_LINK,
+    { status:200, verdict:"likely-alive", signals:["challenge"], title:"Just a moment..." }));
+  assert.ok(!CS.isVerifiedDiscoveryResult(
+    { url:"https://example.com/articles/meal-prep", title:"How to Meal Prep Like a Pro" },
+    LIVE_LINK, { status:200, verdict:"likely-alive", signals:[], title:"How To Make Braided Pesto Bread" }));
+});
+
+t("isVerifiedDiscoveryResult: allows a verified homepage even when its broad title differs", () => {
+  assert.ok(CS.isVerifiedDiscoveryResult(
+    { url:"https://gretchenrubin.com/", title:"The Happiness Project" },
+    LIVE_LINK, { status:200, verdict:"likely-alive", signals:[], title:"Gretchen Rubin | Author and Podcaster" }));
+});
+
+t("isFreshDiscoveryItem: only recently live-checked cards remain dealable", () => {
+  const now = 1_000_000, ttl = 30_000;
+  assert.ok(CS.isFreshDiscoveryItem({ liveCheckedAt: now-ttl }, now, ttl));
+  assert.ok(!CS.isFreshDiscoveryItem({ liveCheckedAt: now-ttl-1 }, now, ttl));
+  assert.ok(!CS.isFreshDiscoveryItem({}, now, ttl));
+  assert.ok(!CS.isFreshDiscoveryItem({ liveCheckedAt: now+1 }, now, ttl));
+});
+
 console.log("capture-state.test.js: " + passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;

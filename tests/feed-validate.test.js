@@ -25,31 +25,32 @@ t("validateItems uses the Core dead-link probe (Store.checkLinks), not allorigin
   assert.ok(body.indexOf("allorigins") < 0, "validateItems must NOT use the api.allorigins.win proxy");
 });
 
-t("validateItems drops only CONFIRMED-dead links from tier 1 (keeps alive/unknown/skipped-social)", () => {
+t("validateItems admits only explicitly alive links and fails closed when tier 1 errors", () => {
   const body = validateItemsBody();
-  assert.ok(/status\s*===\s*"dead"|"dead"/.test(body), "filters on the 'dead' status");
-  // must NOT filter on the linkcheck 'skipped'/'unknown' STATUS values — those are kept
-  assert.ok(body.indexOf('status==="skipped"') < 0 && body.indexOf('status==="unknown"') < 0, "only 'dead' status is dropped");
+  assert.ok(/status\s*===\s*"alive"/.test(body), "only linkcheck status alive is admitted");
+  // A recommendation is disposable: skipped/unknown is not proof that it is live.
+  assert.ok(/catch\s*\([^)]*\)\s*\{[\s\S]*?return\s*\[\]/.test(body), "link-check failure returns no unverified cards");
 });
 
-t("validateItems also runs the content check to drop SOFT-404s (200 OK but 'not found' body)", () => {
+t("validateItems requires clean 2xx content and fails closed when tier 2 errors", () => {
   const body = validateItemsBody();
   assert.ok(body.indexOf("Store.checkContent(") >= 0, "validateItems must run the tier-2 content check");
-  // drops on the STRONG content signals only (dead phrase / redirect-home), never the weak 'empty'
-  assert.ok(body.indexOf('"phrase:"') >= 0 && body.indexOf('"redirect-home"') >= 0, "drops on phrase / redirect-home signals");
-  assert.ok(body.indexOf('"empty"') < 0, "must NOT drop on the weak 'empty' signal (would filter JS-heavy article pages)");
+  // Empty/challenge/non-2xx results are rejected by the tested pure predicate.
+  assert.ok(body.indexOf("isVerifiedDiscoveryResult(") >= 0, "strict pure predicate gates every result");
+  const catches = body.match(/catch\s*\([^)]*\)\s*\{[\s\S]*?return\s*\[\]/g) || [];
+  assert.ok(catches.length >= 2, "both validation tiers fail closed");
 });
 
-t("validateItems keeps bot-challenged items but flags them noshot (no challenge-page screenshots)", () => {
+t("validateItems no longer admits bot-challenged or non-2xx pages", () => {
   const body = validateItemsBody();
-  assert.ok(body.indexOf('"challenge"') >= 0, "reads the challenge signal");
-  assert.ok(/noshot\s*=\s*1/.test(body), "flags noshot instead of dropping");
-  assert.ok(/403|429|503/.test(body), "also treats hard bot-wall statuses as challenge");
+  assert.ok(body.indexOf("noshot=1") < 0 && body.indexOf("noshot = 1") < 0,
+    "challenge pages are rejected rather than rendered without screenshots");
 });
 
 t("validateItems drops wrong-article URLs via titleMismatch (hallucinated IDs serving other pages)", () => {
   const body = validateItemsBody();
-  assert.ok(body.indexOf("titleMismatch(") >= 0, "uses the titleMismatch predicate");
+  assert.ok(body.indexOf("isVerifiedDiscoveryResult(") >= 0,
+    "uses the strict predicate whose unit tests pin titleMismatch behavior");
 });
 
 t("imageChain never screenshot-proxies a noshot item", () => {
@@ -58,10 +59,13 @@ t("imageChain never screenshot-proxies a noshot item", () => {
   assert.ok(/noshot/.test(body), "imageChain honors the noshot flag");
 });
 
-t("validateItems attaches the page's real og:image to kept items (replaces screenshot proxies)", () => {
+t("validateItems discards AI image guesses and keeps only live page-extracted og:image URLs", () => {
   const body = validateItemsBody();
   assert.ok(body.indexOf("ogImage") >= 0, "uses the content check's ogImage");
-  assert.ok(/i\.image\s*=/.test(body), "attaches it as the item's image");
+  assert.ok(/i\.image\s*=\s*null/.test(body), "AI-provided image is cleared first");
+  assert.ok(body.indexOf("Store.checkLinks(") >= 0, "page-extracted image URLs get their own live check");
+  assert.ok(/i\.image\s*=\s*i\.imageCandidate/.test(body), "only a verified page og:image is attached");
+  assert.ok(/liveCheckedAt\s*=\s*Date\.now/.test(body), "accepted cards carry a freshness timestamp");
 });
 
 t("thum.io is banned — its free tier serves an 'Image not authorized' ERROR IMAGE with HTTP 200", () => {
@@ -120,6 +124,14 @@ t("Stumble cards retain the v1.10.4 imageChain/noshot rendering path", () => {
   const body = html.slice(start, html.indexOf("\n}", start) + 2);
   assert.ok(body.indexOf("imageChain(it)") >= 0, "Stumble renders through imageChain");
   assert.ok(body.indexOf("nextImg(") >= 0, "Stumble retains image fallback handling");
+});
+
+t("persisted Stumble cards are version-purged once and expire before dealing", () => {
+  assert.ok(html.indexOf('load("stvalver"') >= 0, "strict-validation migration version is loaded");
+  assert.ok(html.indexOf('save("stvalver"') >= 0, "strict-validation migration version is persisted");
+  const start = html.indexOf("function usableSpool(");
+  const body = html.slice(start, html.indexOf("\n}", start) + 2);
+  assert.ok(body.indexOf("isFreshDiscoveryItem(") >= 0, "spool drops stale/unvalidated cards before dealing");
 });
 
 console.log(passed + " passed, " + failed + " failed");

@@ -54,12 +54,39 @@
     return true;
   }
 
+  // Recommendations are disposable, so Stumble admits only pages positively
+  // verified by both probes. The library's delete checks remain conservative.
+  function isVerifiedDiscoveryResult(item, linkResult, contentResult) {
+    if (!linkResult || linkResult.status !== "alive") return false;
+    if (!contentResult || contentResult.verdict !== "likely-alive") return false;
+    var status = Number(contentResult.status);
+    if (!(status >= 200 && status < 300)) return false;
+    var signals = Array.isArray(contentResult.signals) ? contentResult.signals : [];
+    for (var i = 0; i < signals.length; i++) {
+      var signal = String(signals[i] || "");
+      if (signal === "empty" || signal === "challenge" || signal === "redirect-home" || signal.indexOf("phrase:") === 0) return false;
+    }
+    var path = "";
+    try { path = new URL(String(item && item.url || "")).pathname.replace(/\/+$/, ""); } catch (_) { return false; }
+    if (path && contentResult.title && titleMismatch(item && item.title, contentResult.title)) return false;
+    return true;
+  }
+
+  function isFreshDiscoveryItem(item, now, ttl) {
+    var checked = Number(item && item.liveCheckedAt);
+    var current = Number(now);
+    var maxAge = Number(ttl);
+    return checked > 0 && checked <= current && current - checked <= maxAge;
+  }
+
   var api = {
     isFavicon: isFavicon, isBadImg: isBadImg,
     captureable: captureable, captureableFb: captureableFb,
     needsCapture: needsCapture, needsRetry: needsRetry,
     needsFbCapture: needsFbCapture, fbMiss: fbMiss,
-    titleMismatch: titleMismatch
+    titleMismatch: titleMismatch,
+    isVerifiedDiscoveryResult: isVerifiedDiscoveryResult,
+    isFreshDiscoveryItem: isFreshDiscoveryItem
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -75,5 +102,7 @@
     root.needsFbCapture = needsFbCapture;
     root.fbMiss = fbMiss;
     root.titleMismatch = titleMismatch;
+    root.isVerifiedDiscoveryResult = isVerifiedDiscoveryResult;
+    root.isFreshDiscoveryItem = isFreshDiscoveryItem;
   }
 })(typeof self !== "undefined" ? self : this);
