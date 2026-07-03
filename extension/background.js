@@ -1,4 +1,4 @@
-const FB_CAP_VERSION = "4.47";   // stamped into deliveries so the APP console shows which code is actually running
+const FB_CAP_VERSION = "4.48";   // stamped into deliveries so the APP console shows which code is actually running
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
 

@@ -3,6 +3,39 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.9.0 tightening release (2026-07-03)
+
+Phase 3 duplication-collapse and module-extraction pass across core, web, and extension, plus a
+13-item deferred-minors sweep.
+
+- [x] **T1** `core/guardedfetch.js` — three SSRF-fetch copies unified; undici drain workaround
+  single-sourced.
+- [x] **T2** core smalls — shared stable-stringify via `merge.js`, `jsonKvEndpoints` helper, JSON
+  error middleware, read-only `getSyncConfig` + `ensureSyncConfig` at boot, `window.app` alias
+  removed, `copyById` typo fixed.
+- [x] **T3** `web/ai.js` — one AI dispatcher + `parseJsonArray` replace ~25 copies.
+- [x] **T4** `web/lib/urlkey.js` — four URL canonicalizers unified, fuzz-verified.
+- [x] **T5** `web/lib/import-parsers.js` + `capture-state.js` — parsers, 8 predicates,
+  `ingestImported` pure/impure split; same-batch dedupe crash fixed post-review.
+- [x] **T6** `dispatchCaptureBatch` spine — three extension-batch dispatchers unified; og-fetch path
+  deliberately kept separate.
+- [x] **T7** 13-item deferred-minors sweep — Esc unification, poller `flushQueue`, `saveConfig` tmp
+  cleanup, stumble cap, `parseItems` ids, etc.
+
+**Sanctioned behavior changes (four):** error bodies no longer leak stack traces; duplicate-scan
+groups YouTube shorts like clip-dedupe; CSV titles with doubled quotes import correctly; unified
+no-key message at most AI sites.
+
+### Deferred (from v1.9.0 final review)
+
+- [ ] `urlkey` garbage-input coercion test.
+- [ ] `import-parsers` unconfigured-decode hard-assert.
+- [ ] `kvSet`-move error-path note.
+- [ ] Out-of-band-config-corruption `deviceId` edge in pure `getSyncConfig`.
+
+**Also deferred:** `.img`/`.image` field unification to Phase 4 (iPhone schema work); web
+views/state split is the next increment of the F-plan.
+
 ## v1.8.0 consolidation release (2026-07-02)
 
 Phase 2 of the full-review pass in `docs/full-review-2026-07-02.md` (sections D1-D5, E): GUI
