@@ -39,6 +39,10 @@
     bookmarkSources: function () { return "/api/bookmark-sources"; },
     bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); },
     captureMeta: function () { return "/api/capture-meta"; }
+    ,categories: function () { return "/api/categories"; }
+    ,bstumbleRequest: function () { return "/api/bstumble/request"; }
+    ,bstumbleResults: function () { return "/api/bstumble/results"; }
+    ,bstumbleFeedback: function () { return "/api/bstumble/feedback"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -148,7 +152,13 @@
       getSafeBrowsingKey: function () { return jget(SE.safeBrowsingKey()).then(function (j) { return !!(j && j.hasKey); }); },
       setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); },
       verifySafeBrowsing: function () { return jget(SE.safebrowsingVerify()).then(function (j) { return (j && j.state) || "error"; }); },
-      captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); }
+      captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
+
+      // --- browser stumble (renderer drains these; the extension owns the other side) ---
+      getBrowserStumbleRequest: function () { return jget(SE.bstumbleRequest()).then(function (j) { return (j && j.request) || null; }); },
+      clearBrowserStumbleRequest: function () { return jsend("POST", SE.bstumbleRequest(), { request: null }).then(function () {}); },
+      deliverBrowserStumbleResults: function (items) { return jsend("POST", SE.bstumbleResults(), { items: items || [] }).then(function () {}); },
+      drainBrowserStumbleFeedback: function () { return jget(SE.bstumbleFeedback()).then(function (j) { return (j && j.feedback) || []; }); }
     };
 
     root.Store = Store;
