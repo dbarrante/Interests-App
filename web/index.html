@@ -2062,7 +2062,7 @@ function clearFbPlaceholders(silent){
       cleared++;
     }
   }
-  if(cleared){ Store.putCards(imported); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Auto-capture in tabs' to retry, or open & Save them manually.", 9000); } }
+  if(cleared){ Store.putCards(imported); updateCounts(); if(!silent){ if(curTab==="imported") renderImported(); toast("Cleared "+cleared+" placeholder(s) → moved to 'Couldn't capture'. They won't re-capture the same junk — use 'Get pictures & info' to retry, or open & Save them manually.", 9000); } }
   else if(!silent) toast("No placeholder captures found");
   return cleared;
 }
@@ -2153,6 +2153,7 @@ function renderImported(){
           </div></div>`:"";})()}
       ${selMode
         ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Recapture the selected cards via the extension worker — every platform (Instagram, Facebook, bookmarks, YouTube, Pinterest). Each page opens briefly, is captured, and closes; the real screenshot overwrites the old image. Keep Chrome open and stay logged in.">&#128260; Recapture (${selPicks.size})</button>
+           <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
            <button class="btn btn-ghost" id="openSelBtn" onclick="openSelected()" ${selPicks.size?"":"disabled"} title="Open each selected card's link in its own browser tab. Your browser may ask to allow pop-ups the first time — allow them for this site.">&#128279; Open (${selPicks.size})</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
@@ -2795,11 +2796,50 @@ function ogParse(html){
   };
   return {img:pick("image"), title:pick("title"), desc:pick("description")};
 }
-// fetchSelectedInfo (Select-mode "Fetch info") RETIRED in v1.8.0 (review D1). Its
-// capability — og:image + AI description for selected cards without the extension —
-// is covered by Select→Recapture (recaptureViaWorker, which captures every platform)
-// plus the "Get pictures & info" panel's never-tried og-fetch bucket (Store.captureMeta)
-// and its AI-descriptions bucket (enrichImported). Nothing dropped silently.
+// Select-mode "Fetch info": og:image/title/desc for SELECTED cards via the app's own
+// Core (Store.captureMeta) — no tabs, no forced re-screenshot. Kept as a manual override
+// alongside Select→Recapture (the heavier render+force worker path): the two are NOT
+// equivalent, so both stay (review T6 parity).
+async function fetchSelectedInfo(){
+  const targets = [...selPicks].map(i=>imported[i]).filter(it=>it && it.url).slice(0,40);
+  if(!targets.length){ toast("Select some items with links first"); return; }
+  targets.forEach(it=>{ if(!it.id) it.id=newId(); });
+  const btn=document.getElementById("fetchBtn");
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Fetching…';
+  let gotImg=0, gotInfo=0;
+  for(let i=0;i<targets.length;i+=6){
+    const chunk=targets.slice(i,i+6);
+    let results=[];
+    try{ results = await Store.captureMeta(chunk.map(c=>({id:c.id, url:c.url}))); }
+    catch(e){ console.warn("fetchSelectedInfo chunk failed", e); }
+    const byId={}; chunk.forEach(c=>{ byId[c.id]=c; });
+    results.forEach(r=>{
+      const c=r&&byId[r.id]; if(!c) return;
+      const hadDesc=!!(c.desc && !c.desc.startsWith("Saved from") && !c.desc.startsWith("From your"));
+      if(applyCaptureResult(c, r)) gotImg++;
+      if(!hadDesc && r.description) gotInfo++;
+    });
+    toast("Fetched "+Math.min(i+6,targets.length)+" of "+targets.length+"…");
+  }
+  const noDesc = [...selPicks].map(i=>imported[i]).filter(it=>it && !it.desc).slice(0,40);
+  if(noDesc.length && (S.keys[S.provider] || S.provider==="local")){
+    try{
+      const prompt = `For EACH numbered saved-item title, write ONE short sentence (under 20 words) describing what it likely is. No platform names, no "This is" filler — start with the substance. Return ONLY a JSON array of ${noDesc.length} strings, same order.
+
+${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
+      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
+      const text = await call(prompt);
+      const t=text.replace(/```json|```/g,"").trim();
+      const a=t.indexOf("["), z=t.lastIndexOf("]");
+      if(a>-1&&z>-1){ const arr=JSON.parse(t.slice(a,z+1));
+        noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
+    }catch(e){ console.warn(e); }
+  }
+  await persistCards();
+  selPicks.clear();
+  renderImported();
+  toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
+}
 // Capture the SELECTED cards via the real extension pipeline (durable images):
 // Facebook posts resolve instantly via og-fetch (no tab); other sites open & close
 // a tab and get a screenshot + metadata. Routes the picked cards through the same
@@ -3465,7 +3505,7 @@ function _gpBuckets(){
     { id:"miss", icon:"📷", title:"Never tried",          cards:_gpMiss(),
       desc:"Fetch a preview image + info in the app (no extension needed) for cards with no picture that haven't been tried yet." },
     { id:"fb",   icon:"📘", title:"Facebook",              cards:_gpFb(),
-      desc:"Capture Facebook posts via the extension — each opens briefly; restricted ones render in a focused tab. Stay logged into Facebook." },
+      desc:"Capture Facebook posts via the extension — batches of "+FB_BATCH_CAP+" with a ~1 min pause between, repeating until done; restricted ones then render in a focused tab. Stay logged into Facebook." },
     { id:"fail", icon:"🔄", title:"Failed — retry",        cards:_gpFail(),
       desc:"Recapture cards that were tried but still have no picture, via the extension worker (fresh, overwriting the placeholder)." },
     { id:"desc", icon:"✨", title:"Missing descriptions",  cards:_gpDesc(),
@@ -3514,6 +3554,16 @@ function renderGetPics(){
     </div>`;
 }
 
+// Hard cap on FB batches per sub-stage per Start (20 × FB_BATCH_CAP = up to 500 posts —
+// effectively "drain", while guaranteeing one Start can never loop unbounded).
+const _GP_FB_MAX_BATCHES = 20;
+// Abortable pause between FB batches (the fbAuto ~45–75s jitter, kept for rate-limit safety).
+function _gpPause(ms){
+  return new Promise(resolve=>{
+    const until=Date.now()+ms;
+    const iv=setInterval(()=>{ if(_getpicAbort || Date.now()>=until){ clearInterval(iv); resolve(); } }, 500);
+  });
+}
 // Wait until the worker/FB batch finishes (batchUI flips inactive via pollBatchProgress)
 // or Stop is pressed. Bounded so a lost driver never hangs the sequence forever.
 function _gpWaitBatch(){
@@ -3535,14 +3585,30 @@ async function startGetPics(){
       _getpicStage="miss"; renderGetPics();
       await startBatchCapture();
     }
-    // B — Facebook: extension batch (worker-driven; startFbCapture returns immediately)
+    // B — Facebook: two sub-stages, run in ONE pass so a mixed set is fully handled:
+    //   B1 un-tried posts → startFbCapture (extension og batch, 25-cap per batch)
+    //   B2 remaining "couldn't capture" → startFbMissRenderCapture (focused-tab render)
+    // Each sub-stage LOOPS batches until its set drains (hard cap _GP_FB_MAX_BATCHES),
+    // with the fbAuto-style jittered pause between batches for Facebook rate-limit
+    // safety; _getpicAbort is re-checked between every batch and sub-stage.
     if(!_getpicAbort && _gpFb().length){
       _getpicStage="fb"; renderGetPics();
-      const render = imported.filter(fbMiss).length && !imported.filter(needsFbCapture).length;
-      // prefer the plain og/extension batch when there are un-tried FB posts; use the
-      // slower render-capture only when the remaining set is all "couldn't capture".
-      if(render) await startFbMissRenderCapture(); else await startFbCapture();
-      await _gpWaitBatch();
+      for(let n=0; !_getpicAbort && n<_GP_FB_MAX_BATCHES && imported.some(needsFbCapture); n++){
+        if(n) await _gpPause(fbAutoPauseMs());          // pause BETWEEN batches, not before the first
+        if(_getpicAbort) break;
+        await startFbCapture();
+        await _gpWaitBatch();
+      }
+      for(let n=0; !_getpicAbort && n<_GP_FB_MAX_BATCHES && imported.some(fbMiss); n++){
+        if(n) await _gpPause(fbAutoPauseMs());
+        if(_getpicAbort) break;
+        const before=imported.filter(fbMiss).length;
+        await startFbMissRenderCapture();
+        await _gpWaitBatch();
+        // render-capture legitimately leaves stubborn posts behind (manual-Save cases);
+        // if a whole batch made no progress, stop looping instead of retrying forever.
+        if(imported.filter(fbMiss).length >= before) break;
+      }
     }
     // C — failed/retry: worker recapture (force+render), worker-driven
     if(!_getpicAbort && _gpFail().length){
