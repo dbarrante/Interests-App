@@ -3,6 +3,67 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.8.0 consolidation release (2026-07-02)
+
+Phase 2 of the full-review pass in `docs/full-review-2026-07-02.md` (sections D1-D5, E): GUI
+consolidation on the web side and simplification on the extension side. The app gets smaller —
+fewer buttons, fewer permissions, less code.
+
+- [x] **D1** — "Get pictures & info" capture panel replaces six capture/enrich buttons (Enrich,
+  Capture missing, Capture Facebook, Auto-capture all, Auto-capture in tabs, Select-mode Fetch
+  info). One panel shows per-bucket counts (never-tried, Facebook-needs-extension, failed/retry,
+  missing descriptions); one Start button drains per-bucket sequentially with jittered pauses,
+  capped at ~500 FB posts per Start; one Stop button aborts the whole sequence, not just the
+  current stage.
+- [x] **D2** — "Library health" modal replaces six janitor tools (Scan duplicates, Check links,
+  Groom link-less, failed-captures dropdown, Couldn't-capture toggle, Fix placeholders) with one
+  tabbed modal (Duplicates | Dead & unsafe | Failed captures | No link) sharing one `removeCards`
+  helper (idb + fingerprint cleanup, `persistCards`, user-reviewed `{confirm:true}`, undo toast).
+- [x] **D3** — Backup & restore consolidated into one section: status line, Back up now, auto-backup
+  schedule, restore list, Import legacy backup. Removed the Notion/Jarvis bridge stub section and
+  the browser-quota/persistence rows (meaningless since the SQLite move). Fixed: `ia_theme`
+  legacy-restore routing, partial-restore toast wording, restore's `plan.skipped` count now shown.
+- [x] **D4** — "Suggest interest categories" and "Analyze my library" merged into one "Build my
+  profile" flow (optional free-text + library analysis, same chip/about-draft output). Taxonomy
+  labels clarified in Settings copy (categories = feed sections, tags = imported organization,
+  interests = profile). `persistCards` 409-regex unified with the global net matcher; net toast
+  copy now write-verb-only so failed GETs don't toast "Saving failed"; dead `ogParse` removed.
+- [x] **D5** — extension: the legacy bridge-driving layer (`bridge.js`, `bridge-probe.js`, localhost
+  content-script injection, defer-to-app-tab branches) is deleted; the service-worker poller
+  (`pollCaptureRequest`/`pollBatchState`) is now the only capture driver. Passive dead-link
+  auto-removal (the `chrome.webRequest` 404/410 listener) is retired and the `webRequest`
+  permission dropped — dead links are found only by the app's review-based "Check links" sweep now.
+  Instagram 429/rate-limit pages are now recognized by the blocked-page detector instead of being
+  captured as a card image. Capture-claim persistence for single captures is now handled by the SW
+  poller, surviving service-worker suspension.
+- [x] **E** — dead code sweeps on both sides: extension (`manualCapture` handler, orphaned `.cap`
+  CSS, `clipFacebookPost` alias, `deliverDead` wrapper, duplicated `lockedCaptureVisible` copies,
+  doubled `onInstalled`/`onStartup` registrations, extracted `buildClipInfo`, stale capture-configs
+  doc comment, `*.tmp.*` stray files) and web (`collectBackupMeta`, `downloadJSON`, `markBackupDone`,
+  `restoreFromDir`, `initImageStore`, `BACKUP_SKIP`, `viewFailures` wrapper, `_refreshTabs`/
+  `closeRefreshTab` no-ops).
+- [x] **Repo hygiene** — deleted stray `package.json.tmp.*` and `tests/*.tmp.*` files; moved root-level
+  `facebook-import.json`, `facebook-saves.txt`, `pinterest-import.json`, `youtube-import.json` into
+  `_recovery/root-import-files/`.
+
+**Retired in v1.8.0:** passive dead-link auto-removal (now only via the app's review-based Check
+links sweep); the unbounded auto-capture loop (now a bounded drain-per-Start, capped ~500 FB posts);
+the manual "Fix placeholders" button (placeholder fixing now runs automatically before FB capture
+runs); browser-tab single-capture latency may now be up to ~30s (governed by the SW alarm cadence,
+since the bridge's faster-but-racier path is gone).
+
+### Deferred (from v1.8.0 final review)
+
+- [ ] `pollCaptureRequest` re-entrancy guard for concurrent claims.
+- [ ] `flushQueue` in `iaPollAll` for faster offline-queue delivery.
+- [ ] Stale bridge comment in `background.js` ~line 759 (leftover reference to the deleted bridge
+  layer).
+- [ ] Triple-Esc-listener unification (web side).
+- [ ] Web-side `backupCountsMatch` orphan (dead code left over from the D3 backup consolidation).
+- [ ] `enrichImported`'s `#enrichBtn` guarded ref (button no longer exists post-D1; the guard should
+  be removed with it).
+- [ ] Double-delivery-after-suspension comment (extension SW).
+
 ## v1.7.0 stability release (2026-07-02)
 
 Fixes from the full-review pass in `docs/full-review-2026-07-02.md` (four parallel review agents:
