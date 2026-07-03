@@ -208,6 +208,24 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .modal-box ol{margin:0 0 12px 20px;font-size:14px;line-height:1.7}
 .modal-box p{font-size:13.5px;color:var(--muted);line-height:1.55}
 
+/* ---- Get pictures & info panel (review D1) ---- */
+#getpicModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:48px 16px;overflow:auto}
+#getpicModal.open{display:flex}
+.gp-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(560px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.gp-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
+.gp-list{overflow-y:auto;padding:6px 18px;flex:1 1 auto;min-height:0}
+.gp-bucket{display:flex;gap:12px;align-items:flex-start;padding:12px 6px;border-bottom:1px solid var(--line)}
+.gp-bucket:last-child{border-bottom:0}
+.gp-bucket .gp-n{font-weight:800;font-size:20px;min-width:44px;text-align:right;color:var(--accent)}
+.gp-bucket.zero .gp-n{color:var(--muted);opacity:.5}
+.gp-bucket.zero{opacity:.55}
+.gp-bucket .gp-t{font-weight:700;font-size:14px}
+.gp-bucket .gp-d{font-size:12.5px;color:var(--muted);line-height:1.45;margin-top:2px}
+.gp-bucket.running{background:rgba(34,139,69,.10);border-radius:9px}
+.gp-run-tag{font-size:11px;font-weight:700;color:var(--accent);margin-left:6px}
+.gp-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+.gp-foot .gp-note{margin-right:auto;font-size:12px;color:var(--muted)}
+
 /* ============ imported tab ============ */
 .imp-head{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
 .imp-head input{flex:1;min-width:200px;border:1px solid var(--line);border-radius:999px;padding:9px 16px;font-size:14px;background:var(--card)}
@@ -535,6 +553,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   </div>
 </div>
 <div id="healthModal"><div class="dupe-box"><div id="healthBody"></div></div></div>
+<div id="getpicModal"><div class="gp-box"><div id="getpicBody"></div></div></div>
 
 <script>
 "use strict";
@@ -2115,26 +2134,14 @@ function renderImported(){
       <button class="btn btn-ghost" onclick="toggleImpSort()" title="Sort order">${impSort==="newest"?"&#9660; Newest":"&#9650; Oldest"}</button>
       <button class="btn btn-ghost${impUnreviewed?" btn-primary":""}" onclick="toggleUnreviewed()">${impUnreviewed?"&#10003; ":""}Unreviewed</button>
       ${(function(){ const n=imported.filter(fbMiss).length; return (n||impFbMiss)?`<button class="btn btn-ghost${impFbMiss?" btn-primary":""}" onclick="toggleFbMiss()" title="Facebook cards that couldn't get a picture automatically (restricted/login-gated). Open each and use the extension's Save to grab it.">${impFbMiss?"&#10003; ":"&#128683; "}Couldn't capture${n?" ("+n+")":""}</button>`:""; })()}
-      ${todo?`<button class="btn btn-ghost" id="enrichBtn" onclick="enrichImported()">&#10024; Enrich ${todo} item${todo>1?"s":""}</button>`:""}
       ${(function(){
+        // ONE "Get pictures & info" button replaces the six capture/enrich entry points
+        // (Enrich / Capture missing / Capture Facebook / Auto-capture all / Auto-capture
+        // in tabs / Select→Fetch info) — review D1. While a batch runs it becomes the Stop
+        // button (existing batch Stop semantics; fbAuto stops the auto-loop too).
         if(batchUI.active) return `<button class="btn btn-primary" id="batchBtn" onclick="${fbAuto?'stopFbAuto()':'cancelBatchCapture()'}">&#9632; ${fbAuto?'Stop auto-capture':'Stop capture'} (${batchUI.done}/${batchUI.total})</button>`;
-        const miss=imported.filter(needsCapture).length;
-        const fail=imported.filter(needsRetry).length;
-        var out="";
-        if(miss) out+=`<button class="btn btn-ghost" id="batchBtn" onclick="startBatchCapture()" title="Fetch a preview image + info for every not-yet-tried card with no picture (in the app, no extension needed)">&#128247; Capture missing (${miss})</button>`;
-        const fbmiss=imported.filter(needsFbCapture).length;
-        if(fbmiss){ const fbcap=_fbTested?FB_BATCH_CAP:10; out+=`<button class="btn btn-ghost" id="fbBatchBtn" onclick="startFbCapture()" title="Capture ONE batch of Facebook posts via the extension — stay logged into Facebook. Resumes across runs.">&#128247; Capture Facebook ${fbmiss>fbcap?("("+fbcap+" of "+fbmiss+")"):("("+fbmiss+")")}</button>`;
-          out+= fbAuto
-            ? `<button class="btn btn-primary" onclick="stopFbAuto()" title="Stop the automated run">&#9632; Stop auto-capture</button>`
-            : `<button class="btn btn-ghost" onclick="toggleFbAuto()" title="Automatically capture ${FB_BATCH_CAP} Facebook posts at a time with a ~1 min (jittered) pause between, until done. Stop anytime.">&#9654; Auto-capture all (${fbmiss})</button>`;
-        }
-        const fbcant=imported.filter(fbMiss).length;
-        if(fbcant && !fbAuto){ const rcap=_fbRenderTested?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 3× (5s apart, reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
-        // Placeholder-fixing, failed-triage, groom, duplicate + dead-link review all moved
-        // into the one "🩺 Library health" modal (review D2). Placeholder cleanup is now
-        // silent maintenance (auto-runs inside startFbCapture); its count shows in the
-        // health modal's Failed tab. The impFailed filter keeps a clear affordance below.
-        return out;
+        const n = _getpicTotal();
+        return `<button class="btn btn-ghost" id="getpicBtn" onclick="openGetPics()" title="Get preview pictures and info for your imported cards — never-tried links, Facebook posts, failed retries, and missing AI descriptions, all in one place.">&#128247; Get pictures &amp; info${n?" ("+n+")":""}</button>`;
       })()}
       ${impFailed?`<button class="btn btn-ghost btn-primary" onclick="clearFailedFilter()" title="Showing only failed captures — click to show all cards again">&#10003; Failed only &#10005;</button>`:""}
       <button class="btn btn-ghost" onclick="openHealth()" title="Review & tidy your library: duplicates, dead &amp; unsafe links, failed captures, and link-less cards — all in one place.">&#129658; Library health</button>
@@ -2146,7 +2153,6 @@ function renderImported(){
           </div></div>`:"";})()}
       ${selMode
         ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Recapture the selected cards via the extension worker — every platform (Instagram, Facebook, bookmarks, YouTube, Pinterest). Each page opens briefly, is captured, and closes; the real screenshot overwrites the old image. Keep Chrome open and stay logged in.">&#128260; Recapture (${selPicks.size})</button>
-           <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
            <button class="btn btn-ghost" id="openSelBtn" onclick="openSelected()" ${selPicks.size?"":"disabled"} title="Open each selected card's link in its own browser tab. Your browser may ask to allow pop-ups the first time — allow them for this site.">&#128279; Open (${selPicks.size})</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
@@ -2789,46 +2795,11 @@ function ogParse(html){
   };
   return {img:pick("image"), title:pick("title"), desc:pick("description")};
 }
-async function fetchSelectedInfo(){
-  const targets = [...selPicks].map(i=>imported[i]).filter(it=>it && it.url).slice(0,40);
-  if(!targets.length){ toast("Select some items with links first"); return; }
-  targets.forEach(it=>{ if(!it.id) it.id=newId(); });
-  const btn=document.getElementById("fetchBtn");
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Fetching…';
-  let gotImg=0, gotInfo=0;
-  for(let i=0;i<targets.length;i+=6){
-    const chunk=targets.slice(i,i+6);
-    let results=[];
-    try{ results = await Store.captureMeta(chunk.map(c=>({id:c.id, url:c.url}))); }
-    catch(e){ console.warn("fetchSelectedInfo chunk failed", e); }
-    const byId={}; chunk.forEach(c=>{ byId[c.id]=c; });
-    results.forEach(r=>{
-      const c=r&&byId[r.id]; if(!c) return;
-      const hadDesc=!!(c.desc && !c.desc.startsWith("Saved from") && !c.desc.startsWith("From your"));
-      if(applyCaptureResult(c, r)) gotImg++;
-      if(!hadDesc && r.description) gotInfo++;
-    });
-    toast("Fetched "+Math.min(i+6,targets.length)+" of "+targets.length+"…");
-  }
-  const noDesc = [...selPicks].map(i=>imported[i]).filter(it=>it && !it.desc).slice(0,40);
-  if(noDesc.length && (S.keys[S.provider] || S.provider==="local")){
-    try{
-      const prompt = `For EACH numbered saved-item title, write ONE short sentence (under 20 words) describing what it likely is. No platform names, no "This is" filler — start with the substance. Return ONLY a JSON array of ${noDesc.length} strings, same order.
-
-${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-      const text = await call(prompt);
-      const t=text.replace(/```json|```/g,"").trim();
-      const a=t.indexOf("["), z=t.lastIndexOf("]");
-      if(a>-1&&z>-1){ const arr=JSON.parse(t.slice(a,z+1));
-        noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
-    }catch(e){ console.warn(e); }
-  }
-  await persistCards();
-  selPicks.clear();
-  renderImported();
-  toast(gotImg+" picture"+(gotImg===1?"":"s")+" and "+gotInfo+" description"+(gotInfo===1?"":"s")+" fetched"+(targets.length>=40?" (40 max per run)":""), 6000);
-}
+// fetchSelectedInfo (Select-mode "Fetch info") RETIRED in v1.8.0 (review D1). Its
+// capability — og:image + AI description for selected cards without the extension —
+// is covered by Select→Recapture (recaptureViaWorker, which captures every platform)
+// plus the "Get pictures & info" panel's never-tried og-fetch bucket (Store.captureMeta)
+// and its AI-descriptions bucket (enrichImported). Nothing dropped silently.
 // Capture the SELECTED cards via the real extension pipeline (durable images):
 // Facebook posts resolve instantly via og-fetch (no tab); other sites open & close
 // a tab and get a screenshot + metadata. Routes the picked cards through the same
@@ -3465,7 +3436,7 @@ async function pollBatchProgress(){
   const btn=document.getElementById("batchBtn");
   if(btn) btn.textContent = batchUI.active
     ? ("■ Stop capture ("+batchUI.done+"/"+batchUI.total+")")
-    : ("📷 Capture missing ("+imported.filter(needsCapture).length+")");
+    : ("📷 Get pictures & info ("+_getpicTotal()+")");   // renderImported rebuilds the real button just below
   if(was && !batchUI.active){
     try{ Store.setBatchProgress(null); }catch(e){}
     toast("Capture run finished — "+batchUI.done+"/"+batchUI.total+" processed");
@@ -3473,6 +3444,135 @@ async function pollBatchProgress(){
     if(curTab==="imported") renderImported();
   }
 }
+/* ============ "Get pictures & info" panel (review D1) ============
+   ONE surface replacing six capture/enrich entry points. It WIRES the existing
+   pipelines — it does not rewrite them. Four buckets, computed from the existing
+   predicates, run sequentially on Start; each stage reuses its shipped implementation
+   as-is; empty buckets are skipped. Stop uses the existing batch Stop semantics and
+   is honored between stages so it never just stops one stage and starts the next. */
+
+// Bucket predicates — all read the EXISTING capture-state predicates (no new logic):
+//  A never-tried og-fetchables → needsCapture (Store.captureMeta batch)
+//  B Facebook needing the extension → needsFbCapture + fbMiss (fb candidates incl. "couldn't capture")
+//  C failed/retry → needsRetry (worker recapture, force+render)
+//  D missing descriptions → Enrich candidates (same set enrichImported's todo counts)
+function _gpMiss(){ return imported.filter(needsCapture); }
+function _gpFb(){ const s=new Set(); imported.forEach(i=>{ if(needsFbCapture(i)||fbMiss(i)) s.add(i); }); return [...s]; }
+function _gpFail(){ return imported.filter(needsRetry); }
+function _gpDesc(){ return imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)); }
+function _gpBuckets(){
+  return [
+    { id:"miss", icon:"📷", title:"Never tried",          cards:_gpMiss(),
+      desc:"Fetch a preview image + info in the app (no extension needed) for cards with no picture that haven't been tried yet." },
+    { id:"fb",   icon:"📘", title:"Facebook",              cards:_gpFb(),
+      desc:"Capture Facebook posts via the extension — each opens briefly; restricted ones render in a focused tab. Stay logged into Facebook." },
+    { id:"fail", icon:"🔄", title:"Failed — retry",        cards:_gpFail(),
+      desc:"Recapture cards that were tried but still have no picture, via the extension worker (fresh, overwriting the placeholder)." },
+    { id:"desc", icon:"✨", title:"Missing descriptions",  cards:_gpDesc(),
+      desc:"Fetch Pinterest pin images and write short AI descriptions for cards that don't have one yet." },
+  ];
+}
+function _getpicTotal(){ const b=_gpBuckets(); const s=new Set(); b.forEach(x=>x.cards.forEach(c=>s.add(c))); return s.size; }
+
+let _getpicRunning = false;   // sequence in progress (distinct from batchUI.active — spans multiple stages)
+let _getpicStage = "";        // bucket id currently running (for the panel highlight)
+let _getpicAbort = false;     // Stop pressed → don't start the next stage
+
+function openGetPics(){
+  if(!_booted){ toast("One moment — still loading your library."); return; }
+  renderGetPics();
+  document.getElementById("getpicModal").classList.add("open");
+}
+function closeGetPics(){ document.getElementById("getpicModal").classList.remove("open"); }
+document.getElementById("getpicModal").addEventListener("click", e=>{ if(e.target.id==="getpicModal") closeGetPics(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && document.getElementById("getpicModal").classList.contains("open")) closeGetPics(); });
+
+function renderGetPics(){
+  const host=document.getElementById("getpicBody"); if(!host) return;
+  const buckets=_gpBuckets();                       // recomputed on every (re)render → fresh on open
+  const total=buckets.reduce((n,b)=>n+b.cards.length,0);
+  const busy=_getpicRunning || batchUI.active;
+  host.innerHTML = `
+    <div class="gp-head"><span>&#128247; Get pictures &amp; info</span><span style="flex:1"></span>
+      <button class="btn btn-ghost" onclick="closeGetPics()">Close</button></div>
+    <div class="gp-list">
+      ${buckets.map(b=>`
+        <div class="gp-bucket ${b.cards.length?"":"zero"} ${_getpicStage===b.id?"running":""}">
+          <div class="gp-n">${b.cards.length}</div>
+          <div style="flex:1;min-width:0">
+            <div class="gp-t">${b.icon} ${esc(b.title)}${_getpicStage===b.id?`<span class="gp-run-tag">running…</span>`:""}</div>
+            <div class="gp-d">${esc(b.desc)}</div>
+          </div>
+        </div>`).join("")}
+      ${total?"":`<div class="gp-d" style="padding:16px 6px">Everything's covered — no cards need pictures or info right now.</div>`}
+    </div>
+    <div class="gp-foot">
+      <span class="gp-note">Runs each group in turn; skips empty ones. Keep this app open (and logged into Facebook for that group).</span>
+      ${busy
+        ? `<button class="btn btn-primary" onclick="stopGetPics()">&#9632; Stop</button>`
+        : `<button class="btn btn-primary" onclick="startGetPics()" ${total?"":"disabled"}>Start</button>`}
+    </div>`;
+}
+
+// Wait until the worker/FB batch finishes (batchUI flips inactive via pollBatchProgress)
+// or Stop is pressed. Bounded so a lost driver never hangs the sequence forever.
+function _gpWaitBatch(){
+  return new Promise(resolve=>{
+    const started=Date.now();
+    const iv=setInterval(()=>{
+      if(_getpicAbort || !batchUI.active || (Date.now()-started>15*60*1000)){ clearInterval(iv); resolve(); }
+    }, 800);
+  });
+}
+
+async function startGetPics(){
+  if(!_booted){ toast("One moment — still loading your library."); return; }
+  if(_getpicRunning || batchUI.active){ toast("A capture run is already going"); return; }
+  _getpicRunning=true; _getpicAbort=false;
+  try{
+    // A — never tried: Core og-fetch batch (awaits internally to completion)
+    if(!_getpicAbort && _gpMiss().length){
+      _getpicStage="miss"; renderGetPics();
+      await startBatchCapture();
+    }
+    // B — Facebook: extension batch (worker-driven; startFbCapture returns immediately)
+    if(!_getpicAbort && _gpFb().length){
+      _getpicStage="fb"; renderGetPics();
+      const render = imported.filter(fbMiss).length && !imported.filter(needsFbCapture).length;
+      // prefer the plain og/extension batch when there are un-tried FB posts; use the
+      // slower render-capture only when the remaining set is all "couldn't capture".
+      if(render) await startFbMissRenderCapture(); else await startFbCapture();
+      await _gpWaitBatch();
+    }
+    // C — failed/retry: worker recapture (force+render), worker-driven
+    if(!_getpicAbort && _gpFail().length){
+      _getpicStage="fail"; renderGetPics();
+      if(recaptureViaWorker(_gpFail())) await _gpWaitBatch();
+    }
+    // D — missing descriptions: Pinterest pins + AI descriptions (awaits internally)
+    if(!_getpicAbort && _gpDesc().length){
+      _getpicStage="desc"; renderGetPics();
+      await enrichImported();
+    }
+  }catch(e){
+    console.warn("Get-pictures sequence error", e);
+    toast("A capture step hit a snag — stopped here. "+((e&&e.message)||""), 7000);
+  }finally{
+    _getpicRunning=false; _getpicStage="";
+    if(document.getElementById("getpicModal").classList.contains("open")) renderGetPics();
+    if(!_getpicAbort) toast("Get pictures & info — done.", 5000);
+  }
+}
+
+function stopGetPics(){
+  _getpicAbort=true;                 // don't start the next stage
+  _capStop=true;                     // halt the in-app Core og-fetch loop (bucket A) between chunks
+  if(batchUI.active) cancelBatchCapture();   // existing Stop semantics: {active:false,cancel:true}
+  _getpicStage="";
+  if(document.getElementById("getpicModal").classList.contains("open")) renderGetPics();
+  toast("Stopped.");
+}
+
 // "Remove selected" in the Library-health "No link" tab. The tab lists every link-less
 // card with a checkbox (reviewed), so removal routes through the shared helper directly.
 function groomNoLink(){
