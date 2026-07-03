@@ -615,8 +615,11 @@ let _booted = false;
 // Awaited persistence for the cards array. Store.putCards returns a Promise, so the old
 // `if(!Store.putCards(...))` truthiness check was dead code and failures vanished silently (review B5).
 // On rejection, surface a toast; a 409 (Task 4 mass-delete guard) gets its own message.
-async function persistCards(){
-  try{ await Store.putCards(imported); }
+// opts.confirm: pass {confirm:true} ONLY for user-reviewed bulk removals (removeCards) —
+// it bypasses the mass-delete guard, which would otherwise 409 a legitimate reviewed
+// removal of most of the library. Every other caller omits it so the guard stays armed.
+async function persistCards(opts){
+  try{ await Store.putCards(imported, (opts && opts.confirm) ? {confirm:true} : undefined); }
   catch(e){
     const msg = (e && e.message) || String(e);
     if(/409/.test(msg)){
@@ -3688,7 +3691,7 @@ function snapshotBeforeDestructive(){
 // with {confirm:true} — these are ALWAYS user-reviewed removals (the v1.7.0 data-safety
 // fix), so the full-replace PUT is intentional here. Callers take the snapshot backup
 // (snapshotBeforeDestructive) BEFORE collecting the ids, matching the old flows.
-//   scope "imported" → splices `imported`, persistCards()
+//   scope "imported" → splices `imported`, persistCards({confirm:true})
 //   scope "saved"    → splices `saved`, Store.putSaved(saved,{confirm:true})
 // Returns the number removed.
 //   opts.skipImg → the caller already handled per-card image/fp cleanup (the dupe
@@ -3708,7 +3711,7 @@ function removeCards(ids, opts){
     });
   }
   if(scope==="saved"){ saved = saved.filter(c=>!c || !idset.has(c.id)); Store.putSaved(saved, {confirm:true}); }
-  else { imported = imported.filter(c=>!c || !idset.has(c.id)); persistCards(); }
+  else { imported = imported.filter(c=>!c || !idset.has(c.id)); persistCards({confirm:true}); }   // user-reviewed: bypass the mass-delete guard (matches the saved branch + all four old flows)
   updateCounts();
   return gone.length;
 }
