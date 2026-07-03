@@ -30,10 +30,17 @@ t("mark-done is durable: sets capDone and captureable excludes it", () => {
   assert.ok(/function captureable\(i\)\{[^}]*!i\.capDone/.test(html), "captureable excludes capDone cards");
 });
 
-t("failed-capture triage modal exists and groups by reason with actions", () => {
-  assert.ok(html.indexOf('id="failModal"') >= 0, "fail triage modal present");
-  assert.ok(html.indexOf("function openFailReview") >= 0);
-  assert.ok(html.indexOf("c.capReason") >= 0 || html.indexOf(".capReason") >= 0, "triage reads capReason");
+t("failed-capture triage is the Library-health 'Failed captures' tab and groups by reason with actions", () => {
+  // v1.8.0: the standalone failModal became a tab inside the ONE #healthModal.
+  assert.ok(html.indexOf('id="healthModal"') >= 0, "the consolidated Library-health modal is present");
+  assert.ok(html.indexOf('id="failModal"') < 0, "the standalone fail modal is gone (folded into health)");
+  assert.ok(html.indexOf("function renderHealthFailed(") >= 0, "the Failed-captures tab renderer is present");
+  assert.ok(html.indexOf("function openFailReview") >= 0, "openFailReview entry point kept (opens health on Failed tab)");
+  const oi = html.indexOf("function openFailReview");
+  assert.ok(html.slice(oi, oi + 120).indexOf('openHealth("failed")') >= 0, "openFailReview opens the Failed tab");
+  const ri = html.indexOf("function renderHealthFailed(");
+  const rb = html.slice(ri, ri + 2600);
+  assert.ok(rb.indexOf("capReason") >= 0, "triage groups by capReason");
   assert.ok(html.indexOf("function retryFailFresh") >= 0 && html.indexOf("function removeFailSelected") >= 0 && html.indexOf("function markFailDone") >= 0);
 });
 
@@ -56,7 +63,7 @@ t("fail modal: title opens one link in browser; Open button opens selected via o
   const fi = html.indexOf("function failRowHTML(");
   const fbody = html.slice(fi, fi + 800);
   assert.ok(fbody.indexOf("openFailOne(") >= 0, "title click opens one link");
-  const ri = html.indexOf("function renderFailModal(");
+  const ri = html.indexOf("function renderHealthFailed(");
   const rbody = html.slice(ri, ri + 2600);
   assert.ok(rbody.indexOf("openFailSelected()") >= 0, "Open button calls openFailSelected");
   const oi = html.indexOf("function openFailSelected(");
@@ -204,12 +211,16 @@ t("toolbar 'Retry all' routes the whole failed set through the worker (not the C
   assert.ok(html.indexOf("startBatchCapture('retry')") < 0, "no Core 'retry' batch left wired to a button");
 });
 
-t("link checks are consolidated into ONE 'Check links' button (safety folded into the dead sweep)", () => {
-  // one combined button, renamed
-  assert.ok(html.indexOf("Check links<") >= 0, "the consolidated 'Check links' button exists");
-  assert.ok(html.indexOf("Check dead links") < 0, "old 'Check dead links' label is gone (renamed)");
+t("link checks are consolidated into the Library-health 'Dead & unsafe' tab (safety folded into the dead sweep)", () => {
+  // v1.8.0: the standalone 'Check links' toolbar button became the Dead & unsafe tab.
+  assert.ok(html.indexOf("Dead & unsafe") >= 0 || html.indexOf("Dead &amp; unsafe") >= 0, "the 'Dead & unsafe' tab label exists");
+  assert.ok(html.indexOf("Check dead links") < 0, "old 'Check dead links' label is gone");
   assert.ok(html.indexOf("Check link safety") < 0, "separate 'Check link safety' button is gone");
   assert.ok(html.indexOf("checkLinkSafety(") < 0, "no checkLinkSafety reference remains");
+  // the tab runs the same sweep lazily via checkDeadLinks
+  const hi = html.indexOf("function renderHealthDead(");
+  assert.ok(hi >= 0, "the Dead & unsafe tab renderer is present");
+  assert.ok(html.slice(hi, hi + 800).indexOf("checkDeadLinks()") >= 0, "the tab runs checkDeadLinks lazily on first open");
   // the combined sweep still runs the safety pass (consolidation kept, not lost)
   const di = html.indexOf("async function checkDeadLinks(");
   assert.ok(di >= 0, "checkDeadLinks present");

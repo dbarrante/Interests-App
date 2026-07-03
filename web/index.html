@@ -181,12 +181,16 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
 #modal.open{display:flex}
-#dupeModal,#deadModal,#failModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
-#dupeModal.open,#deadModal.open,#failModal.open{display:flex}
+#healthModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+#healthModal.open{display:flex}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
-#failBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
-#failBody .dupe-row .meta .t{cursor:pointer}
-#failBody .dupe-row .meta .t:hover{text-decoration:underline}
+#healthBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
+#healthBody .dupe-row .meta .t{cursor:pointer}
+#healthBody .dupe-row .meta .t:hover{text-decoration:underline}
+.health-tabs{display:flex;gap:4px;padding:0 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.health-tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 12px;font:inherit;font-weight:600;color:var(--ink);opacity:.6;cursor:pointer}
+.health-tabs button.on{opacity:1;border-bottom-color:var(--accent)}
+.health-tabs button:hover{opacity:.9}
 .dupe-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
 .dupe-list{overflow-y:auto;padding:8px 16px;flex:1 1 auto;min-height:0}
 .dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
@@ -530,9 +534,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
     <div id="modalBody"></div>
   </div>
 </div>
-<div id="dupeModal"><div class="dupe-box"><div id="dupeBody"></div></div></div>
-<div id="deadModal"><div class="dupe-box"><div id="deadBody"></div></div></div>
-<div id="failModal"><div class="dupe-box"><div id="failBody"></div></div></div>
+<div id="healthModal"><div class="dupe-box"><div id="healthBody"></div></div></div>
 
 <script>
 "use strict";
@@ -2125,19 +2127,14 @@ function renderImported(){
         }
         const fbcant=imported.filter(fbMiss).length;
         if(fbcant && !fbAuto){ const rcap=_fbRenderTested?FB_RENDER_CAP:5; out+=`<button class="btn btn-ghost" id="fbRenderBtn" onclick="startFbMissRenderCapture()" title="Auto-capture the 'Couldn't capture' Facebook posts the way you'd do by hand: each opens briefly in a focused tab, waits for the real photo to load, and retries up to 3× (5s apart, reloading) before giving up. Posts whose photo never loads are left for a manual Save (no spinner). One at a time — stay logged into Facebook (and a member of any private groups).">&#128444;&#65039; Auto-capture in tabs ${fbcant>rcap?("("+rcap+" of "+fbcant+")"):("("+fbcant+")")}</button>`; }
-        const ph=(typeof fbPlaceholderCount==="function")?fbPlaceholderCount():0;
-        if(ph) out+=`<button class="btn btn-ghost" onclick="clearFbPlaceholders()" title="Some Facebook cards captured a loading spinner/placeholder instead of the photo. Clear them so they re-capture the real image.">&#129529; Fix ${ph} placeholder${ph>1?"s":""}</button>`;
-        if(fail || impFailed) out+=`<div class="tag-drop"><button class="btn btn-ghost${impFailed?" btn-primary":""}" onclick="toggleRetryMenu()" title="Cards whose last capture failed or didn't land">&#128260; ${fail} failed &#9662;</button>
-          <div class="tag-menu" id="retryMenu">
-            ${fail?`<button onclick="closeRetryMenu();openFailReview()">&#128065; View failures</button>`:""}
-            ${fail?`<button onclick="closeRetryMenu();retryAllFailed()">&#128260; Retry all ${fail}</button>`:""}
-            ${impFailed?`<button onclick="closeRetryMenu();clearFailedFilter()">&#10005; Show all cards</button>`:""}
-          </div></div>`;
+        // Placeholder-fixing, failed-triage, groom, duplicate + dead-link review all moved
+        // into the one "🩺 Library health" modal (review D2). Placeholder cleanup is now
+        // silent maintenance (auto-runs inside startFbCapture); its count shows in the
+        // health modal's Failed tab. The impFailed filter keeps a clear affordance below.
         return out;
       })()}
-      ${(function(){const nolink=imported.filter(i=>!i.url).length; return nolink?`<button class="btn btn-ghost" onclick="groomNoLink()" title="Remove cards that have no link">&#129529; Groom ${nolink} link-less</button>`:"";})()}
-      <button class="btn btn-ghost" onclick="openDupeReview(scanDuplicates())" title="Scan Imported + Saved for duplicate links and near-identical titles, then review before removing">&#128270; Scan duplicates</button>
-      <button class="btn btn-ghost" onclick="checkDeadLinks()" title="Check Imported + Saved links for dead pages (404 / gone domain) AND unsafe sites (Google Safe Browsing), then review before removing">&#128279; Check links</button>
+      ${impFailed?`<button class="btn btn-ghost btn-primary" onclick="clearFailedFilter()" title="Showing only failed captures — click to show all cards again">&#10003; Failed only &#10005;</button>`:""}
+      <button class="btn btn-ghost" onclick="openHealth()" title="Review & tidy your library: duplicates, dead &amp; unsafe links, failed captures, and link-less cards — all in one place.">&#129658; Library health</button>
       ${(function(){const n=imported.filter(i=>!i.tags).length+saved.filter(i=>!i.tags).length;
         return n?`<div class="tag-drop"><button class="btn btn-ghost" id="tagBtn" onclick="toggleTagMenu()">&#127991; Tag ${n} untagged &#9662;</button>
           <div class="tag-menu" id="tagMenu">
@@ -2353,22 +2350,18 @@ ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
 function closeMenus(){ document.querySelectorAll(".tag-menu.open").forEach(m=>m.classList.remove("open")); }
 function toggleTagMenu(){ const m=document.getElementById("tagMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
 function closeTagMenu(){ const m=document.getElementById("tagMenu"); if(m) m.classList.remove("open"); }
-function toggleRetryMenu(){ const m=document.getElementById("retryMenu"); const open=m&&m.classList.contains("open"); closeMenus(); if(m&&!open) m.classList.add("open"); }
-function closeRetryMenu(){ const m=document.getElementById("retryMenu"); if(m) m.classList.remove("open"); }
+// (toggleRetryMenu/closeRetryMenu removed in v1.8.0 — the failed-captures dropdown
+//  became the Library-health "Failed captures" tab.)
 function _failLabel(reason){
   return ({ social:"Login-walled — open & Save from your browser", unreachable:"Couldn't reach — may be dead", "no-image":"No preview image on the page", "image-failed":"Preview image wouldn't download" })[reason] || "Couldn't capture";
 }
 let _failModalList = [];
 let _failStatus = {};   // {cardId: "recapturing"} — transient hint set on title-click; success/removed are derived
 let _recapTarget = null;   // {id, ts} — one-shot, time-windowed target armed by openFailOne; a clip heals it (route-capture.js)
-function openFailReview(){
-  _failModalList = imported.filter(needsRetry);
-  _failStatus = {};
-  if(!_failModalList.length){ toast("No failed captures"); return; }
-  renderFailModal();
-  document.getElementById("failModal").classList.add("open");
-}
-function closeFailReview(){ document.getElementById("failModal").classList.remove("open"); _failModalList=[]; }
+// Entry point (from drainCaptures completion hint etc.): open the Library-health modal
+// on the Failed-captures tab, which reuses this file's fail row/action helpers.
+function openFailReview(){ openHealth("failed"); }
+function closeFailReview(){ closeHealth(); }
 function failRowHTML(c){
   const dom=domain(c.url)||""; const reason=c.capReason||"unreachable";
   const st=_failRowStatus(c.id); const resolved=(st==="success"||st==="removed");
@@ -2379,37 +2372,14 @@ function failRowHTML(c){
     <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-id="${esc(c.id)}"${resolved?' disabled':''} style="width:auto"> select</label>
   </div>`;
 }
-function renderFailModal(){
-  const order=["unreachable","image-failed","no-image","social"];
-  const groups={}; _failModalList.forEach(c=>{ const r=c.capReason||"unreachable"; (groups[r]=groups[r]||[]).push(c); });
-  let body="";
-  order.concat(Object.keys(groups).filter(r=>order.indexOf(r)<0)).forEach(r=>{
-    const g=groups[r]; if(!g||!g.length) return;
-    body += `<div class="s" style="opacity:.8;margin:10px 4px 4px;font-weight:600">${esc(_failLabel(r))} (${g.length}) · <a href="#" onclick="failSelectGroup('${esc(r)}');return false">select these</a></div>`;
-    body += g.map(failRowHTML).join("");
-  });
-  document.getElementById("failBody").innerHTML = `
-    <div class="dupe-head"><span>&#128260; Failed captures — ${_failModalList.length}</span>
-      <span style="flex:1"></span>
-      <button class="btn btn-ghost" onclick="closeFailReview()">Close</button></div>
-    <div class="dupe-foot" style="border-top:0;border-bottom:1px solid var(--line);justify-content:flex-start;flex-wrap:wrap">
-      <button class="btn btn-ghost" onclick="openFailSelected()">&#8599; Open</button>
-      <button class="btn btn-primary" onclick="retryFailFresh()">&#128260; Retry (fresh)</button>
-      <button class="btn btn-ghost" onclick="markFailDone()">&#10003; Mark done</button>
-      <button class="btn btn-ghost" onclick="removeFailSelected()" style="color:#e0556b">&#128465; Remove</button>
-    </div>
-    <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Select cards, then use a button above. <b>Retry (fresh)</b> clears the old picture and re-captures; <b>Remove</b> deletes (backup-first); <b>Mark done</b> stops a card showing as failed (e.g. no preview image). <b>Instagram:</b> open your IG <b>Saved collection</b> in Chrome (logged in) and right-click &#8594; &ldquo;Save to Interests&rdquo; on each post &mdash; matching ones heal here automatically.</div>
-      ${body || "<div class='s'>No failed captures.</div>"}
-    </div>`;
-  attachCardImages();
-}
+// (renderFailModal was retired in v1.8.0 — the Library-health "Failed captures" tab,
+// renderHealthFailed, now renders these rows/actions inside the one shared modal.)
 // reason is a closed internal constant set ("social"/"unreachable"/"no-image"/"image-failed") emitted only by Core — esc() interpolation into onclick/selector is safe without additional quote-escaping.
 function failSelectGroup(reason){
-  Array.prototype.forEach.call(document.querySelectorAll('#failBody .dupe-row[data-reason="'+reason+'"] input[data-id]'), el=>{ el.checked=true; });
+  Array.prototype.forEach.call(document.querySelectorAll('#healthBody .dupe-row[data-reason="'+reason+'"] input[data-id]'), el=>{ el.checked=true; });
 }
 function _failCheckedIds(){
-  return Array.prototype.map.call(document.querySelectorAll('#failBody input[data-id]:checked'), el=>el.getAttribute("data-id"));
+  return Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-id]:checked'), el=>el.getAttribute("data-id"));
 }
 // Single-click a title: back up, clear this card's (bad) image so the recapture lands clean, mark it the
 // last-opened card (so the extension's Remove targets it even without a URL match), flag it "recapturing",
@@ -2448,7 +2418,7 @@ function _failStatusHTML(st){
 }
 // Update ONE row's badge + interactivity in place (preserves selection + scroll). No full re-render.
 function refreshFailRow(id){
-  const row = document.querySelector('#failBody .dupe-row[data-card="'+id+'"]'); if(!row) return;
+  const row = document.querySelector('#healthBody .dupe-row[data-card="'+id+'"]'); if(!row) return;
   const st = _failRowStatus(id);
   const resolved = (st==="success" || st==="removed");
   const badge = row.querySelector(".fst"); if(badge) badge.innerHTML = _failStatusHTML(st);
@@ -2460,8 +2430,8 @@ function refreshFailRow(id){
 }
 // Refresh every row's status while the modal is open (called from the 3s drain loop + on focus return).
 function refreshFailStatuses(){
-  const modal = document.getElementById("failModal");
-  if(!modal || !modal.classList.contains("open")) return;
+  const modal = document.getElementById("healthModal");
+  if(!modal || !modal.classList.contains("open") || _healthTab!=="failed") return;
   _failModalList.forEach(c=>{ if(c && c.id) refreshFailRow(c.id); });
 }
 function retryFailFresh(){
@@ -2484,19 +2454,18 @@ function retryAllFailed(){
 function markFailDone(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   imported.forEach(c=>{ if(c&&ids.has(c.id)){ c.lastResult="ok"; c.lastUpdate=Date.now(); c.capDone=true; c.capReason=""; } });
-  Store.putCards(imported); updateCounts();
-  closeFailReview(); if(curTab==="imported") renderImported();
+  persistCards(); updateCounts();
+  if(_healthTab==="failed") renderHealthFailed(document.getElementById("healthList"));
+  if(curTab==="imported") renderImported();
   toast(`Marked ${ids.size} done`, 4000);
 }
 function removeFailSelected(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   snapshotBeforeDestructive();
-  const gone=imported.filter(c=>c&&ids.has(c.id));
-  gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
-  imported = imported.filter(c=>!c||!ids.has(c.id));
-  Store.putCards(imported, {confirm:true}); updateCounts();
-  closeFailReview(); if(curTab==="imported") renderImported();
-  toast(`Removed ${ids.size} card${ids.size===1?"":"s"}`, 5000);
+  const n = removeCards(ids, {scope:"imported"});   // shared: idb+fp cleanup, splice, persist {confirm:true}
+  if(_healthTab==="failed") renderHealthFailed(document.getElementById("healthList"));
+  if(curTab==="imported") renderImported();
+  toast(`Removed ${n} card${n===1?"":"s"}`, 5000);
 }
 function clearFailedFilter(){ impFailed=false; renderImportedKeepFocus(); }
 document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeMenus(); });
@@ -3501,16 +3470,16 @@ async function pollBatchProgress(){
     if(curTab==="imported") renderImported();
   }
 }
+// "Remove selected" in the Library-health "No link" tab. The tab lists every link-less
+// card with a checkbox (reviewed), so removal routes through the shared helper directly.
 function groomNoLink(){
+  const ids=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
+  if(!ids.size){ toast("Nothing selected to remove"); return; }
   snapshotBeforeDestructive();
-  const nolink=imported.filter(i=>!i.url);
-  if(!nolink.length){ toast("No link-less cards to remove"); return; }
-  if(!confirm("Remove "+nolink.length+" card"+(nolink.length>1?"s":"")+" with no link? This can't be undone.")) return;
-  nolink.forEach(it=>{ if(it.img && (it.img+"").indexOf("idb:")===0){ Store.imgDel(it.id); } });
-  imported = imported.filter(i=>i.url);
-  Store.putCards(imported, {confirm:true}); updateCounts();
+  const n = removeCards(ids, {scope:"imported"});   // shared: idb+fp cleanup, splice, persist {confirm:true}
+  if(_healthTab==="nolink") renderHealthNoLink(document.getElementById("healthList"));
   if(curTab==="imported") renderImported();
-  toast("Removed "+nolink.length+" link-less card"+(nolink.length>1?"s":""));
+  toast("Removed "+n+" link-less card"+(n===1?"":"s"));
 }
 
 function impLike(idx){
@@ -3713,6 +3682,36 @@ function cancelProfile(){ document.getElementById("profileReview").style.display
 function snapshotBeforeDestructive(){
   try{ Store.backupNow(); }catch(e){}   // fire-and-forget
 }
+// Shared user-reviewed card removal used by every Library-health tab (Duplicates,
+// Dead & unsafe, Failed captures, No link). Cleans up each removed card's idb image
+// file + placeholder fingerprint, splices it out of the right array, then persists
+// with {confirm:true} — these are ALWAYS user-reviewed removals (the v1.7.0 data-safety
+// fix), so the full-replace PUT is intentional here. Callers take the snapshot backup
+// (snapshotBeforeDestructive) BEFORE collecting the ids, matching the old flows.
+//   scope "imported" → splices `imported`, persistCards()
+//   scope "saved"    → splices `saved`, Store.putSaved(saved,{confirm:true})
+// Returns the number removed.
+//   opts.skipImg → the caller already handled per-card image/fp cleanup (the dupe
+//     merge does this conditionally so it can spare a file the kept card adopted).
+function removeCards(ids, opts){
+  opts = opts || {};
+  const scope = opts.scope || "imported";
+  const idset = (ids instanceof Set) ? ids : new Set(ids||[]);
+  if(!idset.size) return 0;
+  const arr = scope==="saved" ? saved : imported;
+  const gone = arr.filter(c=>c && idset.has(c.id));
+  if(!opts.skipImg){
+    gone.forEach(c=>{
+      const img=(typeof c.img==="string")?c.img:c.image;
+      if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} }
+      if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} }
+    });
+  }
+  if(scope==="saved"){ saved = saved.filter(c=>!c || !idset.has(c.id)); Store.putSaved(saved, {confirm:true}); }
+  else { imported = imported.filter(c=>!c || !idset.has(c.id)); persistCards(); }
+  updateCounts();
+  return gone.length;
+}
 
 /* ============ extension capture drain ============ */
 // images from external screenshot proxies are unreliable (blocked sites,
@@ -3778,6 +3777,157 @@ function dupeUrlKey(url){
     return id ? base + "?" + id : base;
   }catch(e){ return (url||"").toLowerCase(); }
 }
+/* ============ Library health modal (review D2) ============
+   ONE tabbed modal (Duplicates | Dead & unsafe | Failed captures | No link)
+   replaces the six standalone janitor tools. One shared frame (head + tab strip,
+   scrollable list body, footer) with per-tab content builders that REUSE the
+   existing scan (scanDuplicates/checkDeadLinks), row-render (dupeRowHTML/deadRowHTML/
+   failRowHTML), and removal logic. Each tab runs its scan lazily on first open —
+   dead-link checking hits the Core service, so we never auto-run all four on open. */
+const HEALTH_TABS = [
+  { id:"dupes",  label:"Duplicates" },
+  { id:"dead",   label:"Dead & unsafe" },
+  { id:"failed", label:"Failed captures" },
+  { id:"nolink", label:"No link" },
+];
+let _healthTab = "dupes";
+let _healthScanned = {};   // {tabId:true} once its lazy scan has run this open
+function openHealth(tab){
+  _healthTab = tab || "dupes";
+  _healthScanned = {};
+  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {};
+  document.getElementById("healthModal").classList.add("open");
+  renderHealth();
+}
+function closeHealth(){
+  document.getElementById("healthModal").classList.remove("open");
+  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {};
+}
+function healthSwitch(tab){ if(tab===_healthTab) return; _healthTab = tab; renderHealth(); }
+// Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
+document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && document.getElementById("healthModal").classList.contains("open")) closeHealth(); });
+// Count badges on the tab strip (cheap, computed from in-memory state — no network).
+function _healthCounts(){
+  const nolink = imported.filter(i=>!i.url).length;
+  const failed = imported.filter(needsRetry).length;
+  return { nolink, failed };
+}
+function healthTabStripHTML(){
+  const c = _healthCounts();
+  const badge = { failed:c.failed, nolink:c.nolink };
+  return `<div class="health-tabs">${HEALTH_TABS.map(t=>{
+    const n = badge[t.id];
+    return `<button class="${t.id===_healthTab?"on":""}" onclick="healthSwitch('${t.id}')">${esc(t.label)}${n?` (${n})`:""}</button>`;
+  }).join("")}</div>`;
+}
+// Render the shared frame + the active tab's body. Runs the tab's lazy scan on first view.
+function renderHealth(){
+  const host = document.getElementById("healthBody");
+  host.innerHTML = `
+    <div class="dupe-head"><span>&#129658; Library health</span><span style="flex:1"></span>
+      <button class="btn btn-ghost" onclick="closeHealth()">Close</button></div>
+    ${healthTabStripHTML()}
+    <div class="dupe-list" id="healthList"></div>`;
+  const list = document.getElementById("healthList");
+  const tab = _healthTab;
+  if(tab==="dupes")  return renderHealthDupes(list);
+  if(tab==="dead")   return renderHealthDead(list);
+  if(tab==="failed") return renderHealthFailed(list);
+  if(tab==="nolink") return renderHealthNoLink(list);
+}
+// ---- Duplicates tab ----
+function renderHealthDupes(list){
+  if(!_healthScanned.dupes){ _dupeGroups = scanDuplicates(); _healthScanned.dupes = true; }
+  const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
+  if(!_dupeGroups.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found.</div>`; return; }
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 10px">${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy of each is kept (green); uncheck any you want to spare, or "Keep this" to change which one stays.</div>
+    ${_dupeGroups.map((g,gi)=>`<div class="dupe-group">
+      ${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
+          .map(m=>dupeRowHTML(m, gi, m.card.id===g.keepId)).join("")}
+    </div>`).join("")}
+    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px">
+      <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
+  attachCardImages();
+}
+// ---- Dead & unsafe tab ----
+function renderHealthDead(list){
+  if(!_healthScanned.dead){
+    list.innerHTML = `<div class="s" style="padding:14px 4px"><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Checking links against the app service — dead pages (404 / gone domain), removed content, and unsafe sites. Progress toasts below; tap a toast to stop.</div>`;
+    _healthScanned.dead = true;
+    // checkDeadLinks runs the full sweep and calls openDeadReview(dead) → which now
+    // just stashes _deadList and re-renders this tab. Awaited so the spinner clears.
+    checkDeadLinks().then(()=>{ if(_healthTab==="dead") renderHealthDeadResults(list); });
+    return;
+  }
+  renderHealthDeadResults(list);
+}
+function renderHealthDeadResults(list){
+  if(!list) list = document.getElementById("healthList"); if(!list) return;
+  if(!_deadList.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">No dead or unsafe links found.</div>`; return; }
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 10px">Dead, removed, or unsafe (malware/phishing) links found in your library. Uncheck any you want to keep, then Remove selected.</div>
+    ${_deadList.map(deadRowHTML).join("")}
+    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px">
+      <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>`;
+  attachCardImages();
+}
+// ---- Failed captures tab ----
+function renderHealthFailed(list){
+  _failModalList = imported.filter(needsRetry);
+  _failStatus = _failStatus || {};
+  const ph = (typeof fbPlaceholderCount==="function") ? fbPlaceholderCount() : 0;
+  const fbcant = imported.filter(fbMiss).length;
+  const order=["unreachable","image-failed","no-image","social"];
+  const groups={}; _failModalList.forEach(c=>{ const r=c.capReason||"unreachable"; (groups[r]=groups[r]||[]).push(c); });
+  let body="";
+  order.concat(Object.keys(groups).filter(r=>order.indexOf(r)<0)).forEach(r=>{
+    const g=groups[r]; if(!g||!g.length) return;
+    body += `<div class="s" style="opacity:.8;margin:10px 4px 4px;font-weight:600">${esc(_failLabel(r))} (${g.length}) · <a href="#" onclick="failSelectGroup('${esc(r)}');return false">select these</a></div>`;
+    body += g.map(failRowHTML).join("");
+  });
+  const notes = [];
+  if(fbcant) notes.push(`${fbcant} Facebook post${fbcant>1?"s":""} couldn't be captured automatically (restricted/login-gated). <a href="#" onclick="healthShowFilter('fbmiss');return false">Show in list</a> to open &amp; Save each from your browser.`);
+  if(ph) notes.push(`${ph} card${ph>1?"s":""} captured a loading placeholder instead of the photo — these are cleaned automatically before each Facebook capture run (no action needed).`);
+  list.innerHTML = `
+    <div class="dupe-foot" style="border-top:0;border-bottom:1px solid var(--line);justify-content:flex-start;flex-wrap:wrap;padding:8px 4px">
+      <button class="btn btn-ghost" onclick="openFailSelected()">&#8599; Open</button>
+      <button class="btn btn-primary" onclick="retryFailFresh()">&#128260; Retry (fresh)</button>
+      ${_failModalList.length?`<button class="btn btn-ghost" onclick="retryAllFailed()">&#128260; Retry all ${_failModalList.length}</button>`:""}
+      <button class="btn btn-ghost" onclick="markFailDone()">&#10003; Mark done</button>
+      <button class="btn btn-ghost" onclick="removeFailSelected()" style="color:#e0556b">&#128465; Remove</button>
+    </div>
+    <div class="s" style="opacity:.7;padding:8px 4px">Select cards, then use a button above. <b>Retry (fresh)</b> clears the old picture and re-captures; <b>Remove</b> deletes (backup-first); <b>Mark done</b> stops a card showing as failed. <b>Instagram:</b> open your IG <b>Saved collection</b> in Chrome (logged in) and right-click &#8594; &ldquo;Save to Interests&rdquo; on each post &mdash; matching ones heal here automatically.</div>
+    ${notes.length?`<div class="s" style="opacity:.75;padding:2px 4px 8px">${notes.map(n=>"&#8226; "+n).join("<br>")}</div>`:""}
+    ${body || "<div class='s' style='padding:8px 4px'>No failed captures.</div>"}`;
+  attachCardImages();
+}
+// "Show in list" from the Failed tab: apply the existing filter, close the modal.
+function healthShowFilter(which){
+  closeHealth();
+  showTab("imported");
+  if(which==="fbmiss"){ impFbMiss=true; impBatchIds=null; _refreshPins.clear(); renderImported(); }
+  else if(which==="failed"){ impFailed=true; _refreshPins.clear(); renderImportedKeepFocus(); }
+}
+// ---- No link tab (groom link-less) ----
+function renderHealthNoLink(list){
+  const nolink = imported.filter(i=>!i.url);
+  if(!nolink.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every imported card has a link. Nothing to groom.</div>`; return; }
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 10px">${nolink.length} imported card${nolink.length>1?"s have":" has"} no link. A card with no link can't be opened, captured, or de-duplicated — remove them to tidy the library.</div>
+    ${nolink.map(it=>{
+      const dom=domain(it.url)||"";
+      return `<div class="dupe-row">${dupeThumb({scope:"imported", card:it})}
+        <div class="meta"><div class="t">${esc(it.title||"(untitled)")}</div>
+          <div class="s">${esc(dom||"no link")} · <span class="dupe-badge">Imported</span></div></div>
+        <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(it.id)}" checked style="width:auto"> remove</label>
+      </div>`;
+    }).join("")}
+    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px">
+      <button class="btn btn-primary" onclick="groomNoLink()">Remove selected</button></div>`;
+  attachCardImages();
+}
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
 function scanDuplicates(){
@@ -3828,37 +3978,15 @@ function dupeRowHTML(mem, gi, keep){
          <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
   </div>`;
 }
-function renderDupeModal(){
-  const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
-  const body = document.getElementById("dupeBody");
-  body.innerHTML = `
-    <div class="dupe-head"><span>&#128270; Duplicate review — ${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable</span>
-      <span style="flex:1"></span><button class="btn btn-ghost" onclick="closeDupeReview()">&#10005;</button></div>
-    <div class="dupe-list">
-      ${_dupeGroups.map((g,gi)=>`<div class="dupe-group">
-        ${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
-            .map(m=>dupeRowHTML(m, gi, m.card.id===g.keepId)).join("")}
-      </div>`).join("")}
-    </div>
-    <div class="dupe-foot"><button class="btn btn-ghost" onclick="closeDupeReview()">Cancel</button>
-      <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
-  attachCardImages();   // lazy-load the idb thumbnails in the modal (bounded cache)
-}
+// "Keep this" in the Duplicates tab: change which card stays, re-render the tab in place.
 function dupeSetKeep(gi, id){
   if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
-  renderDupeModal();
+  renderHealthDupes(document.getElementById("healthList"));
 }
-function openDupeReview(groups){
-  _dupeGroups = groups || [];
-  if (!_dupeGroups.length){ toast("No duplicates found"); return; }
-  renderDupeModal();
-  document.getElementById("dupeModal").classList.add("open");
-}
-function closeDupeReview(){ document.getElementById("dupeModal").classList.remove("open"); _dupeGroups = []; }
 async function applyDupeRemoval(){
   snapshotBeforeDestructive();
   const checked = new Set(Array.prototype.map.call(
-    document.querySelectorAll('#dupeBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
+    document.querySelectorAll('#healthBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
   if (!checked.size){ toast("Nothing selected to remove"); return; }
   const rmImported = new Set(), rmSaved = new Set();
   let removed = 0;
@@ -3896,10 +4024,12 @@ async function applyDupeRemoval(){
       removed++;
     }
   }
-  if (rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
-  if (rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); updateCounts();
-  closeDupeReview();
+  // Splice + persist via the shared helper. skipImg: the merge loop above already did
+  // the conditional per-card image/fp cleanup (so a file the kept card adopted survives).
+  if (rmImported.size) removeCards(rmImported, {scope:"imported", skipImg:true});
+  if (rmSaved.size) removeCards(rmSaved, {scope:"saved", skipImg:true});
+  _dupeGroups = scanDuplicates();   // re-scan so the tab reflects what's left
+  if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
   if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
   toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
 }
@@ -3990,8 +4120,8 @@ async function checkDeadLinks(){
 
   // Persist the lc/sb markers (so re-runs resume) via the normal bulk-replace path.
   Store.putCards(imported); Store.putSaved(saved);
-  if(dead.length) openDeadReview(dead);
-  else toast(_deadStop ? "Stopped — nothing flagged so far" : (done ? "No dead or unsafe links found." : "Nothing to check"), 5000);
+  openDeadReview(dead);   // stash results; the Library-health "Dead & unsafe" tab renders them
+  if(!dead.length) toast(_deadStop ? "Stopped — nothing flagged so far" : (done ? "No dead or unsafe links found." : "Nothing to check"), 5000);
 }
 function _deadReason(code){
   if(code===404) return "404 not found"; if(code===410) return "410 gone"; if(code===451) return "451 unavailable";
@@ -4012,32 +4142,20 @@ function deadRowHTML(c){
     <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(c.scope+":"+it.id)}" checked style="width:auto"> remove</label>
   </div>`;
 }
-function renderDeadModal(){
-  document.getElementById("deadBody").innerHTML = `
-    <div class="dupe-head"><span>&#128279; Dead &amp; unsafe links — ${_deadList.length} found</span>
-      <span style="flex:1"></span>
-      <button class="btn btn-ghost" onclick="closeDeadReview()">Cancel</button>
-      <button class="btn btn-primary" onclick="applyDeadRemoval()">Remove selected</button></div>
-    <div class="dupe-list">
-      <div class="s" style="opacity:.7;padding:2px 4px 8px">Dead, removed, or unsafe (malware/phishing) links found in your library. Uncheck any you want to keep, then click Remove selected.</div>
-      ${_deadList.map(deadRowHTML).join("") || "<div class='s'>No dead links.</div>"}
-    </div>`;
-  attachCardImages();
-}
-function openDeadReview(list){ _deadList = list || []; if(!_deadList.length){ toast("No dead links found", 4000); return; } renderDeadModal(); document.getElementById("deadModal").classList.add("open"); }
-function closeDeadReview(){ document.getElementById("deadModal").classList.remove("open"); _deadList = []; }
+// The dead-link sweep (checkDeadLinks) calls this when done: stash the results; the
+// Library-health "Dead & unsafe" tab renders _deadList (renderHealthDeadResults).
+function openDeadReview(list){ _deadList = list || []; if(document.getElementById("healthModal").classList.contains("open") && _healthTab==="dead") renderHealthDeadResults(); }
 function applyDeadRemoval(){
-  const checked = new Set(Array.prototype.map.call(document.querySelectorAll('#deadBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
-  if(!checked.size){ closeDeadReview(); toast("Nothing selected"); return; }
+  const checked = new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
+  if(!checked.size){ toast("Nothing selected"); return; }
   snapshotBeforeDestructive();
   const rmImported = new Set(), rmSaved = new Set();
   checked.forEach(v=>{ const i=v.indexOf(":"); const scope=v.slice(0,i), id=v.slice(i+1); (scope==="saved"?rmSaved:rmImported).add(id); });
-  const gone = imported.filter(c=>c&&rmImported.has(c.id)).concat(saved.filter(c=>c&&rmSaved.has(c.id)));
-  gone.forEach(c=>{ const img=(typeof c.img==="string")?c.img:c.image; if(typeof img==="string" && img.indexOf("idb:")===0){ try{ Store.imgDel(c.id); }catch(e){} } if(_fpMap[c.id]){ delete _fpMap[c.id]; try{ Store.fpDel(c.id); }catch(e){} } });
-  if(rmImported.size) imported = imported.filter(c=>!c||!rmImported.has(c.id));
-  if(rmSaved.size) saved = saved.filter(c=>!c||!rmSaved.has(c.id));
-  Store.putCards(imported, {confirm:true}); Store.putSaved(saved, {confirm:true}); updateCounts();
-  closeDeadReview();
+  if(rmImported.size) removeCards(rmImported, {scope:"imported"});
+  if(rmSaved.size) removeCards(rmSaved, {scope:"saved"});
+  const removedIds = new Set([...rmImported, ...rmSaved]);
+  _deadList = _deadList.filter(c=>c && c.card && !removedIds.has(c.card.id));
+  if(document.getElementById("healthModal").classList.contains("open")) renderHealthDeadResults();
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   toast(`Removed ${checked.size} dead link${checked.size===1?"":"s"}`, 5000);
 }
