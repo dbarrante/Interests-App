@@ -69,6 +69,80 @@ async function findAppPort() {
   return null;
 }
 
+// ===== Browser Stumble (StumbleUpon-style) ==================================
+// Left-click the icon → open one fresh, app-validated page in a single reused
+// tab, with an on-page overlay. Pages come only from the app's validated
+// pipeline (via the /api/bstumble/* mailboxes); the extension never validates.
+const BSTUMBLE_BUFFER_KEY = "ia_bstumble_buffer";   // session-local queue of pages to open
+const BSTUMBLE_TAB_KEY = "ia_bstumble_tabid";       // the reused tab's id
+
+async function bstumbleGetSelectedInterests() {
+  try { const s = await chrome.storage.local.get("ia_bstumble_interests"); return Array.isArray(s.ia_bstumble_interests) ? s.ia_bstumble_interests : []; }
+  catch (e) { return []; }
+}
+async function bstumbleReadBuffer() {
+  try { const s = await chrome.storage.session.get(BSTUMBLE_BUFFER_KEY); return Array.isArray(s[BSTUMBLE_BUFFER_KEY]) ? s[BSTUMBLE_BUFFER_KEY] : []; }
+  catch (e) { return []; }
+}
+async function bstumbleWriteBuffer(buf) { try { await chrome.storage.session.set({ [BSTUMBLE_BUFFER_KEY]: buf }); } catch (e) {} }
+
+// Ask the app to top up the results queue for the chosen interests (fire-and-forget).
+async function bstumbleRequestRefill(port) {
+  const interests = await bstumbleGetSelectedInterests();
+  const nonce = "n" + Date.now() + "_" + Math.round(performance.now());
+  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: { interests, nonce } }) }); } catch (e) {}
+}
+// Pull whatever the app has delivered into our local buffer.
+async function bstumbleDrainResults(port) {
+  try {
+    const r = await fetch("http://127.0.0.1:" + port + "/api/bstumble/results");
+    if (r && r.ok) { const j = await r.json(); if (Array.isArray(j.results) && j.results.length) { const buf = (await bstumbleReadBuffer()).concat(j.results); await bstumbleWriteBuffer(buf); } }
+  } catch (e) {}
+}
+// Open the page in the reused stumble tab (create if it's gone), then inject the overlay.
+async function bstumbleOpen(url) {
+  let bstumbleTabId = null;   // the reused stumble tab's id (persisted in BSTUMBLE_TAB_KEY)
+  try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); bstumbleTabId = s[BSTUMBLE_TAB_KEY]; } catch (e) {}
+  let tab = null;
+  if (bstumbleTabId != null) { try { tab = await chrome.tabs.get(bstumbleTabId); } catch (e) { tab = null; } }
+  if (tab) { try { await chrome.tabs.update(bstumbleTabId, { url, active: true }); await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) { tab = null; } }
+  if (!tab) { try { tab = await chrome.tabs.create({ url, active: true }); bstumbleTabId = tab.id; await chrome.storage.session.set({ [BSTUMBLE_TAB_KEY]: bstumbleTabId }); } catch (e) { return; } }
+  bstumbleInjectOverlayWhenReady(bstumbleTabId);
+}
+function bstumbleInjectOverlayWhenReady(tabId) {
+  function onUpd(tid, info) {
+    if (tid !== tabId || info.status !== "complete") return;
+    try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {}
+    chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] }).catch(() => {});
+  }
+  try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
+  setTimeout(() => { try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} }, 30000);
+}
+// The core action: open the next page, keeping the buffer topped up.
+async function bstumbleGo() {
+  const port = await findAppPort();
+  if (port == null) { notify("bstumble-" + Date.now(), "Stumble", "Open the Interests app to Stumble."); return; }
+  let buf = await bstumbleReadBuffer();
+  if (!buf.length) { await bstumbleDrainResults(port); buf = await bstumbleReadBuffer(); }
+  await bstumbleRequestRefill(port);   // top up for next time
+  if (!buf.length) { notify("bstumble-" + Date.now(), "Stumble", "Finding you something… click again in a moment."); return; }
+  const next = buf.shift();
+  await bstumbleWriteBuffer(buf);
+  if (next && next.url) await bstumbleOpen(next.url);
+  if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
+}
+chrome.action.onClicked.addListener(() => { bstumbleGo().catch(() => {}); });
+
+// Record a 👍/👎 vote from the overlay (app drains /api/bstumble/feedback and learns).
+async function bstumbleSendVote(vote) {
+  const port = await findAppPort();
+  if (port == null) return;
+  let url = "", title = "";
+  try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const t = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (t) { url = t.url || ""; title = t.title || ""; } } catch (e) {}
+  if (!url) return;
+  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url, title, vote } }) }); } catch (e) {}
+}
+
 // Push every queued capture (taken while the app was closed) once it's reachable.
 async function flushQueue() {
   const port = await findAppPort();
@@ -394,6 +468,11 @@ function ensureContextMenu() {
         title: "Save to Interests",
         contexts: ["page", "selection", "link", "image"],
       }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
+      chrome.contextMenus.create({
+        id: "removeFromInterests",
+        title: "Remove from Interests",
+        contexts: ["page", "link"],
+      }, () => { void chrome.runtime.lastError; });
     });
   } catch (e) { log("contextMenu setup failed: " + e.message); }
 }
@@ -535,6 +614,16 @@ chrome.runtime.onStartup.addListener(onExtensionInit);
 
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "removeFromInterests") {
+    (async () => {
+      try {
+        const url = info.linkUrl || info.pageUrl || (tab && tab.url) || "";
+        await deliverToApp({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
+        await setStatus("Removed card from Interests", true);
+      } catch (e) {}
+    })();
+    return;
+  }
   if (info.menuItemId !== "saveToInterests") return;
   let host = "";
   try { host = new URL(tab && tab.url).hostname; } catch (e) {}
@@ -1067,5 +1156,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     })();
     return true;
+  }
+
+  if (msg.action === "bstumbleVote") { bstumbleSendVote(msg.vote).then(() => bstumbleGo()).catch(() => {}); return false; }
+  if (msg.action === "bstumbleNext") { bstumbleGo().catch(() => {}); return false; }
+  if (msg.action === "bstumbleSave") {
+    (async () => {
+      try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const tab = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (tab) await clipCurrentPage(tab); } catch (e) {}
+    })();
+    return false;
   }
 });
