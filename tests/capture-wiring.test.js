@@ -182,14 +182,44 @@ t("impRefresh lets the extension own the capture tab (no app window.open duplica
   assert.ok(body.indexOf("window.open(") < 0, "impRefresh must NOT open its own tab — the extension worker owns it");
 });
 
-t("recaptureViaWorker drives the extension batch with force+render (unified bulk Recapture)", () => {
+t("dispatchCaptureBatch is the shared spine: one setBatchState, batchUI set sync after it (P2-T6 invariant)", () => {
+  const i = html.indexOf("function dispatchCaptureBatch(");
+  assert.ok(i >= 0, "dispatchCaptureBatch defined");
+  const body = html.slice(i, i + 1600);
+  // the shared batch-state shape lives HERE, once, merged with per-path opts.state
+  assert.ok(body.indexOf("Store.setBatchState(") >= 0, "writes batch-state for the worker");
+  assert.ok(/delay:\s*4000/.test(body) && /concurrency:\s*1/.test(body) && /active:\s*true/.test(body), "shared base shape: delay/concurrency/active");
+  assert.ok(body.indexOf("opts.state") >= 0, "merges per-path extra flags (sel/render/force | fb | fb,render)");
+  // the sync-before-await invariant: batchUI.active is set right after setBatchState with no await in this pure-sync helper
+  const sbs = body.indexOf("Store.setBatchState(");
+  const bu = body.indexOf("batchUI={active:true", sbs);
+  assert.ok(bu > sbs, "batchUI.active=true set AFTER setBatchState");
+  assert.ok(body.slice(sbs, bu).indexOf("await") < 0, "no await between setBatchState and batchUI (P2-T6 sync invariant)");
+  assert.ok(body.indexOf("Store.captureMeta") < 0, "extension path must NOT use the Core server-fetch (blind to social)");
+});
+
+t("recaptureViaWorker is a thin wrapper delegating to dispatchCaptureBatch with force+render", () => {
   const i = html.indexOf("function recaptureViaWorker(");
   assert.ok(i >= 0, "recaptureViaWorker defined");
   const body = html.slice(i, i + 1700);
-  assert.ok(body.indexOf("Store.setBatchState(") >= 0, "writes batch-state for the worker");
-  assert.ok(/force:\s*1/.test(body), "sets force:1 so the recapture overwrites the existing image");
-  assert.ok(/render:\s*1/.test(body), "sets render:1 so FB posts render-capture");
-  assert.ok(body.indexOf("Store.captureMeta") < 0, "must NOT use the Core server-fetch (blind to social)");
+  assert.ok(body.indexOf("dispatchCaptureBatch(") >= 0, "delegates to the shared dispatcher");
+  assert.ok(/force:\s*1/.test(body), "passes force:1 so the recapture overwrites the existing image");
+  assert.ok(/render:\s*1/.test(body), "passes render:1 so FB posts render-capture");
+  assert.ok(/sel:\s*1/.test(body), "passes sel:1 (selection recapture)");
+  assert.ok(body.indexOf("Store.setBatchState(") < 0, "wrapper no longer writes batch-state directly (spine owns it)");
+});
+
+t("startFbCapture / startFbMissRenderCapture are thin wrappers delegating to dispatchCaptureBatch", () => {
+  const fi = html.indexOf("async function startFbCapture(");
+  const fb = html.slice(fi, fi + 1800);
+  assert.ok(fb.indexOf("dispatchCaptureBatch(") >= 0, "startFbCapture delegates to the shared dispatcher");
+  assert.ok(/state:\s*\{fb:1\}/.test(fb), "startFbCapture passes fb:1 (extension og batch, no render)");
+  assert.ok(fb.indexOf("Store.setBatchState(") < 0, "wrapper no longer writes batch-state directly");
+  const ri = html.indexOf("async function startFbMissRenderCapture(");
+  const rb = html.slice(ri, ri + 1800);
+  assert.ok(rb.indexOf("dispatchCaptureBatch(") >= 0, "startFbMissRenderCapture delegates to the shared dispatcher");
+  assert.ok(/state:\s*\{fb:1,\s*render:1\}/.test(rb), "render path passes fb:1,render:1 (focused-tab render)");
+  assert.ok(rb.indexOf("Store.setBatchState(") < 0, "wrapper no longer writes batch-state directly");
 });
 
 t("captureSelected and retryFailFresh both route bulk recapture through the worker", () => {

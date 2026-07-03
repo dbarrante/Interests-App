@@ -2566,6 +2566,45 @@ ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
 // Works for EVERY platform — Instagram, Facebook, bookmarks, YouTube, Pinterest. Capped
 // at 100/run, Stoppable (cancelBatchCapture), progress via pollBatchProgress. Returns
 // the number dispatched (0 if nothing to do).
+// ── One parameterized extension-batch dispatcher (review E) ──────────────────
+// The shared spine of the three extension-batch entry points (recaptureViaWorker,
+// startFbCapture, startFbMissRenderCapture). startBatchCapture is NOT one of these:
+// it drives the Core og-fetch (Store.captureMeta chunks) with its own loop and never
+// writes extension batch-state — a genuinely different mechanism, left as-is.
+//
+// SYNCHRONOUS by design: the wrappers do their async prep (kvGet, candidate build,
+// cap) first, then hand a ready `items` array here. Because this function has no
+// awaits, `batchUI.active=true` is guaranteed set synchronously after
+// Store.setBatchState with nothing awaiting in between (the P2-T6 invariant).
+//
+// opts (all optional except where a path relies on them):
+//   stamp(c, at)        per-card pending-stamp applied to matching imported cards
+//                       (each path's exact predicate + lastResult rule live here)
+//   state               EXTRA batch-state flags merged onto the shared shape
+//                       (sel/render/force | fb | fb,render) — byte-identical per path
+//   refreshPins:bool    add each item id to _refreshPins (recapture keeps cards in view)
+//   view()              per-path view/filter setup (FB paths restrict impBatchIds)
+//   toast()             per-path toast
+//   render()            per-path re-render (defaults to renderImportedKeepFocus)
+// The batch-state base ({items,next,done,total,delay:4000,concurrency:1,active:true})
+// is identical across all three; only the trailing flags differ, via opts.state.
+function dispatchCaptureBatch(items, opts){
+  opts = opts || {};
+  if(opts.refreshPins) items.forEach(x=>_refreshPins.add(x.id));  // keep these visible in the current filter so the picture lands in place instead of the card vanishing
+  // stamp dispatched cards (and any url-duplicates) pending so progress/filters update
+  if(opts.stamp){ const at=Date.now(); imported.forEach(c=>opts.stamp(c, at)); }
+  Store.putCards(imported);
+  _batchIgnoreUntil=0;
+  try{
+    Store.setBatchProgress(null);
+    Store.setBatchState(Object.assign({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true}, opts.state||{}));
+  }catch(e){}
+  batchUI={active:true, done:0, total:items.length};   // set synchronously, right after setBatchState — no await between (P2-T6 invariant)
+  if(opts.view) opts.view();
+  if(opts.toast) opts.toast();
+  (opts.render || renderImportedKeepFocus)();
+  return items.length;
+}
 function recaptureViaWorker(cards){
   if(batchUI.active){ toast("A capture run is already going — stop it first or wait for it to finish"); return 0; }
   const usable=(cards||[]).filter(it=>it && it.url && !it.blocked);
@@ -2574,22 +2613,15 @@ function recaptureViaWorker(cards){
   const uniq=usable.filter(it=>{ const k=clipKey(it.url); if(seen.has(k)) return false; seen.add(k); return true; });
   const HARD_MAX=1000;   // safety ceiling (one tab per card, sequential) — not a silent small cap
   const items=uniq.slice(0,HARD_MAX).map(it=>{ if(!it.id) it.id=newId(); return {id:it.id, url:it.url}; });
-  items.forEach(x=>_refreshPins.add(x.id));  // keep these visible in the current filter so the picture lands in place instead of the card vanishing
-  // stamp dispatched cards (and any url-duplicates) pending so progress/filters update
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
-  const at=Date.now();
-  imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url))){ c.lastUpdate=at; if(c.lastResult!=="ok") c.lastResult="pending"; } });
-  Store.putCards(imported);
-  _batchIgnoreUntil=0;
-  try{
-    Store.setBatchProgress(null);
-    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, sel:1, render:1, force:1});   // force: a deliberate Recapture overwrites the existing image (like the per-card ⟳)
-  }catch(e){}
-  batchUI={active:true, done:0, total:items.length};
-  const mins=Math.max(1, Math.round(items.length*10/60));   // ~10s/card (open+capture+close+delay)
-  toast("Recapturing "+items.length+" card"+(items.length===1?"":"s")+" via the extension — one tab opens/captures/closes at a time (~"+mins+" min), overwriting old images. Keep Chrome open + logged in; click Stop anytime."+(uniq.length>HARD_MAX?" (1000 max per run — run again for the rest)":""), 9000);
-  renderImportedKeepFocus();
-  return items.length;
+  return dispatchCaptureBatch(items, {
+    refreshPins:true,
+    // force: a deliberate Recapture overwrites the existing image (like the per-card ⟳)
+    state:{sel:1, render:1, force:1},
+    stamp:(c,at)=>{ if(c.url && dispatched.has(clipKey(c.url))){ c.lastUpdate=at; if(c.lastResult!=="ok") c.lastResult="pending"; } },
+    toast:()=>{ const mins=Math.max(1, Math.round(items.length*10/60));   // ~10s/card (open+capture+close+delay)
+      toast("Recapturing "+items.length+" card"+(items.length===1?"":"s")+" via the extension — one tab opens/captures/closes at a time (~"+mins+" min), overwriting old images. Keep Chrome open + logged in; click Stop anytime."+(uniq.length>HARD_MAX?" (1000 max per run — run again for the rest)":""), 9000); }
+  });
 }
 function captureSelected(){
   const picks=[...selPicks].map(i=>imported[i]);
@@ -3055,30 +3087,25 @@ async function startFbCapture(){
   const isTest = !(await Store.kvGet("ia_fbtested"));
   const cap = isTest ? 10 : FB_BATCH_CAP;
   const items = uniq.slice(0, cap).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
-  // mark dispatched cards (and any url-duplicates) attempted now so each run moves
-  // on to fresh posts even if a result is lost; drainCaptures refines to ok/fail.
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
-  const at=Date.now();
-  imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureableFb(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } });
-  Store.putCards(imported);
-  _batchIgnoreUntil = 0;
-  try{
-    Store.setBatchProgress(null);
+  if(isTest){ Store.kvSet("ia_fbtested", 1); _fbTested = true; }   // was inside the setBatchState try/catch; fire-and-forget, no await → same effect, keeps the sync spine below
+  return dispatchCaptureBatch(items, {
     // concurrency 1 + a 4s settle delay keeps Facebook from rate-limiting/flagging
-    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1});
-    if(isTest){ Store.kvSet("ia_fbtested", 1); _fbTested = true; }
-  }catch(e){}
-  batchUI = {active:true, done:0, total:items.length};
-  // Filter the imported view to ONLY this batch so you can watch the pictures
-  // import; clear other filters that might hide a batch card. ✕ in the banner
-  // (clearBatchFilter) returns to all Facebook imports.
-  impBatchIds = new Set(items.map(it=>it.id));
-  impQuery=""; impTag=""; impUnreviewed=false; impFailed=false; impSrc="facebook"; save("isrc","facebook");
-  toast((isTest
-    ? "Test run: capturing 10 Facebook posts. Check the results, then click again to do "+FB_BATCH_CAP+" at a time."
-    : "Capturing "+items.length+" Facebook posts — one tab at a time.")
-    + " Leave this app tab open and stay logged into Facebook.", 8000);
-  renderCatBar(); renderImported();
+    state:{fb:1},
+    // mark dispatched cards (and any url-duplicates) attempted now so each run moves
+    // on to fresh posts even if a result is lost; drainCaptures refines to ok/fail.
+    stamp:(c,at)=>{ if(c.url && dispatched.has(clipKey(c.url)) && captureableFb(c)){ c.lastUpdate=at; if(!c.lastResult) c.lastResult="pending"; } },
+    // Filter the imported view to ONLY this batch so you can watch the pictures
+    // import; clear other filters that might hide a batch card. ✕ in the banner
+    // (clearBatchFilter) returns to all Facebook imports.
+    view:()=>{ impBatchIds = new Set(items.map(it=>it.id));
+      impQuery=""; impTag=""; impUnreviewed=false; impFailed=false; impSrc="facebook"; save("isrc","facebook"); },
+    toast:()=>toast((isTest
+      ? "Test run: capturing 10 Facebook posts. Check the results, then click again to do "+FB_BATCH_CAP+" at a time."
+      : "Capturing "+items.length+" Facebook posts — one tab at a time.")
+      + " Leave this app tab open and stay logged into Facebook.", 8000),
+    render:()=>{ renderCatBar(); renderImported(); }
+  });
 }
 const FB_RENDER_CAP = 25;   // per-run cap for the slower render-capture (each post opens a tab)
 // Auto render-capture the "Couldn't capture" Facebook posts the way you'd do
@@ -3098,28 +3125,23 @@ async function startFbMissRenderCapture(){
   const isTest = !(await Store.kvGet("ia_fbrender_tested"));
   const cap = isTest ? 5 : FB_RENDER_CAP;
   const items = uniq.slice(0, cap).map(i=>{ if(!i.id) i.id=newId(); return {id:i.id, url:i.url}; });
-  // mark dispatched cards (+ url-duplicates) attempted now so each run advances
   const dispatched=new Set(items.map(it=>clipKey(it.url)));
-  const at=Date.now();
-  imported.forEach(c=>{ if(c.url && dispatched.has(clipKey(c.url)) && fbMiss(c)){ c.lastUpdate=at; c.lastResult="pending"; } });
-  Store.putCards(imported);
-  _batchIgnoreUntil = 0;
-  try{
-    Store.setBatchProgress(null);
+  if(isTest){ Store.kvSet("ia_fbrender_tested", 1); _fbRenderTested = true; }   // was inside the setBatchState try/catch; fire-and-forget, no await → same effect, keeps the sync spine below
+  return dispatchCaptureBatch(items, {
     // render:1 routes each FB post through a focused tab; concurrency 1 +
     // the inherent per-post render time keeps it slow & Facebook-safe.
-    Store.setBatchState({items, next:0, done:0, total:items.length, delay:4000, concurrency:1, active:true, fb:1, render:1});
-    if(isTest){ Store.kvSet("ia_fbrender_tested", 1); _fbRenderTested = true; }
-  }catch(e){}
-  batchUI = {active:true, done:0, total:items.length};
-  // restrict the view to this batch so you watch the pictures land (✕ in the banner clears it)
-  impBatchIds = new Set(items.map(it=>it.id));
-  impQuery=""; impTag=""; impUnreviewed=false; impFailed=false; impFbMiss=false; impSrc="facebook"; save("isrc","facebook");
-  toast((isTest
-    ? "Test run: opening 5 restricted Facebook posts in a tab, one at a time, waiting for each photo to load. Check the results, then run the rest."
-    : "Auto-capturing "+items.length+" restricted Facebook posts — each opens briefly in a tab, one at a time.")
-    + " Keep this app open and stay logged into Facebook. The tab takes focus while it renders.", 9000);
-  renderCatBar(); renderImported();
+    state:{fb:1, render:1},
+    // mark dispatched cards (+ url-duplicates) attempted now so each run advances
+    stamp:(c,at)=>{ if(c.url && dispatched.has(clipKey(c.url)) && fbMiss(c)){ c.lastUpdate=at; c.lastResult="pending"; } },
+    // restrict the view to this batch so you watch the pictures land (✕ in the banner clears it)
+    view:()=>{ impBatchIds = new Set(items.map(it=>it.id));
+      impQuery=""; impTag=""; impUnreviewed=false; impFailed=false; impFbMiss=false; impSrc="facebook"; save("isrc","facebook"); },
+    toast:()=>toast((isTest
+      ? "Test run: opening 5 restricted Facebook posts in a tab, one at a time, waiting for each photo to load. Check the results, then run the rest."
+      : "Auto-capturing "+items.length+" restricted Facebook posts — each opens briefly in a tab, one at a time.")
+      + " Keep this app open and stay logged into Facebook. The tab takes focus while it renders.", 9000),
+    render:()=>{ renderCatBar(); renderImported(); }
+  });
 }
 /* ---- Auto-capture: run FB batches of 25 back-to-back with a ~1 min jittered
    pause between, until every Facebook post is processed or you stop. Session-only
