@@ -255,12 +255,26 @@
       var existIdx = i.url ? (byUrl.has(i.url) ? byUrl.get(i.url) : -1)
                            : (byTitle.has(k) ? byTitle.get(k) : -1);
       if (existIdx >= 0) {
-        var ex = existing[existIdx]; var patch = {}; var changed = false;
+        // The match may be a card appended EARLIER IN THIS SAME BATCH (byTitle/
+        // byUrl track post-append indices) — resolve those against `append`, not
+        // the immutable pre-append `existing`. The old inline code mutated the
+        // live array, so same-batch enrichment landed on the just-appended card;
+        // that end state is the contract.
+        var isAppended = existIdx >= appendBase;
+        var ex = isAppended ? append[existIdx - appendBase] : existing[existIdx];
+        var patch = {}; var changed = false;
         if (i.img && !ex.img) { patch.img = i.img; changed = true; }
         if (i.desc && (!ex.desc || ex.desc.startsWith("Saved from") || ex.desc.startsWith("From your"))) { patch.desc = i.desc; changed = true; }
         if (i.url && !ex.url) { patch.url = i.url; changed = true; }
         var sd = normTs(i.sdate); if (sd && ex.sdate !== sd) { patch.sdate = sd; changed = true; }
-        if (changed) { enrich.push({ idx: existIdx, patch: patch }); updated++; }
+        if (changed) {
+          // Appended entries are enriched IN PLACE (the plan's enrich list only
+          // ever indexes `existing`, so the applier can't miss same-batch targets
+          // regardless of its enrich-vs-append ordering).
+          if (isAppended) Object.assign(ex, patch);
+          else enrich.push({ idx: existIdx, patch: patch });
+          updated++;
+        }
       } else {
         if (!i.id) i.id = newId();
         var newIdx = appendBase + append.length;

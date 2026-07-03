@@ -168,6 +168,48 @@ t("dedupeImported: in-batch dup by url collapses", () => {
   );
   assert.strictEqual(plan.added, 1, "same url twice in one batch => one append");
 });
+t("dedupeImported REGRESSION: title-only dup of a same-batch appended item enriches it, no throw", () => {
+  // v1.9.0 final-review Critical: byTitle/byUrl track post-append indices but ex
+  // resolved against the immutable pre-append array -> ex undefined -> TypeError
+  // that killed the whole import. Routine in FB exports (url item + title-only
+  // item with img/sdate sharing the title in one file).
+  const plan = IP.dedupeImported(
+    [{ title: "Same Post", url: "https://x/a" }, { title: "same post", img: "https://x/i.jpg", sdate: 1600000000000 }],
+    [],
+    { newId: () => "R1" }
+  );
+  assert.strictEqual(plan.added, 1, "one appended card");
+  assert.strictEqual(plan.updated, 1, "the title-only dup counts as an update");
+  assert.strictEqual(plan.enrich.length, 0, "enrich list only indexes pre-existing cards");
+  assert.strictEqual(plan.append[0].img, "https://x/i.jpg", "img landed on the appended card");
+  assert.strictEqual(plan.append[0].sdate, 1600000000000, "sdate landed on the appended card");
+  assert.strictEqual(plan.append[0].url, "https://x/a", "original url kept");
+});
+t("dedupeImported REGRESSION: same url twice in-batch is collapsed by seenThis (no throw, one card)", () => {
+  // Mirror-by-url case: a second url-bearing item with the SAME url is keyed by
+  // url in seenThis and skipped BEFORE dedupe — matching the old inline behavior.
+  const plan = IP.dedupeImported(
+    [{ title: "First look", url: "https://x/b" }, { title: "Second look at the same page", url: "https://x/b", desc: "richer description" }],
+    [],
+    { newId: () => "R2" }
+  );
+  assert.strictEqual(plan.added, 1);
+  assert.strictEqual(plan.updated, 0, "seenThis skip, not an enrich");
+  assert.strictEqual(plan.append.length, 1);
+});
+t("dedupeImported REGRESSION: two url-less items sharing a title collapse via seenThis (no throw, one card)", () => {
+  // Both items key seenThis as "t:<title>", so the second is skipped BEFORE the
+  // dedupe branch — old inline behavior, preserved. The only reachable same-batch
+  // enrich path is the url-first/title-only-second shape (the test above).
+  const plan = IP.dedupeImported(
+    [{ title: "Shared Caption Here" }, { title: "shared caption here", desc: "a fuller description" }],
+    [],
+    { newId: () => "R3" }
+  );
+  assert.strictEqual(plan.added, 1);
+  assert.strictEqual(plan.updated, 0, "seenThis skip, not an enrich");
+  assert.strictEqual(plan.append.length, 1);
+});
 t("dedupeImported: junk titles and raw-url titles are skipped", () => {
   const plan = IP.dedupeImported(
     [{ title: "like" }, { title: "https://raw.example.com" }, { title: "Real title", url: "https://r/1" }],
