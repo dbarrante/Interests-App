@@ -114,39 +114,32 @@ async function safeToFetch(url, opts) {
   return true;
 }
 
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
+var gf = require("./guardedfetch");
+var UA = gf.UA_LINKCHECK;
 
 // Probe ONE url. HEAD first (cheap); retry once with GET if HEAD is unsupported
-// (405/501) or errored. Redirects are followed MANUALLY (redirect:"manual") so each
-// hop's host is re-validated by isProbableHost — a public url that 30x-redirects to an
+// (405/501) or errored. Redirects are followed MANUALLY (via guardedfetch.followRedirects)
+// so each hop's host is re-validated by safeToFetch — a public url that 30x-redirects to an
 // internal/loopback/metadata host is NOT followed (SSRF guard), and its 3xx (=alive) is
 // returned. On a probable host we follow to the final status (a moved page that 404s = dead).
 var MAX_HOPS = 5;
 async function probeUrl(url, opts) {
   opts = opts || {};
   var timeoutMs = opts.timeoutMs || 8000;
+  // One guarded fetch (status + Location only; no body — probes don't read bodies). Maps the
+  // guardedfetch error object to linkcheck's error CODE (timeout -> ETIMEDOUT, else e.cause.code).
   async function fetchOnce(target, method) {
-    var ac = new AbortController();
-    var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
-    try {
-      // Connection: close — don't pool sockets across the thousands of distinct hosts a
-      // sweep touches (also sidesteps a Windows undici keep-alive teardown crash on exit).
-      var res = await fetch(target, { method: method, redirect: "manual", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
-      var loc = (res.headers && typeof res.headers.get === "function") ? res.headers.get("location") : null;
-      return { status: res.status, code: null, location: loc };
-    } catch (e) {
-      // Node's fetch wraps the real DNS/connection error under e.cause; a timeout shows
-      // up as an AbortError (whose numeric e.code must NOT be used as the error code).
-      var code = "ERR";
-      if (e) {
-        if (e.name === "AbortError") code = "ETIMEDOUT";
-        else if (e.cause && e.cause.code) code = e.cause.code;       // ECONNREFUSED / ENOTFOUND / ...
-        else if (typeof e.code === "string") code = e.code;
-      }
-      return { status: 0, code: code, location: null };
-    } finally {
-      clearTimeout(timer);
+    var r = await gf.fetchOnceGuarded(target, { method: method, timeoutMs: timeoutMs, ua: UA, readBody: false });
+    if (!r.error) return { status: r.status, code: null, location: r.location };
+    // Node's fetch wraps the real DNS/connection error under e.cause; a timeout shows up as an
+    // AbortError (whose numeric e.code must NOT be used as the error code).
+    var e = r.error, code = "ERR";
+    if (e) {
+      if (e.name === "AbortError") code = "ETIMEDOUT";
+      else if (e.cause && e.cause.code) code = e.cause.code;         // ECONNREFUSED / ENOTFOUND / ...
+      else if (typeof e.code === "string") code = e.code;
     }
+    return { status: 0, code: code, location: null };
   }
   async function probeOnce(target) {
     var r = await fetchOnce(target, "HEAD");
@@ -157,19 +150,13 @@ async function probeUrl(url, opts) {
     }
     return r;
   }
-  var current = url;
-  for (var hop = 0; hop < MAX_HOPS; hop++) {
-    var r = await probeOnce(current);
-    if (!(r.status >= 300 && r.status < 400) || !r.location) return { status: r.status, code: r.code };
-    var nextUrl;
-    try { nextUrl = new URL(r.location, current).href; } catch (e) { return { status: r.status, code: r.code }; }
-    // SSRF: never follow a redirect to a non-public host (string guard) OR to a host that
-    // RESOLVES to a private IP (rebinding) — stop and report the 3xx (=> "alive", never
-    // "dead": conservative, never flagged for deletion).
-    if (!(await safeToFetch(nextUrl, opts))) return { status: r.status, code: r.code };
-    current = nextUrl;
-  }
-  return { status: 308, code: null };        // redirect loop / too many hops -> treat as alive (never dead)
+  // Follow redirects with the per-hop SSRF re-check; probeOnce is the caller-specific
+  // (HEAD-then-GET) fetch. On blocked/badloc/maxhops we report the last 3xx (=> "alive").
+  var walk = await gf.followRedirects(url, {
+    maxRedirects: MAX_HOPS, lookup: opts.lookup, fetchFn: probeOnce, safeToFetch: safeToFetch
+  });
+  if (walk.stopReason === "maxhops") return { status: 308, code: null };  // loop/too many hops -> alive
+  return { status: walk.result.status, code: walk.result.code };
 }
 
 // Probe a chunk of {id,url} with a concurrency cap. Non-probable (SSRF) or
@@ -179,28 +166,17 @@ async function checkChunk(items, opts) {
   var concurrency = Math.min(opts.concurrency || 8, 8);
   var timeoutMs = opts.timeoutMs || 8000;
   var arr = Array.isArray(items) ? items : [];
-  var results = new Array(arr.length);
-  var next = 0;
-  async function worker() {
-    while (true) {
-      var idx = next++;
-      if (idx >= arr.length) return;
-      var it = arr[idx] || {};
-      var url = it.url;
-      // String guard + social-skip are cheap; the DNS rebinding check (safeToFetch) only runs
-      // for urls that pass them — a domain that resolves private is skipped without a request.
-      if (typeof url !== "string" || !isProbableHost(url) || isSkippedHost(url) || !(await safeToFetch(url, opts))) {
-        results[idx] = { id: it.id, status: "skipped", code: null };
-        continue;
-      }
-      var p = await probeUrl(url, { timeoutMs: timeoutMs, lookup: opts.lookup });
-      results[idx] = { id: it.id, status: classify(p.status, p.code), code: (p.code != null ? p.code : p.status) };
+  return gf.runPool(arr, concurrency, async function (item) {
+    var it = item || {};
+    var url = it.url;
+    // String guard + social-skip are cheap; the DNS rebinding check (safeToFetch) only runs
+    // for urls that pass them — a domain that resolves private is skipped without a request.
+    if (typeof url !== "string" || !isProbableHost(url) || isSkippedHost(url) || !(await safeToFetch(url, opts))) {
+      return { id: it.id, status: "skipped", code: null };
     }
-  }
-  var pool = [];
-  for (var w = 0; w < Math.min(concurrency, arr.length); w++) pool.push(worker());
-  await Promise.all(pool);
-  return results;
+    var p = await probeUrl(url, { timeoutMs: timeoutMs, lookup: opts.lookup });
+    return { id: it.id, status: classify(p.status, p.code), code: (p.code != null ? p.code : p.status) };
+  });
 }
 
 module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, isPrivateAddr: isPrivateAddr, safeToFetch: safeToFetch, _setLookup: setLookup, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };

@@ -77,40 +77,16 @@ function classifyContent(info) {
   return { verdict: signals.length ? "suspect" : "likely-alive", reason: reason, signals: signals };
 }
 
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) InterestsApp link-check";
+var gf = require("./guardedfetch");
+var UA = gf.UA_LINKCHECK;
 var MAX_HOPS = 5;
 
-// Read a response body but stop at maxBytes so a hostile/huge page never fully
-// materializes in memory. Streams via res.body when available; falls back to text()
-// (used by test stubs that don't provide a stream).
+// Read a response body but stop at maxBytes so a hostile/huge page never fully materializes
+// in memory. DRAINS rather than cancels (the undici teardown-crash workaround — see
+// guardedfetch.drainCapped). Kept as a thin string wrapper so the module's contract and any
+// callers are unchanged. Streams via res.body; falls back to arrayBuffer()/text() for stubs.
 async function readCapped(res, maxBytes) {
-  if (res && res.body && typeof res.body.getReader === "function") {
-    var reader = res.body.getReader();
-    var chunks = [], kept = 0;
-    // DRAIN the body to completion, keeping only the first maxBytes. Do NOT cancel():
-    // cancelling a not-fully-consumed undici body leaves its HTTP parser paused, and on
-    // socket end undici throws an async, uncatchable AssertionError (assert(!this.paused))
-    // that crashes the Electron main process. Reading to `done` lets the socket finish
-    // cleanly. Memory stays bounded — we stop accumulating once kept >= maxBytes.
-    while (true) {
-      var step = await reader.read();
-      if (step.done) break;
-      if (kept < maxBytes && step.value) {
-        var chunk = Buffer.from(step.value);
-        var room = maxBytes - kept;
-        if (chunk.length > room) chunk = chunk.subarray(0, room);
-        chunks.push(chunk);
-        kept += chunk.length;
-      }
-      // else: past the cap — discard the chunk but keep reading so the socket drains cleanly.
-    }
-    return Buffer.concat(chunks).toString("utf8");
-  }
-  if (res && typeof res.text === "function") {
-    var full = await res.text();
-    return (typeof full === "string" && full.length > maxBytes) ? full.slice(0, maxBytes) : (full || "");
-  }
-  return "";
+  return (await gf.drainCapped(res, maxBytes)).toString("utf8");
 }
 
 // GET a page's content with the SSRF guard applied to every hop. Redirects followed
@@ -123,35 +99,18 @@ async function fetchContent(url, opts) {
   // SSRF: string guard + DNS-rebinding guard (a public-looking name that resolves private).
   if (!(await linkcheck.safeToFetch(url, opts))) return { finalUrl: url, status: 0, title: "", snippet: "" };
 
-  async function getOnce(target) {
-    var ac = new AbortController();
-    var timer = setTimeout(function () { ac.abort(); }, timeoutMs);
-    try {
-      var res = await fetch(target, { method: "GET", redirect: "manual", signal: ac.signal, headers: { "User-Agent": UA, "Connection": "close" } });
-      var loc = (res.headers && typeof res.headers.get === "function") ? res.headers.get("location") : null;
-      var body = "";
-      try { body = await readCapped(res, maxBytes); } catch (e) { body = ""; }
-      return { status: res.status, location: loc, body: body, finalUrl: (res.url || target) };
-    } catch (e) {
-      return { status: 0, location: null, body: "", finalUrl: target };
-    } finally {
-      clearTimeout(timer);
-    }
+  var walk = await gf.followRedirects(url, {
+    maxRedirects: MAX_HOPS, timeoutMs: timeoutMs, maxBytes: maxBytes, ua: UA,
+    lookup: opts.lookup, safeToFetch: linkcheck.safeToFetch
+  });
+  if (walk.stopReason === "terminal") {
+    var r = walk.result;
+    var body = (r.buffer || Buffer.alloc(0)).toString("utf8");
+    return { finalUrl: walk.current, status: r.status, title: extractTitle(body), snippet: extractText(body) };
   }
-
-  var current = url;
-  for (var hop = 0; hop < MAX_HOPS; hop++) {
-    var r = await getOnce(current);
-    var isRedirect = r.status >= 300 && r.status < 400 && r.location;
-    if (!isRedirect) {
-      return { finalUrl: current, status: r.status, title: extractTitle(r.body), snippet: extractText(r.body) };
-    }
-    var nextUrl;
-    try { nextUrl = new URL(r.location, current).href; } catch (e) { return { finalUrl: current, status: r.status, title: "", snippet: "" }; }
-    if (!(await linkcheck.safeToFetch(nextUrl, opts))) return { finalUrl: current, status: r.status, title: "", snippet: "" };
-    current = nextUrl;
-  }
-  return { finalUrl: current, status: 0, title: "", snippet: "" };
+  // blocked / badloc -> report the last 3xx status with no content; maxhops -> status 0.
+  if (walk.stopReason === "maxhops") return { finalUrl: walk.current, status: 0, title: "", snippet: "" };
+  return { finalUrl: walk.current, status: walk.result.status, title: "", snippet: "" };
 }
 
 // Probe a chunk of {id,url} with a concurrency cap. Social/SSRF/non-probable urls are
@@ -160,27 +119,16 @@ async function checkContentChunk(items, opts) {
   opts = opts || {};
   var concurrency = Math.min(opts.concurrency || 8, 8);
   var arr = Array.isArray(items) ? items : [];
-  var results = new Array(arr.length);
-  var next = 0;
-  async function worker() {
-    while (true) {
-      var idx = next++;
-      if (idx >= arr.length) return;
-      var it = arr[idx] || {};
-      var url = it.url;
-      if (typeof url !== "string" || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
-        results[idx] = { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "" };
-        continue;
-      }
-      var c = await fetchContent(url, opts);
-      var cls = classifyContent({ originalUrl: url, finalUrl: c.finalUrl, status: c.status, title: c.title, text: c.snippet });
-      results[idx] = { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason };
+  return gf.runPool(arr, concurrency, async function (item) {
+    var it = item || {};
+    var url = it.url;
+    if (typeof url !== "string" || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
+      return { id: it.id, status: "skipped", verdict: "skipped", reason: "skipped", finalUrl: url || "", title: "", snippet: "" };
     }
-  }
-  var pool = [];
-  for (var w = 0; w < Math.min(concurrency, arr.length); w++) pool.push(worker());
-  await Promise.all(pool);
-  return results;
+    var c = await fetchContent(url, opts);
+    var cls = classifyContent({ originalUrl: url, finalUrl: c.finalUrl, status: c.status, title: c.title, text: c.snippet });
+    return { id: it.id, finalUrl: c.finalUrl, status: c.status, title: c.title, snippet: c.snippet, verdict: cls.verdict, reason: cls.reason };
+  });
 }
 
 module.exports = { extractTitle: extractTitle, extractText: extractText, DEAD_PHRASES: DEAD_PHRASES, classifyContent: classifyContent, fetchContent: fetchContent, checkContentChunk: checkContentChunk };
