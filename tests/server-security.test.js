@@ -26,6 +26,33 @@ function listen(app) {
     });
   });
 }
+// Raw HTTP GET with a hand-crafted Host header. fetch()/undici refuses to let a
+// custom Host override the connection authority, so we speak HTTP over a socket
+// to exercise the Host-allowlist middleware with arbitrary (incl. attacker) Host
+// values. Returns { status, body }.
+function rawGet(port, hostHeader, pathStr) {
+  const net = require("net");
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, "127.0.0.1", () => {
+      // Use HTTP/1.0 when omitting Host: HTTP/1.1 mandates a Host header and Node's
+      // parser 400s a 1.1 request without one BEFORE app middleware sees it. HTTP/1.0
+      // has no such requirement, so the absent-Host path reaches our middleware.
+      const ver = hostHeader == null ? "HTTP/1.0" : "HTTP/1.1";
+      const lines = ["GET " + pathStr + " " + ver];
+      if (hostHeader != null) lines.push("Host: " + hostHeader);
+      lines.push("Connection: close", "", "");
+      sock.write(lines.join("\r\n"));
+    });
+    let data = "";
+    sock.on("data", (d) => { data += d.toString("utf8"); });
+    sock.on("end", () => {
+      const status = parseInt((data.match(/^HTTP\/1\.1 (\d+)/) || [])[1], 10);
+      const body = data.slice(data.indexOf("\r\n\r\n") + 4);
+      resolve({ status, body });
+    });
+    sock.on("error", reject);
+  });
+}
 async function post(base, route, body, headers) {
   return fetch(base + route, {
     method: "POST",
@@ -108,6 +135,40 @@ async function post(base, route, body, headers) {
       const r = await fetch(base + "/api/ping", { headers: { Origin: "https://evil.example.com" } });
       assert.strictEqual(r.status, 403);
     });
+
+    // --- Host allowlist (DNS-rebinding fix) ---
+    // fetch()/undici will not let a custom Host override the connection authority,
+    // so these use rawGet() to speak HTTP with an arbitrary Host header.
+    const secPort = srv.address().port;
+    // ACCEPT matrix: loopback HOSTNAME on ANY port (the harness itself binds an
+    // ephemeral port), localhost, IPv6 [::1]:port, bare host, and absent-Host over
+    // a loopback socket (this connection IS loopback → the no-Host path allows it).
+    for (const host of ["127.0.0.1:3456", "127.0.0.1:65000", "localhost:3456", "localhost", "[::1]:3456", "127.0.0.1", "[::1]"]) {
+      await t("Host: " + host + " -> 200 (loopback hostname accepted, port ignored)", async () => {
+        const r = await rawGet(secPort, host, "/api/ping");
+        assert.strictEqual(r.status, 200);
+      });
+    }
+    await t("absent Host header over loopback socket -> 200 (remoteAddress is loopback)", async () => {
+      const r = await rawGet(secPort, null, "/api/ping");
+      assert.strictEqual(r.status, 200);
+    });
+    await t("extension-style fetch (127.0.0.1 authority + chrome-extension Origin) -> 200", async () => {
+      const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://abcdefghijklmnop" } });
+      assert.strictEqual(r.status, 200);
+    });
+    // REJECT matrix: a DNS-rebound attacker host (the core threat), with or without
+    // a loopback-range port, and a subdomain-of-loopback trick. Empty-string Host
+    // with a NON-loopback socket cannot be simulated here (the test connection is
+    // always loopback) — documented in the report; the absent-Host accept case
+    // above exercises the loopback-socket branch of the same code path.
+    for (const host of ["evil.com", "evil.com:3456", "127.0.0.1.evil.com", "127.0.0.1.evil.com:3456"]) {
+      await t("Host: " + host + " -> 403 forbidden host (rebinding rejected)", async () => {
+        const r = await rawGet(secPort, host, "/api/ping");
+        assert.strictEqual(r.status, 403);
+        assert.ok(r.body.indexOf("forbidden host") >= 0, "body says forbidden host");
+      });
+    }
 
     // --- CSP header (MEDIUM) ---
     await t("served HTML carries a Content-Security-Policy header", async () => {

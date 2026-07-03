@@ -39,6 +39,47 @@ function originAllowed(origin) {
   return ORIGIN_OK.test(origin);
 }
 
+// Host-header allowlist — closes the DNS-rebinding hole (review 2026-07-02 §3):
+// with no Host check, an attacker page on evil.com whose DNS is rebound to
+// 127.0.0.1 is fetched SAME-ORIGIN (so no Origin header is sent, sailing past
+// the Origin guard) and could read the whole library. The defense is to pin the
+// Host header to a loopback HOSTNAME.
+//
+// DELIBERATE DEVIATION from the plan's "any port in 3456-3465" wording: we match
+// on the hostNAME only and IGNORE the port. Rationale — (1) what defeats DNS
+// rebinding is the hostname: an attacker's rebound domain sends `Host: evil.com`
+// regardless of which port it targets, so the port range adds no security; (2) a
+// port allowlist would BREAK every test harness, which binds ephemeral ports
+// (listen(0, …)) far outside 3456-3465 and sends `Host: 127.0.0.1:<ephemeral>`.
+// So: accept host 127.0.0.1 / localhost / ::1 on ANY port; reject everything else.
+// [::1]:port is bracketed, so strip the bracket form carefully before comparing.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+function hostnameOf(hostHeader) {
+  if (typeof hostHeader !== "string" || !hostHeader) return null;
+  let h = hostHeader.trim().toLowerCase();
+  if (h[0] === "[") {                 // IPv6 literal: [::1] or [::1]:port
+    const close = h.indexOf("]");
+    if (close === -1) return null;
+    return h.slice(1, close);         // inside the brackets, port dropped
+  }
+  const colon = h.indexOf(":");       // hostname:port (single colon → IPv4/name)
+  if (colon !== -1) h = h.slice(0, colon);
+  return h;
+}
+// Loopback remote address (used only when the Host header is ABSENT — a raw
+// same-machine client). Covers IPv4, IPv6, and IPv4-mapped-IPv6 loopback.
+const LOOPBACK_REMOTE = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+function hostAllowed(req) {
+  const host = req.headers.host;
+  if (host == null || host === "") {
+    // No Host header: allow ONLY if the socket peer is loopback.
+    const ra = req.socket && req.socket.remoteAddress;
+    return LOOPBACK_REMOTE.has(ra);
+  }
+  const name = hostnameOf(host);
+  return name != null && LOOPBACK_HOSTS.has(name);
+}
+
 // Content-Security-Policy for the served UI. The single-file web app relies on
 // inline <script>/<style>, so 'unsafe-inline' is required for script-src and
 // style-src — without it the app will not load. img-src allows data: URLs
@@ -55,12 +96,56 @@ const CSP = [
 function createServer(ctx) {
   const app = express();
 
+  // Host allowlist FIRST (before the Origin guard) — DNS-rebinding defense.
+  // Both this and the Origin guard run; a rebound attacker host is rejected here.
+  app.use((req, res, next) => {
+    if (!hostAllowed(req)) {
+      return res.status(403).json({ ok: false, error: "forbidden host" });
+    }
+    next();
+  });
+
   // Block cross-origin web pages from reaching the local API (before any route).
   app.use((req, res, next) => {
     if (!originAllowed(req.headers.origin)) {
       return res.status(403).json({ ok: false, error: "forbidden origin" });
     }
     next();
+  });
+
+  // DORMANT pairing-token gate. lanEnabled is read straight off the persisted
+  // config (plain loadConfig().lanEnabled — not getSyncConfig, which is scoped to
+  // Dropbox device identity and has no business owning a LAN-auth flag). Default
+  // absent/false → next() untouched, so today every caller passes through and no
+  // existing contract changes. When lanEnabled is true, a valid
+  // `Authorization: Bearer <getPairingToken()>` is required, else 401.
+  //
+  // CONTRACT (do NOT half-flip this): the server bind address stays 127.0.0.1
+  // UNCONDITIONALLY — startServer never reads lanEnabled. Actually serving the LAN
+  // requires deliberate future work (change the bind, a TLS decision, and a
+  // pairing UX). Flipping lanEnabled alone only arms this token check; it does not
+  // expose the server off-loopback. A test asserts the bind stays loopback.
+  function requireToken(ctx) {
+    return function (req, res, next) {
+      let lanEnabled = false;
+      try { lanEnabled = !!config.loadConfig().lanEnabled; } catch (e) { lanEnabled = false; }
+      if (!lanEnabled) return next();
+      if (req.path === "/api/pair-status") return next();   // capability probe is exempt
+      const auth = req.headers.authorization || "";
+      const token = getPairingToken();
+      if (token && auth === "Bearer " + token) return next();
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    };
+  }
+  const { getPairingToken } = config;
+  app.use(requireToken(ctx));
+
+  // Capability probe for a future phone client: reports whether LAN mode is armed.
+  // Exempt from the token requirement (it's how a client discovers it needs one).
+  app.get("/api/pair-status", (req, res) => {
+    let lan = false;
+    try { lan = !!config.loadConfig().lanEnabled; } catch (e) { lan = false; }
+    res.json({ ok: true, lan });
   });
 
   // Apply the CSP to every response (covers the served HTML and its assets).

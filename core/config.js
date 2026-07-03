@@ -133,6 +133,28 @@ function setSyncConfig(partial) {
   saveConfig(cfg);
 }
 
+// --- Pairing token (DORMANT auth scaffolding for a future LAN mode) ---
+// A 32-byte random token a future phone client would present as
+// `Authorization: Bearer <token>` once LAN serving is enabled. It is NOT
+// generated at startup — ensurePairingToken() is called only on first future
+// use (the day lanEnabled is flipped and the bind address changes). Until then
+// getPairingToken() returns null and the Bearer middleware is a pass-through.
+function ensurePairingToken() {
+  const cfg = loadConfig();
+  if (!cfg.pairingToken) {
+    cfg.pairingToken = require("crypto").randomBytes(32).toString("hex");
+    saveConfig(cfg);   // persisted once via the atomic saveConfig
+  }
+  return cfg.pairingToken;
+}
+
+// Pure read: returns the persisted pairing token, or null if it has never been
+// generated. Never writes — safe to call on every request.
+function getPairingToken() {
+  const cfg = loadConfig();
+  return typeof cfg.pairingToken === "string" && cfg.pairingToken ? cfg.pairingToken : null;
+}
+
 function getSafeBrowsingKey() {
   const cfg = loadConfig();
   return typeof cfg.safeBrowsingKey === "string" ? cfg.safeBrowsingKey : "";
@@ -157,6 +179,8 @@ module.exports = {
   getSyncConfig,
   ensureSyncConfig,
   setSyncConfig,
+  ensurePairingToken,
+  getPairingToken,
   getSafeBrowsingKey,
   setSafeBrowsingKey,
 };
