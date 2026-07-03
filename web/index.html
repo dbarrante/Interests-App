@@ -324,6 +324,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 .imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
+<script src="ai.js"></script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
 <script src="restore-legacy.js"></script>
@@ -1306,83 +1307,13 @@ RULES:
 }
 
 /* ============ providers ============ */
-async function callAnthropic(prompt){
-  const r = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      "x-api-key":S.keys.anthropic,
-      "anthropic-version":"2023-06-01",
-      "anthropic-dangerous-direct-browser-access":"true"
-    },
-    body:JSON.stringify({
-      model:S.models.anthropic, max_tokens:6000,
-      tools:[{type:"web_search_20250305", name:"web_search", max_uses:8}],
-      messages:[{role:"user", content:prompt}]
-    })
-  });
-  if(!r.ok) throw new Error("Anthropic API error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  return (d.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
-}
-async function callOpenAI(prompt){
-  const r = await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.keys.openai},
-    body:JSON.stringify({model:S.models.openai, tools:[{type:"web_search"}], input:prompt})
-  });
-  if(!r.ok) throw new Error("OpenAI API error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  let out="";
-  (d.output||[]).forEach(o=>{ if(o.type==="message") (o.content||[]).forEach(c=>{ if(c.type==="output_text") out+=c.text; }); });
-  return out || d.output_text || "";
-}
-async function callGemini(prompt){
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${S.models.gemini}:generateContent?key=${S.keys.gemini}`;
-  const r = await fetch(url,{
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts:[{text:prompt}]}], tools:[{google_search:{}}]})
-  });
-  if(!r.ok) throw new Error("Gemini API error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  const parts = d.candidates?.[0]?.content?.parts || [];
-  return parts.map(p=>p.text||"").join("\n");
-}
-async function callGroq(prompt){
-  const r = await fetch("https://api.groq.com/openai/v1/chat/completions",{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.keys.groq},
-    body:JSON.stringify({model:S.models.groq, temperature:0.8,
-      messages:[{role:"user", content:prompt}]})
-  });
-  if(!r.ok) throw new Error("Groq API error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  return d.choices?.[0]?.message?.content || "";
-}
-async function callOpenRouter(prompt){
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions",{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.keys.openrouter,
-      "HTTP-Referer":"http://localhost:3456","X-Title":"Interests App"},
-    body:JSON.stringify({model:S.models.openrouter, temperature:0.8,
-      messages:[{role:"user", content:prompt}]})
-  });
-  if(!r.ok) throw new Error("OpenRouter API error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  return d.choices?.[0]?.message?.content || "";
-}
-async function callLocal(prompt){
-  const headers = {"Content-Type":"application/json"};
-  if(S.keys.local) headers["Authorization"] = "Bearer "+S.keys.local;
-  const r = await fetch(S.localUrl+"/chat/completions",{
-    method:"POST", headers,
-    body:JSON.stringify({model:S.models.local, temperature:0.8,
-      messages:[{role:"user", content:prompt}]})
-  }).catch(e=>{ throw new Error("Can't reach "+S.localUrl+". If using Ollama, start it with OLLAMA_ORIGINS=* set."); });
-  if(!r.ok) throw new Error("Endpoint error "+r.status+": "+(await r.text()).slice(0,300));
-  const d = await r.json();
-  return d.choices?.[0]?.message?.content || "";
-}
+// The six provider callers + the callAI dispatcher + hasAIKey + parseJsonArray now
+// live in web/ai.js (IA_AI). Configured once at boot (see below) with a closure over
+// S so the module stays decoupled from the page global. Thin locals below keep the
+// call sites terse and preserve their exact single-arg semantics.
+const callAI = (prompt, opts) => IA_AI.callAI(prompt, opts);
+const parseJsonArray = (text) => IA_AI.parseJsonArray(text);
+IA_AI.configure(() => S);
 
 /* ============ response parsing & validation ============ */
 function urlKey(u){ return (u||"").toLowerCase().replace(/^https?:\/\/(www\.)?/,"").replace(/\/+$/,""); }
@@ -1398,10 +1329,8 @@ function dropAlreadySaved(items){
 }
 function parseItems(text){
   if(!text) throw new Error("Empty response from model");
-  let t = text.replace(/```json|```/g,"").trim();
-  const a = t.indexOf("["), b = t.lastIndexOf("]");
-  if(a===-1||b===-1) throw new Error("No JSON array found in model response");
-  let arr = JSON.parse(t.slice(a,b+1));
+  let arr = parseJsonArray(text);
+  if(arr===null) throw new Error("No JSON array found in model response");
   if(!Array.isArray(arr)) throw new Error("Model did not return a list");
   return arr.filter(i=>i && i.title && i.url).map((i,n)=>({
     id: Date.now().toString(36)+"_"+n,
@@ -1450,13 +1379,12 @@ async function rankFilter(items){
 /* ============ feed refresh ============ */
 async function refreshFeed(){
   saveSettings(false);
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
   const btn=document.getElementById("refreshBtn");
   btn.disabled=true; btn.innerHTML='<span class="spin"></span> Thinking…';
   try{
     const prompt = buildPrompt();
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-    const text = await call(prompt);
+    const text = await callAI(prompt);
     let items = dropAlreadySaved(parseItems(text));
     if(!items.length) throw new Error("Model returned no usable items");
     btn.innerHTML='<span class="spin"></span> Checking links…';
@@ -1481,11 +1409,10 @@ async function refreshFeed(){
 let stLoading = false;
 async function stumbleFetch(){
   if(stLoading) return false;
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return false; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return false; }
   stLoading = true; renderStumble();
   try{
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await call(buildPrompt("stumble"))))));
+    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"))))));
     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
     if(shown.length>200) shown=shown.slice(-200);
     spool = spool.concat(items.filter(i=>!spool.some(p=>p.url===i.url)));
@@ -2328,7 +2255,7 @@ async function enrichImported(){
     const gotPins = await enrichPins();
     if(gotPins) toast(gotPins+" Pinterest pin image"+(gotPins>1?"s":"")+" fetched");
   }catch(e){ console.warn(e); }
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Pin data done — add your "+PROVIDERS[S.provider].keyName+" in Settings for AI descriptions"); renderImportedKeepFocus(); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); renderImportedKeepFocus(); return; }
   try{
     let done=0;
     while(done<120){
@@ -2337,12 +2264,9 @@ async function enrichImported(){
       const prompt = `Here are titles of things the user saved on social platforms. For EACH numbered title, write ONE short sentence (under 20 words) describing what it likely is and why it caught their eye. Never name the platform or content type — no "Facebook post", "Pinterest pin", "YouTube video", "reel", or "This is a…". Start directly with the substance (e.g. "Bass-fishing knot trick that locks under tension."). No web search needed — infer from the title. Return ONLY a JSON array of ${batch.length} strings, same order, no other text.
 
 ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-      const text = await call(prompt);
-      const t = text.replace(/```json|```/g,"").trim();
-      const a=t.indexOf("["), z=t.lastIndexOf("]");
-      if(a===-1||z===-1) throw new Error("No descriptions found in model response");
-      const arr = JSON.parse(t.slice(a,z+1));
+      const text = await callAI(prompt);
+      const arr = parseJsonArray(text);
+      if(arr===null) throw new Error("No descriptions found in model response");
       batch.forEach((b,i)=>{ if(typeof arr[i]==="string" && arr[i].trim()) b.desc=arr[i].trim().slice(0,220); });
       done += batch.length;
       Store.putCards(imported);
@@ -2478,7 +2402,7 @@ function removeFailSelected(){
 function clearFailedFilter(){ impFailed=false; renderImportedKeepFocus(); }
 document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeMenus(); });
 async function autoTag(limit){
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("tagBtn");
   if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Tagging…'; }
   const cap = limit || Infinity;
@@ -2491,12 +2415,9 @@ async function autoTag(limit){
 Return ONLY a JSON array of ${queue.length} objects, same order, shape: [{"t":["tag1","tag2"],"c":"Category Name"}]
 
 ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-      const text = await call(prompt);
-      const t = text.replace(/```json|```/g,"").trim();
-      const a=t.indexOf("["), z=t.lastIndexOf("]");
-      if(a===-1||z===-1) throw new Error("No tags found in model response");
-      const arr = JSON.parse(t.slice(a,z+1));
+      const text = await callAI(prompt);
+      const arr = parseJsonArray(text);
+      if(arr===null) throw new Error("No tags found in model response");
       queue.forEach((q,i)=>{
         const r=arr[i]||{};
         q.tags = Array.isArray(r.t) ? r.t.filter(x=>typeof x==="string"&&x.trim()).slice(0,4).map(x=>x.trim().toLowerCase()) : [];
@@ -2699,7 +2620,6 @@ function toggleTagMulti(on){ _tagMulti=!!on; }   // session-only; resets to off 
 document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e.target.closest(".tg-add") && !e.target.closest(".tg-auto")) closeTagPicker(); });
 /* ---- AutoTag (AI tag suggestions) ---- */
 async function aiSuggestTags(it){
-  const call={anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
   const vocab=preferredVocab(30);
   const avoid=learnedAvoid(15);
   const prompt=`You curate tags for a personal interests library. Suggest 4-7 tags for this item.\n`+
@@ -2707,7 +2627,7 @@ async function aiSuggestTags(it){
     (vocab.length?`PREFER reusing these existing tags whenever one fits — reusing keeps the library consistent: ${vocab.join(", ")}\n`:"")+
     (avoid.length?`Do NOT suggest these (the user keeps rejecting them): ${avoid.join(", ")}\n`:"")+
     `Best-practice rules: lowercase; 1-2 words; reuse an existing tag instead of a near-synonym; NO years, dates, or numbers; no generic filler (misc, other, stuff); specific and durable. Return ONLY a JSON array of strings, e.g. ["3d printing","arduino"].`;
-  const text=await call(prompt);
+  const text=await callAI(prompt);
   const m=text.match(/\[[\s\S]*\]/); if(!m) throw new Error("No suggestions returned");
   let arr; try{ arr=JSON.parse(m[0]); }catch(e){ throw new Error("Could not parse suggestions"); }
   if(!Array.isArray(arr)) throw new Error("Unexpected response");
@@ -2724,7 +2644,7 @@ async function aiSuggestTags(it){
   return out.slice(0,8);
 }
 function openAutoTag(idx, ev){
-  if(!(S.keys[S.provider] || S.provider==="local")){ toast("Set an AI provider key in Settings to use AutoTag", 5000); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
   _tagPickIdx=idx; _autoSug=[]; _autoErr="";
   document.getElementById("tagPicker").classList.add("open");
   renderAutoTag("loading");
@@ -2812,16 +2732,14 @@ async function fetchSelectedInfo(){
     toast("Fetched "+Math.min(i+6,targets.length)+" of "+targets.length+"…");
   }
   const noDesc = [...selPicks].map(i=>imported[i]).filter(it=>it && !it.desc).slice(0,40);
-  if(noDesc.length && (S.keys[S.provider] || S.provider==="local")){
+  if(noDesc.length && IA_AI.hasAIKey()){
     try{
       const prompt = `For EACH numbered saved-item title, write ONE short sentence (under 20 words) describing what it likely is. No platform names, no "This is" filler — start with the substance. Return ONLY a JSON array of ${noDesc.length} strings, same order.
 
 ${noDesc.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
-      const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-      const text = await call(prompt);
-      const t=text.replace(/```json|```/g,"").trim();
-      const a=t.indexOf("["), z=t.lastIndexOf("]");
-      if(a>-1&&z>-1){ const arr=JSON.parse(t.slice(a,z+1));
+      const text = await callAI(prompt);
+      const arr = parseJsonArray(text);
+      if(arr!==null){
         noDesc.forEach((b,i)=>{ if(typeof arr[i]==="string"&&arr[i].trim()){ b.desc=arr[i].trim().slice(0,220); gotInfo++; } }); }
     }catch(e){ console.warn(e); }
   }
@@ -3223,10 +3141,9 @@ async function enrichOnOpen(it, idx){
         }
       }
     }
-    if(!it.desc && (S.keys[S.provider] || S.provider==="local")){
+    if(!it.desc && IA_AI.hasAIKey()){
       try{
-        const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-        const text = await call(`Write ONE short sentence (under 20 words) describing what this saved item likely is: "${it.title}". No platform names, no filler — start with the substance. Return ONLY the sentence, no quotes.`);
+        const text = await callAI(`Write ONE short sentence (under 20 words) describing what this saved item likely is: "${it.title}". No platform names, no filler — start with the substance. Return ONLY the sentence, no quotes.`);
         const d=text.replace(/^["'\s]+|["'\s]+$/g,"").trim();
         if(d.length>10 && d.length<250){ it.desc=d; changed=true; }
       }catch(e){ console.warn("AI desc failed",e); }
@@ -3710,7 +3627,7 @@ function removeCategory(key){
   renderSettings(); renderCatBar();
 }
 async function suggestCategories(){
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" first"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("catSugBtn");
   btn.disabled=true; btn.innerHTML='<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Thinking…';
   try{
@@ -3723,12 +3640,10 @@ SAMPLE OF THINGS HE SAVES:
 ${sample||"(none)"}
 
 Suggest 6-10 NEW feed categories (2-4 words each, title case) that would usefully partition his interests — specific enough to be meaningful, broad enough to fill a feed section. Return ONLY a JSON array of strings.`;
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-    const text = await call(prompt);
-    const t = text.replace(/```json|```/g,"").trim();
-    const a=t.indexOf("["), z=t.lastIndexOf("]");
-    if(a===-1||z===-1) throw new Error("No suggestions found in model response");
-    catSugs = JSON.parse(t.slice(a,z+1)).filter(x=>typeof x==="string" && x.trim())
+    const text = await callAI(prompt);
+    const arr = parseJsonArray(text);
+    if(arr===null) throw new Error("No suggestions found in model response");
+    catSugs = arr.filter(x=>typeof x==="string" && x.trim())
       .filter(x=>!CATS.some(c=>c.name.toLowerCase()===x.trim().toLowerCase()))
       .slice(0,12).map(x=>({name:x.trim(), sel:false}));
     renderCatSugs();
@@ -3758,7 +3673,7 @@ function addSelectedCats(){
 let _profileTags = [];
 async function buildMyProfile(){
   // No-key guard (preserved from both old tools).
-  if(!S.keys[S.provider] && S.provider!=="local"){ toast("Add your "+PROVIDERS[S.provider].keyName+" first"); showTab("settings"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
   const txt = (document.getElementById("discInput").value || "").trim();
   const all = imported.concat(saved);
   // Need SOMETHING to work from: a library, or free text the user typed.
@@ -3769,8 +3684,7 @@ async function buildMyProfile(){
     const summary = summarizeLibrary(all);
     const extraSources = txt ? [{ label:"what they typed about their interests", text:txt }] : [];
     const prompt = buildProfilePrompt(summary, { about:S.about, interests:S.interests }, extraSources);
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
-    const res = parseProfileResult(await call(prompt));
+    const res = parseProfileResult(await callAI(prompt));
     if(!res.interests.length && !res.about){ toast("The AI didn't return usable results — try again", 6000); return; }
     _profileTags = res.interests.map(name=>({ name, sel:true }));
     document.getElementById("profileAbout").value = (S.about ? S.about.trim()+"\n\n" : "") + res.about;
@@ -4170,18 +4084,17 @@ const AI_DEAD_CAP = 200;   // hard ceiling on paid AI calls per sweep (bounded; 
 async function confirmSoftDead(suspects){
   if(!suspects.length) return [];
   const provider = S.provider;
-  if(!S.keys[provider] && provider!=="local"){
-    toast("Add your "+PROVIDERS[provider].keyName+" in Settings to confirm soft-dead links", 6000);
+  if(!IA_AI.hasAIKey({ provider })){
+    toast("Add your "+PROVIDERS[provider].keyName+" in Settings first", 6000);
     return [];
   }
-  const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[provider];
   const confirmed = []; let used = 0;
   for(const s of suspects){
     if(_deadStop || used >= AI_DEAD_CAP) break;
     used++;
     toast(`Confirming with AI… ${used}/${Math.min(suspects.length, AI_DEAD_CAP)} — tap to stop`, 60000, ()=>{ _deadStop = true; });
     try{
-      const v = parseDeadVerdict(await call(buildDeadCheckPrompt({ title:s.title, snippet:s.snippet, url:s.card.url })));
+      const v = parseDeadVerdict(await callAI(buildDeadCheckPrompt({ title:s.title, snippet:s.snippet, url:s.card.url }), { provider }));
       if(v.dead) confirmed.push(Object.assign({}, s, { soft:true, softReason:v.reason||s.reason }));
     }catch(e){ console.warn("AI dead-check failed", e); }
   }
@@ -4541,9 +4454,8 @@ function addClip(cap){
 // ask the AI provider to assign a category + tags + a one-line "why" for a clip.
 // Falls back silently to the guessCat value already set if no key / on error.
 async function categorizeClip(item){
-  if(!(S.keys[S.provider] || S.provider==="local")) return;
+  if(!IA_AI.hasAIKey()) return;
   try{
-    const call = {anthropic:callAnthropic, openai:callOpenAI, gemini:callGemini, groq:callGroq, openrouter:callOpenRouter, local:callLocal}[S.provider];
     const cats = CATS.map(c=>c.name).join(" | ");
     const prompt = `A user clipped this web page to keep.\nTitle: "${item.title}"\nNotes: "${(item.benefit||"").slice(0,200)}"\nURL: ${item.url}\n\nReturn ONLY strict JSON, no prose:\n{"category": one of [${cats}], "tags": [up to 4 short lowercase topic tags], "why": "one short sentence (<20 words) on why it's worth keeping"}`;
     const text = await call(prompt);
