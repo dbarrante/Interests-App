@@ -62,5 +62,89 @@ t("imageCount and listImageIds report the .jpg files (ids without extension)", (
   assert.deepStrictEqual(images.listImageIds(dir).sort(), ["a", "b"]);
 });
 
+// --- sniffImageType (Task 3, v1.10.0 iPhone-sync prep) ---
+t("sniffImageType: JPEG magic bytes -> image/jpeg", () => {
+  const buf = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+  assert.strictEqual(images.sniffImageType(buf), "image/jpeg");
+});
+
+t("sniffImageType: PNG magic bytes -> image/png", () => {
+  const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+  assert.strictEqual(images.sniffImageType(buf), "image/png");
+});
+
+t("sniffImageType: GIF magic bytes -> image/gif", () => {
+  const buf = Buffer.from("GIF89a", "ascii");
+  assert.strictEqual(images.sniffImageType(buf), "image/gif");
+});
+
+t("sniffImageType: WebP (RIFF....WEBP) -> image/webp", () => {
+  const buf = Buffer.concat([
+    Buffer.from("RIFF", "ascii"),
+    Buffer.from([0x00, 0x00, 0x00, 0x00]), // file size (irrelevant to sniff)
+    Buffer.from("WEBP", "ascii"),
+  ]);
+  assert.strictEqual(images.sniffImageType(buf), "image/webp");
+});
+
+t("sniffImageType: garbage bytes default to image/jpeg", () => {
+  const buf = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04]);
+  assert.strictEqual(images.sniffImageType(buf), "image/jpeg");
+  assert.strictEqual(images.sniffImageType(Buffer.alloc(0)), "image/jpeg");
+});
+
+// --- imageManifest ---
+const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+
+t("imageManifest: empty store -> []", () => {
+  const dir = tmpStore();
+  assert.deepStrictEqual(images.imageManifest(dir), []);
+});
+
+t("imageManifest: JPEG and PNG-bytes-under-.jpg-name both reported correctly", () => {
+  const dir = tmpStore();
+  images.putImg(dir, "jpegid", PIX_DATAURL); // real JPEG bytes
+  // Write PNG bytes directly under <id>.jpg, bypassing putImg's decode path,
+  // to simulate the "PNG stored under a .jpg filename" case from the review.
+  const pngPath = images.imgPath(dir, "pngid");
+  fs.writeFileSync(pngPath, PNG_HEADER);
+
+  const manifest = images.imageManifest(dir).sort((a, b) => a.id.localeCompare(b.id));
+  assert.strictEqual(manifest.length, 2);
+
+  const jpegEntry = manifest.find((m) => m.id === "jpegid");
+  assert.strictEqual(jpegEntry.type, "image/jpeg");
+  assert.strictEqual(jpegEntry.size, Buffer.from(PIX_B64, "base64").length);
+
+  const pngEntry = manifest.find((m) => m.id === "pngid");
+  assert.strictEqual(pngEntry.type, "image/png");
+  assert.strictEqual(pngEntry.size, PNG_HEADER.length);
+});
+
+t("imageManifest: a file that vanishes mid-scan is omitted, not thrown", () => {
+  const dir = tmpStore();
+  images.putImg(dir, "keep", PIX_DATAURL);
+  images.putImg(dir, "vanish", PIX_DATAURL);
+  // Delete the file right after listImageIds would have seen it, by monkey-
+  // patching statSync just for this id to simulate the race.
+  const origStat = fs.statSync;
+  fs.statSync = function (p, ...rest) {
+    if (String(p).indexOf("vanish.jpg") !== -1) {
+      const err = new Error("ENOENT simulated");
+      err.code = "ENOENT";
+      throw err;
+    }
+    return origStat.call(fs, p, ...rest);
+  };
+  let manifest;
+  try {
+    manifest = images.imageManifest(dir);
+  } finally {
+    fs.statSync = origStat;
+  }
+  assert.strictEqual(manifest.length, 1);
+  assert.strictEqual(manifest[0].id, "keep");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

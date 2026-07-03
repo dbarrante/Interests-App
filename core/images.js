@@ -72,4 +72,57 @@ function imageCount(storeDir) {
   return listImageIds(storeDir).length;
 }
 
-module.exports = { imagesDir, imgPath, safeImgId, putImg, getImg, hasImg, delImg, imageCount, listImageIds };
+// Sniff an image's MIME type from its leading magic bytes. Pure function over
+// a Buffer — used both by the manifest (which reads only the first 16 bytes
+// per file) and by GET /api/img/:id (which already has the full buffer in
+// hand). Defaults to image/jpeg when nothing matches — that mirrors the prior
+// hardcoded behavior for genuinely-JPEG files and any unrecognized format.
+function sniffImageType(buf) {
+  if (!buf || buf.length < 3) return "image/jpeg";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 8 &&
+      buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) {
+    return "image/png";
+  }
+  if (buf.length >= 4 &&
+      buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) {
+    return "image/gif";
+  }
+  if (buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    return "image/webp";
+  }
+  return "image/jpeg";
+}
+
+// Enumerate every stored image as {id, size, type} for a future phone client
+// to diff against its local cache. Reads only the first 16 bytes of each file
+// (open/read/close) for sniffing — never the full image — and statSync for
+// size. A file that vanishes mid-scan (deleted concurrently) is silently
+// omitted rather than failing the whole manifest.
+function imageManifest(storeDir) {
+  const ids = listImageIds(storeDir);
+  const out = [];
+  const head = Buffer.alloc(16);
+  for (const id of ids) {
+    let p;
+    try { p = imgPath(storeDir, id); } catch (e) { continue; }
+    let fd;
+    try {
+      const st = fs.statSync(p);
+      fd = fs.openSync(p, "r");
+      const bytesRead = fs.readSync(fd, head, 0, 16, 0);
+      const type = sniffImageType(head.subarray(0, bytesRead));
+      out.push({ id, size: st.size, type });
+    } catch (e) {
+      // vanished mid-scan or unreadable — omit this id
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) {} }
+    }
+  }
+  return out;
+}
+
+module.exports = { imagesDir, imgPath, safeImgId, putImg, getImg, hasImg, delImg, imageCount, listImageIds, sniffImageType, imageManifest };

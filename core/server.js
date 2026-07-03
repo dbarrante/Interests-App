@@ -270,12 +270,25 @@ function createServer(ctx) {
   // An invalid id (path-traversal attempt — see core/images.safeImgId) throws
   // INVALID_IMG_ID; map that to 400. A well-formed but absent image is 404.
   function isInvalidImgId(e) { return e && e.code === "INVALID_IMG_ID"; }
+
+  // Manifest for a future phone client to diff which images it's missing
+  // (review G gap 4 — listImageIds existed but was never exposed over HTTP).
+  // Read-only: no ctx.syncDirty.
+  app.get("/api/images", (req, res) => {
+    res.json({ ok: true, images: images.imageManifest(ctx.storeDir) });
+  });
+
   app.get("/api/img/:id", (req, res) => {
     let buf;
     try { buf = images.getImg(ctx.storeDir, req.params.id); }
     catch (e) { if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" }); throw e; }
     if (!buf) { res.status(404).end(); return; }
-    res.type("image/jpeg").send(buf);
+    // Serve the SNIFFED content type rather than a hardcoded image/jpeg — some
+    // stored images are PNG bytes under a .jpg filename (review G gap 4).
+    // Backward-compatible: browsers already sniff image bytes regardless of
+    // the declared Content-Type, so the renderer/extension are unaffected;
+    // this only makes the contract honest for a future native client.
+    res.type(images.sniffImageType(buf)).send(buf);
   });
   app.put("/api/img/:id", (req, res) => {
     ctx.syncDirty = true;
