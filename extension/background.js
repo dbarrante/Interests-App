@@ -126,20 +126,29 @@ function bstumbleInjectOverlayWhenReady(tabId) {
   setTimeout(() => { try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} }, 30000);
 }
 // The core action: open the next page, keeping the buffer topped up.
+// Re-entrancy guard (_bstumbleGoBusy): the buffer read→shift→write spans awaits, so
+// two overlapping calls (rapid icon clicks, or an icon click racing an overlay
+// "Stumble ⟳"/👎-advance) could both shift the SAME item and serve it twice. Only one
+// advance may be in flight at a time; a second concurrent call is a no-op (COR-1).
+let _bstumbleGoBusy = false;
 async function bstumbleGo() {
-  const port = await findAppPort();
-  if (port == null) { notify("bstumble-" + Date.now(), "Stumble", "Open the Interests app to Stumble."); return; }
-  let buf = await bstumbleReadBuffer();
-  if (!buf.length) { await bstumbleDrainResults(port); buf = await bstumbleReadBuffer(); }
-  await bstumbleRequestRefill(port);   // top up for next time
-  if (!buf.length) { notify("bstumble-" + Date.now(), "Stumble", "Finding you something… click again in a moment."); return; }
-  const next = buf.shift();
-  await bstumbleWriteBuffer(buf);
-  // Remember the item now showing so a vote can carry its category (the AI only
-  // knows the category from the stumble result — the tab itself can't tell us).
-  try { await chrome.storage.session.set({ [BSTUMBLE_CURRENT_KEY]: next || null }); } catch (e) {}
-  if (next && next.url) await bstumbleOpen(next.url);
-  if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
+  if (_bstumbleGoBusy) return;
+  _bstumbleGoBusy = true;
+  try {
+    const port = await findAppPort();
+    if (port == null) { notify("bstumble-" + Date.now(), "Stumble", "Open the Interests app to Stumble."); return; }
+    let buf = await bstumbleReadBuffer();
+    if (!buf.length) { await bstumbleDrainResults(port); buf = await bstumbleReadBuffer(); }
+    await bstumbleRequestRefill(port);   // top up for next time
+    if (!buf.length) { notify("bstumble-" + Date.now(), "Stumble", "Finding you something… click again in a moment."); return; }
+    const next = buf.shift();
+    await bstumbleWriteBuffer(buf);
+    // Remember the item now showing so a vote can carry its category (the AI only
+    // knows the category from the stumble result — the tab itself can't tell us).
+    try { await chrome.storage.session.set({ [BSTUMBLE_CURRENT_KEY]: next || null }); } catch (e) {}
+    if (next && next.url) await bstumbleOpen(next.url);
+    if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
+  } finally { _bstumbleGoBusy = false; }
 }
 chrome.action.onClicked.addListener(() => { bstumbleGo().catch(() => {}); });
 
@@ -151,10 +160,12 @@ async function bstumbleSendVote(vote) {
   try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const t = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (t) { url = t.url || ""; title = t.title || ""; } } catch (e) {}
   if (!url) return;
   // Carry the stumbled page's category (only known from the stumble result) so the
-  // app's learning is category-weighted, not title-only. Use it only when the stored
-  // current item is the page actually showing (guards against a manual navigation).
+  // app's learning is category-weighted, not title-only. Match by matchKey (host+path+
+  // query, scheme/www-insensitive) not exact URL, so a redirect (http→https, www, /) on
+  // the stumbled page doesn't silently drop the category (COR-2). Only carries when the
+  // stashed current item really is this page (guards against a manual navigation).
   let category = "";
-  try { const c = (await chrome.storage.session.get(BSTUMBLE_CURRENT_KEY))[BSTUMBLE_CURRENT_KEY]; if (c && c.url === url) { category = c.category || ""; if (c.title) title = title || c.title; } } catch (e) {}
+  try { const c = (await chrome.storage.session.get(BSTUMBLE_CURRENT_KEY))[BSTUMBLE_CURRENT_KEY]; if (c && c.url && matchKey(c.url) === matchKey(url)) { category = c.category || ""; if (c.title) title = title || c.title; } } catch (e) {}
   try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url, title, category, vote } }) }); } catch (e) {}
 }
 

@@ -24,7 +24,10 @@
     var b = document.createElement("button");
     b.textContent = label; b.title = title;
     b.style.cssText = "border:none;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;background:" + bg + ";color:#fff";
-    b.addEventListener("click", onClick);
+    // Require a REAL user click. This bar lives in the (untrusted) stumbled page's
+    // DOM, so a hostile page could script-click these buttons to forge a Save/vote.
+    // e.isTrusted is false for synthetic/dispatched events — reject those.
+    b.addEventListener("click", function (e) { if (!e || !e.isTrusted) return; onClick(e); });
     return b;
   }
 

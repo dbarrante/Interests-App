@@ -1207,6 +1207,14 @@ function renderSettings(){
       <div class="val">${S.weights[c.key]}</div>
       <button class="act" style="flex:0 0 auto;padding:4px 10px" title="Remove category" onclick="removeCategory('${c.key}')">&#10005;</button>
     </div>`).join("");
+  // Removed built-in categories are restorable (keeps the "reversible" promise — COR-7).
+  const _hiddenBase = BASE_CATS.filter(c=>(S.hiddenBase||[]).indexOf(c.key)>=0);
+  if(_hiddenBase.length) document.getElementById("sliders").innerHTML += _hiddenBase.map(c=>`
+    <div class="slider-row" style="opacity:.55">
+      <div class="nm">${esc(c.name)} <span style="font-size:11px;color:#9a958d">— removed</span></div>
+      <div style="flex:1"></div>
+      <button class="act" style="flex:0 0 auto;padding:4px 10px" title="Restore this category" onclick="restoreCategory('${c.key}')">&#8635; Restore</button>
+    </div>`).join("");
 
   document.getElementById("aboutMe").value = S.about;
   document.getElementById("interestList").value = S.interests;
@@ -1280,6 +1288,7 @@ function buildPrompt(mode, interestKeys){
   const stumble = mode==="stumble";
   const count = stumble ? Math.max(4,Math.min(6,stSize+2)) : S.itemCount + 3;
   let active = CATS.filter(c=>S.weights[c.key]>0);
+  if(!active.length) active = CATS.slice();   // all weights 0 → don't send an empty category list (COR-6)
   if(interestKeys && interestKeys.length){ const set=new Set(interestKeys); const picked=active.filter(c=>set.has(c.key)); if(picked.length) active=picked; }
   const catLines = active.map(c=>`- "${c.name}" (importance ${S.weights[c.key]}/10)`).join("\n");
   const recentSaves = saved.slice(0,stumble?8:20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
@@ -3528,6 +3537,12 @@ function removeCategory(key){
   save("settings", S); rebuildCats();
   renderSettings(); renderCatBar();
 }
+// Un-hide a removed built-in category (COR-7 — makes base removal reversible as promised).
+function restoreCategory(key){
+  S.hiddenBase = (S.hiddenBase||[]).filter(k=>k!==key);
+  save("settings", S); rebuildCats();
+  renderSettings(); renderCatBar();
+}
 async function suggestCategories(){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("catSugBtn");
@@ -4454,28 +4469,42 @@ async function stumbleForInterests(interestKeys){
     return items.map(i=>({ url:i.url, title:i.title, category:i.category, image:i.image, liveCheckedAt:i.liveCheckedAt }));
   }catch(e){ console.warn("browser stumble failed:", e && e.message); return []; }
 }
-let _bstumbleBusy = false;
-async function pollBrowserStumble(){
-  if(!_booted || _bstumbleBusy) return;
-  _bstumbleBusy = true;
+// Feedback draining is INDEPENDENT of the AI-fetch path (COR-3): a stumble refill can
+// take 10-40s inside stumbleForInterests, and votes cast during that window must still
+// be recorded promptly (the extension's feedback queue caps at 50 — a blocked drain
+// could drop the oldest). So it has its own light guard and runs every tick regardless.
+let _bfeedbackBusy = false;
+async function drainBrowserFeedback(){
+  if(!_booted || _bfeedbackBusy) return;
+  _bfeedbackBusy = true;
   try{
-    // 1) feedback → learning signals
     let fb = [];
     try{ fb = (await Store.drainBrowserStumbleFeedback()) || []; }catch(e){}
     if(fb.length){
       fb.forEach(v=>{
         if(!v || !v.url) return;
-        const entry = { title: v.title || v.url, category: v.category || "", ts: Date.now() };
+        // Coerce + length-cap: the vote comes from the (untrusted) mailbox, and its
+        // title/category flow verbatim into buildPrompt — never trust their type or size
+        // (DAT-1 / SEC-2 prompt-injection surface).
+        const entry = { title: String(v.title || v.url).slice(0,200), category: String(v.category || "").slice(0,80), ts: Date.now() };
         if(v.vote > 0) likes.push(entry);
         else if(v.vote < 0) hidden.push(entry);
-        shown.push(v.url);   // never re-serve a page the user already rated
+        shown.push(String(v.url));   // never re-serve a page the user already rated
       });
       if(likes.length>60) likes=likes.slice(-60);
       if(hidden.length>60) hidden=hidden.slice(-60);
       if(shown.length>200) shown=shown.slice(-200);
       persistAll();
     }
-    // 2) request → interest-scoped discovery → results
+  } finally { _bfeedbackBusy = false; }
+}
+let _bstumbleBusy = false;
+async function pollBrowserStumble(){
+  drainBrowserFeedback();   // fire every tick, independent of any in-flight AI fetch (COR-3)
+  if(!_booted || _bstumbleBusy) return;
+  _bstumbleBusy = true;
+  try{
+    // request → interest-scoped discovery → results
     let req = null;
     try{ req = await Store.getBrowserStumbleRequest(); }catch(e){}
     if(req && req.nonce){

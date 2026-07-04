@@ -21,6 +21,8 @@ ok("votes carry the stumbled page's category", /BSTUMBLE_CURRENT_KEY/.test(src) 
 ok("Save-to-Interests menu item is toggleable via ia_ctx_save", /ia_ctx_save/.test(src) && /saveEnabled[\s\S]{0,120}?saveToInterests/.test(src));
 ok("context menu rebuilds when the toggle changes", /storage\.onChanged\.addListener[\s\S]{0,120}?ia_ctx_save[\s\S]{0,60}?ensureContextMenu/.test(src));
 ok("menu items also appear on the extension icon (action context)", /id:\s*["']saveToInterests["'][\s\S]{0,160}?contexts:\s*\[[^\]]*["']action["']/.test(src));
+ok("bstumbleGo is re-entrancy guarded so rapid clicks can't double-serve (COR-1)", /_bstumbleGoBusy/.test(src) && /if\s*\(_bstumbleGoBusy\)\s*return/.test(src));
+ok("votes match the stashed item by normalized URL to survive redirects (COR-2)", /matchKey\(c\.url\)\s*===\s*matchKey\(url\)/.test(src));
 
 console.log("bstumble-ext-bg: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

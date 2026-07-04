@@ -14,6 +14,7 @@ ok("sends thumbs-up vote", /action:\s*["']bstumbleVote["'][\s\S]{0,40}?vote:\s*1
 ok("sends thumbs-down vote", /vote:\s*-1/.test(src));
 ok("sends save action", /action:\s*["']bstumbleSave["']/.test(src));
 ok("sends next action", /action:\s*["']bstumbleNext["']/.test(src));
+ok("button clicks require a trusted (real) event — no page-forged clicks (SEC-1)", /isTrusted/.test(src));
 
 console.log("bstumble-overlay: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

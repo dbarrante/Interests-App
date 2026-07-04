@@ -3,6 +3,17 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.6 — LOOP-11 REVISE hardening (app 1.12.6, ext 4.54)
+Fixes from the LOOP-11 adversarial review (`_loopstate/loop-11/2026-07-04-bstumble/AUDIT-ARTIFACT.md`):
+- **COR-1** — `bstumbleGo` is now re-entrancy-guarded (`_bstumbleGoBusy`), so rapid icon clicks / a click racing the overlay's "Stumble ⟳" can't shift the same buffered page twice.
+- **COR-2** — 👍/👎 votes match the stashed item by normalized `matchKey` (host+path+query), so a redirect on the stumbled page no longer silently drops the category.
+- **COR-3** — feedback draining (`drainBrowserFeedback`) runs every renderer tick independent of the 10-40s AI fetch, so votes cast during a fetch aren't blocked (and can't hit the 50-item extension cap and drop).
+- **DAT-1 / SEC-2** — vote `title`/`category` are `String()`-coerced and length-capped (200/80) before entering `likes`/`hidden` and the AI prompt (defends the mailbox→prompt injection surface).
+- **SEC-1** — injected overlay buttons require a trusted (`event.isTrusted`) click, so a hostile stumbled page can't script-click them to forge a Save/vote.
+- **COR-6** — `buildPrompt` falls back to all categories when every weight is 0 (never sends an empty category list).
+- **COR-7** — removed built-in categories are now truly reversible: Settings shows a "↺ Restore" control (`restoreCategory`), matching the earlier "reversible" claim.
+Deferred (documented, lower value / higher effort): COR-4 (overlay inject timing — 1.5s fallback + idempotency accepted), COR-5 (non-atomic request clear, low frequency), SEC-3/SEC-4/COR-8 (accepted trust model / high bar). Every fix carries a regression assertion.
+
 ## v1.12.5 — "Save to Interests" on the extension icon menu (ext 4.53, extension-only)
 - "Save to Interests" (and "Remove from Interests") now also appear when you **right-click the extension toolbar icon** (added the `"action"` context), not only on the web page's right-click menu. Right-clicking the icon → "Save to Interests" saves the current page — the home the removed popup's "Clip this page" used to have. Still gated by the `ia_ctx_save` toggle. Extension-only — reload the extension.
 

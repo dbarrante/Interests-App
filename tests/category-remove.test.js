@@ -16,6 +16,9 @@ ok("every category row renders a remove button (no c.custom gate)",
 ok("removeCategory hides a base category via hiddenBase", /S\.hiddenBase\s*=\s*\(S\.hiddenBase\|\|\[\]\)\.concat/.test(src));
 ok("removeCategory still drops custom categories from extraCats", /S\.extraCats\s*=\s*S\.extraCats\.filter\(x=>x\.key!==key\)/.test(src));
 ok("keep-at-least-one guard", /CATS\.length<=1[\s\S]{0,60}?return/.test(src));
+ok("removed base categories are restorable (COR-7)", /function restoreCategory\(key\)/.test(src) && /S\.hiddenBase\s*=\s*\(S\.hiddenBase\|\|\[\]\)\.filter\(k=>k!==key\)/.test(src));
+ok("settings renders a Restore control for hidden base categories (COR-7)", /restoreCategory\('\$\{c\.key\}'\)/.test(src));
+ok("buildPrompt falls back to all categories when none active (COR-6)", /if\(!active\.length\)\s*active\s*=\s*CATS\.slice\(\)/.test(src));
 
 console.log("category-remove: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
