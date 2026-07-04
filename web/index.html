@@ -14,6 +14,9 @@
 :root{
   --bg:#f6f5f3; --card:#ffffff; --ink:#1f1d1a; --muted:#6f6a62;
   --accent:#c2410c; --accent-soft:#fff1e8; --line:#e7e3dd;
+  /* --accent-strong: for white text on a solid accent FILL (buttons/pills) — must keep >=4.5:1 with #fff.
+     --accent stays for accent-colored TEXT. In dark the two diverge (see html.dark). */
+  --accent-strong:#c2410c;
   --chip-personal:#0e7490; --chip-work:#7c3aed; --chip-career:#c2410c; --chip-life:#15803d;
   --radius:14px; --shadow:0 1px 3px rgba(0,0,0,.07),0 6px 18px rgba(0,0,0,.05);
 }
@@ -22,10 +25,13 @@
 html.dark{
   --bg:#1a1816; --card:#242120; --ink:#ece8e2; --muted:#a39d93;
   --accent:#ef6c2e; --accent-soft:#352016; --line:#383330;
+  /* keep white-on-fill readable in dark: the bright --accent (#ef6c2e) gives white text only 3.1:1,
+     so solid accent FILLS use this darker orange (white text ~5.8:1); --accent stays bright for TEXT. */
+  --accent-strong:#c2410c;
   --shadow:0 1px 3px rgba(0,0,0,.45),0 6px 20px rgba(0,0,0,.4);
 }
 html.dark header{background:rgba(26,24,22,.9)}
-html.dark .tab.active{background:var(--accent);color:#fff}
+html.dark .tab.active{background:var(--accent-strong);color:#fff}
 html.dark #toast{background:#322e2b;color:var(--ink)}
 html.dark .thumb{background:#2c2926}
 html.dark .benefit{color:#cfc9c0}
@@ -51,12 +57,26 @@ nav{display:flex;gap:4px;flex:1}
 .tab.active{background:var(--ink);color:#fff}
 .tab .cnt{font-size:11px;opacity:.7;margin-left:3px}
 .btn{border:0;border-radius:999px;padding:9px 18px;font-size:14px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:7px}
-.btn-primary{background:var(--accent);color:#fff}
+.btn-primary{background:var(--accent-strong);color:#fff}
 .btn-primary:hover{filter:brightness(1.08)}
 .btn-primary:disabled{opacity:.55;cursor:wait}
 .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
 main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
 @media(max-width:1000px){.bar,main{width:100%;max-width:100%}}
+/* UX-3 (LOOP-06): phone-width breakpoint — the header row, stumble card actions, and
+   provider grid have fixed widths that force horizontal page scroll below ~640px. Let
+   them wrap so nothing overflows the viewport. (Desktop app; matters only if the web
+   UI is opened on a small screen.) */
+@media(max-width:640px){
+  .bar{flex-wrap:wrap;gap:8px 10px;padding:10px 12px}
+  nav{flex-wrap:wrap;flex:1 1 100%}
+  main{padding:14px}
+  .catbar{margin:0 -14px;padding:10px 14px 8px}
+  .imp-sticky{margin:0 -14px;padding:4px 14px 8px}
+  .st-actions .act{min-width:0;flex:1 1 44%}
+  .prov label{min-width:0;flex:1 1 44%}
+  .st-bar .btn{padding:12px 20px}
+}
 
 /* ============ masonry — view modes ============ */
 .masonry{column-gap:16px}
@@ -107,7 +127,7 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
 .actions{display:flex;gap:8px;padding:10px 14px 14px}
 .act{flex:1;border:1px solid var(--line);background:#fafaf8;border-radius:9px;padding:7px 0;font-size:12.5px;font-weight:600;color:#4b463f;cursor:pointer}
 .act:hover{border-color:var(--accent);color:var(--accent)}
-.act.saved{background:var(--accent);border-color:var(--accent);color:#fff}
+.act.saved{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff}
 
 /* ============ empty states ============ */
 .empty{max-width:560px;margin:60px auto;text-align:center;color:var(--muted)}
@@ -176,7 +196,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .st-title:hover{color:var(--accent)}
 .st-actions{display:flex;gap:10px;padding:14px 24px 20px;flex-wrap:wrap}
 .st-actions .act{flex:1;min-width:110px;font-size:14px;padding:11px 0;border-radius:11px}
-.st-actions .act.big{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:800}
+.st-actions .act.big{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff;font-weight:800}
 .st-bar{display:flex;justify-content:center;align-items:center;gap:16px;margin:18px 0;flex-wrap:wrap}
 .st-bar .btn{font-size:16px;padding:13px 34px}
 .st-size{display:inline-flex;gap:4px;background:#efeae2;border-radius:999px;padding:4px}
@@ -187,7 +207,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tagwrap{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .tagchip{border:1.5px solid var(--line);background:#fcfbfa;border-radius:999px;padding:7px 15px;font-size:13px;font-weight:600;color:#4b463f;cursor:pointer}
 .tagchip:hover{border-color:var(--accent)}
-.tagchip.sel{background:var(--accent);border-color:var(--accent);color:#fff}
+.tagchip.sel{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff}
 
 /* ============ modal ============ */
 #modal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.45);z-index:90;align-items:center;justify-content:center;padding:20px}
@@ -446,6 +466,12 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <div><label>Items per refresh</label><input type="number" id="itemCount" min="4" max="24" step="1"></div>
           <div><label>&nbsp;</label><button class="btn btn-ghost" style="width:100%" onclick="resetLearning()">Reset learning history</button></div>
         </div>
+      </div>
+
+      <div class="sec">
+        <h3>What I've learned about you</h3>
+        <div class="hint" style="margin-bottom:10px">The specific things Stumble picked up from your &#128077; / &#128078; / opens — these steer your recommendations. Remove any that are off-base with &#10005;, or wipe everything with “Reset learning history” above. It all stays on this computer.</div>
+        <div id="learnedList"></div>
       </div>
 
       <div class="sec">
@@ -1218,6 +1244,7 @@ function renderSettings(){
 
   document.getElementById("aboutMe").value = S.about;
   document.getElementById("interestList").value = S.interests;
+  renderLearned();
   document.getElementById("itemCount").value = S.itemCount;
   document.getElementById("popOnly").checked = !!S.popularOnly;
   document.getElementById("popOnly").onchange = e=>{ S.popularOnly=e.target.checked; save("settings",S); };
@@ -3543,6 +3570,45 @@ function restoreCategory(key){
   save("settings", S); rebuildCats();
   renderSettings(); renderCatBar();
 }
+// UX-2 (LOOP-06): the memory-transparency panel — show the individual things Stumble has
+// learned (likes / dismissals / opens) with per-item remove, so "what it remembers" is
+// viewable and editable, not just clearable-all. Backed by the same likes/hidden/clicks arrays.
+function renderLearned(){
+  const el = document.getElementById("learnedList");
+  if(!el) return;
+  const groups = [
+    { kind:"likes",  arr:likes,  icon:"&#128077;", label:"Liked — more like this" },
+    { kind:"hidden", arr:hidden, icon:"&#128078;", label:"Not for me — fewer like this" },
+    { kind:"clicks", arr:clicks, icon:"&#8599;",   label:"Opened" }
+  ];
+  let html = "", any = false;
+  groups.forEach(g=>{
+    const arr = Array.isArray(g.arr) ? g.arr : [];
+    const items = arr.slice(-12).reverse();   // most recent first, capped for legibility
+    if(!items.length) return;
+    any = true;
+    html += `<div style="margin-bottom:14px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${g.icon} ${g.label} <span style="color:var(--muted);font-weight:400">(${arr.length})</span></div>`;
+    items.forEach(it=>{
+      const realIdx = arr.indexOf(it);
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0">
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px">${esc(it.title||"(untitled)")}</div>
+          ${it.category?`<div style="font-size:11px;color:var(--muted)">${esc(it.category)}</div>`:""}
+        </div>
+        <button class="act" style="flex:0 0 auto;padding:3px 9px" title="Forget this one" onclick="removeLearned('${g.kind}',${realIdx})">&#10005;</button>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  el.innerHTML = any ? html : `<div class="hint">Nothing learned yet — vote &#128077;/&#128078; on a few stumbles and they'll show up here.</div>`;
+}
+function removeLearned(kind, idx){
+  const arr = kind==="likes" ? likes : kind==="hidden" ? hidden : kind==="clicks" ? clicks : null;
+  if(!arr || idx<0 || idx>=arr.length) return;
+  arr.splice(idx,1);
+  persistAll();
+  renderLearned();
+}
 async function suggestCategories(){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("catSugBtn");
@@ -4452,7 +4518,22 @@ async function bootData(){
   _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
   maybeAutoBackup();
 }
-bootData();
+// UX-4: if boot can't reach the local app service (Core down / network), don't fail
+// silently into an empty screen — show a dismissible banner with a Retry (LOOP-06 node 4).
+function showBootError(e){
+  console.error("boot failed:", e);
+  try{
+    if(document.getElementById("bootErr")) return;
+    const d=document.createElement("div");
+    d.id="bootErr";
+    d.style.cssText="position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#7c2d12;color:#fff;padding:12px 16px;font:600 13px/1.4 system-ui,sans-serif;display:flex;gap:12px;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.35)";
+    d.innerHTML='Couldn’t reach the Interests app service — your library didn’t load. '+
+      '<button style="background:#fff;color:#7c2d12;border:none;border-radius:7px;padding:6px 12px;font:inherit;cursor:pointer" onclick="location.reload()">Retry</button>'+
+      '<button style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);border-radius:7px;padding:6px 10px;font:inherit;cursor:pointer" onclick="this.parentElement.remove()">Dismiss</button>';
+    (document.body||document.documentElement).appendChild(d);
+  }catch(_){}
+}
+bootData().catch(showBootError);
 setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
 setInterval(drainCaptures, 3000);
 /* ===== Browser Stumble: drain the extension's mailboxes ===== */

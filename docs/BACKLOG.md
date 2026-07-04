@@ -3,6 +3,14 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.7 — LOOP-06 UX fixes (app 1.12.7)
+From the LOOP-06 UX/UI audit (`_loopstate/LOOP-06/2026-07-04/AUDIT-ARTIFACT.md`), all Playwright-verified:
+- **UX-1 (contrast)** — primary/accent button FILLS now use a new `--accent-strong` (white text ≥4.5:1 in both themes); the dark primary button went from 3.06:1 → 5.8:1. `--accent` stays bright for accent-colored text.
+- **UX-2 (memory transparency)** — new Settings panel **"What I've learned about you"** lists your 👍/👎/opened items with per-item ✕ remove (delete verified to persist to storage, not cosmetic). `renderLearned`/`removeLearned`, backed by the existing `likes`/`hidden`/`clicks`.
+- **UX-4 (degradation)** — boot now shows a dismissible **"Couldn't reach the app service — Retry"** banner instead of a silent empty screen when the local service is unreachable.
+- **UX-3 (responsive)** — a `≤640px` breakpoint wraps the header/stumble/settings (horizontal overflow 622px → 381px; a ~6px residual on the Saved/Imported grids is accepted — this is a desktop app). Tablet/desktop unaffected.
+Regression asserts in `tests/ux-loop06.test.js` (11). Re-verify: contrast no failures either theme; memory panel with working delete; boot banner present; overflow reduced.
+
 ## v1.12.6 — LOOP-11 REVISE hardening (app 1.12.6, ext 4.54)
 Fixes from the LOOP-11 adversarial review (`_loopstate/loop-11/2026-07-04-bstumble/AUDIT-ARTIFACT.md`):
 - **COR-1** — `bstumbleGo` is now re-entrancy-guarded (`_bstumbleGoBusy`), so rapid icon clicks / a click racing the overlay's "Stumble ⟳" can't shift the same buffered page twice.
