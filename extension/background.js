@@ -146,7 +146,11 @@ async function bstumbleGo() {
     // Remember the item now showing so a vote can carry its category (the AI only
     // knows the category from the stumble result — the tab itself can't tell us).
     try { await chrome.storage.session.set({ [BSTUMBLE_CURRENT_KEY]: next || null }); } catch (e) {}
-    if (next && next.url) await bstumbleOpen(next.url);
+    if (next && next.url) {
+      await bstumbleOpen(next.url);
+      // "seen" ping (vote:0) so the app suppresses this page from re-appearing for ~5 days.
+      try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url: next.url, title: next.title || "", vote: 0 } }) }); } catch (e) {}
+    }
     if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
   } finally { _bstumbleGoBusy = false; }
 }

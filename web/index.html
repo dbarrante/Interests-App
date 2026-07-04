@@ -660,6 +660,12 @@ let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], s
 // disliked = normalized URLs the user thumbed-down; a PERMANENT "never stumble this again"
 // blocklist, hard-filtered in dropAlreadySaved (not just the soft/windowed prompt avoid list).
 let disliked=[];
+// seenAt = { feedKey(url): lastShownMs } — a stumbled page is suppressed from re-appearing
+// for SEEN_TTL (5 days). Stamped when a page is actually DEALT/opened, pruned past the window.
+let seenAt={};
+const SEEN_TTL = 5*24*60*60*1000;
+function markSeen(url){ if(url) seenAt[feedKey(url)] = Date.now(); }
+function pruneSeen(){ const cut = Date.now()-SEEN_TTL; for(const k in seenAt){ if(seenAt[k] < cut) delete seenAt[k]; } }
 const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
 
 // Persistent app state now lives in the Core service kv store (key "ia_<k>").
@@ -682,7 +688,7 @@ function save(k,v){
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
-function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("disliked",disliked); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
+function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("disliked",disliked); save("seen",seenAt); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
 // Boot gate: true only after bootData() has finished loading persistent state.
 // Guards the capture-drain interval + autobackup so a queued capture can't trigger
 // a full-array save of a nearly-empty library before the real data is loaded (review A2).
@@ -1218,29 +1224,28 @@ async function syncNowClick(){
 /* ============ settings ui ============ */
 // Curated OpenRouter models that work well for this app (verified live 2026-07-04).
 // Grouped for the Settings dropdown; "Custom…" still lets power users type any id.
+// Curated OpenRouter models that work well for this app, with an approx per-stumble
+// MODEL token cost (~1.5k in + ~1.2k out), sorted cheapest → most expensive. Verified
+// live 2026-07-04. NOTE: OpenRouter web search (~$0.01–0.02/stumble) is the same for
+// every model and usually dominates this — see the hint under the picker.
+// [id, name, costPerStumble ($, 0 = free), note]
 const OR_MODELS = [
-  ["Recommended — fast & cheap", [
-    ["google/gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — fast, very cheap ★"],
-    ["google/gemini-2.5-flash", "Gemini 2.5 Flash — a touch smarter"],
-    ["openai/gpt-4o-mini", "GPT-4o mini — reliable"],
-    ["openai/gpt-5-mini", "GPT-5 mini"],
-    ["deepseek/deepseek-chat-v3.1", "DeepSeek V3.1 — strong JSON, cheap"]
-  ]],
-  ["Higher quality — pricier", [
-    ["google/gemini-2.5-pro", "Gemini 2.5 Pro"],
-    ["openai/gpt-4o", "GPT-4o"],
-    ["anthropic/claude-sonnet-4", "Claude Sonnet 4"]
-  ]],
-  ["Free — ⚠ often rate-limited", [
-    ["meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B (free)"],
-    ["qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3-Next 80B (free)"],
-    ["openai/gpt-oss-120b:free", "GPT-OSS 120B (free)"]
-  ]]
-];
+  ["meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B", 0, "free"],
+  ["qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3-Next 80B", 0, "free"],
+  ["openai/gpt-oss-120b:free", "GPT-OSS 120B", 0, "free"],
+  ["google/gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite ★", 0.0006, "fast, tested"],
+  ["openai/gpt-4o-mini", "GPT-4o mini", 0.0009, "reliable"],
+  ["deepseek/deepseek-chat-v3.1", "DeepSeek V3.1", 0.0013, "strong JSON"],
+  ["openai/gpt-5-mini", "GPT-5 mini", 0.0028, ""],
+  ["google/gemini-2.5-flash", "Gemini 2.5 Flash", 0.0035, "smarter"],
+  ["google/gemini-2.5-pro", "Gemini 2.5 Pro", 0.014, "top quality"],
+  ["openai/gpt-4o", "GPT-4o", 0.016, ""],
+  ["anthropic/claude-sonnet-4", "Claude Sonnet 4", 0.023, "top quality"]
+].sort((a,b)=>a[2]-b[2]);
+function orModelCost(c){ return c===0 ? "free ⚠ rate-limited" : ("~$"+c.toFixed(4)+"/stumble"); }
 function orModelSelectHTML(cur){
-  const known = OR_MODELS.some(g=>g[1].some(m=>m[0]===cur));
-  let opts = OR_MODELS.map(g=>`<optgroup label="${esc(g[0])}">`+
-    g[1].map(m=>`<option value="${esc(m[0])}"${m[0]===cur?" selected":""}>${esc(m[1])}</option>`).join("")+`</optgroup>`).join("");
+  const known = OR_MODELS.some(m=>m[0]===cur);
+  let opts = OR_MODELS.map(m=>`<option value="${esc(m[0])}"${m[0]===cur?" selected":""}>${esc(m[1])} — ${esc(orModelCost(m[2]))}${m[3]?" · "+esc(m[3]):""}</option>`).join("");
   opts += `<option value="__custom__"${known?"":" selected"}>Custom… (type any OpenRouter model id)</option>`;
   return `<select id="modelSelect" style="width:100%;padding:11px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-size:14px">${opts}</select>`+
     `<input type="text" id="modelName" value="${esc(cur)}" placeholder="provider/model-id" style="margin-top:8px;display:${known?"none":"block"}">`;
@@ -1264,7 +1269,7 @@ function renderSettings(){
     <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for Stumble.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). Stumble automatically uses OpenRouter web search to ground its links.`:""}</div>
     <label>Model</label>
     ${S.provider==="openrouter" ? orModelSelectHTML(S.models.openrouter) : `<input type="text" id="modelName" value="${esc(S.models[S.provider])}">`}
-    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"Pick a model, or <b>Custom…</b> to type any id (see openrouter.ai/models). <b>Gemini 2.5 Flash-Lite</b> is fast, cheap and well-tested for Stumble. Free models work but hit rate limits (429).":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
+    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"Sorted cheapest → priciest (approx <b>model</b> cost per stumble). Heads-up: OpenRouter <b>web search</b> adds ~$0.01–0.02 per stumble the same for every model, so it usually dwarfs the model cost. <b>Gemini 2.5 Flash-Lite ★</b> is the tested sweet spot. Free models 429-rate-limit. <b>Custom…</b> types any id (openrouter.ai/models).":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
   document.getElementById("apiKey").oninput = e=>{ S.keys[S.provider]=e.target.value.trim(); };
   if(S.provider==="openrouter"){
     const _ms=document.getElementById("modelSelect"), _mi=document.getElementById("modelName");
@@ -1433,9 +1438,11 @@ function titleKey(t){ return (t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").tr
 function dropAlreadySaved(items){
   const haveU = new Set(saved.map(s=>feedKey(s.url)));
   const nope = new Set((disliked||[]).map(u=>feedKey(u)));   // hard "never show again" blocklist
+  const seenCut = Date.now()-SEEN_TTL;                        // don't re-show a page seen in the last 5 days
   const haveT = saved.map(s=>titleKey(s.title)).filter(t=>t.length>10);
   return items.filter(i=>{
     if(nope.has(feedKey(i.url))) return false;   // thumbed-down → never deal again
+    if(seenAt[feedKey(i.url)] >= seenCut) return false;   // shown within the last 5 days → skip
     if(haveU.has(feedKey(i.url))) return false;
     const t = titleKey(i.title);
     return !haveT.some(h=>h===t || (t.length>12 && h.includes(t)) || (h.length>12 && t.includes(h)));
@@ -1535,6 +1542,7 @@ function spoolTake(){
   if(!c.length) return null;
   const it = c[Math.floor(Math.random()*c.length)];
   spool = spool.filter(p=>p.url!==it.url);
+  markSeen(it.url);   // dealt to the user → suppress for 5 days
   return it;
 }
 // Ensure the spool can yield at least `need` cards, refilling (capped) if short.
@@ -4517,6 +4525,7 @@ async function bootData(){
   shown  = (await load("shown",  [])) || [];
   likes  = (await load("likes",  [])) || [];
   disliked = (await load("disliked", [])) || [];
+  seenAt = (await load("seen", {})) || {}; if(typeof seenAt!=="object"||Array.isArray(seenAt)) seenAt={}; pruneSeen();
   spool  = (await load("spool",  [])) || [];
   stDeal = (await load("stdeal", [])) || [];
   if(!Array.isArray(stDeal)) stDeal = [];
@@ -4645,6 +4654,8 @@ async function drainBrowserFeedback(){
         const entry = { title: String(v.title || v.url).slice(0,200), category: String(v.category || "").slice(0,80), ts: Date.now() };
         if(v.vote > 0) likes.push(entry);
         else if(v.vote < 0){ hidden.push(entry); disliked.push(feedKey(v.url)); }   // 👎 → permanent never-show-again
+        // vote === 0 is a "seen" ping (page opened, not rated) — no like/hidden, just suppress.
+        markSeen(v.url);             // opened in the browser → suppress for 5 days
         shown.push(String(v.url));   // never re-serve a page the user already rated
       });
       if(likes.length>60) likes=likes.slice(-60);

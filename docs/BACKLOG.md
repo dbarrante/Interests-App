@@ -3,6 +3,11 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.10 — Cost-sorted model picker + 5-day "already seen" suppression (app 1.12.10 / ext 4.55)
+- **Model dropdown now ranks cheapest → most expensive and shows the approx per-stumble cost** in each option (free models first, marked "⚠ rate-limited"). Hint notes that OpenRouter web search (~$0.01–0.02/stumble, same for every model) usually dwarfs the model cost. `OR_MODELS` gained a cost field + `.sort`; `orModelCost` helper.
+- **Stumbles won't repeat a page you've already seen for ~5 days.** New `seenAt` map (`ia_seen`, `SEEN_TTL`=5 days, pruned): a page is stamped when it's actually **dealt** (in-app `spoolTake`) or **opened** in the browser (extension sends a `vote:0` "seen" ping → `drainBrowserFeedback`), and `dropAlreadySaved` hard-skips anything seen within the window. Complements the permanent 👎 blocklist.
+- Regression asserts: `tests/model-dropdown.test.js`, `tests/seen-suppression.test.js`. Extension bumped to 4.55 (reload it).
+
 ## v1.12.9 — Model picker dropdown + Gemini default (app 1.12.9)
 - The OpenRouter **Model** field is now a **grouped dropdown** (Recommended / Higher quality / Free⚠) of curated, live-verified models, with a **Custom…** option to type any id. `OR_MODELS` + `orModelSelectHTML` in the renderer; other providers keep the text input.
 - **Default model changed to `google/gemini-2.5-flash-lite`** — tested working for Stumble and ~2× faster than gpt-4o-mini at a fraction of a cent. (Findings: the requested `gemini-2.0-flash-exp:free` no longer exists on OpenRouter, and current free models 429-rate-limit under the web-search Stumble task.)
