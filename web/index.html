@@ -4500,7 +4500,7 @@ async function drainBrowserFeedback(){
 }
 let _bstumbleBusy = false;
 async function pollBrowserStumble(){
-  drainBrowserFeedback();   // fire every tick, independent of any in-flight AI fetch (COR-3)
+  drainBrowserFeedback().catch(()=>{});   // fire every tick, independent of any in-flight AI fetch (COR-3)
   if(!_booted || _bstumbleBusy) return;
   _bstumbleBusy = true;
   try{
