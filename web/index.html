@@ -407,7 +407,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 
       <div class="sec">
         <h3>Interest categories</h3>
-        <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off. Custom categories can be removed with &#10005;.</div>
+        <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off, or remove any category with &#10005; (keep at least one).</div>
         <div id="sliders"></div>
         <div class="row2" style="margin-top:14px;align-items:center">
           <div><input type="text" id="newCatName" placeholder="Add your own category, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
@@ -581,7 +581,8 @@ const CAT_PALETTE = ["#0d9488","#b45309","#be185d","#4d7c0f","#6d28d9","#0369a1"
 const GRADS = {personal:"#0e7490,#155e75", work:"#7c3aed,#5b21b6", career:"#c2410c,#9a3412", life:"#15803d,#166534"};
 let CATS = [];
 function rebuildCats(){
-  CATS = BASE_CATS.concat((S.extraCats||[]).map(c=>({key:c.key, name:c.name, chip:c.color, custom:true})));
+  const hiddenBase = S.hiddenBase||[];
+  CATS = BASE_CATS.filter(c=>hiddenBase.indexOf(c.key)<0).concat((S.extraCats||[]).map(c=>({key:c.key, name:c.name, chip:c.color, custom:true})));
   CATS.forEach(c=>{ if(S.weights[c.key]==null) S.weights[c.key]=5; });
   try{ if(typeof Store!=="undefined" && Store.kvSet) Store.kvSet("ia_bstumble_cats", CATS.map(c=>({key:c.key, name:c.name}))); }catch(e){}
 }
@@ -626,6 +627,7 @@ S.keys = Object.assign({}, DEFAULTS.keys, S.keys||{});
 S.models = Object.assign({}, DEFAULTS.models, S.models||{});
 S.weights = Object.assign({}, DEFAULTS.weights, S.weights||{});
 S.extraCats = S.extraCats||[];
+S.hiddenBase = S.hiddenBase||[];
 rebuildCats();
 
 let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
@@ -1203,7 +1205,7 @@ function renderSettings(){
       <div class="nm">${c.custom?`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c.chip};margin-right:6px"></span>`:""}${esc(c.name)}</div>
       <input type="range" min="0" max="10" value="${S.weights[c.key]}" oninput="S.weights['${c.key}']=+this.value;this.nextElementSibling.textContent=this.value">
       <div class="val">${S.weights[c.key]}</div>
-      ${c.custom?`<button class="act" style="flex:0 0 auto;padding:4px 10px" title="Remove category" onclick="removeCategory('${c.key}')">&#10005;</button>`:`<span style="width:38px"></span>`}
+      <button class="act" style="flex:0 0 auto;padding:4px 10px" title="Remove category" onclick="removeCategory('${c.key}')">&#10005;</button>
     </div>`).join("");
 
   document.getElementById("aboutMe").value = S.about;
@@ -3513,8 +3515,14 @@ function addCategory(name){
 }
 function removeCategory(key){
   const c=CATS.find(x=>x.key===key);
-  if(!c || !c.custom) return;
-  S.extraCats = S.extraCats.filter(x=>x.key!==key);
+  if(!c) return;
+  // catByName falls back to CATS[0], and buildPrompt needs at least one category — keep one.
+  if(CATS.length<=1){ toast("Keep at least one category"); return; }
+  if(c.custom){
+    S.extraCats = S.extraCats.filter(x=>x.key!==key);   // custom: drop it entirely
+  }else{
+    S.hiddenBase = (S.hiddenBase||[]).concat([key]);     // base: remember it's hidden (reversible in settings)
+  }
   delete S.weights[key];
   if(filterCat===key){ filterCat=""; save("fcat",""); }
   save("settings", S); rebuildCats();

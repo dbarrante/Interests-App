@@ -3,6 +3,9 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.3 — Removable base categories (app 1.12.3)
+- The 4 built-in categories (Personal / Work / Career / Life) can now be removed with ✕, same as custom ones — removed base categories are remembered in `S.hiddenBase` and filtered out of `rebuildCats()`. A keep-at-least-one guard protects the `catByName`/`buildPrompt` fallback. No card data is touched (a removed category only stops driving Stumble; existing cards keep their label and fall back to the first category's color).
+
 ## v1.12.2 — Thumbs-up stays + interest-picker category fix (app 1.12.2, ext 4.51)
 - 👍 (like) now records the vote and **stays on the page** so you can read it or ★ Save it; only 👎 (not-for-me) auto-advances to the next page. (ext 4.51)
 - **Fixed: the extension's interest picker showed no/stale categories until a category was added.** Root cause — `bootData()` loaded settings but never re-ran `rebuildCats()`, so `ia_bstumble_cats` stayed at the module-load base-only list until the next settings edit republished it. Now `rebuildCats()` runs once after settings load at boot, republishing the full list every launch. (app 1.12.2)
