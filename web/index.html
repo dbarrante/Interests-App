@@ -140,6 +140,12 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
 .panel .sub{font-size:13px;color:var(--muted);margin-bottom:20px}
 .sec{margin-bottom:28px}
 .sec h3{font-size:14px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);margin-bottom:12px}
+/* collapsible sections: click the h3 to fold/unfold; a ▾ chevron rotates to ▸ */
+.sec.collapsible>h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:7px}
+.sec.collapsible>h3::before{content:"▾";font-size:11px;color:var(--muted);transition:transform .15s}
+.sec.collapsed>h3{margin-bottom:0}
+.sec.collapsed>h3::before{transform:rotate(-90deg)}
+.sec.collapsed>*:not(h3){display:none}
 label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px}
 input[type=text],input[type=password],input[type=number],textarea,select{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:14px;font-family:inherit;background:#fcfbfa}
 textarea{resize:vertical;min-height:80px;line-height:1.5}
@@ -425,8 +431,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div id="provFields"></div>
       </div>
 
-      <div class="sec">
-        <h3>Interest categories</h3>
+      <div class="sec collapsible" data-sec="categories">
+        <h3 onclick="toggleSec(this)">Interest categories</h3>
         <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off, or remove any category with &#10005; (keep at least one).</div>
         <div id="sliders"></div>
         <div class="row2" style="margin-top:14px;align-items:center">
@@ -440,8 +446,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <button id="catSugAdd" class="btn btn-primary" style="display:none;margin-top:12px" onclick="addSelectedCats()">Add selected categories</button>
       </div>
 
-      <div class="sec">
-        <h3>Your profile</h3>
+      <div class="sec collapsible" data-sec="profile">
+        <h3 onclick="toggleSec(this)">Your profile</h3>
         <div class="hint" style="margin-bottom:10px">Your profile is what Stumble learns from — separate from your <strong>interest categories</strong> (set above) and the <strong>tags</strong> that came in with your imports.</div>
         <label>About you</label>
         <textarea id="aboutMe"></textarea>
@@ -468,8 +474,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         </div>
       </div>
 
-      <div class="sec">
-        <h3>What I've learned about you</h3>
+      <div class="sec collapsible" data-sec="learned">
+        <h3 onclick="toggleSec(this)">What I've learned about you</h3>
         <div class="hint" style="margin-bottom:10px">The specific things Stumble picked up from your &#128077; / &#128078; / opens — these steer your recommendations. Remove any that are off-base with &#10005;, or wipe everything with “Reset learning history” above. It all stays on this computer.</div>
         <div id="learnedList"></div>
       </div>
@@ -1250,6 +1256,17 @@ function orModelSelectHTML(cur){
   return `<select id="modelSelect" style="width:100%;padding:11px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-size:14px">${opts}</select>`+
     `<input type="text" id="modelName" value="${esc(cur)}" placeholder="provider/model-id" style="margin-top:8px;display:${known?"none":"block"}">`;
 }
+// Collapsible Settings sections — click the h3 to fold/unfold; state is a per-device
+// UI preference (localStorage ia_collapsed, keyed by data-sec), so it doesn't sync.
+function toggleSec(h){
+  const sec = h.closest(".sec"); if(!sec) return;
+  sec.classList.toggle("collapsed");
+  try{ const c = JSON.parse(localStorage.getItem("ia_collapsed")||"{}"); c[sec.dataset.sec] = sec.classList.contains("collapsed"); localStorage.setItem("ia_collapsed", JSON.stringify(c)); }catch(e){}
+}
+function restoreCollapsed(){
+  let c={}; try{ c = JSON.parse(localStorage.getItem("ia_collapsed")||"{}"); }catch(e){}
+  document.querySelectorAll(".sec.collapsible[data-sec]").forEach(sec=>{ sec.classList.toggle("collapsed", !!c[sec.dataset.sec]); });
+}
 function renderSettings(){
   document.querySelectorAll("#provPick label").forEach(l=>{
     const on = l.dataset.p===S.provider;
@@ -1303,6 +1320,7 @@ function renderSettings(){
   document.getElementById("aboutMe").value = S.about;
   document.getElementById("interestList").value = S.interests;
   renderLearned();
+  restoreCollapsed();
   document.getElementById("itemCount").value = S.itemCount;
   document.getElementById("popOnly").checked = !!S.popularOnly;
   document.getElementById("popOnly").onchange = e=>{ S.popularOnly=e.target.checked; save("settings",S); };

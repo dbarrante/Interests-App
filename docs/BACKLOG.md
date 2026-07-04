@@ -17,6 +17,9 @@ Requested 2026-07-04 (parked to the wish list). Goal: a Stumble mode that costs 
 - **Trade-off:** less fresh/serendipitous than live AI web search (finite pool, needs seeding); but $0 and fully private. **Recommended first slice = rediscover-own-library only** (fully free, immediate, no bundled data); add the curated new-pages pool as phase 2 if liked.
 - **Open question for build time:** rediscover-only vs. also-bundled-pool (user was asked, chose to wishlist instead of deciding now).
 
+## v1.12.11 — Collapsible Settings sections (app 1.12.11)
+- **Interest categories**, **Your profile**, and **What I've learned about you** now collapse/expand — click the section header (▾/▸ chevron) to fold it. State is remembered per device (localStorage `ia_collapsed`, not synced). `.sec.collapsible`/`.collapsed` CSS + `toggleSec`/`restoreCollapsed` (called from `renderSettings`). +`tests/collapsible-sections.test.js`.
+
 ## v1.12.10 — Cost-sorted model picker + 5-day "already seen" suppression (app 1.12.10 / ext 4.55)
 - **Model dropdown now ranks cheapest → most expensive and shows the approx per-stumble cost** in each option (free models first, marked "⚠ rate-limited"). Hint notes that OpenRouter web search (~$0.01–0.02/stumble, same for every model) usually dwarfs the model cost. `OR_MODELS` gained a cost field + `.sort`; `orModelCost` helper.
 - **Stumbles won't repeat a page you've already seen for ~5 days.** New `seenAt` map (`ia_seen`, `SEEN_TTL`=5 days, pruned): a page is stamped when it's actually **dealt** (in-app `spoolTake`) or **opened** in the browser (extension sends a `vote:0` "seen" ping → `drainBrowserFeedback`), and `dropAlreadySaved` hard-skips anything seen within the window. Complements the permanent 👎 blocklist.
