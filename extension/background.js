@@ -473,16 +473,23 @@ async function clipCurrentPage(tab, opts = {}) {
   return { ok: true, delivered };
 }
 
-// Right-click → "Save to Interests" on any page/link/image/selection.
-function ensureContextMenu() {
+// Right-click → "Save to Interests" on any page/link/image/selection. The
+// "Save to Interests" item is toggleable from the extension Options page
+// (chrome.storage.local ia_ctx_save, default ON when unset); "Remove from
+// Interests" is always present.
+async function ensureContextMenu() {
+  let saveEnabled = true;
+  try { const s = await chrome.storage.local.get("ia_ctx_save"); if (s.ia_ctx_save === false) saveEnabled = false; } catch (e) {}
   try {
     chrome.contextMenus.removeAll(() => {
       void chrome.runtime.lastError;
-      chrome.contextMenus.create({
-        id: "saveToInterests",
-        title: "Save to Interests",
-        contexts: ["page", "selection", "link", "image"],
-      }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
+      if (saveEnabled) {
+        chrome.contextMenus.create({
+          id: "saveToInterests",
+          title: "Save to Interests",
+          contexts: ["page", "selection", "link", "image"],
+        }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
+      }
       chrome.contextMenus.create({
         id: "removeFromInterests",
         title: "Remove from Interests",
@@ -492,6 +499,8 @@ function ensureContextMenu() {
   } catch (e) { log("contextMenu setup failed: " + e.message); }
 }
 ensureContextMenu();   // also run when the service worker spins up
+// Rebuild the menu the instant the Options toggle changes (no reload needed).
+try { chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes.ia_ctx_save) ensureContextMenu(); }); } catch (e) {}
 
 // === SW-driven single-capture poller (the ONLY capture driver) ==============
 // The capture driver runs entirely in the always-on background service worker:

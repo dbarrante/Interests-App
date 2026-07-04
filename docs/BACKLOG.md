@@ -3,6 +3,9 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.4 — Toggle for "Save to Interests" menu (ext 4.52, extension-only)
+- New checkbox on the extension Options page turns the right-click **"Save to Interests"** item on/off (default ON). `ensureContextMenu()` reads `ia_ctx_save` (default ON when unset) and only creates the item when enabled; a `chrome.storage.onChanged` watcher rebuilds the menu the instant the toggle flips (no reload). "Remove from Interests" is always present. Extension-only — reload the extension.
+
 ## v1.12.3 — Removable base categories (app 1.12.3)
 - The 4 built-in categories (Personal / Work / Career / Life) can now be removed with ✕, same as custom ones — removed base categories are remembered in `S.hiddenBase` and filtered out of `rebuildCats()`. A keep-at-least-one guard protects the `catByName`/`buildPrompt` fallback. No card data is touched (a removed category only stops driving Stumble; existing cards keep their label and fall back to the first category's color).
 

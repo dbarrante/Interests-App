@@ -42,4 +42,20 @@ document.getElementById("saveBtn").addEventListener("click", async function () {
   catch (e) { status.className = "status err"; status.textContent = "Could not save."; }
 });
 
+// "Save to Interests" right-click menu toggle. Default ON (checked when the key is
+// unset). Saves immediately on change; the background service worker watches this key
+// (chrome.storage.onChanged) and rebuilds the context menu right away.
+var ctxSave = document.getElementById("ctxSave");
+var ctxStatus = document.getElementById("ctxStatus");
+async function loadCtxToggle() {
+  var on = true;
+  try { var s = await chrome.storage.local.get("ia_ctx_save"); if (s.ia_ctx_save === false) on = false; } catch (e) {}
+  ctxSave.checked = on;
+}
+ctxSave.addEventListener("change", async function () {
+  try { await chrome.storage.local.set({ ia_ctx_save: ctxSave.checked }); ctxStatus.className = "status"; ctxStatus.textContent = ctxSave.checked ? "“Save to Interests” is on." : "“Save to Interests” is off."; }
+  catch (e) { ctxStatus.className = "status err"; ctxStatus.textContent = "Could not save."; }
+});
+
 load();
+loadCtxToggle();

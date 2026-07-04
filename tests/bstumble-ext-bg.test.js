@@ -18,6 +18,8 @@ ok("reuses the stumble tab", /bstumbleTabId|_stumbleTabId/.test(src));
 ok("adds Remove-from-Interests menu item", /removeFromInterests/.test(src));
 ok("handles overlay messages", /bstumbleVote[\s\S]{0,400}?bstumbleNext|bstumbleNext[\s\S]{0,400}?bstumbleVote/.test(src));
 ok("votes carry the stumbled page's category", /BSTUMBLE_CURRENT_KEY/.test(src) && /category[\s\S]{0,120}?vote[\s\S]{0,40}?feedback|feedback[\s\S]{0,120}?category/.test(src));
+ok("Save-to-Interests menu item is toggleable via ia_ctx_save", /ia_ctx_save/.test(src) && /saveEnabled[\s\S]{0,120}?saveToInterests/.test(src));
+ok("context menu rebuilds when the toggle changes", /storage\.onChanged\.addListener[\s\S]{0,120}?ia_ctx_save[\s\S]{0,60}?ensureContextMenu/.test(src));
 
 console.log("bstumble-ext-bg: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
