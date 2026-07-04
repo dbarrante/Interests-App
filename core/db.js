@@ -431,8 +431,34 @@ function tombstonesSince(db, since) {
     .map(r => ({ id: r.id, kind: r.kind, deletedAt: Number(r.deletedAt) }));
 }
 
+// Settings for cross-device sync: the ia_settings blob MINUS secrets (provider API
+// keys + Open PageRank key never leave the machine), plus its last-modified stamp for
+// last-writer-wins merge. Absent settings → {data:null, updatedAt:0} (nothing to sync).
+function settingsForSync(db) {
+  let s;
+  try { s = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { s = null; }
+  if (!s || typeof s !== "object") return { data: null, updatedAt: 0 };
+  const clean = Object.assign({}, s);
+  delete clean.keys;    // provider API keys — never sync
+  delete clean.oprKey;  // Open PageRank key — never sync
+  return { data: clean, updatedAt: Number(getKV(db, "ia_settings_updatedAt") || 0) || 0 };
+}
+// Apply an incoming (winning) synced settings blob: overlay its non-secret fields onto
+// the LOCAL settings, PRESERVING this device's own keys/oprKey, then bump the stamp.
+function applySyncedSettings(db, incoming, updatedAt) {
+  if (!incoming || typeof incoming !== "object") return;
+  // Defense-in-depth: a peer snapshot is only as trusted as the user's own Dropbox, but
+  // settings drive network destinations (provider/localUrl) — reject an absurdly large blob.
+  try { if (JSON.stringify(incoming).length > 262144) { console.error("sync: ignoring oversized settings blob"); return; } } catch (e) { return; }
+  let local;
+  try { local = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { local = null; }
+  local = (local && typeof local === "object") ? local : {};
+  const merged = Object.assign({}, incoming, { keys: local.keys, oprKey: local.oprKey });
+  setKV(db, "ia_settings", JSON.stringify(merged));
+  setKV(db, "ia_settings_updatedAt", String(Number(updatedAt) || Date.now()));
+}
 function serializeLibrary(db) {
-  return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db) };
+  return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db), settings: settingsForSync(db) };
 }
 
 module.exports = {
@@ -442,5 +468,5 @@ module.exports = {
   getFp, setFp, delFp, allFp,
   addTombstone, allTombstones, delTombstone, pruneTombstones,
   cardsSince, savedSince, tombstonesSince,
-  serializeLibrary,
+  serializeLibrary, settingsForSync, applySyncedSettings,
 };

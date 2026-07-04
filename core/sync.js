@@ -67,6 +67,7 @@ function publishSnapshot(ctx, syncDir, deviceId, deviceLabel) {
     cards: lib.cards,
     saved: lib.saved,
     tombstones: lib.tombstones,
+    settings: lib.settings,   // {data:<no secrets>, updatedAt} — additive; older peers read null
   };
   _writeAtomic(path.join(folder, "snapshot.json"), JSON.stringify(snapshot));
 
@@ -107,6 +108,7 @@ function readSnapshot(folder) {
     saved: snap.saved || [],
     fp: snap.fp || {},
     tombstones: snap.tombstones || [],
+    settings: snap.settings || null,   // {data, updatedAt} — additive; older snapshots lack it (null)
     imageIds: imageIds,
   };
 }
@@ -159,7 +161,7 @@ function buildLocal(ctx) {
   lib.cards.forEach(function (c) { cards[c.id] = c; });
   lib.saved.forEach(function (s) { saved[s.id] = s; });
   lib.tombstones.forEach(function (t) { tombs[t.kind + ":" + t.id] = t.deletedAt; });
-  return { cards: cards, saved: saved, tombstones: tombs };
+  return { cards: cards, saved: saved, tombstones: tombs, settings: lib.settings || null };
 }
 
 function applyMerge(ctx, plan) {
@@ -210,8 +212,14 @@ function applyMerge(ctx, plan) {
     try { images.delImg(ctx.storeDir, d.id); } catch (e) {}
   }
   for (const t of plan.tombstones) db.addTombstone(ctx.db, t.id, t.kind, t.deletedAt);
-  const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0;
-  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length };
+  // Settings LWW: overlay the winning peer's non-secret settings, keeping local keys.
+  let settingsApplied = false;
+  if (plan.settings && plan.settings.data) {
+    try { db.applySyncedSettings(ctx.db, plan.settings.data, plan.settings.updatedAt); settingsApplied = true; }
+    catch (e) { console.error("sync: applying synced settings failed:", e && e.message); }
+  }
+  const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
+  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied };
 }
 
 // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
@@ -225,7 +233,7 @@ function runSync(ctx, opts) {
   const skewSkipped = rp.skewSkipped;
   if (peers.length) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
-    if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0) {
+    if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
       let backedUp = true;
       try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
       if (backedUp) {

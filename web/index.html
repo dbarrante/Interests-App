@@ -657,6 +657,9 @@ S.hiddenBase = S.hiddenBase||[];
 rebuildCats();
 
 let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
+// disliked = normalized URLs the user thumbed-down; a PERMANENT "never stumble this again"
+// blocklist, hard-filtered in dropAlreadySaved (not just the soft/windowed prompt avoid list).
+let disliked=[];
 const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
 
 // Persistent app state now lives in the Core service kv store (key "ia_<k>").
@@ -664,11 +667,22 @@ const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
 // cached value populated at boot. save() fires-and-forgets the PUT (the in-memory
 // array is the source of truth during a session; the service persists it).
 function load(k,d){ return Store.kvGet("ia_"+k).then(function(v){ return (v==null)?d:v; }); }
-function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
+// Stamp ia_settings_updatedAt for cross-device LWW — but ONLY when the settings CONTENT
+// actually changed. Boot re-saves the same settings every launch; stamping unconditionally
+// would make the last-BOOTED device always win instead of the last-EDITED one.
+let _lastSettingsJson = null;
+function save(k,v){
+  Store.kvSet("ia_"+k, v);
+  if(k==="settings"){
+    const j = JSON.stringify(v);
+    if(j !== _lastSettingsJson){ _lastSettingsJson = j; Store.kvSet("ia_settings_updatedAt", Date.now()); }
+  }
+  return true;
+}
 function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
 function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
-function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
+function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("disliked",disliked); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
 // Boot gate: true only after bootData() has finished loading persistent state.
 // Guards the capture-drain interval + autobackup so a queued capture can't trigger
 // a full-array save of a nearly-empty library before the real data is loaded (review A2).
@@ -1379,8 +1393,10 @@ IA_AI.configure(() => S);
 function titleKey(t){ return (t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
 function dropAlreadySaved(items){
   const haveU = new Set(saved.map(s=>feedKey(s.url)));
+  const nope = new Set((disliked||[]).map(u=>feedKey(u)));   // hard "never show again" blocklist
   const haveT = saved.map(s=>titleKey(s.title)).filter(t=>t.length>10);
   return items.filter(i=>{
+    if(nope.has(feedKey(i.url))) return false;   // thumbed-down → never deal again
     if(haveU.has(feedKey(i.url))) return false;
     const t = titleKey(i.title);
     return !haveT.some(h=>h===t || (t.length>12 && h.includes(t)) || (h.length>12 && t.includes(h)));
@@ -1589,6 +1605,7 @@ function stumbleVote(idx, up){
   (up?likes:hidden).push({title:it.title, category:it.category, ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   if(hidden.length>60) hidden=hidden.slice(-60);
+  if(!up && it.url){ disliked.push(feedKey(it.url)); if(disliked.length>3000) disliked=disliked.slice(-3000); }   // never stumble this URL again
   persistAll();   // save the user's feedback before any asynchronous refill
   toast(up?"Noted — more like this":"Noted — less like that");
   if(stSize===1) stumbleNext(); else stumbleReplace(idx);
@@ -3600,10 +3617,25 @@ function renderLearned(){
     });
     html += `</div>`;
   });
+  // "Never show again" — the thumbs-down blocklist (URL strings). Shown so a mis-clicked
+  // 👎 can be undone (un-block), and stumbling that page will resume.
+  const dis = (disliked||[]).slice(-12).reverse();
+  if(dis.length){
+    any = true;
+    html += `<div style="margin-bottom:14px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">&#128683; Never show again <span style="color:var(--muted);font-weight:400">(${disliked.length})</span></div>`;
+    dis.forEach(u=>{
+      const realIdx = disliked.indexOf(u);
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px">${esc(u)}</div>
+        <button class="act" style="flex:0 0 auto;padding:3px 9px" title="Un-block — allow this page again" onclick="removeLearned('disliked',${realIdx})">&#10005;</button>
+      </div>`;
+    });
+    html += `</div>`;
+  }
   el.innerHTML = any ? html : `<div class="hint">Nothing learned yet — vote &#128077;/&#128078; on a few stumbles and they'll show up here.</div>`;
 }
 function removeLearned(kind, idx){
-  const arr = kind==="likes" ? likes : kind==="hidden" ? hidden : kind==="clicks" ? clicks : null;
+  const arr = kind==="likes" ? likes : kind==="hidden" ? hidden : kind==="clicks" ? clicks : kind==="disliked" ? disliked : null;
   if(!arr || idx<0 || idx>=arr.length) return;
   arr.splice(idx,1);
   persistAll();
@@ -4445,6 +4477,7 @@ async function bootData(){
   clicks = (await load("clicks", [])) || [];
   shown  = (await load("shown",  [])) || [];
   likes  = (await load("likes",  [])) || [];
+  disliked = (await load("disliked", [])) || [];
   spool  = (await load("spool",  [])) || [];
   stDeal = (await load("stdeal", [])) || [];
   if(!Array.isArray(stDeal)) stDeal = [];
@@ -4506,6 +4539,9 @@ async function bootData(){
     setTimeout(()=>toast("Cleaned up "+(before-imported.length)+" junk imports, reset "+wiped+" vague descriptions — re-import pinterest-import.json, then hit Enrich"), 800);
   }
   ensureIds();
+  // Baseline the settings content BEFORE the boot re-save so it doesn't bump the sync
+  // timestamp — only genuine later user edits (which change S) should stamp updatedAt.
+  _lastSettingsJson = JSON.stringify(S);
   save("settings", S);
   updateCounts();
   let bootTab = await load("tab","stumble");
@@ -4569,11 +4605,12 @@ async function drainBrowserFeedback(){
         // (DAT-1 / SEC-2 prompt-injection surface).
         const entry = { title: String(v.title || v.url).slice(0,200), category: String(v.category || "").slice(0,80), ts: Date.now() };
         if(v.vote > 0) likes.push(entry);
-        else if(v.vote < 0) hidden.push(entry);
+        else if(v.vote < 0){ hidden.push(entry); disliked.push(feedKey(v.url)); }   // 👎 → permanent never-show-again
         shown.push(String(v.url));   // never re-serve a page the user already rated
       });
       if(likes.length>60) likes=likes.slice(-60);
       if(hidden.length>60) hidden=hidden.slice(-60);
+      if(disliked.length>3000) disliked=disliked.slice(-3000);
       if(shown.length>200) shown=shown.slice(-200);
       persistAll();
     }

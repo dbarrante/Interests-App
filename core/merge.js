@@ -72,6 +72,17 @@
     var out = { upserts: [], deletes: [], tombstones: [], imageCopies: [], conflicts: 0 };
     mergeKind("card", local.cards || {}, peers, local.tombstones || {}, out);
     mergeKind("saved", local.saved || {}, peers, local.tombstones || {}, out);
+    // Settings: last-writer-wins by updatedAt. Emit out.settings ONLY when a peer's
+    // settings are strictly newer than local — so a settings-only change from another
+    // device propagates while equal/older peers never clobber local. (Secrets were
+    // already stripped at publish time; applyMerge re-preserves local keys anyway.)
+    var localUA = Number(local.settings && local.settings.updatedAt) || 0;
+    var best = null, bestUA = localUA;
+    peers.forEach(function (p) {
+      var ps = p && p.settings;
+      if (ps && ps.data && (Number(ps.updatedAt) || 0) > bestUA) { bestUA = Number(ps.updatedAt) || 0; best = ps; }
+    });
+    if (best) out.settings = { data: best.data, updatedAt: bestUA };
     return out;
   }
 

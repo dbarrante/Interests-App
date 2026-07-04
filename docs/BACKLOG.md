@@ -3,6 +3,11 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.8 — Settings sync + thumbs-down blocklist (app 1.12.8)
+- **Settings now sync across devices** (rides the existing Dropbox sync): About/Interests, category weights, provider + model choice, and other prefs propagate with newest-wins merge. **API keys and the Open PageRank key never sync** (stripped at publish; each device keeps its own); the Safe Browsing key is config-only and was never in the synced blob. Requires Dropbox sync enabled on each device. Core: `settingsForSync`/`applySyncedSettings` (db.js), settings LWW in `mergeSnapshots` (merge.js), publish + apply in sync.js (additive snapshot field — no schema bump). The renderer stamps `ia_settings_updatedAt` only on genuine content changes (not boot re-saves).
+- **Thumbs-down = never show again** — a 👎 (in-app *or* browser overlay) now permanently blocklists that page's URL, hard-filtered in `dropAlreadySaved` (the shared discovery gate), not just a soft/windowed prompt hint. The blocklist is viewable/undoable in Settings → "What I've learned about you" → 🚫 Never show again.
+- **2 CRITICALs caught by data-safety review before ship & fixed:** settings were never actually published (publish object omitted the field → silent no-op); and the boot re-save was bumping the sync timestamp every launch (would make last-*booted* win instead of last-*edited*). Both fixed + an end-to-end publish→merge regression test (`tests/sync-settings.test.js`, `tests/dislike-blocklist.test.js`).
+
 ## v1.12.7 — LOOP-06 UX fixes (app 1.12.7)
 From the LOOP-06 UX/UI audit (`_loopstate/LOOP-06/2026-07-04/AUDIT-ARTIFACT.md`), all Playwright-verified:
 - **UX-1 (contrast)** — primary/accent button FILLS now use a new `--accent-strong` (white text ≥4.5:1 in both themes); the dark primary button went from 3.06:1 → 5.8:1. `--accent` stays bright for accent-colored text.
