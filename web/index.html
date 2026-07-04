@@ -622,7 +622,7 @@ const PROVIDERS = {
     keyUrl:"https://aistudio.google.com/apikey", keyName:"Google AI Studio API key"},
   groq:{label:"Groq", model:"llama-3.3-70b-versatile",
     keyUrl:"https://console.groq.com/keys", keyName:"Groq API key"},
-  openrouter:{label:"OpenRouter", model:"openai/gpt-4o-mini",
+  openrouter:{label:"OpenRouter", model:"google/gemini-2.5-flash-lite",
     keyUrl:"https://openrouter.ai/keys", keyName:"OpenRouter API key"},
   local:{label:"Local / Custom", model:"llama3.1:8b",
     keyUrl:"https://ollama.com/download", keyName:"API key (optional for Ollama)"}
@@ -1216,6 +1216,35 @@ async function syncNowClick(){
 })();
 
 /* ============ settings ui ============ */
+// Curated OpenRouter models that work well for this app (verified live 2026-07-04).
+// Grouped for the Settings dropdown; "Custom…" still lets power users type any id.
+const OR_MODELS = [
+  ["Recommended — fast & cheap", [
+    ["google/gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — fast, very cheap ★"],
+    ["google/gemini-2.5-flash", "Gemini 2.5 Flash — a touch smarter"],
+    ["openai/gpt-4o-mini", "GPT-4o mini — reliable"],
+    ["openai/gpt-5-mini", "GPT-5 mini"],
+    ["deepseek/deepseek-chat-v3.1", "DeepSeek V3.1 — strong JSON, cheap"]
+  ]],
+  ["Higher quality — pricier", [
+    ["google/gemini-2.5-pro", "Gemini 2.5 Pro"],
+    ["openai/gpt-4o", "GPT-4o"],
+    ["anthropic/claude-sonnet-4", "Claude Sonnet 4"]
+  ]],
+  ["Free — ⚠ often rate-limited", [
+    ["meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B (free)"],
+    ["qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3-Next 80B (free)"],
+    ["openai/gpt-oss-120b:free", "GPT-OSS 120B (free)"]
+  ]]
+];
+function orModelSelectHTML(cur){
+  const known = OR_MODELS.some(g=>g[1].some(m=>m[0]===cur));
+  let opts = OR_MODELS.map(g=>`<optgroup label="${esc(g[0])}">`+
+    g[1].map(m=>`<option value="${esc(m[0])}"${m[0]===cur?" selected":""}>${esc(m[1])}</option>`).join("")+`</optgroup>`).join("");
+  opts += `<option value="__custom__"${known?"":" selected"}>Custom… (type any OpenRouter model id)</option>`;
+  return `<select id="modelSelect" style="width:100%;padding:11px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-size:14px">${opts}</select>`+
+    `<input type="text" id="modelName" value="${esc(cur)}" placeholder="provider/model-id" style="margin-top:8px;display:${known?"none":"block"}">`;
+}
 function renderSettings(){
   document.querySelectorAll("#provPick label").forEach(l=>{
     const on = l.dataset.p===S.provider;
@@ -1234,10 +1263,20 @@ function renderSettings(){
     <input type="password" id="apiKey" value="${esc(S.keys[S.provider])}" placeholder="${S.provider==="local"?"Leave blank for Ollama":"Paste your key…"}">
     <div class="hint">Get one at <a href="${p.keyUrl}" target="_blank">${p.keyUrl.replace("https://","")}</a>. Stored only in this browser.${S.provider==="groq"?` <a href="#" onclick="showGuide('groqkey');return false"><b>Step-by-step instructions</b></a> — free, no card needed. Note: Groq has no web search; great for Enrich, decent for Stumble.`:""}${S.provider==="openrouter"?` One key, hundreds of models from every provider. Pay-per-use (some <b>:free</b> models). Stumble automatically uses OpenRouter web search to ground its links.`:""}</div>
     <label>Model</label>
-    <input type="text" id="modelName" value="${esc(S.models[S.provider])}">
-    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"e.g. openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-001, meta-llama/llama-3.3-70b-instruct:free — see openrouter.ai/models.":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
+    ${S.provider==="openrouter" ? orModelSelectHTML(S.models.openrouter) : `<input type="text" id="modelName" value="${esc(S.models[S.provider])}">`}
+    <div class="hint">${S.provider==="local"?"e.g. llama3.1:8b or qwen2.5:14b (Ollama), llama-3.3-70b-versatile (Groq), meta-llama/llama-3.3-70b-instruct:free (OpenRouter).":S.provider==="openrouter"?"Pick a model, or <b>Custom…</b> to type any id (see openrouter.ai/models). <b>Gemini 2.5 Flash-Lite</b> is fast, cheap and well-tested for Stumble. Free models work but hit rate limits (429).":"Default works well; change it if you want a smarter/cheaper model."}</div>`;
   document.getElementById("apiKey").oninput = e=>{ S.keys[S.provider]=e.target.value.trim(); };
-  document.getElementById("modelName").oninput = e=>{ S.models[S.provider]=e.target.value.trim(); };
+  if(S.provider==="openrouter"){
+    const _ms=document.getElementById("modelSelect"), _mi=document.getElementById("modelName");
+    _ms.onchange = e=>{
+      if(e.target.value==="__custom__"){ _mi.style.display="block"; _mi.focus(); }
+      else { S.models.openrouter=e.target.value; _mi.value=e.target.value; _mi.style.display="none"; save("settings",S); toast("Model set to "+e.target.value, 2500); }
+    };
+    _mi.oninput = e=>{ S.models.openrouter=e.target.value.trim(); };
+    _mi.onchange = ()=>{ save("settings",S); };   // persist a custom id on blur/enter
+  } else {
+    document.getElementById("modelName").oninput = e=>{ S.models[S.provider]=e.target.value.trim(); };
+  }
   if(S.provider==="local") document.getElementById("localUrl").oninput = e=>{ S.localUrl=e.target.value.trim().replace(/\/$/,""); };
 
   document.getElementById("sliders").innerHTML = CATS.map(c=>`

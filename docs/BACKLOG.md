@@ -3,6 +3,11 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.9 — Model picker dropdown + Gemini default (app 1.12.9)
+- The OpenRouter **Model** field is now a **grouped dropdown** (Recommended / Higher quality / Free⚠) of curated, live-verified models, with a **Custom…** option to type any id. `OR_MODELS` + `orModelSelectHTML` in the renderer; other providers keep the text input.
+- **Default model changed to `google/gemini-2.5-flash-lite`** — tested working for Stumble and ~2× faster than gpt-4o-mini at a fraction of a cent. (Findings: the requested `gemini-2.0-flash-exp:free` no longer exists on OpenRouter, and current free models 429-rate-limit under the web-search Stumble task.)
+- Regression asserts in `tests/model-dropdown.test.js`.
+
 ## v1.12.8 — Settings sync + thumbs-down blocklist (app 1.12.8)
 - **Settings now sync across devices** (rides the existing Dropbox sync): About/Interests, category weights, provider + model choice, and other prefs propagate with newest-wins merge. **API keys and the Open PageRank key never sync** (stripped at publish; each device keeps its own); the Safe Browsing key is config-only and was never in the synced blob. Requires Dropbox sync enabled on each device. Core: `settingsForSync`/`applySyncedSettings` (db.js), settings LWW in `mergeSnapshots` (merge.js), publish + apply in sync.js (additive snapshot field — no schema bump). The renderer stamps `ia_settings_updatedAt` only on genuine content changes (not boot re-saves).
 - **Thumbs-down = never show again** — a 👎 (in-app *or* browser overlay) now permanently blocklists that page's URL, hard-filtered in `dropAlreadySaved` (the shared discovery gate), not just a soft/windowed prompt hint. The blocklist is viewable/undoable in Settings → "What I've learned about you" → 🚫 Never show again.
