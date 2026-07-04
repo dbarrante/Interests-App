@@ -16,6 +16,7 @@ ok("rated pages are suppressed via shown", /shown\.push\(v\.url\)/.test(src));
 ok("caps likes/hidden like the rest of the file", /likes\.length>60\) likes=likes\.slice\(-60\)/.test(src) && /hidden\.length>60\) hidden=hidden\.slice\(-60\)/.test(src));
 ok("stumbleForInterests scopes the prompt", /buildPrompt\(\s*["']stumble["']\s*,\s*interestKeys\s*\)/.test(src));
 ok("publishes categories", /ia_bstumble_cats/.test(src));
+ok("republishes categories after settings load at boot (not just on edit)", /Store\.kvGet\(["']ia_settings["']\)[\s\S]{0,400}?rebuildCats\(\)/.test(src));
 
 console.log("bstumble-wiring: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

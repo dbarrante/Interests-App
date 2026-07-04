@@ -4374,6 +4374,11 @@ async function bootData(){
   try{ const ph = await Store.kvGet("ia_ph_fps"); _phFps = new Set(Array.isArray(ph)?ph:[]); }catch(e){ _phFps = new Set(); }
   try{ _fbTested = !!(await Store.kvGet("ia_fbtested")); _fbRenderTested = !!(await Store.kvGet("ia_fbrender_tested")); }catch(e){}
   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
+  // The module-load rebuildCats() ran with empty default settings (base categories only).
+  // Now that the real settings (with custom categories) are loaded, rebuild CATS and
+  // republish ia_bstumble_cats so the extension's interest picker sees the full list on
+  // every boot — not only after the next category edit.
+  rebuildCats();
 
   // one-time data hygiene (was a synchronous IIFE)
   // Feed module removed in v1.11.0 — clear its stored kv (cheap tombstone; no schema change).
