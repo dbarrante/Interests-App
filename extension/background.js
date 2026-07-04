@@ -473,7 +473,10 @@ async function clipCurrentPage(tab, opts = {}) {
   return { ok: true, delivered };
 }
 
-// Right-click → "Save to Interests" on any page/link/image/selection. The
+// "Save to Interests" / "Remove from Interests" appear BOTH on the extension
+// toolbar-icon menu (contexts: "action" — right-click the icon → saves the
+// current page, the home the removed popup's "Clip this page" used to have) AND
+// on the web page's own right-click menu (page/link/image/selection). The
 // "Save to Interests" item is toggleable from the extension Options page
 // (chrome.storage.local ia_ctx_save, default ON when unset); "Remove from
 // Interests" is always present.
@@ -487,13 +490,13 @@ async function ensureContextMenu() {
         chrome.contextMenus.create({
           id: "saveToInterests",
           title: "Save to Interests",
-          contexts: ["page", "selection", "link", "image"],
+          contexts: ["action", "page", "selection", "link", "image"],
         }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
       }
       chrome.contextMenus.create({
         id: "removeFromInterests",
         title: "Remove from Interests",
-        contexts: ["page", "link"],
+        contexts: ["action", "page", "link"],
       }, () => { void chrome.runtime.lastError; });
     });
   } catch (e) { log("contextMenu setup failed: " + e.message); }

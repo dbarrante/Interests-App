@@ -7,7 +7,7 @@ const m = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "extension", "ma
 let pass = 0, fail = 0;
 function ok(name, cond) { if (cond) { pass++; console.log("  ok  " + name); } else { fail++; console.log("  FAIL " + name); } }
 
-ok("version bumped to 4.52", m.version === "4.52");
+ok("version bumped to 4.53", m.version === "4.53");
 ok("no default_popup (icon click fires onClicked)", !(m.action && m.action.default_popup));
 ok("options_page set", m.options_page === "options.html");
 ok("still has scripting + tabs + notifications perms", ["scripting","tabs","notifications"].every(p => m.permissions.includes(p)));
