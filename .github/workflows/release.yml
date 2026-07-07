@@ -8,6 +8,7 @@ on:
     branches: [master]
     paths:
       - 'package.json'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -53,8 +54,10 @@ jobs:
       - name: Build Windows installer
         if: steps.check.outputs.exists == 'false'
         # Override the hardcoded local output dir (C:/Users/...) so artifacts
-        # land in ./dist on the runner. Unsigned build (no cert configured).
-        run: npx electron-builder --win nsis -c.directories.output=dist
+        # land in ./dist on the runner. --publish never: we attach the artifact
+        # ourselves in the next step, so electron-builder must not auto-publish.
+        # Unsigned build (no cert configured).
+        run: npx electron-builder --win nsis -c.directories.output=dist --publish never
 
       - name: Create release and attach installer
         if: steps.check.outputs.exists == 'false'
