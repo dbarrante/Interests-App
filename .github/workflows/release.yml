@@ -1,7 +1,7 @@
 name: Release on version bump
 
-# Automatically creates a GitHub release + tag (vX.Y.Z) whenever the
-# version in package.json changes on the master branch.
+# Automatically builds the Windows installer and creates a GitHub release + tag
+# (vX.Y.Z) whenever the version in package.json changes on the master branch.
 
 on:
   push:
@@ -14,12 +14,21 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
       - name: Read version from package.json
         id: ver
@@ -37,7 +46,17 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create release
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'false'
+        run: npm ci
+
+      - name: Build Windows installer
+        if: steps.check.outputs.exists == 'false'
+        # Override the hardcoded local output dir (C:/Users/...) so artifacts
+        # land in ./dist on the runner. Unsigned build (no cert configured).
+        run: npx electron-builder --win nsis -c.directories.output=dist
+
+      - name: Create release and attach installer
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,4 +65,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "v${{ steps.ver.outputs.version }}" \
             --target "${{ github.sha }}" \
-            --generate-notes
+            --generate-notes \
+            "dist/Interests-App-Setup-${{ steps.ver.outputs.version }}.exe"
