@@ -1,6 +1,6 @@
 {
   "name": "interests-app",
-  "version": "1.12.16",
+  "version": "1.12.17",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -11,6 +11,9 @@
   "build": {
     "appId": "com.dbarrante.interestsapp",
     "productName": "Interests App",
+    "publish": [
+      { "provider": "github", "owner": "dbarrante", "repo": "Interests-App" }
+    ],
     "directories": {
       "buildResources": "build",
       "output": "C:/Users/dkbar/interests-dist"
@@ -45,6 +48,7 @@
     }
   },
   "dependencies": {
+    "electron-updater": "^6.3.9",
     "express": "^4.21.2"
   },
   "devDependencies": {

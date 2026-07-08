@@ -163,6 +163,52 @@ ipcMain.handle("ia:open-external", async (_evt, url) => {
   return false;
 });
 
+// ---- In-app auto-update ---------------------------------------------------
+// electron-updater against the PRIVATE GitHub repo. The renderer passes a user-supplied
+// fine-grained READ-ONLY token per check (stored only in the user's local settings, never
+// here, never synced, never in the packaged app). We lazy-require electron-updater so dev
+// runs — which short-circuit before any updater call — never touch it.
+let _updater = null, _updaterWired = false;
+function getUpdater() {
+  if (_updater) return _updater;
+  try { _updater = require("electron-updater").autoUpdater; }
+  catch (e) { return null; }
+  _updater.autoDownload = true;
+  _updater.autoInstallOnAppQuit = true;
+  if (!_updaterWired) {
+    _updaterWired = true;
+    const send = (status, data) => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("ia:update-status", { status, data }); }
+      catch (e) { /* window gone */ }
+    };
+    _updater.on("update-available", (i) => send("available", { version: i && i.version }));
+    _updater.on("update-not-available", () => send("none", {}));
+    _updater.on("download-progress", (p) => send("progress", { percent: Math.round((p && p.percent) || 0) }));
+    _updater.on("update-downloaded", (i) => send("downloaded", { version: i && i.version }));
+    _updater.on("error", (err) => send("error", { message: String((err && err.message) || err) }));
+  }
+  return _updater;
+}
+
+ipcMain.handle("ia:check-updates", async (_evt, token) => {
+  if (!app.isPackaged) return { ok: false, reason: "dev" };
+  if (typeof token !== "string" || !token.trim()) return { ok: false, reason: "no-token" };
+  const up = getUpdater();
+  if (!up) return { ok: false, reason: "error", message: "Updater unavailable" };
+  try {
+    up.setFeedURL({ provider: "github", owner: "dbarrante", repo: "Interests-App", private: true, token: token.trim() });
+    await up.checkForUpdates();
+    return { ok: true };   // result arrives asynchronously via the "ia:update-status" events
+  } catch (e) {
+    return { ok: false, reason: "error", message: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle("ia:install-update", () => {
+  if (!_updater) return false;
+  try { _updater.quitAndInstall(); return true; } catch (e) { return false; }
+});
+
 // "Reuse window" setting: open a clicked link in ONE in-app window that is reused for
 // every click (no browser-tab pile-up). The window is a plain, hardened browser surface
 // for UNTRUSTED external pages: no preload (so the page can't reach our IPC), no node,

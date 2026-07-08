@@ -439,8 +439,9 @@ function settingsForSync(db) {
   try { s = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { s = null; }
   if (!s || typeof s !== "object") return { data: null, updatedAt: 0 };
   const clean = Object.assign({}, s);
-  delete clean.keys;    // provider API keys — never sync
-  delete clean.oprKey;  // Open PageRank key — never sync
+  delete clean.keys;         // provider API keys — never sync
+  delete clean.oprKey;       // Open PageRank key — never sync
+  delete clean.updateToken;  // GitHub update token — a credential; per-device, never sync
   return { data: clean, updatedAt: Number(getKV(db, "ia_settings_updatedAt") || 0) || 0 };
 }
 // Apply an incoming (winning) synced settings blob: overlay its non-secret fields onto
@@ -453,7 +454,7 @@ function applySyncedSettings(db, incoming, updatedAt) {
   let local;
   try { local = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { local = null; }
   local = (local && typeof local === "object") ? local : {};
-  const merged = Object.assign({}, incoming, { keys: local.keys, oprKey: local.oprKey });
+  const merged = Object.assign({}, incoming, { keys: local.keys, oprKey: local.oprKey, updateToken: local.updateToken });
   setKV(db, "ia_settings", JSON.stringify(merged));
   setKV(db, "ia_settings_updatedAt", String(Number(updatedAt) || Date.now()));
 }

@@ -504,6 +504,19 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec">
+        <h3>App updates</h3>
+        <div class="hint" style="margin-bottom:10px">Let the app update itself. Paste a <b>read-only</b> access token once (stored only on this computer — never synced, never in the app file), then use <b>Check for updates now</b> or the button in Help → About. When a newer version exists it downloads in the background; you'll be asked to restart to install.</div>
+        <label>GitHub update token (fine-grained, read-only)</label>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <input type="password" id="updTok" placeholder="Paste your update token…" style="flex:1">
+          <button class="btn btn-primary" onclick="saveUpdateToken()">Save</button>
+        </div>
+        <div class="hint" style="margin-top:6px"><a href="#" onclick="showUpdateTokenHelp();return false"><b>How to create this token (step-by-step)</b></a> — 2 minutes, no cost.</div>
+        <div style="margin-top:10px"><button class="btn btn-ghost" onclick="checkForUpdates()">&#8635; Check for updates now</button>
+          <span class="hint" id="updStatus" style="margin-left:8px"></span></div>
+      </div>
+
+      <div class="sec">
         <h3>Import your saves (Facebook · Instagram · Pinterest · YouTube · Google)</h3>
         <div class="hint" style="margin-bottom:10px">Drop the platform's export file here — the ZIP works as-is. Imported titles become taste signals the AI learns from (they don't clutter your Saved tab). YouTube playlist exports contain only video IDs; titles are fetched automatically.</div>
         <div style="margin-bottom:10px">How to export:
@@ -644,6 +657,7 @@ const DEFAULTS = {
   localUrl:"http://localhost:11434/v1",
   popularOnly:false,
   oprKey:"",
+  updateToken:"",   // GitHub fine-grained read-only token for in-app auto-update (per-device; never synced)
   captureDelay:3,
   captureConcurrency:3,
   recaptureMonths:0,
@@ -831,14 +845,83 @@ async function openHelp(){
     </ul>`;
   document.getElementById("modal").classList.add("open");
 }
-// Open the GitHub releases page (newest first) in the default browser. The repo is
-// private, so there's no unauthenticated version API to compare against — the user
-// checks the latest release there and compares with the version shown in this modal.
-function checkForUpdates(){
-  const url = "https://github.com/dbarrante/Interests-App/releases/latest";
-  if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
-  else { window.open(url, "_blank", "noopener"); }
-  toast("Opened the latest release on GitHub — compare it with your version.", 4000);
+const RELEASES_URL = "https://github.com/dbarrante/Interests-App/releases/latest";
+function openReleasesPage(){
+  if(window.ia && window.ia.openExternal){ window.ia.openExternal(RELEASES_URL); }
+  else { window.open(RELEASES_URL, "_blank", "noopener"); }
+}
+// Show a short status next to the Settings "Check for updates now" button (if visible).
+function updSet(msg){ const el=document.getElementById("updStatus"); if(el) el.textContent = msg||""; }
+
+function saveUpdateToken(){
+  const el = document.getElementById("updTok");
+  S.updateToken = el ? el.value.trim() : (S.updateToken||"");
+  save("settings", S);
+  toast(S.updateToken ? "Update token saved (stays on this computer)" : "Update token cleared");
+}
+
+// Auto-update via the packaged app's updater (Electron main process). Falls back to
+// opening the GitHub releases page when running unpackaged, when there's no token,
+// or if the updater is unavailable. The token is read from local settings and passed
+// to main per-check — it never leaves this machine and is never synced.
+async function checkForUpdates(){
+  const token = (S.updateToken||"").trim();
+  if(!(window.ia && window.ia.checkUpdates)){   // browser/dev — no native updater
+    openReleasesPage();
+    toast("Opened the latest release on GitHub — compare it with your version.", 4000);
+    return;
+  }
+  if(!token){
+    updSet("Add a read-only update token in Settings → App updates to enable one-click updates.");
+    openReleasesPage();
+    toast("No update token set — opened the releases page instead. Add a token in Settings to auto-update.", 5000);
+    return;
+  }
+  updSet("Checking for updates…");
+  toast("Checking for updates…", 2500);
+  let res;
+  try{ res = await window.ia.checkUpdates(token); }catch(e){ res = {ok:false, reason:"error", message:String(e&&e.message||e)}; }
+  if(res && res.ok) return;   // outcome is delivered asynchronously via onUpdateStatus
+  if(res && res.reason==="dev"){ updSet("Auto-update only works in the installed app."); openReleasesPage(); return; }
+  if(res && res.reason==="no-token"){ updSet("The update token looks empty — paste it again and Save."); return; }
+  updSet("Couldn't check: " + ((res&&res.message)||"unknown error") + ". Opening the releases page…");
+  openReleasesPage();
+}
+
+// One-time registration: relay auto-update events from main into toasts + the status line.
+(function wireUpdateStatus(){
+  if(!(window.ia && window.ia.onUpdateStatus)) return;
+  window.ia.onUpdateStatus(function(msg){
+    const s = msg && msg.status, d = (msg && msg.data) || {};
+    if(s==="none"){ updSet("You're on the latest version."); toast("You're already on the latest version.", 4000); }
+    else if(s==="available"){ updSet("Update found ("+(d.version||"newer")+") — downloading…"); toast("Update found — downloading in the background…", 4000); }
+    else if(s==="progress"){ updSet("Downloading update… "+(d.percent||0)+"%"); }
+    else if(s==="downloaded"){
+      updSet("Update "+(d.version||"")+" ready. Restart to install.");
+      if(confirm("Update "+(d.version||"")+" downloaded. Restart now to install it?")){ if(window.ia.installUpdate) window.ia.installUpdate(); }
+      else toast("Update will install next time you quit the app.", 5000);
+    }
+    else if(s==="error"){ updSet("Update error: "+(d.message||"unknown")+". You can download manually from the releases page."); }
+  });
+})();
+
+// Step-by-step: create a fine-grained, read-only, single-repo GitHub token.
+function showUpdateTokenHelp(){
+  const b = document.getElementById("modalBody");
+  if(!b){ if(window.ia&&window.ia.openExternal) window.ia.openExternal("https://github.com/settings/tokens?type=beta"); return; }
+  b.innerHTML = `<h2>Create your update token (2 minutes, free)</h2>
+    <div class="hint" style="margin-bottom:12px">This is a <b>read-only</b> key that lets the app see and download new releases from your private repo. It can't change anything, and it never leaves this computer.</div>
+    <ol style="line-height:1.7;padding-left:20px">
+      <li>Go to <a href="#" onclick="window.ia&&window.ia.openExternal('https://github.com/settings/tokens?type=beta');return false"><b>GitHub → Fine-grained tokens</b></a> and click <b>Generate new token</b>.</li>
+      <li><b>Token name:</b> <code>Interests App updates</code>. <b>Expiration:</b> pick up to a year (you'll repaste a new one when it lapses).</li>
+      <li><b>Repository access:</b> choose <b>Only select repositories</b> → pick <b>Interests-App</b>.</li>
+      <li><b>Permissions → Repository permissions → Contents:</b> set to <b>Read-only</b>. Leave everything else as <i>No access</i>.</li>
+      <li>Click <b>Generate token</b>, copy the <code>github_pat_…</code> string.</li>
+      <li>Back here: paste it into <b>Settings → App updates</b> and click <b>Save</b>. Done.</li>
+    </ol>
+    <div class="note" style="margin-top:14px">Because the app is unsigned, Windows may still show a <b>"Run anyway"</b> prompt once while the update installs — that's expected and safe.</div>
+    <div style="margin-top:14px;text-align:right"><button class="btn btn-primary" onclick="closeGuide()">Got it</button></div>`;
+  document.getElementById("modal").classList.add("open");
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
@@ -1359,6 +1442,10 @@ function renderSettings(){
   document.getElementById("popOnly").onchange = e=>{ S.popularOnly=e.target.checked; save("settings",S); };
   document.getElementById("oprKey").value = S.oprKey||"";
   document.getElementById("oprKey").oninput = e=>{ S.oprKey=e.target.value.trim(); };
+  if(document.getElementById("updTok")){
+    document.getElementById("updTok").value = S.updateToken||"";
+    document.getElementById("updTok").oninput = e=>{ S.updateToken=e.target.value.trim(); };
+  }
   document.getElementById("captureDelay").value = S.captureDelay||0;
   document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
   document.getElementById("captureConcurrency").value = S.captureConcurrency||1;

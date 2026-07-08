@@ -3,6 +3,13 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.17 — One-click in-app auto-update (app 1.12.17)
+- **The "Check for updates" button now actually updates the app** (electron-updater against the private GitHub repo). When a newer release exists it downloads in the background and offers to restart-and-install. Falls back to opening the releases page when unpackaged, when no token is set, or on error.
+- **Auth = a user-pasted, read-only, single-repo GitHub token** (Settings → App updates). Chosen delivery (2026-07-08): token stored **only in local settings** — never baked into the .exe, never committed, and **never synced** (stripped in `settingsForSync`, preserved locally in `applySyncedSettings`, same as the provider/OPR keys). Passed to the main process per-check via a new `ia:check-updates` IPC; main uses `setFeedURL({provider:"github", private:true, token})`.
+- **Token type = fine-grained, Contents: Read-only, Interests-App only** — in-app step-by-step guide (`showUpdateTokenHelp`) walks the user through creating it.
+- Wiring: `preload.js` (`checkUpdates`/`installUpdate`/`onUpdateStatus`), `main.js` (lazy-required updater, dev-guarded, event relay → renderer toasts/status), renderer (`checkForUpdates` rework + status listener + Settings section). `package.json` gained the `electron-updater` dep + a `publish` (github) block so electron-builder emits `latest.yml`/`app-update.yml`; CI now attaches `latest.yml` + the `.exe.blockmap` to each release. +`tests/auto-update.test.js` (13 asserts, incl. token-never-syncs).
+- **First-run caveat:** the currently-installed build (≤1.12.16) has no updater, so **v1.12.17 must be installed manually once** (from the releases page). After that, the button auto-updates. Unsigned → one Windows "Run anyway" prompt may still appear during an update install.
+
 ## v1.12.16 — Stumble category pills match Imported tag style (app 1.12.16)
 - **Stumble category filter pills now use the same small `.tg` style/size as the Imported tags** (10.5px, 2px 9px, pill, accent when active) instead of the chunky `.catpill`. `renderCatBar` gained a `curTab==="stumble"` branch that renders the filters as `.tg` spans; Imported source pills, Saved (already `.tg` in its sidebar), and the view-mode pills are unchanged. +`tests/pill-style-parity.test.js` locks the parity across Imported/Saved/Stumble.
 

@@ -64,12 +64,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Attach the installer PLUS the electron-updater metadata (latest.yml + the
+          # installer's .blockmap) so the in-app auto-updater can detect and fetch updates.
+          # electron-builder generates latest.yml/.blockmap because a publish provider is
+          # configured in package.json (even though we build with --publish never).
           gh release create "v${{ steps.ver.outputs.version }}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "v${{ steps.ver.outputs.version }}" \
             --target "${{ github.sha }}" \
             --generate-notes \
-            "dist/Interests-App-Setup-${{ steps.ver.outputs.version }}.exe"
+            "dist/Interests-App-Setup-${{ steps.ver.outputs.version }}.exe" \
+            "dist/Interests-App-Setup-${{ steps.ver.outputs.version }}.exe.blockmap" \
+            "dist/latest.yml"
 
       - name: Prepend Windows install note to release body
         # Best-effort: the app is unsigned, so Windows SmartScreen flags the
