@@ -814,7 +814,8 @@ async function openHelp(){
   document.getElementById("modalBody").innerHTML = `
     <h2>Interests App</h2>
     <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
-    <div style="margin-bottom:12px"><button class="btn btn-ghost" onclick="checkForUpdates()" title="Open the latest release on GitHub — compare it with your version above">&#8635; Check for updates</button></div>
+    <div style="margin-bottom:6px"><button class="btn btn-ghost" onclick="checkForUpdates()" title="Open the latest release on GitHub — compare it with your version above">&#8635; Check for updates</button></div>
+    <div class="hint" style="margin-bottom:12px">When you run a downloaded installer, Windows may warn <b>&ldquo;Windows protected your PC&rdquo;</b> (unknown publisher) — the app is unsigned but safe: click <b>More info &rarr; Run anyway</b>.</div>
     <h3 style="margin:12px 0 6px">Quick tour</h3>
     <ul style="margin:0 0 10px 18px;line-height:1.7">
       <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. The <b>&#127922; Stumble</b> button deals a fresh set.</li>

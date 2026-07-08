@@ -70,3 +70,24 @@ jobs:
             --target "${{ github.sha }}" \
             --generate-notes \
             "dist/Interests-App-Setup-${{ steps.ver.outputs.version }}.exe"
+
+      - name: Prepend Windows install note to release body
+        # Best-effort: the app is unsigned, so Windows SmartScreen flags the
+        # installer. Add clear "Run anyway" guidance above the auto changelog,
+        # right where people download. Never fail the release over this.
+        if: steps.check.outputs.exists == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.ver.outputs.version }}"
+          body=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          {
+            echo "### 📥 Installing on Windows"
+            echo "This build is **unsigned**, so Windows may show **\"Windows protected your PC\"** (unknown publisher). The app is safe — click **More info → Run anyway**. The warning fades as the app builds download reputation."
+            echo ""
+            echo "---"
+            echo ""
+            printf '%s\n' "$body"
+          } > _relnotes.md
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file _relnotes.md

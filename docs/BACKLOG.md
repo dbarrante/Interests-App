@@ -3,10 +3,19 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.15 — SmartScreen workaround guidance (app 1.12.15)
+- **Decision (2026-07-08): live with the SmartScreen warning, no code-signing certificate.** The installer is unsigned, and only a paid Authenticode/Azure Trusted Signing cert removes the warning — deferred. Options remain documented below if revisited.
+- **In-app note:** the Help/About modal (under "Check for updates") now explains the expected **"Windows protected your PC"** warning and the **More info → Run anyway** workaround (unsigned but safe).
+- **Release-page note:** the CI workflow (`.github/workflows/release.yml`) now prepends the same "Installing on Windows" guidance above the auto-generated changelog on every GitHub release — shown right where the installer is downloaded. Best-effort step (`continue-on-error`); never blocks the release.
+
+### Deferred: remove SmartScreen via code signing (if revisited)
+- **Azure Trusted Signing** (~$10/mo, Microsoft) — cheapest legit path; needs an Azure account + identity verification, then wire electron-builder + CI signing creds.
+- **OV/EV Authenticode cert** (~$100–400/yr, EV often on a hardware token) — EV = instant trust; OV builds reputation.
+- Either way I'd add the signing config to `package.json` build + CI secrets once credentials exist.
+
 ## v1.12.14 — Check-for-updates + Saved sidebar style parity (app 1.12.14)
 - **"Check for updates"** button in the Help/About modal → opens the GitHub **releases/latest** page in the browser (via `window.ia.openExternal`), where you compare against the version shown in the modal. (Repo is private, so there's no unauthenticated version API to auto-compare; the page is the check.)
 - **Saved category sidebar now matches the Imported tag sidebar exactly** — the pills use the same `.tg` style (10.5px, 2px 9px, counts shown, active pill with ✕ to clear) instead of the larger `catpill`. `catSideHTML` rewritten to mirror `tagSideHTML`; unused `.cat-side .catpill` CSS removed.
-- Not addressed here (needs a decision, not code): **Windows SmartScreen on the installer** — it's unsigned; only a code-signing certificate removes the warning. See notes below / ask.
 
 ## 💡 Wish list — not scheduled
 
