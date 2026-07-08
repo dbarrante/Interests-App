@@ -1,6 +1,6 @@
 {
   "name": "interests-app",
-  "version": "1.12.13",
+  "version": "1.12.14",
   "private": true,
   "main": "main.js",
   "scripts": {

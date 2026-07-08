@@ -180,7 +180,6 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tag-side .tg{display:block;width:100%;box-sizing:border-box}
 @media(max-width:760px){.tag-side{display:none}.imp-body{display:block}}
 .imp-body>.masonry{flex:1;min-width:0}
-.cat-side .catpill{display:block;width:100%;box-sizing:border-box;text-align:left;margin:0}
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
@@ -815,6 +814,7 @@ async function openHelp(){
   document.getElementById("modalBody").innerHTML = `
     <h2>Interests App</h2>
     <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
+    <div style="margin-bottom:12px"><button class="btn btn-ghost" onclick="checkForUpdates()" title="Open the latest release on GitHub — compare it with your version above">&#8635; Check for updates</button></div>
     <h3 style="margin:12px 0 6px">Quick tour</h3>
     <ul style="margin:0 0 10px 18px;line-height:1.7">
       <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. The <b>&#127922; Stumble</b> button deals a fresh set.</li>
@@ -829,6 +829,15 @@ async function openHelp(){
       <li>Browser extension pairs automatically with this app on this computer (Chrome &rarr; Interests Capture)</li>
     </ul>`;
   document.getElementById("modal").classList.add("open");
+}
+// Open the GitHub releases page (newest first) in the default browser. The repo is
+// private, so there's no unauthenticated version API to compare against — the user
+// checks the latest release there and compares with the version shown in this modal.
+function checkForUpdates(){
+  const url = "https://github.com/dbarrante/Interests-App/releases/latest";
+  if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
+  else { window.open(url, "_blank", "noopener"); }
+  toast("Opened the latest release on GitHub — compare it with your version.", 4000);
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
@@ -2177,14 +2186,16 @@ function tagSideHTML(){
 }
 function impSidebarOn(){ return !!S.tagSidebar && window.innerWidth >= 760; }
 function catSidebarOn(){ return !!S.catSidebar && window.innerWidth >= 760; }
-// Category filter as a left sidebar in the Saved view — mirrors tagSideHTML().
-// Reuses the CATS / filterCat / setFilter machinery that drives the top #catBar.
+// Category filter as a left sidebar in the Saved view — same pill size/style as the
+// Imported tag sidebar (uses .tg, with per-category counts; active shown with ✕ to clear).
 function catSideHTML(){
-  const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
+  const counts = {};
+  saved.forEach(s=>{ const c = catByName(String(s.category||"")); if(c) counts[c.key] = (counts[c.key]||0) + 1; });
+  const rows = CATS.filter(c=>counts[c.key]).sort((a,b)=>counts[b.key]-counts[a.key]);   // populated cats, most first — like tags
+  const activeName = filterCat ? ((CATS.find(c=>c.key===filterCat)||{}).name || filterCat) : "";
   return `<div class="tag-side-h">Categories</div>`
-    + pills.map(c=>
-      `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
-        onclick="setFilter('${c.key}')">${esc(c.name)}</button>`).join("");
+    + (filterCat ? `<span class="tg on" onclick="setFilter('')">&#10005; ${esc(activeName)}</span>` : "")
+    + rows.map(c=> filterCat===c.key ? "" : `<span class="tg" onclick="setFilter('${c.key}')">${esc(c.name)} <b>${counts[c.key]}</b></span>`).join("");
 }
 const PICONS = {
   youtube:  `<svg class="pic" width="13" height="13" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#f00"/><path d="M9.5 7.5v9l8-4.5z" fill="#fff"/></svg>`,
