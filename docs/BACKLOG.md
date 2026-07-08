@@ -3,6 +3,9 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.16 — Stumble category pills match Imported tag style (app 1.12.16)
+- **Stumble category filter pills now use the same small `.tg` style/size as the Imported tags** (10.5px, 2px 9px, pill, accent when active) instead of the chunky `.catpill`. `renderCatBar` gained a `curTab==="stumble"` branch that renders the filters as `.tg` spans; Imported source pills, Saved (already `.tg` in its sidebar), and the view-mode pills are unchanged. +`tests/pill-style-parity.test.js` locks the parity across Imported/Saved/Stumble.
+
 ## v1.12.15 — SmartScreen workaround guidance (app 1.12.15)
 - **Decision (2026-07-08): live with the SmartScreen warning, no code-signing certificate.** The installer is unsigned, and only a paid Authenticode/Azure Trusted Signing cert removes the warning — deferred. Options remain documented below if revisited.
 - **In-app note:** the Help/About modal (under "Check for updates") now explains the expected **"Windows protected your PC"** warning and the **More info → Run anyway** workaround (unsigned but safe).

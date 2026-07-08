@@ -847,7 +847,12 @@ function renderCatBar(){
     ? PLATS.map(([k,label])=>
       `<button class="catpill${impSrc===k?" on":""}" style="${impSrc===k?"background:var(--ink)":""}"
         onclick="setImpSrc('${k}')">${k?PICONS[k]||"":""}${label}</button>`).join("")
-    : catSideActive ? "" : pills.map(c=>
+    : catSideActive ? ""
+    : curTab==="stumble"
+      // Stumble category filters use the same small pill style/size as the Imported tags (.tg)
+      ? pills.map(c=>
+        `<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join("")
+      : pills.map(c=>
     `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
       onclick="setFilter('${c.key}')">${c.name}</button>`).join("");
   document.getElementById("catBar").innerHTML = catHtml
