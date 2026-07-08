@@ -180,6 +180,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tag-side .tg{display:block;width:100%;box-sizing:border-box}
 @media(max-width:760px){.tag-side{display:none}.imp-body{display:block}}
 .imp-body>.masonry{flex:1;min-width:0}
+.imp-body>.st-main{flex:1;min-width:0}   /* Stumble content beside its left category sidebar */
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
@@ -932,9 +933,10 @@ function renderCatBar(){
         onclick="setImpSrc('${k}')">${k?PICONS[k]||"":""}${label}</button>`).join("")
     : catSideActive ? ""
     : curTab==="stumble"
-      // Stumble category filters use the same small pill style/size as the Imported tags (.tg)
-      ? pills.map(c=>
-        `<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join("")
+      // Stumble shows categories in a left sidebar on wide screens (stCatSideHTML); only
+      // fall back to top-bar .tg pills when that sidebar is hidden (narrow screens).
+      ? (stSidebarOn() ? "" : pills.map(c=>
+        `<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join(""))
       : pills.map(c=>
     `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
       onclick="setFilter('${c.key}')">${c.name}</button>`).join("");
@@ -1765,19 +1767,27 @@ function stCardHTML(it, idx){
 function sizeSelector(){
   return `<div class="st-size">${[1,2,4].map(n=>`<button class="${stSize===n?"on":""}" onclick="setStSize(${n})">${n}</button>`).join("")}</div>`;
 }
+// Wrap the Stumble content beside its left category sidebar (wide screens); on narrow
+// screens the categories live in the top bar, so render the content bare.
+function stWrap(inner){
+  return stSidebarOn()
+    ? `<div class="imp-body">${stCatSideHTML()}<div class="st-main">${inner}</div></div>`
+    : inner;
+}
 function renderStumble(){
   const v = document.getElementById("view-stumble");
   if(stLoading && !stDeal.length){
-    v.innerHTML = `<div class="empty"><h2>Stumbling…</h2><p>Hunting down corners of the web you didn't know you needed.</p><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent);width:26px;height:26px"></span></div>`;
+    v.innerHTML = stWrap(`<div class="empty"><h2>Stumbling…</h2><p>Hunting down corners of the web you didn't know you needed.</p><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent);width:26px;height:26px"></span></div>`);
     return;
   }
+  const sideHint = stSidebarOn() ? "the category list on the left" : "the category pills above";
   if(!stDeal.length){
-    v.innerHTML = `<div class="stumble"><div class="st-bar">
+    v.innerHTML = stWrap(`<div class="stumble"><div class="st-bar">
       <button class="btn btn-primary" onclick="stumbleNext()">&#127922; Stumble</button>${sizeSelector()}</div>
-      <div class="empty"><h2>Ready to stumble?</h2><p>Deal 1, 2, or 4 validated pages at a time, picked for your interests. Save or pass on each, and vote to teach it your taste — use the category pills above to stumble within one area.</p></div></div>`;
+      <div class="empty"><h2>Ready to stumble?</h2><p>Deal 1, 2, or 4 validated pages at a time, picked for your interests. Save or pass on each, and vote to teach it your taste — use ${sideHint} to stumble within one area.</p></div></div>`);
     return;
   }
-  v.innerHTML = `<div class="stumble deal-${stSize}">
+  v.innerHTML = stWrap(`<div class="stumble deal-${stSize}">
     <div class="st-bar">
       <button class="btn btn-primary" onclick="stumbleNext()" ${stLoading?"disabled":""}>&#127922; Stumble ${stLoading?'<span class="spin"></span>':"&rarr;"}</button>
       ${sizeSelector()}
@@ -1785,7 +1795,7 @@ function renderStumble(){
     <div class="st-deal deal-${stSize}">
       ${stDeal.map((it,idx)=>stCardHTML(it,idx)).join("")}
     </div>
-  </div>`;
+  </div>`);
 }
 function stumbleVote(idx, up){
   const it = stDeal[idx]; if(!it) return;
@@ -2134,7 +2144,7 @@ function setStickyOffsets(){
   }catch(e){}
 }
 let _impResizeTimer;
-window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } });
+window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } else if(curTab==="stumble"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(()=>{ renderCatBar(); renderStumble(); },120); } });
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -2279,6 +2289,18 @@ function tagSideHTML(){
 }
 function impSidebarOn(){ return !!S.tagSidebar && window.innerWidth >= 760; }
 function catSidebarOn(){ return !!S.catSidebar && window.innerWidth >= 760; }
+// Stumble shows its category filter in a LEFT sidebar (like the Imported/Saved tabs) on
+// wide screens; on narrow screens the pills fall back to the top bar (renderCatBar).
+function stSidebarOn(){ return window.innerWidth >= 760; }
+// The Stumble category sidebar: same .tg pill style as the other sidebars — "All" + each
+// category, active highlighted. It's a live filter (no counts), so setFilter drives it.
+function stCatSideHTML(){
+  const pills = [{key:"",name:"All"}].concat(CATS);
+  return `<aside class="tag-side">
+    <div class="tag-side-h">Categories</div>
+    ${pills.map(c=>`<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join("")}
+  </aside>`;
+}
 // Category filter as a left sidebar in the Saved view — same pill size/style as the
 // Imported tag sidebar (uses .tg, with per-category counts; active shown with ✕ to clear).
 function catSideHTML(){

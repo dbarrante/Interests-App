@@ -3,6 +3,9 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## v1.12.18 — Stumble categories in a left sidebar (app 1.12.18)
+- **The Stumble tab's category filter now appears in a LEFT sidebar** (like the Imported/Saved tabs) on wide screens (≥760px), using the same `.tg` pill style. New `stCatSideHTML()` (a `.tag-side` aside of `.tg` pills) + `stWrap()` (wraps the stumble content in an `.imp-body` flex row beside the sidebar) + `stSidebarOn()` gate. `renderCatBar` now suppresses the stumble top-bar pills when the sidebar is showing; on narrow screens the sidebar hides and the pills fall back to the top bar (resize re-renders across the breakpoint). CSS: `.imp-body>.st-main{flex:1;min-width:0}`. Playwright-verified (sidebar left of content, 5 `.tg` pills @10.5px/2px 9px, top bar empty when sidebar on, narrow fallback works). Test parity assertions updated in `tests/pill-style-parity.test.js`.
+
 ## v1.12.17 — One-click in-app auto-update (app 1.12.17)
 - **The "Check for updates" button now actually updates the app** (electron-updater against the private GitHub repo). When a newer release exists it downloads in the background and offers to restart-and-install. Falls back to opening the releases page when unpackaged, when no token is set, or on error.
 - **Auth = a user-pasted, read-only, single-repo GitHub token** (Settings → App updates). Chosen delivery (2026-07-08): token stored **only in local settings** — never baked into the .exe, never committed, and **never synced** (stripped in `settingsForSync`, preserved locally in `applySyncedSettings`, same as the provider/OPR keys). Passed to the main process per-check via a new `ia:check-updates` IPC; main uses `setFeedURL({provider:"github", private:true, token})`.
