@@ -179,6 +179,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .tag-side .tag-side-h{font-size:12px;font-weight:700;opacity:.6;text-transform:uppercase;letter-spacing:.04em;margin:2px 4px 4px}
 .tag-side .tg{display:block;width:100%;box-sizing:border-box}
 @media(max-width:760px){.tag-side{display:none}.imp-body{display:block}}
+.imp-body>.masonry{flex:1;min-width:0}
+.cat-side .catpill{display:block;width:100%;box-sizing:border-box;text-align:left;margin:0}
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
@@ -391,7 +393,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <main>
   <div id="catBar" class="catbar"></div>
   <div id="view-stumble"></div>
-  <div id="view-saved" style="display:none"><div class="masonry" id="savedGrid"></div><div id="savedEmpty"></div></div>
+  <div id="view-saved" style="display:none"><div id="savedBody"><aside class="tag-side cat-side" id="catSide" style="display:none"></aside><div class="masonry" id="savedGrid"></div></div><div id="savedEmpty"></div></div>
   <div id="view-imported" style="display:none"></div>
 
   <div id="view-settings" style="display:none">
@@ -411,6 +413,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint" style="margin-top:6px">Displays when each imported item was saved/added.</div>
         <label style="display:block;margin-top:8px">
           <input type="checkbox" id="tagSideToggle" style="width:auto"> Tags in a left sidebar (Imported view)
+        </label>
+        <label style="display:block;margin-top:8px">
+          <input type="checkbox" id="catSideToggle" style="width:auto"> Categories in a left sidebar (Saved view)
         </label>
         <label style="display:block;margin-top:8px">
           <input type="checkbox" id="reuseWinToggle" style="width:auto"> Open links in one reused window (instead of a new browser tab each)
@@ -646,6 +651,7 @@ const DEFAULTS = {
   showDates:false,
   autoBackup:0,
   tagSidebar:false,
+  catSidebar:false,
   reuseWindow:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
@@ -826,11 +832,12 @@ async function openHelp(){
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
+  const catSideActive = curTab==="saved" && catSidebarOn();
   const catHtml = curTab==="imported"
     ? PLATS.map(([k,label])=>
       `<button class="catpill${impSrc===k?" on":""}" style="${impSrc===k?"background:var(--ink)":""}"
         onclick="setImpSrc('${k}')">${k?PICONS[k]||"":""}${label}</button>`).join("")
-    : pills.map(c=>
+    : catSideActive ? "" : pills.map(c=>
     `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
       onclick="setFilter('${c.key}')">${c.name}</button>`).join("");
   document.getElementById("catBar").innerHTML = catHtml
@@ -925,6 +932,17 @@ function renderSaved(){
   const g = document.getElementById("savedGrid");
   g.className = gridClass();
   g.innerHTML = list.map(i=>cardHTML(i,"saved")).join("");
+  const body = document.getElementById("savedBody");
+  const side = document.getElementById("catSide");
+  if(catSidebarOn()){
+    body.classList.add("imp-body");
+    side.style.display = "";
+    side.innerHTML = catSideHTML();
+  } else {
+    body.classList.remove("imp-body");
+    side.style.display = "none";
+    side.innerHTML = "";
+  }
   attachCardImages();
   document.getElementById("savedEmpty").innerHTML = list.length?"":`<div class="empty"><h2>Nothing saved${filterCat?" in this category":" yet"}</h2><p>Save items from Stumble and they collect here — and every save teaches the AI what to bring you next.</p></div>`;
 }
@@ -1338,6 +1356,8 @@ function renderSettings(){
   document.getElementById("datesToggle").onchange = e=>{ S.showDates=e.target.checked; save("settings",S); if(curTab==="imported") renderImported(); };
   document.getElementById("tagSideToggle").checked = !!S.tagSidebar;
   document.getElementById("tagSideToggle").onchange = e=>{ S.tagSidebar = e.target.checked; save("settings", S); if(curTab==="imported") renderImported(); };
+  document.getElementById("catSideToggle").checked = !!S.catSidebar;
+  document.getElementById("catSideToggle").onchange = e=>{ S.catSidebar = e.target.checked; save("settings", S); renderCatBar(); if(curTab==="saved") renderSaved(); };
   if(document.getElementById("reuseWinToggle")){
     document.getElementById("reuseWinToggle").checked = !!S.reuseWindow;
     document.getElementById("reuseWinToggle").onchange = e=>{ S.reuseWindow = e.target.checked; save("settings", S); toast(S.reuseWindow?"Links open in one reused window":"Links open in your browser", 3500); };
@@ -2012,7 +2032,7 @@ function setStickyOffsets(){
   }catch(e){}
 }
 let _impResizeTimer;
-window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } });
+window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } });
 function updateCounts(){
   document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
   document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
@@ -2156,6 +2176,16 @@ function tagSideHTML(){
   </aside>`;
 }
 function impSidebarOn(){ return !!S.tagSidebar && window.innerWidth >= 760; }
+function catSidebarOn(){ return !!S.catSidebar && window.innerWidth >= 760; }
+// Category filter as a left sidebar in the Saved view — mirrors tagSideHTML().
+// Reuses the CATS / filterCat / setFilter machinery that drives the top #catBar.
+function catSideHTML(){
+  const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
+  return `<div class="tag-side-h">Categories</div>`
+    + pills.map(c=>
+      `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
+        onclick="setFilter('${c.key}')">${esc(c.name)}</button>`).join("");
+}
 const PICONS = {
   youtube:  `<svg class="pic" width="13" height="13" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#f00"/><path d="M9.5 7.5v9l8-4.5z" fill="#fff"/></svg>`,
   facebook: `<svg class="pic" width="13" height="13" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#1877f2"/><text x="12" y="18.5" text-anchor="middle" font-size="17" font-weight="bold" fill="#fff" font-family="Arial">f</text></svg>`,
