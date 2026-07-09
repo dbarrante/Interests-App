@@ -18,6 +18,7 @@ const linkcheck = require("./linkcheck");
 const contentcheck = require("./contentcheck");
 const safebrowse = require("./safebrowse");
 const capturemeta = require("./capturemeta");
+const news = require("./news");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -653,6 +654,21 @@ function createServer(ctx) {
     } catch (e) {
       console.error("check-safety failed:", e);
       res.status(500).json({ error: "check failed" });
+    }
+  });
+
+  // ---- free interest-matched news for Stumble (Google News RSS via core/news; no key) ----
+  app.get("/api/news", async (req, res) => {
+    try {
+      const raw = String(req.query.interests || "");
+      const interests = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
+      const limit = Math.max(1, Math.min(Number(req.query.limit) || 40, 60));
+      if (!interests.length) { res.json({ ok: true, now: Date.now(), items: [] }); return; }
+      const items = await news.fetchNews(interests, { limit });
+      res.json({ ok: true, now: Date.now(), items: items });
+    } catch (e) {
+      console.error("news failed:", e);
+      res.status(500).json({ ok: false, error: "news failed" });
     }
   });
 
