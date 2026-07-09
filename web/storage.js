@@ -43,6 +43,7 @@
     ,bstumbleRequest: function () { return "/api/bstumble/request"; }
     ,bstumbleResults: function () { return "/api/bstumble/results"; }
     ,bstumbleFeedback: function () { return "/api/bstumble/feedback"; }
+    ,news: function (interests) { return "/api/news?interests=" + encodeURIComponent((interests || []).join(",")); }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -148,6 +149,7 @@
       bookmarks: function (browser, profile) { return jget(SE.bookmarks(browser, profile)).then(function (j) { return (j && j.bookmarks) || []; }); },
       checkLinks: function (items, opts) { return jsend("POST", SE.checkLinks(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
       checkContent: function (items, opts) { return jsend("POST", SE.checkContent(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
+      news: function (interests) { return jget(SE.news(interests)).then(function (j) { return (j && j.items) || []; }); },
       checkSafety: function (items, opts) { return jsend("POST", SE.checkSafety(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
       getSafeBrowsingKey: function () { return jget(SE.safeBrowsingKey()).then(function (j) { return !!(j && j.hasKey); }); },
       setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); },
