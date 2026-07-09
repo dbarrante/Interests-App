@@ -14,6 +14,7 @@ ok("stCardHTML shows a news badge", /it\.isNews\s*\?[\s\S]{0,80}?news-badge/.tes
 ok(".news-badge CSS exists", /\.news-badge\{/.test(src));
 ok("Settings has a Mix-news toggle wired to S.newsMix", /id="newsMixToggle"/.test(src) && /S\.newsMix\s*=\s*e\.target\.checked/.test(src));
 ok("news empty-state nudge when no interests", /stNewsOnly[\s\S]{0,80}?interestList\(\)\.length[\s\S]{0,200}?[Ii]nterests/.test(src));
+ok("news interest onclick arg is attribute-escaped (quotes safe)", /function stNewsSideHTML\(\)[\s\S]{0,400}?setNewsInterest\(\$\{esc\(JSON\.stringify\(t\)\)\.replace\(\/"\/g,'&quot;'\)\}/.test(src));
 
 console.log("stumble-news-ui: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

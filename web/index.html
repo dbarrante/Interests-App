@@ -2381,7 +2381,7 @@ function stCatSideHTML(){
 function stNewsSideHTML(){
   const ints = interestList();
   const pills = `<span class="tg${filterInterest===""?" on":""}" onclick="setNewsInterest('')">All</span>`
-    + ints.map(t=>`<span class="tg${filterInterest===t?" on":""}" onclick="setNewsInterest(${JSON.stringify(t)})">${esc(t)}</span>`).join("");
+    + ints.map(t=>`<span class="tg${filterInterest===t?" on":""}" onclick="setNewsInterest(${esc(JSON.stringify(t)).replace(/"/g,'&quot;')})">${esc(t)}</span>`).join("");
   return `<aside class="tag-side">
     <div class="tag-side-h">News</div>
     <span class="tg on" onclick="toggleNewsOnly()">&#128240; News</span>
