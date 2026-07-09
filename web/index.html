@@ -659,6 +659,7 @@ const DEFAULTS = {
   popularOnly:false,
   oprKey:"",
   updateToken:"",   // GitHub fine-grained read-only token for in-app auto-update (per-device; never synced)
+  newsMix:true,   // blend fresh interest-news into the normal Stumble deck
   captureDelay:3,
   captureConcurrency:3,
   recaptureMonths:0,
@@ -683,6 +684,7 @@ S.hiddenBase = S.hiddenBase||[];
 rebuildCats();
 
 let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
+let stNewsOnly=false, filterInterest="";   // 📰 News-only mode + active interest ("" = All)
 // disliked = normalized URLs the user thumbed-down; a PERMANENT "never stumble this again"
 // blocklist, hard-filtered in dropAlreadySaved (not just the soft/windowed prompt avoid list).
 let disliked=[];
@@ -1653,15 +1655,59 @@ async function rankFilter(items){
 // dead-link + tier-2 soft-404/challenge/title-mismatch) → rankFilter, and survivors
 // go into `spool`. A "deal" of N cards (1/2/4) is dealt from the spool into `stDeal`.
 let stLoading = false;
+// The user's specific interests (comma-separated free text) → the news filter "tags".
+function interestList(){
+  return (S.interests||"").split(",").map(s=>s.trim()).filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i);
+}
+function relTime(ts){
+  const s=Math.max(0,(Date.now()-(+ts||0))/1000);
+  if(s<3600) return Math.max(1,Math.floor(s/60))+"m ago";
+  if(s<86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+// Fetch interest-news (free, no AI/key), shape into Stumble items, filter vs saved/disliked/seen.
+async function newsBatch(limit){
+  const ints = stNewsOnly ? (filterInterest ? [filterInterest] : interestList()) : interestList();
+  if(!ints.length) return [];
+  let raw = [];
+  try{ raw = await Store.news(ints); }catch(e){ console.warn("news fetch failed:", e); return []; }
+  const shaped = (raw||[]).map(n=>{
+    const src = String(n.source||domain(n.url)||"news");
+    return { id:"nw_"+(feedKey(n.url)||Math.random().toString(36).slice(2)),
+      title:String(n.title||""), url:String(n.url||""), source:src,
+      category:String(n.interest||""), benefit:"From "+src+" · "+relTime(n.ts),
+      image:null, isNews:true, ts:+n.ts||0 };
+  }).filter(n=>n.url && n.title);
+  let out = dropAlreadySaved(shaped);
+  if(limit) out = out.slice(0, limit);
+  return out;
+}
+// Blend news into a discovery list at ~1-in-4 (one news card after every 3 discovery cards).
+function interleaveNews(discovery, news){
+  if(!news || !news.length) return discovery;
+  const out=[]; let ni=0;
+  for(let i=0;i<discovery.length;i++){
+    out.push(discovery[i]);
+    if((i+1)%3===0 && ni<news.length) out.push(news[ni++]);
+  }
+  while(ni<news.length) out.push(news[ni++]);
+  return out;
+}
 // Pull one fresh batch into the spool. Returns the number of NEW survivors added.
 async function stumbleFetch(){
   if(stLoading) return 0;
-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
   stLoading = true; renderStumble();
   try{
-    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"),{webSearch:true})))));
-    items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
-    if(shown.length>200) shown=shown.slice(-200);
+    let items;
+    if(stNewsOnly){
+      items = await newsBatch();   // free news path — no AI call, no key required
+    } else {
+      if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
+      items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"),{webSearch:true})))));
+      items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
+      if(shown.length>200) shown=shown.slice(-200);
+      if(S.newsMix){ items = interleaveNews(items, await newsBatch(3)); }   // ~1-in-4 fresh news
+    }
     usableSpool();
     const dealtUrls = new Set(stDeal.map(d=>d && d.url));
     const fresh = items.filter(i=>!spool.some(p=>p.url===i.url) && !dealtUrls.has(i.url));
@@ -1675,8 +1721,11 @@ async function stumbleFetch(){
 // 30-minute live-check window; a refill will re-check the URL and its page content.
 function usableSpool(){
   const now=Date.now();
-  spool=spool.filter(i=>isFreshDiscoveryItem(i,now,ST_LIVE_TTL));
-  return applyFilter(spool);
+  // News items are transient and have no AI live-check window — keep them; discovery items
+  // still expire after ST_LIVE_TTL. In news-only mode ignore the category filter (news is
+  // filtered by interest at fetch time, not by CATS).
+  spool=spool.filter(i=> i.isNews || isFreshDiscoveryItem(i,now,ST_LIVE_TTL));
+  return stNewsOnly ? spool.filter(i=>i.isNews) : applyFilter(spool);
 }
 // Take one card from the fresh spool (respecting the category filter). null if empty.
 function spoolTake(){
@@ -4709,6 +4758,8 @@ async function bootData(){
   const storedStSize = Number(await load("stsize", 1));
   stSize = [1,2,4].indexOf(storedStSize)>=0 ? storedStSize : 1;
   filterCat = (await load("fcat", "")) || "";
+  stNewsOnly = await load("stnewsonly", false);
+  filterInterest = await load("finterest", "");
   viewMode  = (await load("view", "g4")) || "g4";
   impTag    = (await load("itag", "")) || "";
   impSrc    = (await load("isrc", "")) || "";
