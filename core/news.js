@@ -44,4 +44,55 @@ function parseNewsRss(xml) {
   return out;
 }
 
-module.exports = { parseNewsRss: parseNewsRss, decodeEntities: decodeEntities };
+var gf = require("./guardedfetch");
+
+function feedUrl(interest, whenDays) {
+  var q = encodeURIComponent(interest + " when:" + whenDays + "d");
+  return "https://news.google.com/rss/search?q=" + q + "&hl=en-US&gl=US&ceid=US:en";
+}
+
+// Default transport: one guarded GET, body → utf8 string. Fixed host (news.google.com), so
+// no SSRF host-check needed; guardedfetch supplies timeout + drain-don't-cancel.
+async function defaultFetchImpl(url) {
+  var r = await gf.fetchOnceGuarded(url, { ua: gf.UA_LINKCHECK, timeoutMs: 8000, maxBytes: 512 * 1024 });
+  if (!r || r.status === 0 || r.error) throw (r && r.error) || new Error("fetch failed");
+  return r.buffer ? r.buffer.toString("utf8") : "";
+}
+
+// Fetch news for each interest, tag, merge, dedupe (url then lowercased title), sort
+// newest-first, cap. One failing feed contributes nothing but never rejects the batch.
+async function fetchNews(interests, opts) {
+  opts = opts || {};
+  var list = (Array.isArray(interests) ? interests : []).map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+  if (!list.length) return [];
+  var perInterest = opts.perInterest || 10;
+  var limit = opts.limit || 40;
+  var whenDays = opts.whenDays || 7;
+  var concurrency = opts.concurrency || 4;
+  var fetchImpl = opts.fetchImpl || defaultFetchImpl;
+
+  var perFeed = await gf.runPool(list, concurrency, async function (interest) {
+    try {
+      var xml = await fetchImpl(feedUrl(interest, whenDays));
+      var items = parseNewsRss(xml).slice(0, perInterest);
+      items.forEach(function (it) { it.interest = interest; });
+      return items;
+    } catch (e) { return []; }   // one feed down ≠ whole batch down
+  });
+
+  var merged = [];
+  var seenUrl = Object.create(null), seenTitle = Object.create(null);
+  perFeed.forEach(function (items) {
+    (items || []).forEach(function (it) {
+      var uk = String(it.url || "");
+      var tk = String(it.title || "").toLowerCase();
+      if (!uk || seenUrl[uk] || seenTitle[tk]) return;
+      seenUrl[uk] = 1; seenTitle[tk] = 1;
+      merged.push(it);
+    });
+  });
+  merged.sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+  return merged.slice(0, limit);
+}
+
+module.exports = { parseNewsRss: parseNewsRss, decodeEntities: decodeEntities, fetchNews: fetchNews };
