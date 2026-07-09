@@ -1691,7 +1691,7 @@ async function newsBatch(limit){
   const ints = stNewsOnly ? (filterInterest ? [filterInterest] : interestList()) : interestList();
   if(!ints.length) return [];
   let raw = [];
-  try{ raw = await Store.news(ints); }catch(e){ console.warn("news fetch failed:", e); return []; }
+  try{ raw = await Store.news(ints); }catch(e){ console.warn("news fetch failed:", e); toast("Couldn't load news.", 5000); return []; }
   const shaped = (raw||[]).map(n=>{
     const src = String(n.source||domain(n.url)||"news");
     return { id:"nw_"+(feedKey(n.url)||Math.random().toString(36).slice(2)),
@@ -1821,7 +1821,9 @@ function stCardHTML(it, idx){
                   :`<div class="ph" style="background:linear-gradient(135deg,${grad})">${fav?`<img src="${esc(fav)}">`:""}${esc(dom||"idea")}</div>`}
       </a>
       <div class="st-body">
-        <span class="chip" style="background:${cat.chip}">${esc(cat.name)}</span>
+        ${it.isNews
+          ? `<span class="chip" style="background:#6b6358">${esc(it.category||"News")}</span>`
+          : `<span class="chip" style="background:${cat.chip}">${esc(cat.name)}</span>`}
         ${it.isNews?`<span class="news-badge">&#128240; News</span>`:""}
         <div class="st-title" onclick="stumbleOpen(${idx})">${esc(it.title)}</div>
         <div class="src">${esc(it.source||dom)}</div>

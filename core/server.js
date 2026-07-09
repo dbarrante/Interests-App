@@ -661,7 +661,9 @@ function createServer(ctx) {
   app.get("/api/news", async (req, res) => {
     try {
       const raw = String(req.query.interests || "");
-      const interests = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
+      const all = raw.split(",").map((s) => s.trim()).filter(Boolean);
+      const interests = all.slice(0, 8);
+      if (all.length > 8) console.warn("news: capping " + all.length + " interests to 8");
       const limit = Math.max(1, Math.min(Number(req.query.limit) || 40, 60));
       if (!interests.length) { res.json({ ok: true, now: Date.now(), items: [] }); return; }
       const items = await news.fetchNews(interests, { limit });
