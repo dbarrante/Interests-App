@@ -200,6 +200,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .st-deal.deal-2 .st-card .thumb .ph,.st-deal.deal-4 .st-card .thumb .ph{height:190px}
 .st-body{padding:20px 24px;flex:1}
 .st-title{font-size:21px;font-weight:800;line-height:1.25;cursor:pointer}
+.news-badge{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;color:#fff;background:#c2410c;border-radius:999px;padding:1px 7px;vertical-align:middle}
 .st-deal.deal-2 .st-title,.st-deal.deal-4 .st-title{font-size:18px}
 .st-title:hover{color:var(--accent)}
 .st-actions{display:flex;gap:10px;padding:14px 24px 20px;flex-wrap:wrap}
@@ -421,6 +422,10 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <input type="checkbox" id="reuseWinToggle" style="width:auto"> Open links in one reused window (instead of a new browser tab each)
         </label>
         <div class="hint" style="margin-top:6px">Opens links inside the app and reuses a single window for each click — no more tab pile-up. It's separate from your main browser (its own logins). Bulk "Open" still uses your browser.</div>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer;margin-top:8px">
+          <input type="checkbox" id="newsMixToggle" style="width:auto"> Mix fresh news into Stumble
+        </label>
+        <div class="hint" style="margin:4px 0 0">Blends interest-matched news into your normal Stumble deck (free). Turn off for discovery pages only. The &#128240; News pill in Stumble always gives news-only.</div>
       </div>
 
       <div class="sec">
@@ -955,6 +960,18 @@ function setFilter(k){
   renderCatBar();
   if(curTab==="saved") renderSaved(); else if(curTab==="stumble") renderStumble();
 }
+function toggleNewsOnly(){
+  stNewsOnly = !stNewsOnly; save("stnewsonly", stNewsOnly);
+  spool = []; stDeal = [];          // switch content source cleanly
+  renderCatBar(); renderStumble();
+  stumbleNext();
+}
+function setNewsInterest(k){
+  filterInterest = k; save("finterest", k);
+  spool = []; stDeal = [];          // interest changed → refill from the new query
+  renderStumble();
+  stumbleNext();
+}
 function applyFilter(list){
   if(!filterCat) return list;
   const c = CATS.find(c=>c.key===filterCat);
@@ -1468,6 +1485,10 @@ function renderSettings(){
     document.getElementById("reuseWinToggle").checked = !!S.reuseWindow;
     document.getElementById("reuseWinToggle").onchange = e=>{ S.reuseWindow = e.target.checked; save("settings", S); toast(S.reuseWindow?"Links open in one reused window":"Links open in your browser", 3500); };
   }
+  if(document.getElementById("newsMixToggle")){
+    document.getElementById("newsMixToggle").checked = !!S.newsMix;
+    document.getElementById("newsMixToggle").onchange = e=>{ S.newsMix = e.target.checked; save("settings", S); toast(S.newsMix?"News will be mixed into Stumble":"News mixing off"); };
+  }
   document.getElementById("autoBackup").value = String(S.autoBackup||0);
   document.getElementById("autoBackup").onchange = e=>{ S.autoBackup=+e.target.value||0; save("settings",S); toast(S.autoBackup?("Auto-backup: every "+S.autoBackup+" day"+(S.autoBackup>1?"s":"")):"Auto-backup off"); };
   if(document.getElementById("syncToggle")){
@@ -1801,6 +1822,7 @@ function stCardHTML(it, idx){
       </a>
       <div class="st-body">
         <span class="chip" style="background:${cat.chip}">${esc(cat.name)}</span>
+        ${it.isNews?`<span class="news-badge">&#128240; News</span>`:""}
         <div class="st-title" onclick="stumbleOpen(${idx})">${esc(it.title)}</div>
         <div class="src">${esc(it.source||dom)}</div>
         <div class="benefit"><b>Why for you:</b> ${esc(it.benefit)}</div>
@@ -1820,11 +1842,15 @@ function sizeSelector(){
 // screens the categories live in the top bar, so render the content bare.
 function stWrap(inner){
   return stSidebarOn()
-    ? `<div class="imp-body">${stCatSideHTML()}<div class="st-main">${inner}</div></div>`
+    ? `<div class="imp-body">${stNewsOnly?stNewsSideHTML():stCatSideHTML()}<div class="st-main">${inner}</div></div>`
     : inner;
 }
 function renderStumble(){
   const v = document.getElementById("view-stumble");
+  if(stNewsOnly && !interestList().length){
+    v.innerHTML = stWrap(`<div class="stumble"><div class="empty"><h2>No interests yet</h2><p>Add a few interests in <a href="#" onclick="showTab('settings');return false">Settings</a> (your profile) and News mode will fill with stories matched to them.</p></div></div>`);
+    return;
+  }
   if(stLoading && !stDeal.length){
     v.innerHTML = stWrap(`<div class="empty"><h2>Stumbling…</h2><p>Hunting down corners of the web you didn't know you needed.</p><span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent);width:26px;height:26px"></span></div>`);
     return;
@@ -2347,7 +2373,19 @@ function stCatSideHTML(){
   const pills = [{key:"",name:"All"}].concat(CATS);
   return `<aside class="tag-side">
     <div class="tag-side-h">Categories</div>
+    <span class="tg${stNewsOnly?" on":""}" onclick="toggleNewsOnly()">&#128240; News</span>
     ${pills.map(c=>`<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join("")}
+  </aside>`;
+}
+// News-only sidebar: the 📰 toggle (active) + "All" + the user's specific interests as tags.
+function stNewsSideHTML(){
+  const ints = interestList();
+  const pills = `<span class="tg${filterInterest===""?" on":""}" onclick="setNewsInterest('')">All</span>`
+    + ints.map(t=>`<span class="tg${filterInterest===t?" on":""}" onclick="setNewsInterest(${JSON.stringify(t)})">${esc(t)}</span>`).join("");
+  return `<aside class="tag-side">
+    <div class="tag-side-h">News</div>
+    <span class="tg on" onclick="toggleNewsOnly()">&#128240; News</span>
+    ${pills}
   </aside>`;
 }
 // Category filter as a left sidebar in the Saved view — same pill size/style as the
