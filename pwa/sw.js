@@ -1,16 +1,26 @@
 "use strict";
 
-// Minimal service worker, Phase 2 scope: proxy /idb-img/<id> requests to the
-// "images" IndexedDB object store. This exists because Store.imgUrl(id) must stay
-// SYNCHRONOUS (index.html does `im.src = Store.imgUrl(id)` directly, mirroring the
-// desktop's `/api/img/<id>` URL-string contract) while IndexedDB reads are async.
-// Returning a same-origin URL and letting the browser's normal <img> fetch trigger
-// this handler is the only way to bridge that gap without touching index.html.
+// Service worker: proxies /idb-img/<id> requests to the "images" IndexedDB object
+// store (Phase 2 — see below), and caches every other same-origin GET request for
+// full offline app-shell support (Phase 5).
 //
-// Full offline app-shell caching is out of scope here — that's Phase 5.
+// The /idb-img proxy exists because Store.imgUrl(id) must stay SYNCHRONOUS
+// (index.html does `im.src = Store.imgUrl(id)` directly, mirroring the desktop's
+// `/api/img/<id>` URL-string contract) while IndexedDB reads are async. Returning
+// a same-origin URL and letting the browser's normal <img> fetch trigger this
+// handler is the only way to bridge that gap without touching index.html.
+//
+// The app-shell cache is a generic same-origin cache-first rule, not a hardcoded
+// file list — index.html, every .js file, and manifest.webmanifest all get cached
+// the first time they're fetched, so there's nothing to remember to update when a
+// new script tag is added. Cross-origin requests (Dropbox API, AI providers,
+// thum.io/mshots, etc.) always go straight to network, untouched.
 
 const DB_NAME = "interests-app-pwa";
 const DB_VERSION = 2; // must always track pwa/idb.js's DB_VERSION
+const SHELL_CACHE = "interests-pwa-shell-v1"; // bump when a cached file's behavior
+// changes in a way old clients must not keep serving stale. Routine additions of
+// new files need no bump — they're cached the first time they're fetched.
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -34,18 +44,39 @@ async function getImage(id) {
 }
 
 self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("activate", (e) => e.waitUntil(
+  caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k !== SHELL_CACHE).map((k) => caches.delete(k))))
+    .then(() => self.clients.claim())
+));
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   const m = url.pathname.match(/^\/idb-img\/(.+)$/);
-  if (!m) return; // not ours — let the browser handle it normally
+  if (m) {
+    const id = decodeURIComponent(m[1]);
+    event.respondWith(
+      getImage(id).then((row) => {
+        if (!row || !row.blob) return new Response("not found", { status: 404 });
+        return new Response(row.blob, { headers: { "Content-Type": row.type || "image/jpeg" } });
+      }).catch(() => new Response("error reading image store", { status: 500 }))
+    );
+    return;
+  }
 
-  const id = decodeURIComponent(m[1]);
+  // Phase 5: generic same-origin app-shell cache. Cross-origin requests (Dropbox
+  // API, AI providers, thum.io/mshots, Pinterest widgets, microlink, noembed,
+  // openpagerank, the Cloudflare content-check Worker) and non-GET requests are
+  // left untouched — always network, exactly as before this branch existed.
+  if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
+
   event.respondWith(
-    getImage(id).then((row) => {
-      if (!row || !row.blob) return new Response("not found", { status: 404 });
-      return new Response(row.blob, { headers: { "Content-Type": row.type || "image/jpeg" } });
-    }).catch(() => new Response("error reading image store", { status: 500 }))
+    caches.open(SHELL_CACHE).then(async (cache) => {
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const res = await fetch(event.request);
+      if (res.ok) cache.put(event.request, res.clone());
+      return res;
+    })
   );
 });
