@@ -193,27 +193,40 @@ async function checkContentChunk(items) {
   });
 }
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*", // tighten to your GitHub Pages origin once deployed there (Phase 6)
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Auth-Token",
-};
+// Allow-list, not a single hardcoded origin: a static single origin would break
+// local dev testing of Stumble's content-check from localhost:8080 once this is
+// tightened for the deployed GitHub Pages site, since a CORS response can only
+// echo back ONE Access-Control-Allow-Origin value. Instead, check the request's
+// actual Origin against this list and echo back whichever one matches (Phase 6).
+const ALLOWED_ORIGINS = ["http://localhost:8080", "https://dbarrante.github.io"];
+
+function corsHeaders(request) {
+  const origin = request.headers.get("Origin");
+  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Auth-Token",
+    "Vary": "Origin",
+  };
+}
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
-    if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
+    const headers = corsHeaders(request);
+    if (request.method === "OPTIONS") return new Response(null, { headers });
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers });
 
     const token = request.headers.get(AUTH_HEADER);
     if (!env.AUTH_TOKEN || token !== env.AUTH_TOKEN) {
-      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...headers, "Content-Type": "application/json" } });
     }
 
     let body;
-    try { body = await request.json(); } catch (e) { return new Response(JSON.stringify({ error: "bad json" }), { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }); }
+    try { body = await request.json(); } catch (e) { return new Response(JSON.stringify({ error: "bad json" }), { status: 400, headers: { ...headers, "Content-Type": "application/json" } }); }
     const items = Array.isArray(body.items) ? body.items.slice(0, 50) : []; // cap per-request batch size
 
     const results = await checkContentChunk(items);
-    return new Response(JSON.stringify({ results }), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ results }), { headers: { ...headers, "Content-Type": "application/json" } });
   },
 };
