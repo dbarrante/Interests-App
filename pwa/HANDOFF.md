@@ -109,6 +109,27 @@ For a fresh browser or a real device, you'll need to either:
    Imported tab) has the same shape of dependency and is still stubbed —
    apply the same fix pattern if that turns out to matter.
 
+## Phase 6 (done in code, not yet verified live)
+
+GitHub Actions (`.github/workflows/deploy-pwa.yml`) deploys `pwa/` to GitHub
+Pages on every push to `master` touching `pwa/**`, plus manual dispatch. The
+default project-site URL for this repo is a subpath —
+`https://dbarrante.github.io/Interests-App/`, not the origin root — which
+would have broken three hardcoded-root-path assumptions (service worker
+registration, `Store.imgUrl()`, the OAuth `redirectUri()`); all three are now
+relative/scope-derived instead. The Cloudflare content-check Worker's CORS is
+now an allow-list (`localhost:8080` + the Pages origin) instead of a
+wildcard, so local dev testing keeps working alongside the deployed site.
+
+**Three things still require a human, outside what an agent can do:**
+1. Redeploy the updated `pwa/cf-worker/worker.js` to your Cloudflare account.
+2. Add `https://dbarrante.github.io/Interests-App/` as a second registered
+   OAuth redirect URI in the Dropbox App Console (keep
+   `http://localhost:8080/` too, for continued local dev).
+3. Verify Add to Home Screen on a real iPhone/iPad, confirm the icon renders,
+   an offline reload works, and a full sync round-trip succeeds against a
+   live desktop install.
+
 ## Recommended next steps, in order
 
 1. Decide on the Dropbox-connection-UI gap above (probably: add a real

@@ -161,8 +161,15 @@ stubbed to `[]` — same fix pattern would apply if that turns out to matter too
 
 ## What's next (not built yet)
 
-- Phase 5: PWA manifest + extend `sw.js` for full offline app-shell caching and installability
-- Phase 6: deploy to GitHub Pages (gets real HTTPS, which the local dev server
-  can't provide — needed for both PKCE/Web Crypto and the service worker to work
-  on an actual iPhone/iPad, not just localhost), verify on a real device via Add to
-  Home Screen, confirm a full sync round-trip against a live desktop install
+- Phase 5: done — see `pwa/HANDOFF.md`.
+- Phase 6: done in code — GitHub Actions deploys `pwa/` to GitHub Pages on every
+  push to `master` (`.github/workflows/deploy-pwa.yml`), three origin-root-path
+  assumptions were fixed to work under the Pages subpath, and the Cloudflare
+  content-check Worker's CORS is now an allow-list (`localhost:8080` +
+  `https://dbarrante.github.io`). **Three things remain manual, outside what an
+  agent can do:** redeploy the updated `pwa/cf-worker/worker.js` to your actual
+  Cloudflare account; add `https://dbarrante.github.io/Interests-App/` as a
+  second registered redirect URI in the Dropbox App Console (alongside
+  `http://localhost:8080/`); and verify Add to Home Screen on a real
+  iPhone/iPad — the first point this project can actually be used on the
+  device it was built for.
