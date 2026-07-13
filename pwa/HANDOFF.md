@@ -137,10 +137,5 @@ wildcard, so local dev testing keeps working alongside the deployed site.
    `oauth.js`'s `beginAuthorize`/`handleRedirectCallback`).
 2. Phase 5: `manifest.webmanifest` + icons, extend `sw.js` beyond image
    proxying into full app-shell caching for offline/installability.
-3. Phase 6: deploy `pwa/` to GitHub Pages. Before that ships:
-   - Tighten `cf-worker/worker.js`'s `CORS_HEADERS` from `*` to the real
-     GitHub Pages origin.
-   - Add the GitHub Pages URL as a second registered redirect URI in the
-     Dropbox App Console (alongside `http://localhost:8080/`).
-   - Test Add to Home Screen on a real iPhone/iPad — this is the first point
-     this project can actually be used on the device it was built for.
+3. Phase 6: done in code — see the "Phase 6" section above for what remains
+   (all manual, outside what an agent can do).
