@@ -17,7 +17,7 @@
 
 (function () {
   const ICON_SVG_DATA_URI =
-    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23c2410c'/%3E%3Ctext x='50' y='68' font-size='52' font-family='Segoe UI,Arial' font-weight='800' fill='white' text-anchor='middle'%3Ei%3C/text%3E%3C/svg%3E";
+    "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Crect%20width='100'%20height='100'%20rx='22'%20fill='%23c2410c'/%3E%3Ctext%20x='50'%20y='68'%20font-size='52'%20font-family='Segoe%20UI,Arial'%20font-weight='800'%20fill='white'%20text-anchor='middle'%3Ei%3C/text%3E%3C/svg%3E";
 
   if (!document.querySelector('link[rel="apple-touch-icon"]')) {
     const link = document.createElement("link");
