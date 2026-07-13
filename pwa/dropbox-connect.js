@@ -73,12 +73,35 @@
     $("dbxAppKey").addEventListener("change", (e) => {
       localStorage.setItem(Dbx.LS_KEYS.appKey, e.target.value.trim());
     });
+
+    $("dbxConnectBtn").addEventListener("click", async () => {
+      if (Dbx.isConnected()) {
+        Dbx.disconnect();
+        setError("");
+        await refreshStatus();
+        if (typeof renderSyncStatus === "function") renderSyncStatus();
+        return;
+      }
+      const appKey = $("dbxAppKey").value.trim();
+      if (!appKey) { setError("Enter a Dropbox App key first."); return; }
+      localStorage.setItem(Dbx.LS_KEYS.appKey, appKey);
+      Dbx.beginAuthorize(appKey, redirectUri());
+    });
   }
 
   async function init() {
     if (!Dbx) return; // oauth.js not loaded on this page
+    localStorage.setItem(Dbx.LS_KEYS.redirectUri, redirectUri());
+
     injectWidget();
+
+    const wasCallback = await Dbx.handleRedirectCallback(currentAppKey(), redirectUri(), (msg) => {
+      console.log(msg);
+      if (/failed|mismatch/i.test(msg)) setError(msg);
+    });
+
     await refreshStatus();
+    if (wasCallback && typeof renderSyncStatus === "function") renderSyncStatus();
   }
 
   if (document.readyState === "loading") {
