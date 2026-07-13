@@ -18,9 +18,10 @@
 
 const DB_NAME = "interests-app-pwa";
 const DB_VERSION = 2; // must always track pwa/idb.js's DB_VERSION
-const SHELL_CACHE = "interests-pwa-shell-v1"; // bump when a cached file's behavior
-// changes in a way old clients must not keep serving stale. Routine additions of
-// new files need no bump — they're cached the first time they're fetched.
+const SHELL_CACHE = "interests-pwa-shell-v1"; // bump on ANY edit to an already-cached
+// file (index.html, any .js file, the manifest) — cache-first means existing
+// installs keep serving the old content indefinitely otherwise. Adding a brand-new
+// file needs no bump; it's simply cached the first time it's fetched.
 
 function openDb() {
   return new Promise((resolve, reject) => {
