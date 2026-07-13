@@ -17,7 +17,7 @@
 
   function $(id) { return document.getElementById(id); }
   function currentAppKey() { return localStorage.getItem(Dbx.LS_KEYS.appKey) || ""; }
-  function redirectUri() { return location.origin + "/"; }
+  function redirectUri() { return new URL(".", location.href).href; }
 
   function setError(msg) {
     const el = $("dbxConnectError");

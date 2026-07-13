@@ -19,7 +19,7 @@
   const idb = window.IA_IDB;
 
   if (navigator.serviceWorker) {
-    navigator.serviceWorker.register("/sw.js").catch((e) => {
+    navigator.serviceWorker.register("sw.js").catch((e) => {
       console.error("Service worker registration failed (images will not load):", e);
     });
   }
@@ -70,7 +70,7 @@
     delSaved(id) { return idb.delete("saved", id).then(() => idb.addTombstone("saved", id)).then(() => {}); },
 
     // --- images: /idb-img/<id> is served by sw.js's fetch handler ---
-    imgUrl(id) { return "/idb-img/" + encodeURIComponent(id); },
+    imgUrl(id) { return "idb-img/" + encodeURIComponent(id); },
     imgPut(id, dataUrl) {
       return dataUrlToBlob(dataUrl).then((blob) => idb.put("images", { id, blob, type: blob.type })).then(() => {});
     },
