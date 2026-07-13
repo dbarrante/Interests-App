@@ -1,0 +1,43 @@
+name: Deploy PWA to GitHub Pages
+
+# Publishes pwa/ as a static site whenever it changes on master, so the iPad
+# PWA build is reachable over real HTTPS (required for PKCE/Web Crypto and
+# the service worker — see pwa/HANDOFF.md's Phase 6).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'pwa/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload pwa/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pwa
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
