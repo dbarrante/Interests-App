@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interests App PWA — Phase 3: Sync</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1.05rem; margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: .3rem; }
+  label { display: block; font-size: .85rem; font-weight: 600; margin-top: .75rem; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem; font-size: .95rem; margin-top: .25rem; }
+  button { margin-top: .75rem; margin-right: .5rem; padding: .55rem 1rem; font-size: .95rem; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { padding: .6rem; border-radius: 6px; background: #f0f0f0; margin-top: .75rem; font-size: .9rem; }
+  #status.ok { background: #e2f5e6; }
+  #syncResult { padding: .6rem; border-radius: 6px; background: #f0f0f0; margin-top: .75rem; font-size: .85rem; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+  table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .85rem; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; }
+  #log { background: #111; color: #ccc; padding: .75rem; font-family: ui-monospace, monospace; font-size: .8rem; height: 180px; overflow-y: auto; margin-top: .5rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<h1>Interests App — iPad PWA, Phase 3</h1>
+<p>Full sync cycle: read Dropbox peer snapshots, merge via the unmodified <code>core/merge.js</code> port, apply to IndexedDB, then publish this device's own snapshot back.</p>
+
+<h2>1. Dropbox connection</h2>
+<label for="appKey">App key</label>
+<input type="text" id="appKey">
+<label for="redirectUri">Redirect URI</label>
+<input type="text" id="redirectUri">
+<button id="saveConfig">Save config</button>
+<div id="status">Not connected.</div>
+<button id="connectBtn">Connect to Dropbox</button>
+
+<h2>2. This device</h2>
+<div id="deviceInfo"></div>
+<label for="deviceLabel">Device label</label>
+<input type="text" id="deviceLabel" placeholder="e.g. Dave's iPad">
+<button id="saveLabel">Save label</button>
+
+<h2>3. Test data</h2>
+<button id="addTestCard">Add a test card (unique, timestamped)</button>
+<button id="deleteLastCard" disabled>Delete last-added test card</button>
+<div id="localCards"></div>
+
+<h2>4. Sync</h2>
+<button id="syncNowBtn" disabled>Sync Now</button>
+<div id="syncResult"></div>
+
+<h2>Log</h2>
+<div id="log"></div>
+
+<script src="idb.js"></script>
+<script src="oauth.js"></script>
+<script src="merge.js"></script>
+<script src="sync-pwa.js"></script>
+<script src="storage-pwa.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+function log(msg) {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.textContent += line + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log(line);
+}
+
+function loadConfig() {
+  $("appKey").value = localStorage.getItem(IADropbox.LS_KEYS.appKey) || "";
+  // Defaults to the origin ROOT, not this page's own path — must match whatever
+  // redirect URI is actually registered in the Dropbox App Console (index.html's
+  // Phase 1 setup used http://localhost:8080/). localStorage is origin-scoped, so
+  // if you already connected via index.html this page picks up that same token
+  // without needing to reconnect at all.
+  $("redirectUri").value = localStorage.getItem(IADropbox.LS_KEYS.redirectUri) || (location.origin + "/");
+}
+function saveConfig() {
+  localStorage.setItem(IADropbox.LS_KEYS.appKey, $("appKey").value.trim());
+  localStorage.setItem(IADropbox.LS_KEYS.redirectUri, $("redirectUri").value.trim());
+  log("Config saved.");
+  refreshStatus();
+}
+function currentAppKey() { return localStorage.getItem(IADropbox.LS_KEYS.appKey) || ""; }
+function currentRedirectUri() { return localStorage.getItem(IADropbox.LS_KEYS.redirectUri) || ""; }
+
+async function refreshStatus() {
+  const el = $("status");
+  if (!IADropbox.isConnected()) {
+    el.textContent = "Not connected.";
+    el.className = "";
+    $("syncNowBtn").disabled = true;
+    return;
+  }
+  try {
+    const token = await IADropbox.getAccessToken(currentAppKey());
+    const account = await IADropbox.getCurrentAccount(token);
+    el.textContent = `Connected as ${account.email}`;
+    el.className = "ok";
+    $("syncNowBtn").disabled = false;
+  } catch (e) {
+    el.textContent = "Connected, but account check failed: " + e.message;
+    el.className = "";
+    log("Account check error: " + e.message);
+  }
+}
+
+async function refreshDeviceInfo() {
+  const { deviceId, deviceLabel } = await IASync.ensureDeviceIdentity();
+  $("deviceInfo").textContent = `Device ID: ${deviceId}`;
+  $("deviceLabel").value = deviceLabel;
+}
+
+let _lastTestCardId = null;
+async function refreshCardsList() {
+  const cards = await Store.getCards();
+  $("localCards").innerHTML = cards.length
+    ? "<table><thead><tr><th>ID</th><th>Title</th><th>Updated</th></tr></thead><tbody>" +
+      cards.map((c) => `<tr><td>${c.id}</td><td>${c.title || ""}</td><td>${new Date(c.updatedAt).toLocaleTimeString()}</td></tr>`).join("") +
+      "</tbody></table>"
+    : "<em>(no local cards)</em>";
+}
+
+$("saveConfig").addEventListener("click", saveConfig);
+$("connectBtn").addEventListener("click", () => {
+  const appKey = currentAppKey(), redirectUri = currentRedirectUri();
+  if (!appKey || !redirectUri) { log("Set App key and Redirect URI first."); return; }
+  IADropbox.beginAuthorize(appKey, redirectUri);
+});
+
+$("saveLabel").addEventListener("click", async () => {
+  await Store.setDeviceLabel($("deviceLabel").value.trim() || "iPad");
+  log("Device label saved.");
+});
+
+$("addTestCard").addEventListener("click", async () => {
+  const id = "pwa-test-" + Date.now();
+  await Store.patchCard({ id, title: "PWA test card " + new Date().toLocaleTimeString(), note: "created from sync-test.html" });
+  _lastTestCardId = id;
+  $("deleteLastCard").disabled = false;
+  log("Added card " + id);
+  refreshCardsList();
+});
+
+$("deleteLastCard").addEventListener("click", async () => {
+  if (!_lastTestCardId) return;
+  await Store.delCard(_lastTestCardId);
+  log("Deleted card " + _lastTestCardId + " (tombstone written).");
+  _lastTestCardId = null;
+  $("deleteLastCard").disabled = true;
+  refreshCardsList();
+});
+
+$("syncNowBtn").addEventListener("click", async () => {
+  $("syncNowBtn").disabled = true;
+  const startedAt = Date.now();
+  $("syncResult").textContent = "Syncing... (starting)";
+  try {
+    const result = await Store.syncNow(({ phase, done, total }) => {
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      $("syncResult").textContent = `Syncing... ${phase}: ${done}/${total} (${secs}s elapsed)`;
+    });
+    const secs = Math.round((Date.now() - startedAt) / 1000);
+    $("syncResult").textContent = `Done in ${secs}s:\n` + JSON.stringify(result, null, 2);
+    log(`Sync done in ${secs}s: peers=${result.peersRead} upserts=${result.upserts} deletes=${result.deletes} conflicts=${result.conflicts} published=${result.published}`);
+    await refreshCardsList();
+  } catch (e) {
+    $("syncResult").textContent = "Error: " + e.message;
+    log("Sync error: " + e.message);
+  } finally {
+    $("syncNowBtn").disabled = false;
+  }
+});
+
+(async function init() {
+  log("init: starting");
+  loadConfig();
+  log("init: config loaded");
+  const wasCallback = await IADropbox.handleRedirectCallback(currentAppKey(), currentRedirectUri(), log);
+  log("init: redirect-callback check done (wasCallback=" + wasCallback + ")");
+  if (wasCallback) loadConfig();
+  await refreshStatus();
+  log("init: status refreshed");
+  await refreshDeviceInfo();
+  log("init: device info refreshed (IndexedDB reachable)");
+  await refreshCardsList();
+  log("init: cards list refreshed");
+  log("Ready.");
+})().catch((e) => log("init FAILED: " + (e && e.stack || e)));
+</script>
+</body>
+</html>

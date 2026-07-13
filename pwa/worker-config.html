@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interests App PWA — Content-Check Worker Config</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.2rem; }
+  label { display: block; font-size: .85rem; font-weight: 600; margin-top: .75rem; }
+  input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: .5rem; font-size: .95rem; margin-top: .25rem; }
+  button { margin-top: .75rem; margin-right: .5rem; padding: .55rem 1rem; font-size: .95rem; cursor: pointer; }
+  #status { padding: .6rem; border-radius: 6px; background: #f0f0f0; margin-top: .75rem; font-size: .9rem; white-space: pre-wrap; }
+  #status.ok { background: #e2f5e6; }
+  #status.err { background: #fce4e4; }
+</style>
+</head>
+<body>
+
+<h1>Content-Check Worker Configuration</h1>
+<p>Wires <code>Store.checkContent</code> to your deployed Cloudflare Worker (see <code>cf-worker/README.md</code> for deployment steps). Once saved, Stumble mode's live-content verification will use this instead of always returning empty.</p>
+
+<label for="url">Worker URL</label>
+<input type="text" id="url" placeholder="https://interests-content-check.<you>.workers.dev">
+<label for="token">Auth token (the AUTH_TOKEN secret you set on the Worker)</label>
+<input type="password" id="token">
+<button id="save">Save</button>
+<button id="test">Test with a real URL</button>
+<button id="clear">Clear config</button>
+
+<div id="status"></div>
+
+<script src="idb.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const LS_URL = "ia_pwa_contentcheck_url", LS_TOKEN = "ia_pwa_contentcheck_token";
+
+function setStatus(text, cls) { const el = $("status"); el.textContent = text; el.className = cls || ""; }
+
+function load() {
+  $("url").value = localStorage.getItem(LS_URL) || "";
+  $("token").value = localStorage.getItem(LS_TOKEN) || "";
+}
+$("save").addEventListener("click", () => {
+  localStorage.setItem(LS_URL, $("url").value.trim());
+  localStorage.setItem(LS_TOKEN, $("token").value.trim());
+  setStatus("Saved.", "ok");
+});
+$("clear").addEventListener("click", () => {
+  localStorage.removeItem(LS_URL); localStorage.removeItem(LS_TOKEN);
+  $("url").value = ""; $("token").value = "";
+  setStatus("Cleared — Store.checkContent will fall back to returning nothing (Stumble mode's verification will fail closed, same as before).");
+});
+$("test").addEventListener("click", async () => {
+  const url = $("url").value.trim(), token = $("token").value.trim();
+  if (!url) { setStatus("Set a Worker URL first.", "err"); return; }
+  setStatus("Testing against https://example.com ...");
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Auth-Token": token },
+      body: JSON.stringify({ items: [{ id: "test1", url: "https://example.com" }] }),
+    });
+    const text = await res.text();
+    if (!res.ok) { setStatus(`Worker returned ${res.status}:\n${text}`, "err"); return; }
+    setStatus("Worker responded:\n" + text, "ok");
+  } catch (e) {
+    setStatus("Request failed: " + e.message, "err");
+  }
+});
+load();
+</script>
+</body>
+</html>
