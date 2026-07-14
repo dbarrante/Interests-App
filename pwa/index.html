@@ -429,8 +429,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 </header>
 <nav class="mtabbar" aria-label="Main">
   <button class="tab mtab active" data-tab="stumble" onclick="showTab('stumble')"><span class="micon">&#127919;</span>Stumble</button>
-  <button class="tab mtab" data-tab="saved" onclick="showTab('saved')"><span class="micon">&#11088;</span>Saved <span class="cnt" data-cnt="saved"></span></button>
-  <button class="tab mtab" data-tab="imported" onclick="showTab('imported')"><span class="micon">&#128229;</span>Imported <span class="cnt" data-cnt="imported"></span></button>
+  <button class="tab mtab" data-tab="saved" onclick="showTab('saved')"><span class="micon">&#11088;</span><span>Saved <span class="cnt" data-cnt="saved"></span></span></button>
+  <button class="tab mtab" data-tab="imported" onclick="showTab('imported')"><span class="micon">&#128229;</span><span>Imported <span class="cnt" data-cnt="imported"></span></span></button>
   <button class="tab mtab" data-tab="settings" onclick="showTab('settings')"><span class="micon">&#9881;</span>Settings</button>
 </nav>
 
@@ -839,7 +839,7 @@ function userName(){ return (S.about.split(/[—\-,.;:]/)[0]||"").trim() || "the
 let curTab = "stumble";
 let filterCat = "";        // hydrated from Store.kv in bootData()
 let mobileFilterOpen = false;  // collapsible filter bar on narrow screens; never persisted
-function mobileNarrow(){ return window.innerWidth < 760; }
+function mobileNarrow(){ return window.innerWidth <= 760; }
 function mobileFilterLabel(){
   if(curTab==="imported"){ const m=PLATS.find(([k])=>k===impSrc); return m?m[1]:"All sources"; }
   const pills=[{key:"",name:"All"}].concat(CATS);
@@ -861,6 +861,7 @@ function setView(v){
 function gridClass(){ return "masonry m-"+viewMode; }
 function showTab(t, deferStumble){
   curTab = t;
+  mobileFilterOpen = false;
   _refreshPins.clear();
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
