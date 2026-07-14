@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
-const { counts, openDb } = require("./db.js");
+const { counts, openDb, allCards, allSaved, allTombstones, getKV } = require("./db.js");
 const { setStorePath } = require("./config.js");
 
 // Find the user's real Dropbox root from Dropbox's own info.json, which records
@@ -88,6 +88,26 @@ function copyFileSync(src, dst) {
   fs.copyFileSync(src, dst);
 }
 
+// Portable JSON snapshot for a new PWA install to restore from directly — a
+// one-way pull, no re-publish needed (unlike the live peer-sync path in
+// pwa/sync-pwa.js). Deliberately does NOT go through settingsForSync()'s
+// stripping — this snapshot intentionally includes the raw settings blob
+// (API keys, Open PageRank key included) so a brand-new install needs no
+// manual setup beyond the Dropbox App key itself (which can never be
+// auto-filled this way — see pwa/restore-from-backup.js's own header
+// comment). See docs/superpowers/specs/2026-07-13-pwa-restore-from-desktop-
+// backup-design.md's "Security" section for the tradeoff this represents.
+function buildPortableSnapshot(db) {
+  let settings = null;
+  try { settings = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { settings = null; }
+  return {
+    cards: allCards(db),
+    saved: allSaved(db),
+    tombstones: allTombstones(db),
+    settings,
+  };
+}
+
 // Create dropboxBackupDir()/interests-backup-YYYY-MM-DD/, copy interests.db + new/
 // changed images, write meta.json LAST (presence signals a complete write).
 function runBackup(db, storeDir) {
@@ -110,6 +130,11 @@ function runBackup(db, storeDir) {
   for (const id of changedImageIds(storeDir, destImages)) {
     copyFileSync(path.join(srcImages, id + ".jpg"), path.join(destImages, id + ".jpg"));
   }
+
+  // Portable snapshot BEFORE meta.json — meta.json's presence is the backup's
+  // completion marker (see readMeta/verifyBackup below), so everything else
+  // must be written first.
+  fs.writeFileSync(path.join(destRoot, "snapshot.json"), JSON.stringify(buildPortableSnapshot(db)));
 
   // meta.json LAST
   fs.writeFileSync(path.join(destRoot, "meta.json"), JSON.stringify({ _counts: cnt, ts: Date.now() }));

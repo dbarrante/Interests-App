@@ -98,7 +98,7 @@ t("changedImageIds: nothing changed → []", () => {
 });
 
 /* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
-const { openDb, upsertCard, upsertSaved, counts } = require("../core/db.js");
+const { openDb, upsertCard, upsertSaved, counts, setKV } = require("../core/db.js");
 const images = require("../core/images.js");
 const config = require("../core/config.js");
 
@@ -138,6 +138,32 @@ t("runBackup copies db + images and verifyBackup confirms", () => {
     assert.strictEqual(backup.verifyBackup(res.name, res.counts), true);
     assert.strictEqual(backup.verifyBackup(res.name, { imported: 1, saved: 1, images: 999 }), false);
     db.close();
+  });
+});
+
+t("runBackup writes a portable snapshot.json with unstripped settings", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const dbHandle = openDb(store);
+    upsertCard(dbHandle, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    upsertSaved(dbHandle, { id: "s1", url: "https://x/2", category: "Tips", clipped: 1, image: "idb:s1" });
+    setKV(dbHandle, "ia_settings", JSON.stringify({ about: "me", keys: { anthropic: "SECRET_KEY" }, oprKey: "OPR_SECRET" }));
+
+    const res = backup.runBackup(dbHandle, store);
+    const bdir = backup.dropboxBackupDir();
+    const snapPath = path.join(bdir, res.name, "snapshot.json");
+    assert.ok(fs.existsSync(snapPath), "snapshot.json written");
+
+    const snap = JSON.parse(fs.readFileSync(snapPath, "utf8"));
+    assert.strictEqual(snap.cards.length, 1);
+    assert.strictEqual(snap.cards[0].id, "c1");
+    assert.strictEqual(snap.saved.length, 1);
+    assert.strictEqual(snap.saved[0].id, "s1");
+    assert.deepStrictEqual(snap.tombstones, []);
+    // Unstripped — unlike settingsForSync(), the API key must survive here.
+    assert.strictEqual(snap.settings.keys.anthropic, "SECRET_KEY");
+    assert.strictEqual(snap.settings.oprKey, "OPR_SECRET");
+    dbHandle.close();
   });
 });
 
