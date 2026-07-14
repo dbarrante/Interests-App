@@ -609,11 +609,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div id="backupList"></div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Import legacy backup…</label>
-          <div class="hint" style="margin:4px 0 8px">Bring in data from an older version. Both paths replace everything currently in the app — a verified safety backup of your current data is taken first.</div>
+          <div class="hint" style="margin:4px 0 8px">Bring in a single-file .json backup exported by an older version. Replaces everything currently in the app — a verified safety backup of your current data is taken first.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)" title="Import a single-file .json backup exported by an older version.">
-            <button id="btnImportLegacy" class="btn btn-ghost" title="Import an old folder-style backup (contains data.json) from a previous version. Reads only — your source folder is never modified.">Import from folder…</button>
-            <span id="importLegacyResult" class="hint"></span>
           </div>
         </div>
       </div>
@@ -1179,6 +1177,10 @@ async function backupNow(){ return doBackup(true); }
 async function doBackup(manual){
   try{
     const res = await Store.backupNow();                 // {ok,verified,name,counts}
+    if(res && res.ok===false){
+      if(manual) toast(res.reason || "Backup not available");
+      return res;
+    }
     const counts = res && res.counts ? res.counts : {imported:imported.length, saved:saved.length, images:0};
     const verified = !!(res && res.verified);
     await Store.kvSet("ia_lastbackup", Date.now());
@@ -1348,6 +1350,7 @@ async function moveDataLocation(){
   toast("Moving data store… (the old copy is kept until the move verifies)");
   try{
     const res = await Store.moveStore(target);
+    if(res && res.ok===false){ toast(res.reason || "Move not available"); return; }
     toast("Data store moved to " + (res.path||target));
     try{ await storageHealthCheck(); }catch(e){}
   }catch(e){ toast("Move failed: " + (e&&e.message||e)); }
@@ -1382,40 +1385,6 @@ async function syncNowClick(){
   try{ const r = await Store.syncNow(); toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date"); if(r && r.changed){ setTimeout(()=>location.reload(), 900); } }
   catch(e){ toast("Sync failed: " + (e&&e.message||e)); }
 }
-
-// Settings → "Import legacy backup…": pick a folder (native bridge if present,
-// else a path prompt) and call Store.runImport, then render a one-line result.
-(function bindImportLegacy(){
-  var btn = document.getElementById("btnImportLegacy");
-  if(!btn) return;
-  btn.addEventListener("click", async function(){
-    var out = document.getElementById("importLegacyResult");
-    var srcDir = null;
-    try {
-      var pf = window.ia && window.ia.pickFolder;
-      if (pf) {
-        srcDir = await pf();
-      } else {
-        srcDir = window.prompt("Path to legacy backup folder (contains data.json):");
-      }
-    } catch(e) { srcDir = null; }
-    if(!srcDir){ return; }
-    if(out){ out.textContent = "Importing…"; }
-    try {
-      var res = await Store.runImport(srcDir);
-      if(out){
-        out.textContent = "Imported " + res.cards + " cards, " + res.saved + " saved, " +
-          res.images + " images — " + (res.missing ? res.missing.length : 0) + " missing. Refreshing…";
-      }
-      // The DB now holds the imported rows, but in-memory state was loaded at
-      // startup. Reload so the library appears without an app restart (same
-      // approach the restore-from-backup path uses).
-      setTimeout(function(){ location.reload(); }, 1500);
-    } catch(e) {
-      if(out){ out.textContent = "Import failed: " + (e && e.message ? e.message : e); }
-    }
-  });
-})();
 
 /* ============ settings ui ============ */
 // Curated OpenRouter models that work well for this app (verified live 2026-07-04).
@@ -1580,7 +1549,9 @@ async function saveSafeBrowsingKey(){
   const inp = document.getElementById("sbKey");
   const v = inp ? inp.value.trim() : "";
   if (v === SB_MASK) { toast("Key unchanged"); return; }    // mask untouched = no change
-  try { await Store.setSafeBrowsingKey(v); } catch(e){ toast("Couldn't save key", 4000); return; }
+  let res;
+  try { res = await Store.setSafeBrowsingKey(v); } catch(e){ toast("Couldn't save key", 4000); return; }
+  if (res && res.ok===false){ toast(res.reason || "Couldn't save key", 4000); return; }
   if (inp) inp.value = "";
   toast(v ? "Safe Browsing key saved" : "Safe Browsing key cleared", 4000);
   loadSafetyKeyStatus();
