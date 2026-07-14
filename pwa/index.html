@@ -1046,7 +1046,8 @@ function renderCatBar(){
     + `<span style="flex:1"></span>`
     + VIEWS.map(([v,label])=>
     `<button class="catpill${viewMode===v?" on":""}" style="${viewMode===v?"background:var(--ink)":""}" title="View"
-      onclick="setView('${v}')">${label}</button>`).join("");
+      onclick="setView('${v}')">${label}</button>`).join("")
+    + (curTab==="imported" ? `<button class="catpill" title="Open reader view" onclick="openReader()">&#128214; Reader</button>` : "");
   requestAnimationFrame(setStickyOffsets);
 }
 function setFilter(k){
@@ -3442,9 +3443,11 @@ function renderReader(){
     <button class="reader-arrow r" onclick="readerPage(1)" ${readerPos>=readerSnapshot.length-1?"disabled":""}>&#8250;</button>`;
   attachCardImages();
 }
+// idx omitted (the view-mode pill's call) -> start at the first item in
+// the current filtered/sorted view instead of a specific clicked card.
 function openReader(idx){
-  const it = imported[idx];
-  if(!it) return;
+  const it = (idx!=null) ? imported[idx] : null;
+  if(idx!=null && !it) return;
   // Every item needs a stable id BEFORE building the snapshot (readerSnapshot
   // is id-based) — assign any missing ones now, mirroring impOpen()'s lazy
   // per-item assignment, but for the whole array at once.
@@ -3456,7 +3459,8 @@ function openReader(idx){
     .filter(r=>impFilterPredicate(r.it, savedUrls))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; })
     .map(r=>r.it.id);
-  readerPos = readerSnapshot.indexOf(it.id);
+  if(!readerSnapshot.length){ toast("Nothing to show in the reader — check your filters"); return; }
+  readerPos = it ? readerSnapshot.indexOf(it.id) : 0;
   if(readerPos<0) readerPos = 0;
   document.getElementById("readerModal").classList.add("open");
   document.body.classList.add("reader-locked");   // no page-scroll behind the fixed reader
