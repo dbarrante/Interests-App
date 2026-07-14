@@ -289,6 +289,26 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .gp-bucket.running{background:rgba(34,139,69,.10);border-radius:9px}
 .gp-run-tag{font-size:11px;font-weight:700;color:var(--accent);margin-left:6px}
 .gp-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+
+/* ---- Single-card reader view (Imported triage) ---- */
+#readerModal{display:none;position:fixed;inset:0;background:#000;z-index:97}
+#readerModal.open{display:flex}
+.reader-box{position:relative;width:100%;height:100%;display:flex;flex-direction:column}
+.reader-close{position:absolute;top:14px;right:16px;z-index:2;border:0;background:rgba(0,0,0,.5);color:#fff;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer}
+.reader-img{flex:1;min-height:0;background:#1a1815;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.reader-img img{max-width:100%;max-height:100%;object-fit:contain}
+.reader-img .ic{width:96px;height:96px;border-radius:16px;background:linear-gradient(135deg,#c2410c,#9a3412);color:#fff;font-size:32px;font-weight:800;display:flex;align-items:center;justify-content:center}
+.reader-strip{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(20,15,10,.92) 40%);color:#fff;padding:40px 60px 20px}
+.reader-title{font-size:20px;font-weight:800;line-height:1.3}
+.reader-desc{font-size:14px;color:#e8ddd0;margin-top:6px;line-height:1.5}
+.reader-tags{margin-top:8px}
+.reader-tags .tag{background:rgba(255,255,255,.16);color:#fff;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;margin-right:6px;display:inline-block}
+.reader-foot{display:flex;align-items:center;justify-content:space-between;margin-top:14px}
+.reader-pos{font-size:12px;color:#cfc4b6}
+.reader-arrow{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;border:0;font-size:22px;cursor:pointer;z-index:2}
+.reader-arrow.l{left:14px}
+.reader-arrow.r{right:14px}
+.reader-arrow:disabled{opacity:.25;cursor:default}
 .gp-foot .gp-note{margin-right:auto;font-size:12px;color:var(--muted)}
 
 /* ============ imported tab ============ */
@@ -324,11 +344,12 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .pickov{position:absolute;inset:0;z-index:5;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
 .pickov:hover{background:rgba(194,65,12,.08)}
 .selpick .pickov{background:rgba(194,65,12,.13)}
-.imp-edit,.imp-refresh{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.imp-edit,.imp-refresh,.imp-reader{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .imp-edit{right:6px}
 .imp-refresh{right:40px;font-size:15px}
-.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh{display:flex}
-.imp-edit:hover,.imp-refresh:hover{border-color:var(--accent);color:var(--accent)}
+.imp-reader{right:74px}
+.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader{display:flex}
+.imp-edit:hover,.imp-refresh:hover,.imp-reader:hover{border-color:var(--accent);color:var(--accent)}
 .imp-refresh.spin{animation:ispin .7s linear infinite}
 @keyframes ispin{to{transform:rotate(360deg)}}
 .ed-row{display:flex;gap:8px;margin-top:18px}
@@ -652,6 +673,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 </div>
 <div id="healthModal"><div class="dupe-box"><div id="healthBody"></div></div></div>
 <div id="getpicModal"><div class="gp-box"><div id="getpicBody"></div></div></div>
+<div id="readerModal"><div class="reader-box" id="readerBody"></div></div>
 
 <script>
 "use strict";
@@ -720,6 +742,7 @@ S.hiddenBase = S.hiddenBase||[];
 rebuildCats();
 
 let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
+let readerSnapshot=null, readerPos=0;   // reader view: array of item ids (NOT imported-array indices — removeCards splices imported, which shifts indices but not ids) + current position
 let stNewsOnly=false, filterInterest="";   // 📰 News-only mode + active interest ("" = All)
 // disliked = normalized URLs the user thumbed-down; a PERMANENT "never stumble this again"
 // blocklist, hard-filtered in dropAlreadySaved (not just the soft/windowed prompt avoid list).
@@ -3150,7 +3173,7 @@ function impCardHTML(it,idx){
         ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
         : `<div class="ic">${yt?"YT":"IM"}</div>`));
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
-    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
+    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
@@ -3365,6 +3388,58 @@ function impOpen(idx){
   Store.setCaptureRequest({url:it.url, id:it.id, delay:(S.captureDelay||0)*1000, force:stale, capture:doCapture});
   openLink(it.url);
   if(doCapture) enrichOnOpen(it, idx);
+}
+// Single-card reader view — image-dominant overlay for triaging Imported
+// items one at a time. readerSnapshot holds item ids (not imported-array
+// indices), because removeCards() splices the imported array and shifts
+// every index after the removed item; ids stay valid across that splice.
+function readerImgHTML(it){
+  const dom = it.url ? domain(it.url) : "";
+  const yt = /^YouTube/i.test(it.title) || /youtu/.test(dom);
+  const thumb = impThumb(it);
+  const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;
+  if(isIdbImg) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
+  if(thumb) return `<img src="${esc(thumb)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
+  return `<div class="ic">${yt?"YT":"IM"}</div>`;
+}
+function renderReader(){
+  if(!readerSnapshot || !readerSnapshot.length){ closeReader(); return; }
+  const it = imported.find(c=>c && c.id===readerSnapshot[readerPos]);
+  if(!it){ closeReader(); return; }
+  document.getElementById("readerBody").innerHTML = `
+    <button class="reader-close" onclick="closeReader()">&#10005;</button>
+    <div class="reader-img">${readerImgHTML(it)}</div>
+    <div class="reader-strip">
+      <div class="reader-title">${esc(it.title)}</div>
+      ${it.desc?`<div class="reader-desc">${esc(cleanDesc(it.desc))}</div>`:""}
+      ${it.tags&&it.tags.length?`<div class="reader-tags">${it.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</div>`:""}
+      <div class="reader-foot">
+        <span class="reader-pos">${readerPos+1} of ${readerSnapshot.length}</span>
+      </div>
+    </div>
+    <button class="reader-arrow l" onclick="readerPage(-1)" ${readerPos<=0?"disabled":""}>&#8249;</button>
+    <button class="reader-arrow r" onclick="readerPage(1)" ${readerPos>=readerSnapshot.length-1?"disabled":""}>&#8250;</button>`;
+  attachCardImages();
+}
+function openReader(idx){
+  const it = imported[idx];
+  if(!it) return;
+  if(!it.id){ it.id=newId(); Store.putCards(imported); }   // same lazy-id-assignment impOpen() does
+  readerSnapshot = [it.id];
+  readerPos = 0;
+  document.getElementById("readerModal").classList.add("open");
+  renderReader();
+}
+function closeReader(){
+  document.getElementById("readerModal").classList.remove("open");
+  readerSnapshot = null;
+}
+function readerPage(dir){
+  if(!readerSnapshot) return;
+  const next = readerPos + dir;
+  if(next<0 || next>=readerSnapshot.length) return;
+  readerPos = next;
+  renderReader();
 }
 // Force a fresh image for one card: drop the current picture and request a
 // forced re-capture (force:true overwrites whatever's there). Opens the page so
