@@ -15,3 +15,4 @@ _recovery/
 saves-*.json
 interests-backup-*
 interests-snapshot-*
+.superpowers/
