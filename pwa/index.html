@@ -2263,7 +2263,7 @@ function clearFbPlaceholders(silent){
   return cleared;
 }
 const PLATS = [["","All sources"],["facebook","Facebook"],["instagram","Instagram"],["pinterest","Pinterest"],["youtube","YouTube"],["google","Google"],["bookmark","Bookmarks"],["web","Other web"]];
-function setImpSrc(k){ impSrc=k; save("isrc",k); renderCatBar(); renderImported(); }
+function setImpSrc(k){ impSrc=k; save("isrc",k); mobileFilterOpen=false; renderCatBar(); renderImported(); }
 function toggleImpSort(){ impSort = impSort==="newest"?"oldest":"newest"; save("isort",impSort); renderImportedKeepFocus(); }
 function toggleUnreviewed(){ impUnreviewed=!impUnreviewed; _refreshPins.clear(); save("iunrev",impUnreviewed); renderImportedKeepFocus(); }
 // Facebook cards that were captured/attempted but still have no usable picture —
@@ -2321,7 +2321,7 @@ function renderImported(){
     .filter(r=>impFilterPredicate(r.it, savedUrls))
     .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; });
   const todo = imported.filter(i=>!i.desc || (platformOf(i)==="pinterest" && i.url && !i.img && !i.pt)).length;
-  v.innerHTML = `
+  const stickyBlock = (mobileNarrow() && !mobileFilterOpen) ? "" : `
     <div class="imp-sticky">
     <div class="imp-head">
       <input type="text" placeholder="Search ${imported.length} imported items…" value="${esc(impQuery)}"
@@ -2375,10 +2375,10 @@ function renderImported(){
         <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${right}</span>
       </div>`;
     })() : ""}
-    </div>
-    ${impSidebarOn()
+    </div>`;
+  v.innerHTML = stickyBlock + (impSidebarOn()
       ? `<div class="imp-body">${tagSideHTML()}<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div></div>`
-      : `<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`}`;
+      : `<div class="imp-grid ig-${viewMode}">${list.map(r=>impCardHTML(r.it,r.idx)).join("")}</div>`);
   attachCardImages();
   requestAnimationFrame(setStickyOffsets);
 }
