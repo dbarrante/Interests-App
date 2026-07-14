@@ -87,11 +87,16 @@ including the tag/category sidebars, is untouched.
   additionally sets `mobileFilterOpen = false` before re-rendering, so
   picking a filter auto-collapses back to the summary pill (confirmed
   behavior) — no separate "close" affordance needed.
-- **Imported** is the one case with two stacked rows today: `#catBar`
-  (source-platform pills) and `.imp-sticky`'s tag/search row
-  (`pwa/index.html:174-175`). Both hide behind the same single toggle and
-  both reveal together when expanded (confirmed) — `mobileFilterOpen` gates
-  both rows' visibility together for this tab, not just `#catBar`.
+- **Imported** is the one case with two stacked sticky blocks today: `#catBar`
+  (source-platform pills) and `.imp-sticky` (`pwa/index.html:174-175`, built by
+  `renderImported()` — confirmed on inspection to be a full toolbar: search
+  box, sort toggle, Unreviewed/Failed/Couldn't-capture filters, the "Get
+  pictures & info" capture button, Library health, tag menu, Select mode,
+  *and* the tag pill row). Confirmed with the user: the toggle hides this
+  entire combined block (both `#catBar` and all of `.imp-sticky`, actions
+  included), not just the filter-ish parts — simplest behavior, consistent
+  with every other tab where "expand filters" reveals everything that today
+  lives in that sticky area.
 - This is purely a presentation change to the already-existing narrow-screen
   fallback path. It doesn't touch `S.catSidebar`/`S.tagSidebar` (the
   wide-screen sidebar-vs-topbar settings) or add a new Settings entry.
