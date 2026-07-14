@@ -3424,9 +3424,19 @@ function renderReader(){
 function openReader(idx){
   const it = imported[idx];
   if(!it) return;
-  if(!it.id){ it.id=newId(); Store.putCards(imported); }   // same lazy-id-assignment impOpen() does
-  readerSnapshot = [it.id];
-  readerPos = 0;
+  // Every item needs a stable id BEFORE building the snapshot (readerSnapshot
+  // is id-based) — assign any missing ones now, mirroring impOpen()'s lazy
+  // per-item assignment, but for the whole array at once.
+  let idsAssigned = false;
+  imported.forEach(c=>{ if(c && !c.id){ c.id=newId(); idsAssigned=true; } });
+  if(idsAssigned) Store.putCards(imported);
+  const savedUrls = new Set(saved.filter(s=>s.url).map(s=>s.url));
+  readerSnapshot = imported.map((c,i)=>({it:c,idx:i}))
+    .filter(r=>impFilterPredicate(r.it, savedUrls))
+    .sort((a,b)=>{ const av=a.it.sdate||a.it.ts||0, bv=b.it.sdate||b.it.ts||0; return impSort==="oldest" ? av-bv : bv-av; })
+    .map(r=>r.it.id);
+  readerPos = readerSnapshot.indexOf(it.id);
+  if(readerPos<0) readerPos = 0;
   document.getElementById("readerModal").classList.add("open");
   renderReader();
 }
