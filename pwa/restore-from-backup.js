@@ -33,6 +33,15 @@
 
   function $(id) { return document.getElementById(id); }
 
+  // Ported from pwa/sync-pwa.js's safeImgId (not exported from that file's
+  // IIFE) — a snapshot.json is only as trustworthy as the Dropbox account
+  // it came from; guard against a malformed/corrupted id reaching a Dropbox
+  // download path or an IndexedDB primary key, same as the live peer-sync
+  // path already does for structurally identical data.
+  function safeImgId(id) {
+    return typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+  }
+
   // Ported from pwa/sync-pwa.js's sniffImageType (not exported from that
   // file's IIFE) — always trust sniffed magic bytes over the .jpg extension.
   function sniffImageType(bytes) {
@@ -91,8 +100,14 @@
 
   function imageIdsIn(snapshot) {
     const ids = new Set();
-    (snapshot.cards || []).forEach((c) => { if (typeof c.img === "string" && c.img.indexOf("idb:") === 0) ids.add(c.img.slice(4)); });
-    (snapshot.saved || []).forEach((s) => { if (typeof s.image === "string" && s.image.indexOf("idb:") === 0) ids.add(s.image.slice(4)); });
+    let skippedUnsafe = 0;
+    function addIfSafe(id) {
+      if (safeImgId(id)) ids.add(id);
+      else skippedUnsafe++;
+    }
+    (snapshot.cards || []).forEach((c) => { if (typeof c.img === "string" && c.img.indexOf("idb:") === 0) addIfSafe(c.img.slice(4)); });
+    (snapshot.saved || []).forEach((s) => { if (typeof s.image === "string" && s.image.indexOf("idb:") === 0) addIfSafe(s.image.slice(4)); });
+    if (skippedUnsafe) console.error("restore-from-backup: skipped " + skippedUnsafe + " image id(s) that failed the safe-id check");
     return [...ids];
   }
 
