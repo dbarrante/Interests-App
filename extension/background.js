@@ -1124,20 +1124,6 @@ async function sweepBatchTabs() {
 // popup's explicit "Remove card" action is unaffected.
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === "clipPage") {
-    (async () => {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const res = await clipCurrentPage(tab);
-        sendResponse(res);
-      } catch (e) {
-        await setStatus("Clip failed: " + e.message, false);
-        sendResponse({ ok: false, error: e.message });
-      }
-    })();
-    return true;
-  }
-
   if (msg.action === "clipSocialPost" && msg.data) {
     (async () => {
       try {
@@ -1165,26 +1151,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
-    })();
-    return true;
-  }
-
-  if (msg.action === "removeCard") {
-    (async () => {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const url = (tab && tab.url) || "";
-        // remove the card matching this page's URL, or fall back to the
-        // last-opened ("active") card in the app. "Dead post" notices are
-        // ordinary capture objects (cap.dead) — deliver them the same way,
-        // with the same HTTP + offline-queue fallback (deliverToApp).
-        await deliverToApp({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
-        await setStatus("Removed card from Interests + closing tab", true);
-        sendResponse({ ok: true });
-        if (tab && tab.id != null) await closeTabSafe(tab.id);   // close the page tab
-      } catch (e) {
-        sendResponse({ ok: false, error: e.message });
-      }
     })();
     return true;
   }
