@@ -69,7 +69,6 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
    UI is opened on a small screen.) */
 @media(max-width:640px){
   .bar{flex-wrap:wrap;gap:8px 10px;padding:10px 12px}
-  nav{flex-wrap:wrap;flex:1 1 100%}
   main{padding:14px}
   .catbar{margin:0 -14px;padding:10px 14px 8px}
   .imp-sticky{margin:0 -14px;padding:4px 14px 8px}
@@ -78,14 +77,6 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
   .st-bar .btn{padding:12px 20px}
 }
 
-/* Mobile (<=760px): the 4 section tabs move to a fixed bottom bar (same
-   breakpoint where the desktop tag sidebars already hide), freeing the top
-   header for just the logo + Help + Open-in-browser. */
-@media(max-width:760px){
-  header nav{display:none}
-  body{padding-bottom:calc(54px + env(safe-area-inset-bottom))}
-  .mtabbar{display:flex}
-}
 .mtabbar{
   display:none;position:fixed;left:0;right:0;bottom:0;z-index:60;
   gap:2px;background:rgba(246,245,243,.96);backdrop-filter:blur(8px);
@@ -99,6 +90,18 @@ html.dark .mtabbar{background:rgba(26,24,22,.96)}
 }
 .mtabbar .mtab .micon{font-size:18px;line-height:1}
 .mtabbar .mtab .cnt{margin-left:0}
+/* Mobile (<=760px): the 4 section tabs move to a fixed bottom bar (same
+   breakpoint where the desktop tag sidebars already hide), freeing the top
+   header for just the logo + Help + Open-in-browser. This block must come
+   AFTER the base .mtabbar rule above: same-specificity `.mtabbar{display:...}`
+   declarations resolve by source order, so display:flex has to be later in
+   the cascade to win over the unconditional display:none when this media
+   query is active. */
+@media(max-width:760px){
+  header nav{display:none}
+  body{padding-bottom:calc(54px + env(safe-area-inset-bottom))}
+  .mtabbar{display:flex}
+}
 
 /* ============ masonry — view modes ============ */
 .masonry{column-gap:16px}
@@ -412,7 +415,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
   </div>
 </header>
-<nav class="mtabbar tab" aria-label="Main">
+<nav class="mtabbar" aria-label="Main">
   <button class="tab mtab active" data-tab="stumble" onclick="showTab('stumble')"><span class="micon">&#127919;</span>Stumble</button>
   <button class="tab mtab" data-tab="saved" onclick="showTab('saved')"><span class="micon">&#11088;</span>Saved <span class="cnt" data-cnt="saved"></span></button>
   <button class="tab mtab" data-tab="imported" onclick="showTab('imported')"><span class="micon">&#128229;</span>Imported <span class="cnt" data-cnt="imported"></span></button>
