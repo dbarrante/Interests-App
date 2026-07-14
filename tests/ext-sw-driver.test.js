@@ -13,6 +13,13 @@
 // onErrorOccurred / reportDead / recentWatches / tabStatus machinery — while the
 // pending-capture webNavigation.onCompleted flow and the popup's explicit
 // "Remove card" action are asserted to survive.
+//
+// 2026-07-14 cleanup: the popup itself (and its clipPage/removeCard message
+// handlers) was deleted as dead code — nothing could open it (no
+// default_popup, nothing calls chrome.action.setPopup). Explicit user
+// removal survives via the context menu's direct deliverToApp({removeActive:true})
+// call instead; the assertions below were updated to expect clipPage/removeCard
+// GONE, not surviving.
 const assert = require("assert");
 const fs = require("fs"), path = require("path");
 
@@ -77,10 +84,10 @@ t("bridge-only message handlers removed (captureRequest fwd, captureOneTab, clea
   assert.ok(!/msg\.action === "getQueue"/.test(bg), "getQueue handler removed");
   assert.ok(!/msg\.action === "clearQueue"/.test(bg), "clearQueue handler removed");
 });
-t("popup-facing handlers survive (clipPage, removeCard, getStatus, clipSocialPost)", () => {
-  assert.ok(/msg\.action === "clipPage"/.test(bg), "clipPage handler kept (popup)");
-  assert.ok(/msg\.action === "removeCard"/.test(bg), "removeCard handler kept (popup)");
-  assert.ok(/msg\.action === "getStatus"/.test(bg), "getStatus handler kept (popup)");
+t("clipPage/removeCard removed (popup deleted); getStatus/clipSocialPost survive (used elsewhere)", () => {
+  assert.ok(!/msg\.action === "clipPage"/.test(bg), "clipPage handler removed (popup deleted, unreachable)");
+  assert.ok(!/msg\.action === "removeCard"/.test(bg), "removeCard handler removed (popup deleted, unreachable)");
+  assert.ok(/msg\.action === "getStatus"/.test(bg), "getStatus handler kept (used elsewhere)");
   assert.ok(/msg\.action === "clipSocialPost"/.test(bg), "clipSocialPost handler kept (capture-core.js)");
 });
 t("captureOneTab remains as an internal SW function the pollers call", () => {
@@ -153,10 +160,10 @@ t("webNavigation.onCompleted listener SURVIVES (pending-capture flow)", () => {
   assert.ok(/chrome\.webNavigation\.onCompleted\.addListener/.test(bg),
     "webNavigation.onCompleted must remain — the pending-capture flow depends on it");
 });
-t("popup 'removeCard' handler SURVIVES (explicit user removal), deliverDead wrapper inlined", () => {
-  assert.ok(/msg\.action === "removeCard"/.test(bg), "removeCard handler kept (popup explicit removal)");
+t("explicit user removal survives via the context menu (popup's removeCard message handler removed), deliverDead wrapper inlined", () => {
+  assert.ok(!/msg\.action === "removeCard"/.test(bg), "removeCard message handler removed (popup deleted, unreachable)");
   assert.ok(!/\bdeliverDead\b/.test(bg), "deliverDead wrapper removed — inlined into deliverToApp call (review E)");
-  assert.ok(/removeActive:\s*true/.test(bg), "removeCard still delivers removeActive:true");
+  assert.ok(/removeActive:\s*true/.test(bg), "explicit removal still delivers removeActive:true (now only via the context-menu path)");
 });
 
 // ---- v1.9.0 Task 7 (deferred minors): pollCaptureRequest re-entrancy guard --
