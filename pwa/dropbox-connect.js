@@ -19,6 +19,36 @@
   function currentAppKey() { return localStorage.getItem(Dbx.LS_KEYS.appKey) || ""; }
   function redirectUri() { return new URL(".", location.href).href; }
 
+  const PWA_CONFIG_PATH = "/Interests App/pwa-config.json";
+
+  // Lets a future PWA install skip manual Cloudflare Worker setup. Does NOT
+  // help with the Dropbox App key itself — that can never be bootstrapped
+  // this way, since reading this very file requires already being connected,
+  // which requires the App key first. appKey is included here only so a
+  // human inspecting this file in Dropbox can see which device published it.
+  async function publishPwaConfig(token) {
+    const cfg = {
+      appKey: currentAppKey(),
+      contentcheckUrl: localStorage.getItem("ia_pwa_contentcheck_url") || "",
+      contentcheckToken: localStorage.getItem("ia_pwa_contentcheck_token") || "",
+    };
+    try { await Dbx.dbxUpload(token, PWA_CONFIG_PATH, JSON.stringify(cfg)); }
+    catch (e) { console.warn("dropbox-connect: publishing pwa-config.json failed:", e.message); }
+  }
+
+  // Adopts another device's published Worker config, but only ever fills in
+  // fields this device doesn't already have — never overwrites a
+  // deliberately different local setup.
+  async function tryAdoptPwaConfig(token) {
+    if (localStorage.getItem("ia_pwa_contentcheck_url")) return; // already configured — leave it alone
+    try {
+      const text = await Dbx.dbxDownload(token, PWA_CONFIG_PATH);
+      const cfg = JSON.parse(text);
+      if (cfg.contentcheckUrl) localStorage.setItem("ia_pwa_contentcheck_url", cfg.contentcheckUrl);
+      if (cfg.contentcheckToken) localStorage.setItem("ia_pwa_contentcheck_token", cfg.contentcheckToken);
+    } catch (e) { /* no pwa-config.json published yet, or unreadable — nothing to adopt */ }
+  }
+
   function setError(msg) {
     const el = $("dbxConnectError");
     if (el) el.textContent = msg || "";
@@ -40,6 +70,8 @@
       const token = await Dbx.getAccessToken(currentAppKey());
       const account = await Dbx.getCurrentAccount(token);
       statusEl.textContent = "Connected as " + account.email;
+      await tryAdoptPwaConfig(token);
+      await publishPwaConfig(token);
     } catch (e) {
       statusEl.textContent = "Connected, but account check failed: " + e.message;
     }
