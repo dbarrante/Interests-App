@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#c2410c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -77,6 +77,28 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
   .prov label{min-width:0;flex:1 1 44%}
   .st-bar .btn{padding:12px 20px}
 }
+
+/* Mobile (<=760px): the 4 section tabs move to a fixed bottom bar (same
+   breakpoint where the desktop tag sidebars already hide), freeing the top
+   header for just the logo + Help + Open-in-browser. */
+@media(max-width:760px){
+  header nav{display:none}
+  body{padding-bottom:calc(54px + env(safe-area-inset-bottom))}
+  .mtabbar{display:flex}
+}
+.mtabbar{
+  display:none;position:fixed;left:0;right:0;bottom:0;z-index:60;
+  gap:2px;background:rgba(246,245,243,.96);backdrop-filter:blur(8px);
+  border-top:1px solid var(--line);
+  padding:4px 4px calc(4px + env(safe-area-inset-bottom))
+}
+html.dark .mtabbar{background:rgba(26,24,22,.96)}
+.mtabbar .mtab{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:6px 2px;font-size:10.5px;border-radius:11px
+}
+.mtabbar .mtab .micon{font-size:18px;line-height:1}
+.mtabbar .mtab .cnt{margin-left:0}
 
 /* ============ masonry — view modes ============ */
 .masonry{column-gap:16px}
@@ -394,14 +416,20 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
     <div class="logo">Inter<span>ests</span></div>
     <nav>
       <button class="tab active" data-tab="stumble" onclick="showTab('stumble')">Stumble</button>
-      <button class="tab" data-tab="saved" onclick="showTab('saved')">Saved <span class="cnt" id="savedCnt"></span></button>
-      <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" id="impCnt"></span></button>
+      <button class="tab" data-tab="saved" onclick="showTab('saved')">Saved <span class="cnt" data-cnt="saved"></span></button>
+      <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" data-cnt="imported"></span></button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
   </div>
 </header>
+<nav class="mtabbar tab" aria-label="Main">
+  <button class="tab mtab active" data-tab="stumble" onclick="showTab('stumble')"><span class="micon">&#127919;</span>Stumble</button>
+  <button class="tab mtab" data-tab="saved" onclick="showTab('saved')"><span class="micon">&#11088;</span>Saved <span class="cnt" data-cnt="saved"></span></button>
+  <button class="tab mtab" data-tab="imported" onclick="showTab('imported')"><span class="micon">&#128229;</span>Imported <span class="cnt" data-cnt="imported"></span></button>
+  <button class="tab mtab" data-tab="settings" onclick="showTab('settings')"><span class="micon">&#9881;</span>Settings</button>
+</nav>
 
 <main>
   <div id="catBar" class="catbar"></div>
@@ -2235,8 +2263,8 @@ function setStickyOffsets(){
 let _impResizeTimer;
 window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } else if(curTab==="stumble"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(()=>{ renderCatBar(); renderStumble(); },120); } });
 function updateCounts(){
-  document.getElementById("savedCnt").textContent = saved.length?`(${saved.length})`:"";
-  document.getElementById("impCnt").textContent = imported.length?`(${imported.length})`:"";
+  document.querySelectorAll('[data-cnt="saved"]').forEach(el=>el.textContent = saved.length?`(${saved.length})`:"");
+  document.querySelectorAll('[data-cnt="imported"]').forEach(el=>el.textContent = imported.length?`(${imported.length})`:"");
 }
 function guessCat(title){
   if(/career|linkedin|resume|cv\b|interview|job |job-|recruiter|ats\b|salary/i.test(title)) return "Career movement";
