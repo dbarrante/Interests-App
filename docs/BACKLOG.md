@@ -3,6 +3,10 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## Requested 2026-07-14 (Dave)
+
+- [ ] **Clear message when out of AI tokens/credits for Stumble.** When an AI-search Stumble call fails because the configured provider account is out of tokens/credits (not a generic network/API error), show a specific, actionable message — e.g. "Your [provider] account is out of credits — add funds or switch models in Settings" — instead of whatever generic failure text shows today. Needs a brainstorm: how to detect this specifically (provider error codes/messages vary — OpenAI/OpenRouter/Anthropic/Gemini each signal insufficient-balance differently) vs. other failure modes (rate limit, invalid key, network), and where the message surfaces (toast vs. inline in the Stumble empty state).
+
 ## v1.12.19 — News stories in Stumble (intermix + dedicated news-only) (app 1.12.19)
 - **Interest-matched news is now part of Stumble, two ways:** (1) **intermixed** into the normal deck (~1-in-4) via a default-on Settings toggle **"Mix fresh news into Stumble"**; (2) **dedicated news-only** via a **📰 News** pill at the top of the Stumble sidebar — when active the sidebar swaps from categories to **your specific interest keywords** (from `S.interests`), and each dealt card is a current news story for the selected interest ("All" = across everything).
 - **Free & no-AI:** news comes from **Google News RSS** (no key, no per-use cost). News-only mode makes **zero AI calls**; intermix adds free news cards to a deal that was already running. Only "Web" discovery uses the paid AI search.
