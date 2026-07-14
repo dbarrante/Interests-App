@@ -351,6 +351,9 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .imp-reader{right:74px}
 .imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader{display:flex}
 .imp-edit:hover,.imp-refresh:hover,.imp-reader:hover{border-color:var(--accent);color:var(--accent)}
+/* Touch devices have no hover state, so hover-only icons are otherwise unreachable —
+   show them unconditionally at mobile width, matching the app's other ≤760px rules. */
+@media(max-width:760px){.imp-edit,.imp-refresh,.imp-reader{display:flex}}
 .imp-refresh.spin{animation:ispin .7s linear infinite}
 @keyframes ispin{to{transform:rotate(360deg)}}
 .ed-row{display:flex;gap:8px;margin-top:18px}
