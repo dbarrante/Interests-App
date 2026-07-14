@@ -142,19 +142,26 @@
     const cardCount = (snapshot.cards || []).length;
     const savedCount = (snapshot.saved || []).length;
     if (!confirm("Restore from " + backupName + "? (" + cardCount + " imported, " + savedCount + " saved)\n\n" +
-                 "This REPLACES everything currently in the app. A safety backup of your current data is attempted first.")) {
+                 "This replaces the cards, saved items, and settings currently in this browser with the backup's version.")) {
       setStatus("Restore cancelled.");
       return;
     }
 
     // PWA's Store.backupNow() is a stub that always resolves {ok:false} — this
-    // is a no-op on the PWA build today, unlike the desktop's real safety copy.
+    // is a no-op on the PWA build today, so no real safety copy happens here
+    // (unlike the desktop, which takes a real one). Kept for forward
+    // compatibility if that stub is ever filled in.
     try { await Store.backupNow(); } catch (e) {}
 
     setStatus("Writing cards, saved items & settings…");
     try {
-      if (snapshot.cards) await Store.putCards(snapshot.cards, { confirm: true });
-      if (snapshot.saved) await Store.putSaved(snapshot.saved, { confirm: true });
+      // Direct idb writes here, not Store.putCards/putSaved — those stamp every
+      // row's updatedAt to "now" (storage-pwa.js's nowStamp), which would make
+      // every restored item outrank a genuinely newer edit the next time this
+      // device runs a live sync. The snapshot already carries each row's real
+      // updatedAt (core/db.js's rowToCard/rowToSaved) and must keep it.
+      if (snapshot.cards) { await idb.clear("cards"); await idb.putMany("cards", snapshot.cards); }
+      if (snapshot.saved) { await idb.clear("saved"); await idb.putMany("saved", snapshot.saved); }
       if (snapshot.tombstones && snapshot.tombstones.length) {
         const rows = snapshot.tombstones.map((t) => ({ key: t.kind + ":" + t.id, id: t.id, kind: t.kind, deletedAt: t.deletedAt }));
         await idb.putMany("tombstones", rows);
@@ -164,7 +171,7 @@
         await Store.kvSet("ia_settings_updatedAt", Date.now());
       }
     } catch (e) {
-      setStatus("Restore was partial — a safety backup of your previous data was attempted first. (" + e.message + ")");
+      setStatus("Restore was partial — some data may already have been written. (" + e.message + ")");
       return;
     }
 
