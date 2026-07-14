@@ -1,9 +1,50 @@
 # Session Handoff — iPad PWA
 
-Written at the end of the session that built Phases 1-4. Read this first; it's
-oriented around "what does the next session need to know to keep going,"
-`README.md` is the phase-by-phase technical log. Both are current as of commit
-`927b54f` ("feat: iPad PWA — Dropbox sync, IndexedDB store, real UI (Phases 1-4)").
+**Latest update: 2026-07-14 — read this section first. Everything below it
+(starting at "Where things stand") is the original Phases 1-4 handoff, kept
+for its postmortem detail but otherwise historical/superseded.**
+
+## Pick up here tomorrow
+
+Phases 1-6 are complete and live: `https://dbarrante.github.io/Interests-App/`,
+installed and verified via Add to Home Screen on a real iPhone. On top of
+that, a **restore-from-desktop-backup** feature shipped this session (desktop
+v1.12.20): the desktop's automatic backups now also write a portable
+`snapshot.json`, and the PWA has a "Restore from Dropbox backup…" button
+(Settings → Dropbox sync section) that pulls it directly — much faster than
+the live peer-sync path for a first-time device pairing, and brings AI
+provider keys along so a new install needs no manual key entry. Full detail:
+`docs/superpowers/specs/2026-07-13-pwa-restore-from-desktop-backup-design.md`
+and the matching plan under `docs/superpowers/plans/`. Commits `0733a81`
+through `4f735c7` on `master`.
+
+1. **Confirm the first real end-to-end restore result.** The user had just
+   installed desktop v1.12.20, taken a fresh backup, and started a restore on
+   the iPhone when the last session ended — the outcome was never confirmed.
+   Ask directly: did the restore complete, do cards/saved/images show up, are
+   the AI provider keys populated without manual entry?
+2. **If it worked:** the feature is done. Loose ends, all low-priority:
+   - `pwa/cf-worker/worker.js`'s CORS allow-list change still needs a manual
+     redeploy to the user's Cloudflare account (status not reconfirmed since
+     Phase 6 — the live Worker just keeps its old wildcard CORS meanwhile,
+     harmless).
+   - The cross-device Worker-config adoption via `pwa-config.json` (Task 2 of
+     the restore-from-backup plan) was never manually verified end-to-end
+     with a *second* device — worth confirming if that scenario matters soon.
+3. **If it didn't work**, read these two gotchas *before* re-diagnosing from
+   scratch — both were hit and fixed this session, and either could recur:
+   - **PWA shell-cache bump discipline.** Any edit to `pwa/index.html` or an
+     already-shipped `pwa/*.js` file needs `pwa/sw.js`'s `SHELL_CACHE` bumped,
+     or already-installed PWAs (especially iOS home-screen installs) keep
+     serving old code forever with no visible error — just a missing
+     feature. Check whether the current `SHELL_CACHE` value was actually
+     bumped for whatever changed most recently.
+   - **The desktop app does not auto-update from `git pull`.** It's a
+     separately built/installed Electron app. A code change only reaches the
+     user after a `package.json` version bump is pushed to `master`
+     (triggers `release.yml`'s installer build) *and* the user installs the
+     new build. Check `package.json`'s version against what's actually
+     installed before assuming a merged fix is live for the user.
 
 ## Where things stand
 
@@ -130,12 +171,7 @@ wildcard, so local dev testing keeps working alongside the deployed site.
    an offline reload works, and a full sync round-trip succeeds against a
    live desktop install.
 
-## Recommended next steps, in order
+## Recommended next steps
 
-1. Decide on the Dropbox-connection-UI gap above (probably: add a real
-   "Connect to Dropbox" section to `index.html`'s Settings panel, reusing
-   `oauth.js`'s `beginAuthorize`/`handleRedirectCallback`).
-2. Phase 5: `manifest.webmanifest` + icons, extend `sw.js` beyond image
-   proxying into full app-shell caching for offline/installability.
-3. Phase 6: done in code — see the "Phase 6" section above for what remains
-   (all manual, outside what an agent can do).
+Superseded — see "Pick up here tomorrow" at the top of this file for the
+current state and what to do next.
