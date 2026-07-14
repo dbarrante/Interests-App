@@ -291,14 +291,18 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .gp-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end;flex-wrap:wrap}
 
 /* ---- Single-card reader view (Imported triage) ---- */
-#readerModal{display:none;position:fixed;inset:0;background:#000;z-index:97}
+#readerModal{display:none;position:fixed;inset:0;background:#000;z-index:97;overflow:hidden}
 #readerModal.open{display:flex}
-.reader-box{position:relative;width:100%;height:100%;display:flex;flex-direction:column}
-.reader-close{position:absolute;top:14px;right:16px;z-index:2;border:0;background:rgba(0,0,0,.5);color:#fff;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer}
-.reader-img{flex:1;min-height:0;background:#1a1815;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+body.reader-locked{overflow:hidden}
+.reader-box{position:relative;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden}
+.reader-close{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;z-index:2;border:0;background:rgba(0,0,0,.5);color:#fff;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer}
+.reader-img{flex:1;min-height:0;background:#1a1815;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;overscroll-behavior:contain}
 .reader-img img{max-width:100%;max-height:100%;object-fit:contain}
 .reader-img .ic{width:96px;height:96px;border-radius:16px;background:linear-gradient(135deg,#c2410c,#9a3412);color:#fff;font-size:32px;font-weight:800;display:flex;align-items:center;justify-content:center}
-.reader-strip{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(20,15,10,.92) 40%);color:#fff;padding:40px 60px 20px}
+/* max-height + its own scroll: a long description scrolls WITHIN the strip
+   instead of growing the strip taller than the viewport (which read as "the
+   card extends past the screen"). Bottom padding clears the home indicator. */
+.reader-strip{position:absolute;left:0;right:0;bottom:0;max-height:45vh;overflow-y:auto;background:linear-gradient(transparent,rgba(20,15,10,.92) 40%);color:#fff;padding:40px 60px calc(20px + env(safe-area-inset-bottom))}
 .reader-title{font-size:20px;font-weight:800;line-height:1.3}
 .reader-desc{font-size:14px;color:#e8ddd0;margin-top:6px;line-height:1.5}
 .reader-tags{margin-top:8px}
@@ -3455,10 +3459,12 @@ function openReader(idx){
   readerPos = readerSnapshot.indexOf(it.id);
   if(readerPos<0) readerPos = 0;
   document.getElementById("readerModal").classList.add("open");
+  document.body.classList.add("reader-locked");   // no page-scroll behind the fixed reader
   renderReader();
 }
 function closeReader(){
   document.getElementById("readerModal").classList.remove("open");
+  document.body.classList.remove("reader-locked");
   readerSnapshot = null;
 }
 function readerPage(dir){
@@ -4321,6 +4327,17 @@ document.getElementById("readerBody").addEventListener("touchstart", e=>{
   if(!e.target.closest(".reader-img")) return;
   _readerTouchX = e.touches[0].clientX;
 });
+// Block the browser's native scroll/bounce for the duration of a reader swipe —
+// without this, iOS's default pan/rubber-band gesture stays active and visually
+// fights the custom horizontal-swipe detection below (competes for the same
+// touch, and often wins visually since it acts continuously during touchmove
+// while our logic only resolves once, on touchend). Needs {passive:false} —
+// browsers default touch listeners to passive for scroll performance, which
+// silently ignores preventDefault() unless explicitly opted out.
+document.getElementById("readerBody").addEventListener("touchmove", e=>{
+  if(_readerTouchX==null) return;
+  e.preventDefault();
+}, {passive:false});
 document.getElementById("readerBody").addEventListener("touchend", e=>{
   if(_readerTouchX==null) return;
   const dx = e.changedTouches[0].clientX - _readerTouchX;
