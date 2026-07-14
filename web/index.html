@@ -453,10 +453,12 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <input type="checkbox" id="reuseWinToggle" style="width:auto"> Open links in one reused window (instead of a new browser tab each)
         </label>
         <div class="hint" style="margin-top:6px">Opens links inside the app and reuses a single window for each click — no more tab pile-up. It's separate from your main browser (its own logins). Bulk "Open" still uses your browser.</div>
-        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer;margin-top:8px">
-          <input type="checkbox" id="newsMixToggle" style="width:auto"> Mix fresh news into Stumble
-        </label>
-        <div class="hint" style="margin:4px 0 0">Blends interest-matched news into your normal Stumble deck (free). Turn off for discovery pages only. The &#128240; News pill in Stumble always gives news-only.</div>
+        <div id="newsMixBlock">
+          <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer;margin-top:8px">
+            <input type="checkbox" id="newsMixToggle" style="width:auto"> Mix fresh news into Stumble
+          </label>
+          <div class="hint" style="margin:4px 0 0">Blends interest-matched news into your normal Stumble deck (free). Turn off for discovery pages only. The &#128240; News pill in Stumble always gives news-only.</div>
+        </div>
       </div>
 
       <div class="sec">
@@ -530,7 +532,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <label>Open PageRank API key (optional, enforces the filter)</label>
         <input type="password" id="oprKey" placeholder="Free key — no card needed">
         <div class="hint">Get one at <a href="https://www.domcop.com/openpagerank/" target="_blank">openpagerank.com</a> — <a href="#" onclick="showGuide('oprkey');return false"><b>step-by-step instructions</b></a>. Without a key the preference is prompt-only.</div>
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <div id="sbKeyBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Google Safe Browsing API key <span id="sbKeyStatus" class="hint"></span></label>
           <div class="hint">Free malware/phishing check for your links — <a href="#" onclick="showGuide('sbkey');return false"><b>step-by-step instructions</b></a>. Leave blank to disable.</div>
           <div style="display:flex;gap:8px;margin-top:6px">
@@ -540,7 +542,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         </div>
       </div>
 
-      <div class="sec">
+      <div class="sec" id="secAppUpdates">
         <h3>App updates</h3>
         <div class="hint" style="margin-bottom:10px">Let the app update itself. Paste a <b>read-only</b> access token once (stored only on this computer — never synced, never in the app file), then use <b>Check for updates now</b> or the button in Help → About. When a newer version exists it downloads in the background; you'll be asked to restart to install.</div>
         <label>GitHub update token (fine-grained, read-only)</label>
@@ -569,7 +571,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint" id="impStatus" style="margin-top:8px"></div>
       </div>
 
-      <div class="sec">
+      <div class="sec" id="secBrowserExt">
         <h3>Browser extension</h3>
         <div class="hint" style="margin-bottom:10px">The Interests Capture extension grabs screenshots and metadata when you click imported articles. Set a delay so the page has time to load before the capture fires.</div>
         <label>Capture delay (seconds)</label>
@@ -2399,7 +2401,7 @@ function stCatSideHTML(){
   const pills = [{key:"",name:"All"}].concat(CATS);
   return `<aside class="tag-side">
     <div class="tag-side-h">Categories</div>
-    <span class="tg${stNewsOnly?" on":""}" onclick="toggleNewsOnly()">&#128240; News</span>
+    ${window.IA_IDB?"":`<span class="tg${stNewsOnly?" on":""}" onclick="toggleNewsOnly()">&#128240; News</span>`}
     ${pills.map(c=>`<span class="tg${filterCat===c.key?" on":""}" onclick="setFilter('${c.key}')">${esc(c.name)}</span>`).join("")}
   </aside>`;
 }
@@ -5001,6 +5003,17 @@ async function pollSyncChanged(){
 setInterval(pollSyncChanged, 30000);
 setInterval(pollBatchProgress, 1500);
 setupPasteToCard();
+// Desktop-only Settings sections are fully functional on the real app but
+// silent no-ops on the PWA build (pwa/storage-pwa.js permanently stubs
+// their backing calls) — hide them there rather than show controls that
+// can never do anything. window.IA_IDB is set only by pwa/idb.js, which
+// only pwa/index.html loads, so this is a reliable PWA-vs-desktop check.
+if (window.IA_IDB) {
+  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  });
+}
 </script>
 </body>
 </html>
