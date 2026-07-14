@@ -305,6 +305,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .reader-tags .tag{background:rgba(255,255,255,.16);color:#fff;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;margin-right:6px;display:inline-block}
 .reader-foot{display:flex;align-items:center;justify-content:space-between;margin-top:14px}
 .reader-pos{font-size:12px;color:#cfc4b6}
+.reader-remove{background:var(--accent-strong);color:#fff;border:0;border-radius:999px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer}
 .reader-arrow{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;border:0;font-size:22px;cursor:pointer;z-index:2}
 .reader-arrow.l{left:14px}
 .reader-arrow.r{right:14px}
@@ -3426,6 +3427,7 @@ function renderReader(){
       ${it.desc?`<div class="reader-desc">${esc(cleanDesc(it.desc))}</div>`:""}
       ${it.tags&&it.tags.length?`<div class="reader-tags">${it.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</div>`:""}
       <div class="reader-foot">
+        <button class="reader-remove" onclick="readerRemove()">&#128465; Remove</button>
         <span class="reader-pos">${readerPos+1} of ${readerSnapshot.length}</span>
       </div>
     </div>
@@ -3462,6 +3464,24 @@ function readerPage(dir){
   if(next<0 || next>=readerSnapshot.length) return;
   readerPos = next;
   renderReader();
+}
+// Backup-first delete, matching the Library-health pattern exactly
+// (snapshotBeforeDestructive -> removeCards -> toast). readerSnapshot
+// stores ids specifically so this splice-then-renumber never invalidates
+// the remaining entries the way an index-based snapshot would.
+function readerRemove(){
+  if(!readerSnapshot || !readerSnapshot.length) return;
+  const id = readerSnapshot[readerPos];
+  const it = imported.find(c=>c && c.id===id);
+  if(!it) return;
+  snapshotBeforeDestructive();
+  removeCards(new Set([id]), {scope:"imported"});
+  readerSnapshot.splice(readerPos, 1);
+  if(curTab==="imported") renderImported();
+  if(!readerSnapshot.length){ closeReader(); toast("Removed 1 card"); return; }
+  if(readerPos >= readerSnapshot.length) readerPos = readerSnapshot.length - 1;
+  renderReader();
+  toast("Removed 1 card");
 }
 // Force a fresh image for one card: drop the current picture and request a
 // forced re-capture (force:true overwrites whatever's there). Opens the page so
