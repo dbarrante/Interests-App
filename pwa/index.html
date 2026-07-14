@@ -838,6 +838,18 @@ function userName(){ return (S.about.split(/[—\-,.;:]/)[0]||"").trim() || "the
 
 let curTab = "stumble";
 let filterCat = "";        // hydrated from Store.kv in bootData()
+let mobileFilterOpen = false;  // collapsible filter bar on narrow screens; never persisted
+function mobileNarrow(){ return window.innerWidth < 760; }
+function mobileFilterLabel(){
+  if(curTab==="imported"){ const m=PLATS.find(([k])=>k===impSrc); return m?m[1]:"All sources"; }
+  const pills=[{key:"",name:"All"}].concat(CATS);
+  const m=pills.find(c=>c.key===filterCat); return m?m.name:"All";
+}
+function toggleMobileFilter(){
+  mobileFilterOpen = !mobileFilterOpen;
+  renderCatBar();
+  if(curTab==="imported") renderImported();
+}
 let viewMode = "g4";       // hydrated from Store.kv in bootData()
 const VIEWS = [["g1","&#9634; 1&times;1"],["g2","&#9635; 2&times;2"],["g4","&#9638; 4&times;4"],["detail","&#9645; Detail"],["list","&#9776; List"]];
 function setView(v){
@@ -990,7 +1002,15 @@ function renderCatBar(){
       : pills.map(c=>
     `<button class="catpill${filterCat===c.key?" on":""}" style="${filterCat===c.key?`background:${c.chip}`:""}"
       onclick="setFilter('${c.key}')">${c.name}</button>`).join("");
-  document.getElementById("catBar").innerHTML = catHtml
+  // Mobile (<760px): collapse whatever pill row the branches above produced
+  // behind a single toggle chip, so a large category/tag list can't push
+  // cards off-screen. Wide screens (>=760px) are unaffected.
+  const toggleChip = `<button class="catpill on" style="background:var(--ink)" onclick="toggleMobileFilter()">Filter: ${esc(mobileFilterLabel())} ${mobileFilterOpen?"&#9652;":"&#9662;"}</button>`;
+  const mobileCatHtml = !mobileNarrow() ? catHtml
+    : !catHtml ? ""
+    : !mobileFilterOpen ? toggleChip
+    : toggleChip + catHtml;
+  document.getElementById("catBar").innerHTML = mobileCatHtml
     + `<span style="flex:1"></span>`
     + VIEWS.map(([v,label])=>
     `<button class="catpill${viewMode===v?" on":""}" style="${viewMode===v?"background:var(--ink)":""}" title="View"
@@ -1000,6 +1020,7 @@ function renderCatBar(){
 function setFilter(k){
   filterCat = k;
   save("fcat", k);
+  mobileFilterOpen = false;
   renderCatBar();
   if(curTab==="saved") renderSaved(); else if(curTab==="stumble") renderStumble();
 }
