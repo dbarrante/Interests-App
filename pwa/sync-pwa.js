@@ -84,12 +84,17 @@
 
   async function readPeers(accessToken, selfDeviceId) {
     console.log("sync: readPeers — listing", SYNC_ROOT);
+    // TEMPORARY DIAGNOSTIC (remove once the silent-failure sync issue is root-caused):
+    // `errors` collects what would otherwise only be visible in devtools console,
+    // so it can be surfaced through runSyncCycle's return value to an alert().
+    const errors = [];
     let entries;
     try {
       entries = await Dbx.dbxListFolder(accessToken, SYNC_ROOT);
     } catch (e) {
       console.log("sync: readPeers — list_folder failed (likely no sync root yet):", e.message);
-      return { peers: [], skewSkipped: 0 }; // sync root doesn't exist yet — nobody has synced ever
+      errors.push("list_folder(" + SYNC_ROOT + "): " + (e && e.message || e));
+      return { peers: [], skewSkipped: 0, errors }; // sync root doesn't exist yet — nobody has synced ever
     }
     const deviceIds = entries.filter((e) => e[".tag"] === "folder").map((e) => e.name).filter((id) => id !== selfDeviceId);
     console.log("sync: readPeers — found device folders:", deviceIds);
@@ -101,9 +106,9 @@
       console.log("sync: readPeers — reading peer", deviceId);
       let snap;
       try { snap = await Dbx.readFullPeerSnapshot(accessToken, deviceId); }
-      catch (e) { console.error("sync: failed to read peer", deviceId, e.message); continue; }
+      catch (e) { console.error("sync: failed to read peer", deviceId, e.message); errors.push("readFullPeerSnapshot(" + deviceId + "): " + (e && e.message || e)); continue; }
       console.log("sync: readPeers — read peer", deviceId, "ok:", !!snap);
-      if (!snap) continue; // torn write on the writer's side — skip, retry next cycle
+      if (!snap) { errors.push("readFullPeerSnapshot(" + deviceId + "): returned null (torn write / missing meta or snapshot)"); continue; }
       if ((snap.schemaVersion | 0) > SCHEMA_VERSION) continue; // ahead of us — forward-compat gate
       if (snap.publishedAt != null && isFinite(snap.publishedAt) && Number(snap.publishedAt) - now > MAX_FUTURE_SKEW_MS) {
         skewSkipped++;
@@ -112,7 +117,7 @@
       peers.push(snap);
     }
     console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped);
-    return { peers, skewSkipped };
+    return { peers, skewSkipped, errors, deviceIdsFound: deviceIds };
   }
 
   // Batches the actual IndexedDB writes into one transaction per store instead of
@@ -302,7 +307,7 @@
     const { deviceId, deviceLabel } = await ensureDeviceIdentity();
     console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
 
-    const { peers, skewSkipped } = await readPeers(accessToken, deviceId);
+    const { peers, skewSkipped, errors: peerErrors, deviceIdsFound } = await readPeers(accessToken, deviceId);
     let changed = false, conflicts = 0, upserts = 0, deletes = 0;
     if (peers.length) {
       console.log("sync: runSyncCycle — building local snapshot for merge");
@@ -331,6 +336,8 @@
       deviceId, deviceLabel, changed, conflicts, upserts, deletes,
       peersRead: peers.length, skewSkipped,
       published: !!publishResult, publishedAt: publishResult && publishResult.publishedAt,
+      // TEMPORARY DIAGNOSTIC fields (remove once the silent-failure sync issue is root-caused):
+      deviceIdsFound: deviceIdsFound || [], peerErrors: peerErrors || [],
     };
   }
 

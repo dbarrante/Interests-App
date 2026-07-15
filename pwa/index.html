@@ -1428,8 +1428,20 @@ async function chooseSyncFolder(){
 }
 async function syncNowClick(){
   toast("Syncing…");
-  try{ const r = await Store.syncNow(); toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date"); if(r && r.changed){ setTimeout(()=>location.reload(), 900); } }
-  catch(e){ toast("Sync failed: " + (e&&e.message||e)); }
+  try{
+    const r = await Store.syncNow();
+    // TEMPORARY DIAGNOSTIC (remove once the silent-failure sync issue is root-caused):
+    // shows the full result instead of a quick-vanishing toast so it's readable
+    // without a devtools connection.
+    alert("Sync result:\n" + JSON.stringify(r, null, 2));
+    if(r && r.ok === false){ return; }
+    toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
+    if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
+  }
+  catch(e){
+    alert("Sync threw:\n" + (e && e.stack || e && e.message || e));
+    toast("Sync failed: " + (e&&e.message||e));
+  }
 }
 
 /* ============ settings ui ============ */
