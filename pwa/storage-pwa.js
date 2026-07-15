@@ -19,7 +19,22 @@
   const idb = window.IA_IDB;
 
   if (navigator.serviceWorker) {
-    navigator.serviceWorker.register("sw.js").catch((e) => {
+    // updateViaCache: "none" stops the browser from ever serving sw.js itself out
+    // of the HTTP cache when checking for updates — without this, a stale cached
+    // sw.js can make the update check a no-op indefinitely on some WebKit builds,
+    // which is how a home-screen PWA gets stuck on an old build even across
+    // force-quits. The explicit update() call (each load) and the one-shot reload
+    // on controllerchange (new SW actually took control) make a fresh deploy
+    // propagate to an already-installed device without any manual cache-clearing.
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
+      reg.update().catch(() => {});
+      let reloading = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (reloading) return;
+        reloading = true;
+        location.reload();
+      });
+    }).catch((e) => {
       console.error("Service worker registration failed (images will not load):", e);
     });
   }

@@ -1,6 +1,25 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+// One-time escape hatch for a stuck service worker (iOS home-screen PWAs can get
+// wedged on a stale cached build). Visiting ?forcefresh unregisters the service
+// worker and clears its Cache Storage ONLY — completely separate browser storage
+// from localStorage (Dropbox tokens/settings) and IndexedDB (cards/saved/images),
+// neither of which this touches. Safe to run repeatedly; strips itself from the
+// URL via replace() so it doesn't loop or land in history.
+(function(){
+  if (!/[?&]forcefresh\b/.test(location.search)) return;
+  var clean = location.origin + location.pathname;
+  Promise.resolve()
+    .then(function(){ return navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []; })
+    .then(function(regs){ return Promise.all(regs.map(function(r){ return r.unregister(); })); })
+    .then(function(){ return ("caches" in window) ? caches.keys() : []; })
+    .then(function(keys){ return Promise.all(keys.map(function(k){ return caches.delete(k); })); })
+    .then(function(){ location.replace(clean); })
+    .catch(function(){ location.replace(clean); });
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#c2410c">
