@@ -58,5 +58,10 @@ ok("UX-6: syncNowClick has no leftover temporary diagnostic alert()s", !/TEMPORA
 ok("UX-6: syncNowClick shows a reconnect toast and re-renders sync status on AUTH_EXPIRED", /r\.code === "AUTH_EXPIRED"[\s\S]{0,120}?renderSyncStatus\(\)/.test(src));
 ok("UX-6: syncNowClick still shows a generic failure toast for a non-auth failure", /Sync failed: " \+ \(r\.reason \|\| "unknown reason"\)/.test(src));
 
+// UX-6 cont'd: persistent "Last sync" line in the Settings sync-status panel,
+// feature-detected since desktop's web/storage.js has no lastSyncResult().
+ok("UX-6: renderSyncStatus feature-detects Store.lastSyncResult before calling it", /typeof Store\.lastSyncResult === "function"/.test(src));
+ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync: <b>succeeded<\/b>/.test(src) && /Last sync: <b>failed<\/b>/.test(src));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

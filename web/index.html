@@ -1405,10 +1405,23 @@ async function renderSyncStatus(){
   if(fi) fi.textContent = st.folder ? st.folder : (st.dropboxFound ? "(default Dropbox location)" : "Dropbox not found — install Dropbox or pick a folder.");
   const nm = document.getElementById("syncDeviceName"); if(nm && document.activeElement!==nm) nm.value = st.deviceLabel || "";
   const peers = (st.peers||[]).map(p => esc(p.deviceLabel||p.deviceId) + (p.publishedAt ? " ("+new Date(p.publishedAt).toLocaleString()+")" : "")).join(", ") || "none seen yet";
+  let lastSyncLine = "";
+  if (typeof Store.lastSyncResult === "function") {
+    try {
+      const last = await Store.lastSyncResult();
+      if (last) {
+        const when = new Date(last.at).toLocaleString();
+        lastSyncLine = last.ok
+          ? "<div>Last sync: <b>succeeded</b> " + esc(when) + "</div>"
+          : "<div>Last sync: <b>failed</b> — " + esc(last.reason || "unknown reason") + " " + esc(when) + "</div>";
+      }
+    } catch (e) {}
+  }
   el.innerHTML =
     "<div>Status: <b>" + (st.enabled ? "on" : "off") + "</b></div>" +
     "<div>This device: <b>" + esc(st.deviceLabel||"") + "</b></div>" +
-    "<div>Other devices: <b>" + peers + "</b></div>";
+    "<div>Other devices: <b>" + peers + "</b></div>" +
+    lastSyncLine;
 }
 async function chooseSyncFolder(){
   const pf = window.ia && window.ia.pickFolder;
