@@ -188,6 +188,20 @@ async function fetchWithRetry(url, options) {
   }
 }
 
+// Pure — classifies a Dropbox HTTP response status into a code the rest of
+// the app can branch on, without inspecting Dropbox's free-text
+// error_summary. 401 means the access token is dead (revoked or expired
+// server-side — distinct from our own locally-tracked expiresAt, which can
+// still look "not expired yet" while the server has already killed it) and
+// every caller must treat that identically: clear the token, tell the user
+// to reconnect. Everything else (network failure, 404, 5xx, a 429 that
+// survived fetchWithRetry's own retries) is a generic, non-auth failure
+// that must NOT force a reconnect for what might just be a bad moment.
+function classifyDbxError(status) {
+  if (status === 401) return { code: "AUTH_EXPIRED", message: "Dropbox connection expired — reconnect in Settings." };
+  return { code: "OTHER", message: null };
+}
+
 async function dbxApiCall(accessToken, endpoint, argBody) {
   const res = await fetchWithRetry(`${DBX_API_URL}/${endpoint}`, {
     method: "POST",
