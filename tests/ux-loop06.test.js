@@ -102,8 +102,14 @@ ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync:
 // outerHTML div-swap like impCardHTML uses) because it's re-invoked on the
 // SAME <img> element every time the user changes the image within one
 // modal session — a div-swap would permanently break that.
-ok("UX-7: edRenderPrev sets onerror before assigning src", /p\.onerror\s*=\s*dom/.test(src));
-ok("UX-7: edRenderPrev falls back through a favicon then a neutral placeholder, never a bare broken icon", /s2\/favicons\?domain=/.test(src) && /data:image\/svg\+xml/.test(src));
+const edRenderPrevBody = grab(src, "edRenderPrev");
+{
+  const onerrorIdx = edRenderPrevBody.indexOf("p.onerror = dom");
+  const srcIdx = edRenderPrevBody.indexOf("p.src=_editImg");
+  ok("UX-7: edRenderPrev sets onerror before assigning src (positional, not just present)",
+    onerrorIdx >= 0 && srcIdx >= 0 && onerrorIdx < srcIdx);
+}
+ok("UX-7: edRenderPrev falls back through a favicon then a neutral placeholder, never a bare broken icon", /s2\/favicons\?domain=/.test(edRenderPrevBody) && /data:image\/svg\+xml/.test(edRenderPrevBody));
 
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
