@@ -1029,8 +1029,11 @@ App Console and the deployed PWA on a real device:
 3. Confirm the toast reads "Dropbox connection expired — reconnect in
    Settings" (not a generic "Sync failed" or the old misleading "already up
    to date").
-4. Open Settings and confirm the sync status panel reflects "not connected"
-   immediately, without needing another manual refresh.
+4. Open Settings and confirm the sync status panel shows a "Last sync:
+   **failed** — Dropbox connection expired — reconnect in Settings" line
+   immediately, without needing another manual refresh. (The `Status: on/off`
+   line above it is just the sync toggle and is unrelated to token
+   validity — it will still read "on".)
 5. Reconnect via the existing Dropbox connect flow, tap "Sync now" again,
    and confirm a normal sync completes with a "Last sync: succeeded
    `<time>`" line visible in Settings.

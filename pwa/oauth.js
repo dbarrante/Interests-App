@@ -317,6 +317,7 @@ async function listDeviceImageIds(accessToken, deviceId) {
     const entries = await dbxListFolder(accessToken, `/Interests App/sync/${deviceId}/images`);
     return entries.filter((e) => e[".tag"] === "file").map((e) => e.name.replace(/\.jpg$/i, ""));
   } catch (e) {
+    if (e && e.code === "AUTH_EXPIRED") throw e; // a dead token must propagate, not be absorbed as "no images"
     // path/not_found is the normal, silent case for a device that hasn't
     // published any images yet. Anything else (rate limit, network error, a
     // real bug) was previously swallowed identically — that masked the actual

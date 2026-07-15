@@ -67,5 +67,15 @@ t("refreshAccessToken tags a failed refresh AUTH_EXPIRED and disconnects", () =>
   assert.ok(codeCount >= 2, "both failure paths must tag err.code = AUTH_EXPIRED");
 });
 
+t("listDeviceImageIds: re-throws AUTH_EXPIRED before the path/not_found swallow", () => {
+  const body = grab(src, "listDeviceImageIds");
+  assert.ok(/if\s*\(e\s*&&\s*e\.code\s*===\s*"AUTH_EXPIRED"\)\s*throw e/.test(body),
+    "must re-throw AUTH_EXPIRED instead of absorbing it as \"no images yet\"");
+  const authIdx = body.search(/e\.code\s*===\s*"AUTH_EXPIRED"/);
+  const pathIdx = body.search(/path\/not_found/);
+  assert.ok(authIdx >= 0 && pathIdx >= 0 && authIdx < pathIdx,
+    "AUTH_EXPIRED check must come before the path/not_found check");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
