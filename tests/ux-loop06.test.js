@@ -111,5 +111,9 @@ const edRenderPrevBody = grab(src, "edRenderPrev");
 }
 ok("UX-7: edRenderPrev falls back through a favicon then a neutral placeholder, never a bare broken icon", /s2\/favicons\?domain=/.test(edRenderPrevBody) && /data:image\/svg\+xml/.test(edRenderPrevBody));
 
+// UX-7 cont'd: dupeThumb's http(s)-URL branch had no onerror at all, unlike
+// the idb: branch right above it in the same function.
+ok("UX-7: dupeThumb's http(s) branch has the same onerror fallback as its idb: branch", /<img src="\$\{esc\(src\)\}" loading="lazy" onerror="this\.outerHTML='<div class=ph><\/div>'">/.test(src));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

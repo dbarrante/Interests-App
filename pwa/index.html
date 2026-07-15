@@ -4608,7 +4608,7 @@ function dupeThumb(mem){
   const v = itemImg(it, mem.scope);
   if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
   const src = resolveImg(v);
-  if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy">`;
+  if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;
   return `<div class="ph"></div>`;
 }
 function dupeRowHTML(mem, gi, keep){
