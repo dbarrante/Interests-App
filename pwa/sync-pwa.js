@@ -84,17 +84,21 @@
 
   async function readPeers(accessToken, selfDeviceId) {
     console.log("sync: readPeers — listing", SYNC_ROOT);
-    // TEMPORARY DIAGNOSTIC (remove once the silent-failure sync issue is root-caused):
-    // `errors` collects what would otherwise only be visible in devtools console,
-    // so it can be surfaced through runSyncCycle's return value to an alert().
-    const errors = [];
     let entries;
     try {
       entries = await Dbx.dbxListFolder(accessToken, SYNC_ROOT);
     } catch (e) {
-      console.log("sync: readPeers — list_folder failed (likely no sync root yet):", e.message);
-      errors.push("list_folder(" + SYNC_ROOT + "): " + (e && e.message || e));
-      return { peers: [], skewSkipped: 0, errors }; // sync root doesn't exist yet — nobody has synced ever
+      if (e && e.code === "AUTH_EXPIRED") throw e; // sync cannot proceed without a live connection
+      // path/not_found is the normal, silent case for "nobody has ever synced
+      // to this Dropbox account yet" — the sync root folder doesn't exist.
+      // Anything else here used to be swallowed identically (the root cause
+      // of a 2-day silent sync failure, see the design spec) — now it
+      // propagates so the caller actually finds out.
+      if (/path\/not_found/.test(e && e.message)) {
+        console.log("sync: readPeers — no sync root yet (nobody has ever synced):", e.message);
+        return { peers: [], skewSkipped: 0, partialFailures: [] };
+      }
+      throw e;
     }
     const deviceIds = entries.filter((e) => e[".tag"] === "folder").map((e) => e.name).filter((id) => id !== selfDeviceId);
     console.log("sync: readPeers — found device folders:", deviceIds);
@@ -102,13 +106,20 @@
     const now = Date.now();
     let skewSkipped = 0;
     const peers = [];
+    const partialFailures = [];
     for (const deviceId of deviceIds) {
       console.log("sync: readPeers — reading peer", deviceId);
       let snap;
-      try { snap = await Dbx.readFullPeerSnapshot(accessToken, deviceId); }
-      catch (e) { console.error("sync: failed to read peer", deviceId, e.message); errors.push("readFullPeerSnapshot(" + deviceId + "): " + (e && e.message || e)); continue; }
+      try {
+        snap = await Dbx.readFullPeerSnapshot(accessToken, deviceId);
+      } catch (e) {
+        if (e && e.code === "AUTH_EXPIRED") throw e; // a dead token kills the whole cycle, not just this peer
+        console.error("sync: failed to read peer", deviceId, e.message);
+        partialFailures.push({ deviceId, reason: (e && e.message) || String(e) });
+        continue;
+      }
       console.log("sync: readPeers — read peer", deviceId, "ok:", !!snap);
-      if (!snap) { errors.push("readFullPeerSnapshot(" + deviceId + "): returned null (torn write / missing meta or snapshot)"); continue; }
+      if (!snap) { partialFailures.push({ deviceId, reason: "torn write (meta/snapshot count mismatch) — will retry next cycle" }); continue; }
       if ((snap.schemaVersion | 0) > SCHEMA_VERSION) continue; // ahead of us — forward-compat gate
       if (snap.publishedAt != null && isFinite(snap.publishedAt) && Number(snap.publishedAt) - now > MAX_FUTURE_SKEW_MS) {
         skewSkipped++;
@@ -116,8 +127,8 @@
       }
       peers.push(snap);
     }
-    console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped);
-    return { peers, skewSkipped, errors, deviceIdsFound: deviceIds };
+    console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped + " partialFailures=" + partialFailures.length);
+    return { peers, skewSkipped, partialFailures };
   }
 
   // Batches the actual IndexedDB writes into one transaction per store instead of
