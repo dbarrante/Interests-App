@@ -1436,10 +1436,6 @@ async function syncNowClick(){
   toast("Syncing…");
   try{
     const r = await Store.syncNow();
-    // TEMPORARY DIAGNOSTIC (remove once the live "no visible sync result" issue is
-    // root-caused): gated on a PWA-only method so this stays byte-identical with
-    // web/index.html and never fires for desktop users.
-    if(typeof Store.lastSyncResult === "function"){ alert("Sync result:\n" + JSON.stringify(r, null, 2)); }
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
     if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
@@ -1447,8 +1443,6 @@ async function syncNowClick(){
     if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
   }
   catch(e){
-    // TEMPORARY DIAGNOSTIC (remove once the live "no visible sync result" issue is root-caused):
-    if(typeof Store.lastSyncResult === "function"){ alert("Sync threw:\n" + (e && e.stack || e && e.message || e)); }
     toast("Sync failed: " + (e&&e.message||e));
     await renderSyncStatus();
   }

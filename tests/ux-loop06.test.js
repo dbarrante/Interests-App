@@ -67,12 +67,7 @@ ok("UX-5: html/body has an overflow-x backstop against page-level horizontal ove
 // classified sync result instead of the temporary alert()-based diagnostics
 // added earlier this session. Desktop (web/index.html) never had the temp
 // diagnostics — this locks in the SAME permanent shape landing on both files.
-// TEMPORARILY SUSPENDED (2026-07-15, live on-device debugging session): a
-// PWA-gated diagnostic alert() was deliberately reintroduced in syncNowClick
-// to root-cause a live report of "sync toast disappears, Last-sync line never
-// updates" that survived the render fix. Restore this assertion (and remove
-// the diagnostic from web/index.html + pwa/index.html) once that's resolved.
-// ok("UX-6: syncNowClick has no leftover temporary diagnostic alert()s", !/TEMPORARY DIAGNOSTIC/.test(src) && !/alert\("Sync result/.test(src) && !/alert\("Sync threw/.test(src));
+ok("UX-6: syncNowClick has no leftover temporary diagnostic alert()s", !/TEMPORARY DIAGNOSTIC/.test(src) && !/alert\("Sync result/.test(src) && !/alert\("Sync threw/.test(src));
 ok("UX-6: syncNowClick shows a reconnect toast and re-renders sync status on AUTH_EXPIRED", /r\.code === "AUTH_EXPIRED"[\s\S]{0,120}?renderSyncStatus\(\)/.test(src));
 ok("UX-6: syncNowClick still shows a generic failure toast for a non-auth failure", /Sync failed: " \+ \(r\.reason \|\| "unknown reason"\)/.test(src));
 
