@@ -50,5 +50,13 @@ ok("UX-5: .ig-g1 img.th keeps a square aspect ratio while shrinking", /aspect-ra
 ok("UX-5: imp-card's text sibling has min-width:0 so it can shrink/wrap too", /\$\{icon\}\s*<div style="flex:1;min-width:0">/.test(src));
 ok("UX-5: html/body has an overflow-x backstop against page-level horizontal overflow", /(?:html|body)[^{]*\{[^}]*overflow-x:hidden/.test(src));
 
+// UX-6 (2026-07-15 sync-reliability plan): syncNowClick() branches on the
+// classified sync result instead of the temporary alert()-based diagnostics
+// added earlier this session. Desktop (web/index.html) never had the temp
+// diagnostics — this locks in the SAME permanent shape landing on both files.
+ok("UX-6: syncNowClick has no leftover temporary diagnostic alert()s", !/TEMPORARY DIAGNOSTIC/.test(src) && !/alert\("Sync result/.test(src) && !/alert\("Sync threw/.test(src));
+ok("UX-6: syncNowClick shows a reconnect toast and re-renders sync status on AUTH_EXPIRED", /r\.code === "AUTH_EXPIRED"[\s\S]{0,120}?renderSyncStatus\(\)/.test(src));
+ok("UX-6: syncNowClick still shows a generic failure toast for a non-auth failure", /Sync failed: " \+ \(r\.reason \|\| "unknown reason"\)/.test(src));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
