@@ -105,7 +105,10 @@ t("recapture heal wiring: openFailOne arms _recapTarget; drainCaptures passes + 
   const ob = html.slice(oi, oi + 800);
   assert.ok(ob.indexOf("_recapTarget") >= 0, "openFailOne arms _recapTarget");
   const di = html.indexOf("async function drainCaptures(");
-  const db = html.slice(di, di + 7000);
+  // slice to the function's closing brace, not a fixed char count — comment growth
+  // upstream of the call pushed it past a fixed 7000-char window once already
+  // (junk-screenshot-detection.test.js's drainCaptures insertion, 2026-07-15).
+  const db = html.slice(di, html.indexOf("\n}", di) + 2);
   assert.ok(db.replace(/\s/g, "").indexOf("recapTarget:_recapTarget") >= 0, "drainCaptures passes recapTarget to routeCapture");
   assert.ok(db.indexOf("viaRecap") >= 0, "drainCaptures computes viaRecap");
   assert.ok(db.replace(/\s/g, "").indexOf("_recapTarget=null") >= 0, "disarms _recapTarget after heal");

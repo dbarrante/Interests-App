@@ -2274,6 +2274,46 @@ function imgFp(d){ d=(d||"")+""; return d ? (d.length+"|"+d.slice(0,48)+"|"+d.sl
 // can't re-loop back into the placeholder pile. Persisted across reloads.
 let _phFps = new Set();
 function rememberPhFp(fp){ if(fp && !_phFps.has(fp)){ _phFps.add(fp); Store.kvSet("ia_ph_fps", [..._phFps].slice(-200)); } }
+// Instagram serves a visually-identical "Sorry, we're having trouble displaying this
+// video" error page for reels it currently won't play (deleted/private/age-gated/
+// region-locked). captureTab still takes a real screenshot of THAT error page, so it
+// looks like a normal successful capture (a real data: image, not a raw hotlink) --
+// imgFp's exact match can't catch it either, since each screenshot differs slightly
+// (account name/follower count in Instagram's own chrome around the error). Found
+// live 2026-07-15: 14 of 609 cached Instagram Reel screenshots were this exact error
+// page, forming a clean perceptual-hash cluster (Hamming distance 0-8 from these two
+// references; the next-closest UNRELATED image was at distance 12, and the bulk of
+// real screenshots cluster around distance ~27 out of 64 bits -- a well-separated
+// gap, not an arbitrary cutoff).
+const IG_VIDEO_ERROR_DHASHES = [
+  "1011010010110100101101001011010010110100101101001011010010110110",
+  "1011010010110100101101001011010010110100101001001010010010100110",
+];
+const JUNK_DHASH_MAX_DIST = 8;
+// 64-bit perceptual "difference hash" of a data: URL image, robust to the minor pixel
+// differences between two captures of the same underlying error-page layout (unlike
+// imgFp's exact string match). Returns "" on any decode failure -- never blocks a
+// capture over an unrelated canvas issue.
+async function dHashFromDataUrl(dataUrl){
+  try{
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    const w=9, h=8;
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const gray=[];
+    for(let i=0;i<w*h;i++) gray.push(0.299*data[i*4]+0.587*data[i*4+1]+0.114*data[i*4+2]);
+    let hash="";
+    for(let row=0; row<h; row++) for(let col=0; col<w-1; col++){ const idx=row*w+col; hash += gray[idx]<gray[idx+1] ? "1":"0"; }
+    return hash;
+  }catch(e){ return ""; }
+}
+async function isKnownJunkScreenshot(dataUrl){
+  const hash = await dHashFromDataUrl(dataUrl);
+  if(!hash) return false;
+  return IG_VIDEO_ERROR_DHASHES.some(ref => hammingDist(hash, ref) <= JUNK_DHASH_MAX_DIST);
+}
 // Detect FB cards that captured a loading-spinner/placeholder instead of the post
 // photo: those all share the IDENTICAL image (real photos are unique). Returns the
 // groups of duplicate-image cards. Cheap content fingerprint from the cached data URL.
@@ -4852,6 +4892,14 @@ async function drainCaptures(){
     // This is what stops gated posts from re-looping into the placeholder pile.
     if(best && (best+"").indexOf("data:")===0 && _phFps.has(imgFp(best))){
       console.log("[drainCaptures] rejected known placeholder image for "+cap.url);
+      match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
+      continue;
+    }
+    // Same rejection, different detector: a known error-page screenshot (e.g. Instagram's
+    // "trouble displaying this video") that imgFp's exact match can't catch because each
+    // capture differs slightly (account name/follower count baked into the screenshot).
+    if(best && (best+"").indexOf("data:")===0 && await isKnownJunkScreenshot(best)){
+      console.log("[drainCaptures] rejected known junk screenshot (e.g. IG video-unavailable error page) for "+cap.url);
       match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
       continue;
     }

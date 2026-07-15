@@ -28,6 +28,17 @@
   // never be treated as a permanently-good image, only ever "idb:"-cached bytes are.
   function isBadImg(u) { return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u) || (/scontent[.-]|cdninstagram\.com|fbcdn\.net/i.test(u) && /[?&]oe=/i.test(u)); }
 
+  // Bit-distance between two equal-length binary hash strings (e.g. a 64-bit
+  // perceptual image dHash) -- used to detect near-duplicate screenshots (a known
+  // junk error page) that an exact string match like imgFp would miss. Mismatched
+  // lengths (a decode failure produced "") return the max distance -- never a match.
+  function hammingDist(a, b) {
+    if (!a || !b || a.length !== b.length) return 64;
+    var d = 0;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+    return d;
+  }
+
   function captureable(i) { return i.url && !i.capDone && isBadImg(i.img || "") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
   function captureableFb(i) { return i.url && !i.capDone && isBadImg(i.img || "") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
   function needsCapture(i) { return captureable(i) && !i.lastUpdate && !i.captured; }   // never tried
@@ -83,7 +94,7 @@
   }
 
   var api = {
-    isFavicon: isFavicon, isBadImg: isBadImg,
+    isFavicon: isFavicon, isBadImg: isBadImg, hammingDist: hammingDist,
     captureable: captureable, captureableFb: captureableFb,
     needsCapture: needsCapture, needsRetry: needsRetry,
     needsFbCapture: needsFbCapture, fbMiss: fbMiss,
@@ -98,6 +109,7 @@
   if (root) {
     root.isFavicon = isFavicon;
     root.isBadImg = isBadImg;
+    root.hammingDist = hammingDist;
     root.captureable = captureable;
     root.captureableFb = captureableFb;
     root.needsCapture = needsCapture;

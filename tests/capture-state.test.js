@@ -44,6 +44,35 @@ t("isBadImg: an idb: local cache ref or a non-social CDN URL with '?oe=' noise -
   assert.ok(!CS.isBadImg("https://cdn.example.com/photo.jpg?oe=123"));   // unrelated host, coincidental param
 });
 
+/* ---------- hammingDist (perceptual dHash comparison) ---------- */
+// Live bug 2026-07-15 (follow-on): Instagram serves the same "trouble displaying this
+// video" error page for reels it currently won't play, and captureTab dutifully
+// screenshots it -- a REAL data: image, so isBadImg/imgFp both call it "fine". Found
+// 14 of 609 cached Instagram Reel screenshots were this exact error page. The two
+// reference hashes below are the actual computed dHashes of two of those cards
+// (c_mqyfkl7d_6zia77 / c_mqyfkl7d_t5i5r3) -- verified live to be 3 bits apart from
+// each other despite different account/follower-count chrome baked into each screenshot,
+// and 12+ bits from the nearest unrelated real photo in the same library.
+const IG_ERROR_HASH_A = "1011010010110100101101001011010010110100101101001011010010110110";
+const IG_ERROR_HASH_B = "1011010010110100101101001011010010110100101001001010010010100110";
+t("hammingDist: identical hashes -> 0", () => {
+  assert.strictEqual(CS.hammingDist(IG_ERROR_HASH_A, IG_ERROR_HASH_A), 0);
+});
+t("hammingDist: the two live IG-error-page hashes are 3 bits apart (within threshold)", () => {
+  assert.strictEqual(CS.hammingDist(IG_ERROR_HASH_A, IG_ERROR_HASH_B), 3);
+});
+t("hammingDist: mismatched length (a decode failure) -> max distance, never a false match", () => {
+  assert.strictEqual(CS.hammingDist(IG_ERROR_HASH_A, "1011"), 64);
+  assert.strictEqual(CS.hammingDist("", IG_ERROR_HASH_A), 64);
+  assert.strictEqual(CS.hammingDist(IG_ERROR_HASH_A, ""), 64);
+});
+t("hammingDist: flipping 20 of 64 bits -> distance 20, well outside the rejection threshold", () => {
+  const chars = IG_ERROR_HASH_A.split("");
+  for (let i = 0; i < 20; i++) chars[i] = chars[i] === "1" ? "0" : "1";
+  const farHash = chars.join("");
+  assert.strictEqual(CS.hammingDist(IG_ERROR_HASH_A, farHash), 20);
+});
+
 /* ---------- captureable (web, not FB) ---------- */
 t("captureable: web url + bad img + not capDone/blocked -> true", () => {
   assert.ok(CS.captureable({ url: WEB, img: "" }));
