@@ -115,5 +115,19 @@ ok("UX-7: edRenderPrev falls back through a favicon then a neutral placeholder, 
 // the idb: branch right above it in the same function.
 ok("UX-7: dupeThumb's http(s) branch has the same onerror fallback as its idb: branch", /<img src="\$\{esc\(src\)\}" loading="lazy" onerror="this\.outerHTML='<div class=ph><\/div>'">/.test(src));
 
+// UX-7 cont'd (mobile stuck-UI): pollBatchProgress's fetch throws on the
+// actual deployed PWA (no /api/batch-progress route exists on GitHub
+// Pages) — confirmed by tracing the real request path, not assumed. The
+// old catch(e){ return; } meant that path NEVER reached any stuck-check, so
+// the fix has to live in a shape both the catch path and the "p stays
+// null" path funnel through.
+// Scoped to pollBatchProgress's own body (via grab()) rather than the whole
+// file — an unrelated catch(e){ return; } already exists elsewhere in
+// web/index.html (drainCaptures' queue fetch), so a whole-file regex would
+// false-negative on that pre-existing, out-of-scope occurrence.
+const pollBatchProgressBody = grab(src, "pollBatchProgress");
+ok("UX-7: pollBatchProgress's catch no longer early-returns (falls through to the shared stuck-check instead)", !/catch\(e\)\{ return; \}/.test(pollBatchProgressBody));
+ok("UX-7: pollBatchProgress resets batchUI and toasts after ~20s of no progress ever appearing", /_batchStuckSince/.test(pollBatchProgressBody) && /Recapture needs the desktop app running with the extension/.test(pollBatchProgressBody));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

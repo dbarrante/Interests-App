@@ -3695,6 +3695,7 @@ async function enrichOnOpen(it, idx){
 }
 /* ============ batch "capture missing" ============ */
 let batchUI = {active:false, done:0, total:0};
+let _batchStuckSince = 0; // pollBatchProgress: first poll where batchUI.active is true but no progress record has ever appeared (no extension/desktop servicing this batch)
 let _batchIgnoreUntil = 0;   // after a manual Stop, ignore stale progress briefly
 // a card worth auto-capturing: has a link, no real image, not blocked, not a
 // Facebook permalink, AND not already attempted (so the batch never re-does a
@@ -3897,8 +3898,29 @@ function cancelBatchCapture(){
 }
 async function pollBatchProgress(){
   if(Date.now() < _batchIgnoreUntil) return;          // just stopped — don't flip back to Stop
-  let p; try{ const j = await fetch("/api/batch-progress").then(r=>r.json()); p = j && j.progress; }catch(e){ return; }
-  if(!p) return;
+  let p = null;
+  try{ const j = await fetch("/api/batch-progress").then(r=>r.json()); p = j && j.progress; }
+  catch(e){ /* no local server reachable at all (e.g. standalone mobile PWA) — fall through to the stuck-check below instead of returning early */ }
+  if(!p){
+    // Covers BOTH "the server responded but nothing is running/claimed yet"
+    // and "the fetch itself failed" — only force a reset if we're actually
+    // waiting on a batch we started (batchUI.active), never during normal
+    // idle polling (most polls, all the time, on every platform).
+    if(batchUI.active){
+      if(!_batchStuckSince) _batchStuckSince = Date.now();
+      else if(Date.now() - _batchStuckSince > 20000){
+        _batchStuckSince = 0;
+        try{ Store.setBatchState({active:false, cancel:true}); }catch(e){}
+        batchUI={active:false, done:0, total:0};
+        toast("Recapture needs the desktop app running with the extension");
+        if(curTab==="imported") renderImported();
+      }
+    } else {
+      _batchStuckSince = 0;
+    }
+    return;
+  }
+  _batchStuckSince = 0;
   // stale progress (driver/tab gone) — treat as finished so the button never sticks
   if(p.active && p.ts && (Date.now()-p.ts > 90000)){ p.active=false; }
   const was=batchUI.active;
