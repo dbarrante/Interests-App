@@ -94,6 +94,65 @@ ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync:
   }
 }
 
+// UX-8 (2026-07-15 live-device bug): syncNowClick() only called
+// renderSyncStatus() on the AUTH_EXPIRED branch. Store.syncNow() always
+// persists the fresh "last sync result" to IndexedDB regardless of outcome
+// (via persist() in pwa/storage-pwa.js), but the on-screen Settings "Last
+// sync" line — rendered by renderSyncStatus() — only refreshed on the
+// AUTH_EXPIRED path. A user confirmed live that after a successful sync,
+// storage updated correctly but the visible "Last sync" line stayed stuck
+// on an old failed entry until they navigated away from Settings and back.
+// Fix: call renderSyncStatus() on every exit path (success, non-auth
+// failure, AUTH_EXPIRED, and the outer catch) — 4 calls total, not 1.
+{
+  const webSyncBody = grab(src, "syncNowClick");
+  const pwaSyncBody = grab(pwaSrc, "syncNowClick");
+
+  for (const [label, body] of [["web", webSyncBody], ["pwa", pwaSyncBody]]) {
+    const renderCount = (body.match(/renderSyncStatus\(\)/g) || []).length;
+    ok(`UX-8: ${label}/index.html syncNowClick calls renderSyncStatus() on all 4 exit paths (not just AUTH_EXPIRED)`, renderCount === 4);
+
+    // AUTH_EXPIRED branch: toast -> await renderSyncStatus() -> return, all in one statement group.
+    ok(`UX-8: ${label} AUTH_EXPIRED branch toasts then re-renders sync status then returns`,
+      /r\.code === "AUTH_EXPIRED"\)\{ toast\("Dropbox connection expired[^"]*"\); await renderSyncStatus\(\); return; \}/.test(body));
+
+    // Non-auth failure branch (r.ok === false): toast -> await renderSyncStatus() -> return.
+    // Pre-fix this branch had no renderSyncStatus() call at all, so this fails against the bug.
+    ok(`UX-8: ${label} non-auth failure branch toasts then re-renders sync status then returns`,
+      /r\.ok === false\)\{ toast\("Sync failed: " \+ \(r\.reason \|\| "unknown reason"\)\); await renderSyncStatus\(\); return; \}/.test(body));
+
+    // Success path: the success toast must be followed by "renderSyncStatus();"
+    // BEFORE the location.reload() setTimeout (so the panel refreshes even when
+    // a reload is about to happen). Pre-fix, no renderSyncStatus() call exists
+    // anywhere after the success toast, so indexOf(...) returns -1 and this fails.
+    const toastSuccessIdx = body.indexOf('toast(r && r.changed ? "Synced');
+    const renderAfterSuccessIdx = body.indexOf("renderSyncStatus();", toastSuccessIdx);
+    const setTimeoutIdx = body.indexOf("setTimeout(()=>location.reload()");
+    ok(`UX-8: ${label} success path re-renders sync status (before any reload)`,
+      toastSuccessIdx >= 0 && renderAfterSuccessIdx > toastSuccessIdx &&
+      (setTimeoutIdx < 0 || renderAfterSuccessIdx < setTimeoutIdx));
+
+    // Outer catch(e) block: toast -> await renderSyncStatus(), consecutively.
+    // Pre-fix the catch block only toasts and never calls renderSyncStatus(),
+    // and since AUTH_EXPIRED's single call sits earlier in the source, slicing
+    // from catchIdx onward finds nothing pre-fix.
+    const catchIdx = body.indexOf("catch(e){");
+    const catchBody = catchIdx >= 0 ? body.slice(catchIdx) : "";
+    ok(`UX-8: ${label} catch block toasts then re-renders sync status`,
+      /toast\("Sync failed: " \+ \(e&&e\.message\|\|e\)\);\s*await renderSyncStatus\(\);/.test(catchBody));
+  }
+
+  // Binding parity: syncNowClick must stay byte-identical between web and pwa,
+  // same convention as the renderSyncStatus lock above.
+  try {
+    assert.strictEqual(pwaSyncBody, webSyncBody, "pwa/index.html's syncNowClick has diverged from web/index.html's — keep them byte-identical or update both together");
+    ok("UX-8: syncNowClick is byte-identical between web/index.html and pwa/index.html (binding parity)", true);
+  } catch (e) {
+    ok("UX-8: syncNowClick is byte-identical between web/index.html and pwa/index.html (binding parity)", false);
+    console.error("  " + e.message);
+  }
+}
+
 // UX-7 (2026-07-15 image-reliability plan): editImgPreview had no onerror
 // fallback at all — a broken/expired image URL pasted or already stored on
 // a card showed a bare broken-image icon in the edit modal. Every other

@@ -1476,12 +1476,14 @@ async function syncNowClick(){
   try{
     const r = await Store.syncNow();
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
-    if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); return; }
+    if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
+    await renderSyncStatus();
     if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
   }
   catch(e){
     toast("Sync failed: " + (e&&e.message||e));
+    await renderSyncStatus();
   }
 }
 
