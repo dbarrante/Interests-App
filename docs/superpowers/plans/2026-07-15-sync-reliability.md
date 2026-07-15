@@ -561,59 +561,82 @@ Expected: multiple FAILs (current `runSyncCycle` still has the temporary diagnos
 
 Replace the entirety of `runSyncCycle` (`pwa/sync-pwa.js:304-342`) with:
 
+Add this helper immediately before `runSyncCycle`:
+
+```js
+  function classifySyncError(e) {
+    return { code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e) };
+  }
+```
+
+Then `runSyncCycle` itself — note the ENTIRE body is wrapped in one outer try/catch (not just `readPeers`/`publishSnapshot`), so that `ensureDeviceIdentity`, `buildLocal`, `mergeSnapshots`, and `applyMergeToLocal`'s IndexedDB writes can't reject the promise either:
+
 ```js
   async function runSyncCycle(accessToken, opts) {
     console.log("sync: runSyncCycle — starting");
     opts = opts || {};
-    const { deviceId, deviceLabel } = await ensureDeviceIdentity();
-    console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
-
-    let peers, skewSkipped, partialFailures;
+    let deviceId, deviceLabel;
     try {
-      ({ peers, skewSkipped, partialFailures } = await readPeers(accessToken, deviceId));
-    } catch (e) {
-      console.error("sync: runSyncCycle — aborting, peer read failed:", e && e.message);
-      return { ok: false, code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e), deviceId, deviceLabel };
-    }
+      ({ deviceId, deviceLabel } = await ensureDeviceIdentity());
+      console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
 
-    let changed = false, conflicts = 0, upserts = 0, deletes = 0;
-    if (peers.length) {
-      console.log("sync: runSyncCycle — building local snapshot for merge");
-      const local = await buildLocal();
-      const plan = mergeSnapshots(local, peers); // pwa/merge.js — global, no import needed
-      console.log("sync: runSyncCycle — merge plan: upserts=" + plan.upserts.length + " deletes=" + plan.deletes.length + " imageCopies=" + plan.imageCopies.length);
-      if (opts.onProgress) opts.onProgress({ phase: "merging", done: 0, total: plan.imageCopies.length });
-      if (plan.upserts.length + plan.deletes.length + plan.imageCopies.length > 0 || plan.settings) {
-        const r = await applyMergeToLocal(plan, accessToken, (done, total) => {
-          if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
-        });
-        changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
-        console.log("sync: runSyncCycle — merge applied");
+      let peers, skewSkipped, partialFailures;
+      try {
+        ({ peers, skewSkipped, partialFailures } = await readPeers(accessToken, deviceId));
+      } catch (e) {
+        console.error("sync: runSyncCycle — aborting, peer read failed:", e && e.message);
+        return Object.assign({ ok: false, deviceId, deviceLabel }, classifySyncError(e));
       }
-    }
 
-    let publishResult = null;
-    try {
-      if (opts.publish !== false) {
-        publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
-          if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
-        });
+      let changed = false, conflicts = 0, upserts = 0, deletes = 0;
+      if (peers.length) {
+        console.log("sync: runSyncCycle — building local snapshot for merge");
+        const local = await buildLocal();
+        const plan = mergeSnapshots(local, peers); // pwa/merge.js — global, no import needed
+        console.log("sync: runSyncCycle — merge plan: upserts=" + plan.upserts.length + " deletes=" + plan.deletes.length + " imageCopies=" + plan.imageCopies.length);
+        if (opts.onProgress) opts.onProgress({ phase: "merging", done: 0, total: plan.imageCopies.length });
+        if (plan.upserts.length + plan.deletes.length + plan.imageCopies.length > 0 || plan.settings) {
+          const r = await applyMergeToLocal(plan, accessToken, (done, total) => {
+            if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
+          });
+          changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
+          console.log("sync: runSyncCycle — merge applied");
+        }
       }
-    } catch (e) {
-      console.error("sync: runSyncCycle — publish failed:", e && e.message);
+
+      let publishResult = null;
+      try {
+        if (opts.publish !== false) {
+          publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
+            if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
+          });
+        }
+      } catch (e) {
+        console.error("sync: runSyncCycle — publish failed:", e && e.message);
+        return Object.assign(
+          { ok: false, deviceId, deviceLabel, changed, conflicts, upserts, deletes, peersRead: peers.length, skewSkipped, partialFailures },
+          classifySyncError(e)
+        );
+      }
+      console.log("sync: runSyncCycle — done");
+
       return {
-        ok: false, code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e), deviceId, deviceLabel,
-        changed, conflicts, upserts, deletes, peersRead: peers.length, skewSkipped, partialFailures,
+        ok: true,
+        deviceId, deviceLabel, changed, conflicts, upserts, deletes,
+        peersRead: peers.length, skewSkipped, partialFailures,
+        published: !!publishResult, publishedAt: publishResult && publishResult.publishedAt,
       };
+    } catch (e) {
+      // Safety net for anything NOT already handled above — ensureDeviceIdentity,
+      // buildLocal, mergeSnapshots, and applyMergeToLocal's uncaught IndexedDB
+      // writes have no dedicated try/catch of their own. The inner try/catches
+      // for readPeers/publishSnapshot always return before reaching here, so
+      // this only ever fires for the segments that don't have their own
+      // handling. Without this, runSyncCycle could still reject despite its
+      // documented "always resolves" contract.
+      console.error("sync: runSyncCycle — unexpected failure:", e && e.message);
+      return Object.assign({ ok: false, deviceId, deviceLabel }, classifySyncError(e));
     }
-    console.log("sync: runSyncCycle — done");
-
-    return {
-      ok: true,
-      deviceId, deviceLabel, changed, conflicts, upserts, deletes,
-      peersRead: peers.length, skewSkipped, partialFailures,
-      published: !!publishResult, publishedAt: publishResult && publishResult.publishedAt,
-    };
   }
 ```
 

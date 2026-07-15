@@ -34,11 +34,13 @@ t("runSyncCycle no longer returns the temporary deviceIdsFound/peerErrors fields
   assert.ok(!/peerErrors/.test(body), "peerErrors must be removed (replaced by partialFailures)");
 });
 
-t("runSyncCycle wraps the readPeers call in try/catch and returns ok:false with the error's code", () => {
-  const tryIdx = body.indexOf("try {");
+t("runSyncCycle wraps the readPeers call in try/catch and returns ok:false, classifying the error via classifySyncError", () => {
+  const readPeersIdx = body.indexOf("readPeers(");
+  assert.ok(readPeersIdx >= 0, "readPeers must still be called");
+  const tryIdx = body.lastIndexOf("try {", readPeersIdx);
   assert.ok(tryIdx >= 0, "must have a try block around readPeers");
   const catchSlice = body.slice(body.indexOf("catch (e) {", tryIdx));
-  assert.ok(/code:\s*\(e\s*&&\s*e\.code\)\s*\|\|\s*"OTHER"/.test(catchSlice), "must classify the caught error's code, defaulting to OTHER");
+  assert.ok(/classifySyncError\(e\)/.test(catchSlice), "must classify the caught error via classifySyncError(e)");
   assert.ok(/ok:\s*false/.test(catchSlice), "must return ok:false on a caught readPeers failure");
 });
 
@@ -54,6 +56,15 @@ t("runSyncCycle wraps publishSnapshot in try/catch too (a publish-time 401 must 
   assert.ok(publishIdx >= 0, "publishSnapshot must still be called");
   const around = body.slice(Math.max(0, publishIdx - 200), publishIdx + 400);
   assert.ok(/try\s*\{/.test(around), "publishSnapshot call must be inside a try block");
+});
+
+t("runSyncCycle wraps its ENTIRE body in one outer try/catch, not just readPeers/publishSnapshot (regression: a prior version only wrapped 2 of 5 throwable segments — ensureDeviceIdentity/buildLocal/mergeSnapshots/applyMergeToLocal could still reject the whole promise)", () => {
+  const tryOpenIdx = body.indexOf("try {", body.indexOf('opts = opts || {};'));
+  assert.ok(tryOpenIdx >= 0, "must have an outer try immediately after opts = opts || {}");
+  const catchCount = (body.match(/catch \(e\) \{/g) || []).length;
+  assert.ok(catchCount >= 3, "must have at least 3 catch blocks: the outer safety-net plus the readPeers and publishSnapshot inner ones");
+  const lastCatchIdx = body.lastIndexOf("catch (e) {");
+  assert.ok(lastCatchIdx > tryOpenIdx, "the outermost catch (the safety net) must be the LAST catch block in the function, at the outer nesting level");
 });
 
 console.log(passed + " passed, " + failed + " failed");
