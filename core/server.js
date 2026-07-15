@@ -298,6 +298,7 @@ function createServer(ctx) {
       res.json({ ok: true, file });
     } catch (e) {
       if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
+      if (e && e.code === "EMPTY_IMAGE") return res.status(400).json({ ok: false, error: "empty image data" });
       throw e;
     }
   });

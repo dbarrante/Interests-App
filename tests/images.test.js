@@ -53,6 +53,19 @@ t("delImg removes the file (idempotent on missing)", () => {
   images.delImg(dir, "abc"); // no throw
 });
 
+t("putImg throws EMPTY_IMAGE on an empty decoded payload instead of writing a corrupt 0-byte file", () => {
+  const dir = tmpStore();
+  assert.throws(() => images.putImg(dir, "abc", "data:image/jpeg;base64,"), (e) => e.code === "EMPTY_IMAGE");
+  assert.strictEqual(fs.existsSync(path.join(dir, "images", "abc.jpg")), false, "no file must be written on rejection");
+});
+
+t("getImg treats a 0-byte file on disk as missing (returns null, not an empty Buffer)", () => {
+  const dir = tmpStore();
+  // Simulate pre-existing corruption by writing directly, bypassing putImg's new guard.
+  fs.writeFileSync(images.imgPath(dir, "corrupt"), Buffer.alloc(0));
+  assert.strictEqual(images.getImg(dir, "corrupt"), null);
+});
+
 t("imageCount and listImageIds report the .jpg files (ids without extension)", () => {
   const dir = tmpStore();
   assert.strictEqual(images.imageCount(dir), 0);

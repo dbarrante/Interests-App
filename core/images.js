@@ -42,15 +42,23 @@ function decodeDataUrl(dataUrl) {
 
 function putImg(storeDir, id, dataUrl) {
   const p = imgPath(storeDir, id);   // validates id first; throws on a bad id
+  const bytes = decodeDataUrl(dataUrl);
+  if (bytes.length === 0) {
+    const err = new Error("decoded image payload is empty — refusing to write a corrupt file");
+    err.code = "EMPTY_IMAGE";
+    throw err;
+  }
   fs.mkdirSync(imagesDir(storeDir), { recursive: true });
-  fs.writeFileSync(p, decodeDataUrl(dataUrl));
+  fs.writeFileSync(p, bytes);
   return id + ".jpg";
 }
 
 function getImg(storeDir, id) {
   const p = imgPath(storeDir, id);
   if (!fs.existsSync(p)) return null;
-  return fs.readFileSync(p);
+  const buf = fs.readFileSync(p);
+  if (buf.length === 0) return null; // corrupt/truncated-to-nothing — treat the same as missing
+  return buf;
 }
 
 function hasImg(storeDir, id) {
