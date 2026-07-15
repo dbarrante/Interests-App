@@ -291,7 +291,7 @@ function isExpiringCdnImage(url) {
   return !!url && /^https?:/i.test(url) && /scontent|cdninstagram|fbcdn/i.test(url) && !/static\.|rsrc\.php/i.test(url);
 }
 async function durableImage(url) {
-  if (!isExpiringCdnImage(url)) return url;
+  if (!url || url.indexOf("data:") === 0) return url; // already durable, or nothing to do
   const data = await fetchAsDataUrl(url);
   return data || url;
 }
@@ -491,8 +491,8 @@ async function clipCurrentPage(tab, opts = {}) {
     title: opts.title || meta.title || tab.title || tab.url,
     desc: opts.desc || (blocked ? "" : (meta.desc || "")),
     clipImage: opts.image || "",
-    ogImage: blocked ? "" : (meta.ogImage || ""),
-    contentImage: blocked ? "" : (meta.contentImage || ""),
+    ogImage: blocked ? "" : await durableImage(meta.ogImage || ""),
+    contentImage: blocked ? "" : await durableImage(meta.contentImage || ""),
     screenshot: shot, ts: Date.now(),
   };
   const delivered = await deliverToApp(payload);

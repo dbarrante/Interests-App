@@ -12,9 +12,14 @@ const fs = require("fs"), path = require("path");
 const bg = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
 
 function grab(src, name){
-  const idx = src.indexOf("function " + name + "(");
+  let idx = src.indexOf("function " + name + "(");
   if (idx < 0) throw new Error("not found: " + name);
-  const open = src.indexOf("{", idx);
+  if (idx >= 6 && src.slice(idx - 6, idx) === "async ") idx -= 6; // include the async keyword so eval() produces a real async function
+  // skip past the parameter list (which may itself contain braces, e.g. a `= {}` default) to find the body's real opening brace
+  const parenOpen = src.indexOf("(", idx);
+  let pdepth = 0, po = parenOpen;
+  for (; po < src.length; po++){ const ch = src[po]; if (ch === "(") pdepth++; else if (ch === ")"){ pdepth--; if (pdepth === 0){ po++; break; } } }
+  const open = src.indexOf("{", po);
   let depth = 0, i = open;
   for (; i < src.length; i++){ const ch = src[i]; if (ch === "{") depth++; else if (ch === "}"){ depth--; if (depth === 0){ i++; break; } } }
   return src.slice(idx, i);
@@ -57,11 +62,36 @@ t("captureTab converts ogImage/contentImage through durableImage before shipping
     "contentImage must be converted via durableImage before delivery");
 });
 
-t("durableImage falls back to fetchAsDataUrl and keeps the raw URL only if that fetch fails", () => {
+t("durableImage no longer gates on isExpiringCdnImage — Approach A: attempt conversion for any external URL", () => {
   const body = grab(bg, "durableImage");
-  assert.ok(body.indexOf("isExpiringCdnImage(url)") >= 0, "gates on isExpiringCdnImage");
-  assert.ok(body.indexOf("fetchAsDataUrl(url)") >= 0, "converts via the existing CORS-bypassing fetchAsDataUrl helper");
-  assert.ok(/return data \|\| url/.test(body), "keeps the raw URL as a last resort if the durable fetch fails (never worse than before)");
+  assert.ok(body.indexOf("isExpiringCdnImage(url)") === -1,
+    "must no longer gate on isExpiringCdnImage — that gate was the whole gap (Pinterest/YouTube/generic CDNs were never protected, only Facebook/Instagram)");
+  assert.ok(body.indexOf("fetchAsDataUrl(url)") >= 0, "must still convert via the existing CORS-bypassing fetchAsDataUrl helper");
+  assert.ok(/return data \|\| url/.test(body), "must still keep the raw URL as a last resort if the durable fetch fails (never worse than before)");
+});
+
+t("durableImage early-outs for an already-durable data: URL or an empty string (no wasted fetch)", () => {
+  const body = grab(bg, "durableImage");
+  assert.ok(/if\s*\(!url \|\| url\.indexOf\("data:"\) === 0\)\s*return url;/.test(body),
+    "must early-out before attempting a fetch for a url that's already durable or empty");
+});
+
+t("durableImage actually converts a non-Meta CDN URL now (e.g. Pinterest) — this is the real fix, proven by execution not just source text", () => {
+  let calledWith = null;
+  async function fetchAsDataUrl(u) { calledWith = u; return "data:image/jpeg;base64,AAAA"; }
+  const durableImage = eval("(" + grab(bg, "durableImage") + ")");
+  return durableImage("https://i.pinimg.com/564x/ab/cd/ef.jpg").then((result) => {
+    assert.strictEqual(calledWith, "https://i.pinimg.com/564x/ab/cd/ef.jpg", "must have attempted the fetch — before this fix, isExpiringCdnImage(pinimg url) is false, so the fetch was skipped entirely");
+    assert.strictEqual(result, "data:image/jpeg;base64,AAAA");
+  });
+});
+
+t("clipCurrentPage converts ogImage/contentImage through durableImage too (previously only captureTab did — clipCurrentPage's right-clicked-image case was protected, but its scraped og:image/contentImage were not)", () => {
+  const body = grab(bg, "clipCurrentPage");
+  assert.ok(/ogImage:\s*blocked \? "" : await durableImage\(meta\.ogImage \|\| ""\)/.test(body),
+    "clipCurrentPage's payload.ogImage must be converted via durableImage before delivery");
+  assert.ok(/contentImage:\s*blocked \? "" : await durableImage\(meta\.contentImage \|\| ""\)/.test(body),
+    "clipCurrentPage's payload.contentImage must be converted via durableImage before delivery");
 });
 
 console.log(passed + " passed, " + failed + " failed");
