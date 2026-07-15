@@ -30,6 +30,19 @@ t("isBadImg: mshots/thum.io/microlink/webcache placeholders -> bad", () => {
 t("isBadImg: a real http(s) image -> good (false)", () => {
   assert.ok(!CS.isBadImg("https://cdn.example.com/photo.jpg"));
 });
+// Live bug 2026-07-15: 51 Instagram-imported cards from one capture batch (2026-07-04)
+// landed on the raw signed scontent.cdninstagram.com og:image URL instead of a cached
+// local copy. isBadImg didn't flag it (looked like "a real http(s) image"), so it never
+// re-entered needsCapture/needsRetry -- and the signed "oe" expiry silently killed it
+// ~10 days later with zero record anywhere that the card needed another try.
+t("isBadImg: an expiring signed Facebook/Instagram CDN hotlink -> bad (must re-enter retry)", () => {
+  assert.ok(CS.isBadImg("https://scontent.cdninstagram.com/v/t51.71878-15/705018096_1366937845281127_5734660294580020960_n.jpg?stp=cmp1_dst-jpg_e35_s640x640_tt6&_nc_cat=102&oh=00_AQC3erfV06LtnmBwtoebth_LoBqwzRS_iL75vcuB19--Ag&oe=6A48EDD6"));
+  assert.ok(CS.isBadImg("https://scontent-lax3-1.xx.fbcdn.net/v/t39.30808-6/x.jpg?_nc_cat=1&oh=abc&oe=64ABCDEF"));
+});
+t("isBadImg: an idb: local cache ref or a non-social CDN URL with '?oe=' noise -> still good", () => {
+  assert.ok(!CS.isBadImg("idb:c_mqyfkl7c_yk1dll"));            // the durable form -- never flagged
+  assert.ok(!CS.isBadImg("https://cdn.example.com/photo.jpg?oe=123"));   // unrelated host, coincidental param
+});
 
 /* ---------- captureable (web, not FB) ---------- */
 t("captureable: web url + bad img + not capDone/blocked -> true", () => {

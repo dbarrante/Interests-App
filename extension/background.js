@@ -282,6 +282,20 @@ async function fetchAsDataUrl(url) {
   } catch (e) { log("fetchAsDataUrl failed: " + e.message); return ""; }
 }
 
+// A raw Facebook/Instagram CDN image URL is signed with a short-lived expiry (the
+// "oe" query param) -- stored as-is it looks fine for days, then silently rots when
+// the signature times out (same class of bug as the right-clicked-image guard in
+// clipCurrentPage). Convert it to a durable data: URL now; "" from fetchAsDataUrl
+// keeps the raw URL as a last-resort fallback rather than losing the image entirely.
+function isExpiringCdnImage(url) {
+  return !!url && /^https?:/i.test(url) && /scontent|cdninstagram|fbcdn/i.test(url) && !/static\.|rsrc\.php/i.test(url);
+}
+async function durableImage(url) {
+  if (!isExpiringCdnImage(url)) return url;
+  const data = await fetchAsDataUrl(url);
+  return data || url;
+}
+
 // Fetch a Facebook permalink's RAW server HTML and pull out the og:image URL.
 // The rendered SPA leaves og:image out of the live DOM (so the in-page engine
 // can't see it), but the server HTML — the same thing that powers link previews —
@@ -754,8 +768,8 @@ async function captureTab(tab, delayMs, force, cardId) {
       url: tabUrl,
       title: blocked ? "" : (meta.title || ""),
       desc: blocked ? "" : (meta.desc || ""),
-      ogImage: blocked ? "" : (meta.ogImage || ""),
-      contentImage: blocked ? "" : (meta.contentImage || ""),
+      ogImage: blocked ? "" : await durableImage(meta.ogImage || ""),
+      contentImage: blocked ? "" : await durableImage(meta.contentImage || ""),
       screenshot,
       blocked,
       ts: Date.now(),

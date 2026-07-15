@@ -22,7 +22,11 @@
   "use strict";
 
   function isFavicon(u) { return !!u && /favicon|apple-touch-icon|icons\.duckduckgo\.com\/ip3|\/s2\/favicons/i.test(u); }
-  function isBadImg(u) { return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u); }
+  // A raw Facebook/Instagram CDN URL (scontent/cdninstagram/fbcdn) carrying a signed
+  // "oe" expiry param looks like a real picture today and silently rots once that
+  // signature times out (days-to-weeks later, with no error anywhere) -- it should
+  // never be treated as a permanently-good image, only ever "idb:"-cached bytes are.
+  function isBadImg(u) { return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u) || (/scontent[.-]|cdninstagram\.com|fbcdn\.net/i.test(u) && /[?&]oe=/i.test(u)); }
 
   function captureable(i) { return i.url && !i.capDone && isBadImg(i.img || "") && !i.blocked && !/facebook\.com|fb\.watch/i.test(i.url); }
   function captureableFb(i) { return i.url && !i.capDone && isBadImg(i.img || "") && !i.blocked && /facebook\.com|fb\.watch/i.test(i.url); }
