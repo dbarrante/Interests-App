@@ -109,7 +109,12 @@ async function exchangeCodeForToken(appKey, redirectUri, code, verifier) {
 
 async function refreshAccessToken(appKey) {
   const refreshToken = localStorage.getItem(LS_KEYS.refreshToken);
-  if (!refreshToken) throw new Error("No refresh token on file — reconnect to Dropbox.");
+  if (!refreshToken) {
+    disconnect();
+    const err = new Error("No refresh token on file — reconnect to Dropbox.");
+    err.code = "AUTH_EXPIRED";
+    throw err;
+  }
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
@@ -121,7 +126,13 @@ async function refreshAccessToken(appKey) {
     body: body.toString(),
   });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error_description || json.error || res.statusText);
+  if (!res.ok) {
+    disconnect();
+    const err = new Error(json.error_description || json.error || res.statusText);
+    err.code = "AUTH_EXPIRED";
+    err.status = res.status;
+    throw err;
+  }
   storeTokens(json);
   return json.access_token;
 }
@@ -202,6 +213,19 @@ function classifyDbxError(status) {
   return { code: "OTHER", message: null };
 }
 
+// Builds — and, for AUTH_EXPIRED, acts on — a typed error from a failed
+// Dropbox response. Every throw site below calls this instead of a bare
+// `new Error(...)` so a 401 anywhere reliably clears the dead token instead
+// of leaving isConnected() reporting a stale "yes" against a dead token.
+function dbxError(status, detail) {
+  const info = classifyDbxError(status);
+  if (info.code === "AUTH_EXPIRED") disconnect();
+  const err = new Error(info.code === "AUTH_EXPIRED" ? info.message : detail);
+  err.status = status;
+  err.code = info.code;
+  return err;
+}
+
 async function dbxApiCall(accessToken, endpoint, argBody) {
   const res = await fetchWithRetry(`${DBX_API_URL}/${endpoint}`, {
     method: "POST",
@@ -212,7 +236,7 @@ async function dbxApiCall(accessToken, endpoint, argBody) {
     body: JSON.stringify(argBody || {}),
   });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error_summary || res.statusText);
+  if (!res.ok) throw dbxError(res.status, json.error_summary || res.statusText);
   return json;
 }
 
@@ -226,7 +250,7 @@ async function dbxDownload(accessToken, path) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`download ${path}: ${res.status} ${errText}`);
+    throw dbxError(res.status, `download ${path}: ${res.status} ${errText}`);
   }
   return res.text();
 }
@@ -250,7 +274,7 @@ async function dbxDownloadBinary(accessToken, path) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`download ${path}: ${res.status} ${errText}`);
+    throw dbxError(res.status, `download ${path}: ${res.status} ${errText}`);
   }
   return res.arrayBuffer();
 }
@@ -269,7 +293,7 @@ async function dbxUpload(accessToken, path, contentBytesOrString, mode) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`upload ${path}: ${res.status} ${errText}`);
+    throw dbxError(res.status, `upload ${path}: ${res.status} ${errText}`);
   }
   return res.json();
 }

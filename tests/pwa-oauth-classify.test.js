@@ -42,5 +42,30 @@ t("classifyDbxError: 400/404/429/500 are all OTHER with no message", () => {
   }
 });
 
+t("dbxError: calls classifyDbxError, disconnects and tags AUTH_EXPIRED on 401", () => {
+  const body = grab(src, "dbxError");
+  assert.ok(body.indexOf("classifyDbxError(status)") >= 0, "must call classifyDbxError(status)");
+  assert.ok(body.indexOf("disconnect()") >= 0, "must call disconnect() on the AUTH_EXPIRED path");
+  assert.ok(/err\.status\s*=\s*status/.test(body), "must set err.status");
+  assert.ok(/err\.code\s*=\s*info\.code/.test(body), "must set err.code from classifyDbxError's result");
+});
+
+t("every Dropbox-call throw site uses dbxError(...) instead of a bare new Error(...)", () => {
+  for (const fn of ["dbxApiCall", "dbxDownload", "dbxDownloadBinary", "dbxUpload"]) {
+    const body = grab(src, fn);
+    assert.ok(/throw dbxError\(res\.status,/.test(body), fn + " must throw dbxError(res.status, ...)");
+    assert.ok(!/throw new Error\(/.test(body), fn + " must not throw a bare Error anymore");
+  }
+});
+
+t("refreshAccessToken tags a failed refresh AUTH_EXPIRED and disconnects", () => {
+  const body = grab(src, "refreshAccessToken");
+  // two failure paths: no refresh token on file, and a non-ok token-endpoint response
+  const disconnectCount = (body.match(/disconnect\(\)/g) || []).length;
+  assert.ok(disconnectCount >= 2, "both failure paths must call disconnect()");
+  const codeCount = (body.match(/err\.code\s*=\s*"AUTH_EXPIRED"/g) || []).length;
+  assert.ok(codeCount >= 2, "both failure paths must tag err.code = AUTH_EXPIRED");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
