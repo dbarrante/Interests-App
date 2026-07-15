@@ -94,5 +94,16 @@ ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync:
   }
 }
 
+// UX-7 (2026-07-15 image-reliability plan): editImgPreview had no onerror
+// fallback at all — a broken/expired image URL pasted or already stored on
+// a card showed a bare broken-image icon in the edit modal. Every other
+// card/reader rendering path already falls back favicon -> generic icon;
+// this is the one gap. edRenderPrev() sets onerror fresh each call (not an
+// outerHTML div-swap like impCardHTML uses) because it's re-invoked on the
+// SAME <img> element every time the user changes the image within one
+// modal session — a div-swap would permanently break that.
+ok("UX-7: edRenderPrev sets onerror before assigning src", /p\.onerror\s*=\s*dom/.test(src));
+ok("UX-7: edRenderPrev falls back through a favicon then a neutral placeholder, never a bare broken icon", /s2\/favicons\?domain=/.test(src) && /data:image\/svg\+xml/.test(src));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

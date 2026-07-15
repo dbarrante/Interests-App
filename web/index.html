@@ -3319,7 +3319,20 @@ function edAddTag(t){
 }
 function edRenderPrev(){
   const p=document.getElementById("editImgPreview"); if(!p) return;
-  if(_editImg){ p.src=_editImg; }
+  p.onerror=null;
+  if(_editImg){
+    // A neutral gray rectangle, not the outerHTML div-swap impCardHTML/dupeThumb
+    // use — this element is re-rendered in place every time the user changes
+    // the image within the same modal session, so it must stay an <img> with
+    // an assignable .src for the NEXT edRenderPrev() call to find.
+    const placeholder = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='54'%3E%3Crect width='100%25' height='100%25' fill='%23e8e4de'/%3E%3C/svg%3E";
+    const it = imported[_editIdx];
+    const dom = it && it.url ? domain(it.url) : "";
+    p.onerror = dom
+      ? function(){ this.onerror=function(){ this.onerror=null; this.src=placeholder; }; this.src="https://www.google.com/s2/favicons?domain="+encodeURIComponent(dom)+"&sz=64"; }
+      : function(){ this.onerror=null; this.src=placeholder; };
+    p.src=_editImg;
+  }
   else { p.src=""; }
 }
 function edSetImg(v){ _editImg=(v||"").trim(); edRenderPrev(); }
