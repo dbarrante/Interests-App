@@ -318,7 +318,14 @@
     const { deviceId, deviceLabel } = await ensureDeviceIdentity();
     console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
 
-    const { peers, skewSkipped, errors: peerErrors, deviceIdsFound } = await readPeers(accessToken, deviceId);
+    let peers, skewSkipped, partialFailures;
+    try {
+      ({ peers, skewSkipped, partialFailures } = await readPeers(accessToken, deviceId));
+    } catch (e) {
+      console.error("sync: runSyncCycle — aborting, peer read failed:", e && e.message);
+      return { ok: false, code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e), deviceId, deviceLabel };
+    }
+
     let changed = false, conflicts = 0, upserts = 0, deletes = 0;
     if (peers.length) {
       console.log("sync: runSyncCycle — building local snapshot for merge");
@@ -336,19 +343,26 @@
     }
 
     let publishResult = null;
-    if (opts.publish !== false) {
-      publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
-        if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
-      });
+    try {
+      if (opts.publish !== false) {
+        publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
+          if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
+        });
+      }
+    } catch (e) {
+      console.error("sync: runSyncCycle — publish failed:", e && e.message);
+      return {
+        ok: false, code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e), deviceId, deviceLabel,
+        changed, conflicts, upserts, deletes, peersRead: peers.length, skewSkipped, partialFailures,
+      };
     }
     console.log("sync: runSyncCycle — done");
 
     return {
+      ok: true,
       deviceId, deviceLabel, changed, conflicts, upserts, deletes,
-      peersRead: peers.length, skewSkipped,
+      peersRead: peers.length, skewSkipped, partialFailures,
       published: !!publishResult, publishedAt: publishResult && publishResult.publishedAt,
-      // TEMPORARY DIAGNOSTIC fields (remove once the silent-failure sync issue is root-caused):
-      deviceIdsFound: deviceIdsFound || [], peerErrors: peerErrors || [],
     };
   }
 
