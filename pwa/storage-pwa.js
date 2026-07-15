@@ -150,17 +150,30 @@
     setSyncEnabled(b) { return idb.kvSet("_pwa_sync_enabled", !!b).then(() => ({ ok: true })); },
     setSyncFolder: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — always /Interests App/sync/." }),
     setDeviceLabel(label) { return window.IASync.setDeviceLabel(label).then(() => ({ ok: true })); },
+    // Reads back what syncNow() last persisted (see below) — lets the Settings
+    // panel show "Last sync: succeeded/failed" any time it's opened, not only
+    // right after tapping Sync. Desktop's web/storage.js has no equivalent;
+    // callers must feature-detect (typeof Store.lastSyncResult === "function").
+    lastSyncResult() { return idb.kvGet("_pwa_last_sync_result"); },
     // onProgress (optional): ({phase, done, total}) => void — called periodically
     // during a long sync so callers can show live status instead of a static
     // "Syncing..." that's indistinguishable from a hang for a large library.
+    //
+    // ALWAYS resolves (never rejects), and persists every outcome — not
+    // connected, a thrown getAccessToken/runSyncCycle failure, or a normal
+    // result — to idb's kv store via persist(), so lastSyncResult() above
+    // always reflects the true last attempt regardless of how it ended.
     syncNow(onProgress) {
       const Dbx = window.IADropbox;
       const appKey = localStorage.getItem(Dbx.LS_KEYS.appKey);
+      const persist = (result) => idb.kvSet("_pwa_last_sync_result", Object.assign({ at: Date.now() }, result)).then(() => result);
       if (!appKey || !Dbx.isConnected()) {
-        return Promise.resolve({ ok: false, reason: "Not connected to Dropbox." });
+        return persist({ ok: false, code: "AUTH_EXPIRED", reason: "Not connected to Dropbox." });
       }
-      return Dbx.getAccessToken(appKey).then((token) => window.IASync.runSyncCycle(token, { onProgress }))
-        .then((result) => Object.assign({ ok: true }, result));
+      return Dbx.getAccessToken(appKey)
+        .then((token) => window.IASync.runSyncCycle(token, { onProgress }))
+        .then((result) => persist(Object.assign({ ok: true }, result)))
+        .catch((e) => persist({ ok: false, code: (e && e.code) || "OTHER", reason: (e && e.message) || String(e) }));
     },
 
     // --- browser bookmarks / link / content / safety checks / news: desktop-only,
