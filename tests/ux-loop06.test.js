@@ -4,9 +4,22 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const src = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+const pwaSrc = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
 
 let pass = 0, fail = 0;
 function ok(name, cond) { if (cond) { pass++; console.log("  ok  " + name); } else { fail++; console.log("  FAIL " + name); } }
+
+// Extracts a named function's full body (brace-balanced) from a larger HTML
+// file's inline <script>. Same technique as tests/junk-screenshot-detection.test.js's
+// "grab" helper.
+function grab(text, name) {
+  const idx = text.indexOf("function " + name + "(");
+  if (idx < 0) throw new Error("not found: " + name);
+  const open = text.indexOf("{", idx);
+  let depth = 0, i = open;
+  for (; i < text.length; i++) { const ch = text[i]; if (ch === "{") depth++; else if (ch === "}") { depth--; if (depth === 0) { i++; break; } } }
+  return text.slice(idx, i);
+}
 
 // UX-1: primary/accent FILLS use --accent-strong (AA-safe white text) in both themes.
 ok("UX-1: --accent-strong defined in light :root", /:root\{[\s\S]*?--accent-strong:#c2410c/.test(src));
@@ -62,6 +75,24 @@ ok("UX-6: syncNowClick still shows a generic failure toast for a non-auth failur
 // feature-detected since desktop's web/storage.js has no lastSyncResult().
 ok("UX-6: renderSyncStatus feature-detects Store.lastSyncResult before calling it", /typeof Store\.lastSyncResult === "function"/.test(src));
 ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync: <b>succeeded<\/b>/.test(src) && /Last sync: <b>failed<\/b>/.test(src));
+
+// UX-6 cont'd: renderSyncStatus (added in commit 454de55) lives independently in
+// both web/index.html and pwa/index.html — this file only reads web/index.html,
+// so nothing above actually verifies pwa's copy. Lock byte-identity between the
+// two, matching this repo's established binding-parity convention (see the
+// "web and pwa detector code is byte-identical" lock in
+// tests/junk-screenshot-detection.test.js).
+{
+  const webBody = grab(src, "renderSyncStatus");
+  const pwaBody = grab(pwaSrc, "renderSyncStatus");
+  try {
+    assert.strictEqual(pwaBody, webBody, "pwa/index.html's renderSyncStatus has diverged from web/index.html's — keep them byte-identical or update both together");
+    ok("UX-6: renderSyncStatus is byte-identical between web/index.html and pwa/index.html (binding parity)", true);
+  } catch (e) {
+    ok("UX-6: renderSyncStatus is byte-identical between web/index.html and pwa/index.html (binding parity)", false);
+    console.error("  " + e.message);
+  }
+}
 
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
