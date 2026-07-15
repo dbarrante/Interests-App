@@ -166,7 +166,8 @@
     syncNow(onProgress) {
       const Dbx = window.IADropbox;
       const appKey = localStorage.getItem(Dbx.LS_KEYS.appKey);
-      const persist = (result) => idb.kvSet("_pwa_last_sync_result", Object.assign({ at: Date.now() }, result)).then(() => result);
+      const persist = (result) => idb.kvSet("_pwa_last_sync_result", Object.assign({ at: Date.now() }, result))
+        .then(() => result, (e) => { console.error("sync: failed to persist last sync result:", e && e.message); return result; });
       if (!appKey || !Dbx.isConnected()) {
         return persist({ ok: false, code: "AUTH_EXPIRED", reason: "Not connected to Dropbox." });
       }

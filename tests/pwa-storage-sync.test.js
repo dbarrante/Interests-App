@@ -35,5 +35,10 @@ t("Store exposes lastSyncResult() reading the same kv key", () => {
     "lastSyncResult() must read _pwa_last_sync_result via idb.kvGet");
 });
 
+t("persist() swallows its own idb.kvSet failure instead of propagating it (regression: syncNow must never reject even if the kv write itself fails)", () => {
+  assert.ok(/\.then\(\(\) => result, \(e\) => \{/.test(syncNowBody),
+    "persist's .then must have a rejection handler (second argument) that still resolves with result, not just a bare .then(() => result)");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
