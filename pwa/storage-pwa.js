@@ -23,16 +23,29 @@
     // of the HTTP cache when checking for updates — without this, a stale cached
     // sw.js can make the update check a no-op indefinitely on some WebKit builds,
     // which is how a home-screen PWA gets stuck on an old build even across
-    // force-quits. The explicit update() call (each load) and the one-shot reload
-    // on controllerchange (new SW actually took control) make a fresh deploy
-    // propagate to an already-installed device without any manual cache-clearing.
+    // force-quits. The explicit update() call (each load) makes a fresh deploy
+    // actually get installed on an already-installed device without any manual
+    // cache-clearing.
+    //
+    // hadController distinguishes a genuine update (this tab already had an
+    // active SW controlling it) from sw.js's activate handler simply calling
+    // clients.claim() on a brand-new install (this tab had no controller yet) —
+    // both fire "controllerchange", but only the former is a real update.
+    const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
       reg.update().catch(() => {});
-      let reloading = false;
+      let sawFirst = false;
       navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (reloading) return;
-        reloading = true;
-        location.reload();
+        const isFirst = !sawFirst;
+        sawFirst = true;
+        if (isFirst && !hadController) return; // fresh install taking control, not an update
+        // Deliberately NOT auto-reloading: clients.claim() in sw.js's activate
+        // handler takes control of every open tab of this app, not just this
+        // one, and a forced reload here could discard unsaved state in another
+        // tab (e.g. an in-progress card edit that only persists on explicit
+        // save). The new worker is already in control and will serve the fresh
+        // build on this page's next natural reload/navigation — just say so.
+        if (typeof toast === "function") toast("An update is ready — it'll load next time you open the app.");
       });
     }).catch((e) => {
       console.error("Service worker registration failed (images will not load):", e);

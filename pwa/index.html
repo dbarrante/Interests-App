@@ -10,7 +10,15 @@
 // URL via replace() so it doesn't loop or land in history.
 (function(){
   if (!/[?&]forcefresh\b/.test(location.search)) return;
-  var clean = location.origin + location.pathname;
+  // Strip ONLY forcefresh, not the whole query string — this page is also the
+  // Dropbox OAuth redirect target, and a stuck-app user retrying via ?forcefresh
+  // could easily do so while a pending ?code=...&state=... callback is still in
+  // the URL. Dropping those here (before oauth.js ever runs) would silently
+  // discard the one-time auth code with no error.
+  var params = new URLSearchParams(location.search);
+  params.delete("forcefresh");
+  var qs = params.toString();
+  var clean = location.origin + location.pathname + (qs ? "?" + qs : "") + location.hash;
   Promise.resolve()
     .then(function(){ return navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []; })
     .then(function(regs){ return Promise.all(regs.map(function(r){ return r.unregister(); })); })
@@ -1458,7 +1466,7 @@ async function syncNowClick(){
     // shows the full result instead of a quick-vanishing toast so it's readable
     // without a devtools connection.
     alert("Sync result:\n" + JSON.stringify(r, null, 2));
-    if(r && r.ok === false){ return; }
+    if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); return; }
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
     if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
   }
