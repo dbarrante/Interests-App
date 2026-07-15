@@ -27,5 +27,28 @@ ok("UX-3: <=640px breakpoint added", /@media\(max-width:640px\)/.test(src));
 ok("UX-4: showBootError banner exists", /function showBootError\(/.test(src));
 ok("UX-4: bootData rejection routes to the banner", /bootData\(\)\.catch\(showBootError\)/.test(src));
 
+// UX-5: Imported detail view (ig-g1) no longer forces horizontal overflow on
+// narrow mobile viewports. Root cause: img.th's base rule sets flex-shrink:0
+// (line ~367, shared with every view mode), and the g1-specific override
+// (hardcoded width:320px;height:320px) never re-enabled shrinking or capped
+// the width — so the image refused to shrink below 320px even when the
+// .imp-card flex row had far less than that available, forcing the whole
+// card past the screen edge. Fixed by letting it shrink and cap at 100% of
+// its flex space, giving the text sibling min-width:0 so it can shrink too
+// (a flex item's default min-width:auto blocks shrinking to fit long
+// unbroken content), and adding overflow-x:hidden as a defense-in-depth
+// backstop against any other unknown overflow source.
+// Anchored to line-start (no leading whitespace) so this matches only the
+// base rule, not the indented @media(max-width:640px) override of the same
+// selector (which intentionally sets just width:100% for the stacked layout).
+const ig1ImgRuleMatch = src.match(/^\.ig-g1 \.imp-card img\.th\{([^}]*)\}/m);
+ok("UX-5: .ig-g1 img.th rule exists", !!ig1ImgRuleMatch);
+const ig1ImgRule = ig1ImgRuleMatch ? ig1ImgRuleMatch[1] : "";
+ok("UX-5: .ig-g1 img.th caps at 100% of its available space", /max-width:100%/.test(ig1ImgRule));
+ok("UX-5: .ig-g1 img.th re-enables shrink (overrides the inherited flex-shrink:0)", /flex-shrink:1/.test(ig1ImgRule));
+ok("UX-5: .ig-g1 img.th keeps a square aspect ratio while shrinking", /aspect-ratio:1\/1/.test(ig1ImgRule) && /height:auto/.test(ig1ImgRule));
+ok("UX-5: imp-card's text sibling has min-width:0 so it can shrink/wrap too", /\$\{icon\}\s*<div style="flex:1;min-width:0">/.test(src));
+ok("UX-5: html/body has an overflow-x backstop against page-level horizontal overflow", /(?:html|body)[^{]*\{[^}]*overflow-x:hidden/.test(src));
+
 console.log("ux-loop06: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

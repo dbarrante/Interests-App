@@ -47,7 +47,7 @@ html.dark .note{border-color:#5a4f33}
 
 /* ============ reset & layout ============ */
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;min-height:100vh}
+body{background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;min-height:100vh;overflow-x:hidden}
 header{position:sticky;top:0;z-index:50;background:rgba(246,245,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .bar{width:75vw;max-width:1800px;margin:0 auto;display:flex;align-items:center;gap:16px;padding:12px 20px}
 .logo{font-size:20px;font-weight:800;letter-spacing:-.4px}
@@ -75,6 +75,11 @@ main{width:75vw;max-width:1800px;margin:0 auto;padding:20px}
   .st-actions .act{min-width:0;flex:1 1 44%}
   .prov label{min-width:0;flex:1 1 44%}
   .st-bar .btn{padding:12px 20px}
+  /* UX-5: ig-g1's image-beside-text row has no room for a 320px image once the
+     card's own padding is subtracted from a phone-width main; stack instead of
+     letting the two constrained-width children fight it out. */
+  .ig-g1 .imp-card{flex-wrap:wrap}
+  .ig-g1 .imp-card img.th{width:100%}
 }
 
 .mtabbar{
@@ -323,7 +328,7 @@ body.reader-locked{overflow:hidden}
 .ig-g4{grid-template-columns:repeat(4,1fr)}
 .ig-g1{grid-template-columns:1fr;max-width:900px;margin:0 auto}
 .ig-g1 .imp-card{padding:24px 28px;gap:22px}
-.ig-g1 .imp-card img.th{width:320px;height:320px;border-radius:14px}
+.ig-g1 .imp-card img.th{width:320px;max-width:100%;height:auto;aspect-ratio:1/1;border-radius:14px;flex-shrink:1}
 .ig-g1 .imp-card img.fv{width:44px;height:44px;border-radius:12px}
 .ig-g1 .imp-card .ic{width:44px;height:44px;font-size:22px}
 .ig-g1 .imp-t{font-size:27px}
@@ -3184,7 +3189,7 @@ function impCardHTML(it,idx){
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
-    <div style="flex:1">
+    <div style="flex:1;min-width:0">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
       <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.sdate)?" · &#128197; "+esc(fmtCardDate(it.sdate)):""}</div>
