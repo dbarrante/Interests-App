@@ -169,6 +169,40 @@ function sharedRefreshAccessToken(appKey) {
   return _refreshPromise;
 }
 
+function canRefresh() {
+  return !!(localStorage.getItem(LS_KEYS.appKey) && localStorage.getItem(LS_KEYS.refreshToken));
+}
+
+// Resolve the freshest usable token at CALL time, not cycle-start time. The old
+// design fetched one token string per sync cycle and threaded it through every
+// call — if iOS suspended the PWA mid-cycle and resumed after the ~4h access
+// token died, every remaining call 401'd and (worse) nuked the whole connection.
+// Fallback chain keeps disconnected edge cases working: callers that hold an
+// explicit token (restore-from-backup during connect, etc.) still function.
+async function resolveToken(fallbackToken) {
+  if (canRefresh()) return getAccessToken(localStorage.getItem(LS_KEYS.appKey));
+  if (fallbackToken) return fallbackToken;
+  const stored = localStorage.getItem(LS_KEYS.accessToken);
+  if (stored) return stored;
+  const err = new Error("Not connected to Dropbox.");
+  err.code = "AUTH_EXPIRED";
+  throw err;
+}
+
+// Auth choke point for every Dropbox HTTP call: resolve a fresh token, make the
+// request, and on a 401 refresh (single-flight) and retry EXACTLY once. Only a
+// fresh-token 401 reaches the caller's dbxError(401) path — which is what makes
+// that path's disconnect() finally correct: by then the rejection is definitive.
+async function dbxAuthedFetch(fallbackToken, makeRequest) {
+  let token = await resolveToken(fallbackToken);
+  let res = await makeRequest(token);
+  if (res.status === 401 && canRefresh()) {
+    token = await sharedRefreshAccessToken(localStorage.getItem(LS_KEYS.appKey));
+    res = await makeRequest(token);
+  }
+  return res;
+}
+
 function storeTokens(tokens) {
   localStorage.setItem(LS_KEYS.accessToken, tokens.access_token);
   if (tokens.refresh_token) localStorage.setItem(LS_KEYS.refreshToken, tokens.refresh_token);
@@ -259,27 +293,27 @@ function dbxError(status, detail) {
 }
 
 async function dbxApiCall(accessToken, endpoint, argBody) {
-  const res = await fetchWithRetry(`${DBX_API_URL}/${endpoint}`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetchWithRetry(`${DBX_API_URL}/${endpoint}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(argBody || {}),
-  });
+  }));
   const json = await res.json();
   if (!res.ok) throw dbxError(res.status, json.error_summary || res.statusText);
   return json;
 }
 
 async function dbxDownload(accessToken, path) {
-  const res = await fetchWithRetry(`${DBX_CONTENT_URL}/files/download`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetchWithRetry(`${DBX_CONTENT_URL}/files/download`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Dropbox-API-Arg": JSON.stringify({ path }),
     },
-  });
+  }));
   if (!res.ok) {
     const errText = await res.text();
     throw dbxError(res.status, `download ${path}: ${res.status} ${errText}`);
@@ -288,22 +322,22 @@ async function dbxDownload(accessToken, path) {
 }
 
 async function getCurrentAccount(accessToken) {
-  const res = await fetch(`${DBX_API_URL}/users/get_current_account`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetch(`${DBX_API_URL}/users/get_current_account`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) throw new Error("users/get_current_account failed: " + res.status);
+    headers: { Authorization: `Bearer ${token}` },
+  }));
+  if (!res.ok) throw dbxError(res.status, "users/get_current_account failed: " + res.status);
   return res.json();
 }
 
 async function dbxDownloadBinary(accessToken, path) {
-  const res = await fetchWithRetry(`${DBX_CONTENT_URL}/files/download`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetchWithRetry(`${DBX_CONTENT_URL}/files/download`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Dropbox-API-Arg": JSON.stringify({ path }),
     },
-  });
+  }));
   if (!res.ok) {
     const errText = await res.text();
     throw dbxError(res.status, `download ${path}: ${res.status} ${errText}`);
@@ -313,16 +347,18 @@ async function dbxDownloadBinary(accessToken, path) {
 
 // mode: "overwrite" (default, matches desktop's atomic-write-then-rename intent —
 // Dropbox itself makes a single PUT atomic from a reader's perspective) or "add".
+// The body is safe to resend on dbxAuthedFetch's 401 retry — fetch copies an
+// ArrayBuffer/string body; nothing is consumed.
 async function dbxUpload(accessToken, path, contentBytesOrString, mode) {
-  const res = await fetchWithRetry(`${DBX_CONTENT_URL}/files/upload`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetchWithRetry(`${DBX_CONTENT_URL}/files/upload`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/octet-stream",
       "Dropbox-API-Arg": JSON.stringify({ path, mode: mode || "overwrite", mute: true }),
     },
     body: contentBytesOrString,
-  });
+  }));
   if (!res.ok) {
     const errText = await res.text();
     throw dbxError(res.status, `upload ${path}: ${res.status} ${errText}`);
