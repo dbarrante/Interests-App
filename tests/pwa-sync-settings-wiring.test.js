@@ -38,6 +38,15 @@ t("applyMergeToLocal merges settings via mergeSyncedSettings, not blanket local-
   assert.ok(!/keys:\s*local\.keys/.test(body), "old force-preserve of local.keys must be gone");
 });
 
+t("applyMergeToLocal rejects an oversized settings blob BEFORE writing (mirrors core/db.js's 256KiB guard, fail closed)", () => {
+  const body = grab(src, "applyMergeToLocal");
+  assert.ok(/262144/.test(body), "must carry the 262144-byte limit");
+  const guardIdx = body.indexOf("262144");
+  const writeIdx = body.indexOf('kvSet("ia_settings"');
+  assert.ok(writeIdx >= 0 && guardIdx >= 0 && guardIdx < writeIdx, "the size guard must run before the ia_settings write");
+  assert.ok(/let oversized = true/.test(body), "unstringifiable must count as oversized (fail closed)");
+});
+
 t("index.html loads merge.js before sync-pwa.js (bare-global dependency order)", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
   const mergeIdx = html.indexOf("merge.js");

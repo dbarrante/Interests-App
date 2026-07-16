@@ -1439,6 +1439,21 @@ async function chooseSyncFolder(){
 let _syncInFlight = null;   // Promise while a cycle runs — no overlapping cycles
 let _lastAutoSyncAt = 0;
 let _authToastShown = false;
+// After a sync cycle changed the store underneath the page, the in-memory
+// globals (S / imported / saved) are STALE — and every persist path is a blind
+// overwrite (save(), putSaved's clear+putMany), so acting on stale state would
+// write freshly synced data back out of existence. Worst case: a just-arrived
+// provider key vanishes locally and the strict-newer LWW gate never re-sends it
+// (data-safety review 2026-07-16, HIGH). Re-hydrate BEFORE the user can touch
+// anything; the reload toast is then only cosmetic.
+async function rehydrateAfterSync(){
+  imported = await Store.getCards();
+  saved    = await Store.getSaved();
+  const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
+  _lastSettingsJson = JSON.stringify(S);   // baseline, not a user edit — must not stamp ia_settings_updatedAt
+  rebuildCats();
+  updateCounts();
+}
 async function syncNowClick(){
   if(_syncInFlight){ toast("Sync already running…"); return; }
   toast("Syncing…");
@@ -1451,7 +1466,7 @@ async function syncNowClick(){
     _lastAutoSyncAt = Date.now();
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
     await renderSyncStatus();
-    if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
+    if(r && r.changed){ await rehydrateAfterSync(); setTimeout(()=>location.reload(), 900); }
   }
   catch(e){
     toast("Sync failed: " + (e&&e.message||e));
@@ -5272,6 +5287,7 @@ async function pollSyncChanged(){
   try{
     const st = await Store.syncStatus();
     if(st && st.changedAt && _lastSyncChangedAt && st.changedAt > _lastSyncChangedAt){
+      await rehydrateAfterSync();   // the service's timer merge changed the store under us — see rehydrateAfterSync
       toast("✨ Updates synced from your other devices — click to refresh", 8000, ()=>location.reload());
     }
     if(st) _lastSyncChangedAt = st.changedAt || _lastSyncChangedAt || 1;

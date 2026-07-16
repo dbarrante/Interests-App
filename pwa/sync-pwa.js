@@ -230,11 +230,21 @@
     let settingsApplied = false;
     if (plan.settings && plan.settings.data) {
       try {
-        const local = (await idb.kvGet("ia_settings")) || {};
-        const merged = mergeSyncedSettings(local, plan.settings.data); // pwa/merge.js — global, like mergeSnapshots
-        await idb.kvSet("ia_settings", merged);
-        await idb.kvSet("ia_settings_updatedAt", Number(plan.settings.updatedAt) || Date.now());
-        settingsApplied = true;
+        // Mirror core/db.js applySyncedSettings' oversized-blob rejection: settings
+        // drive network destinations (provider/localUrl), so an absurdly large peer
+        // blob is rejected before it touches the store. Unstringifiable counts as
+        // oversized (fail closed).
+        let oversized = true;
+        try { oversized = JSON.stringify(plan.settings.data).length > 262144; } catch (e2) {}
+        if (oversized) {
+          console.error("sync: ignoring oversized settings blob");
+        } else {
+          const local = (await idb.kvGet("ia_settings")) || {};
+          const merged = mergeSyncedSettings(local, plan.settings.data); // pwa/merge.js — global, like mergeSnapshots
+          await idb.kvSet("ia_settings", merged);
+          await idb.kvSet("ia_settings_updatedAt", Number(plan.settings.updatedAt) || Date.now());
+          settingsApplied = true;
+        }
       } catch (e) {
         console.error("sync: applying synced settings failed:", e.message);
       }
