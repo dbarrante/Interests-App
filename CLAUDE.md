@@ -15,7 +15,7 @@ Everything runs client-side. API keys go only to the user's chosen AI provider.
 - **Zero tooling**: No bundler, no npm, no build. Just open `index.html`.
 - **No backend**: localStorage + IndexedDB only. The `saves.json` bridge uses File System Access API (Chrome/Edge).
 - **Single-user**: Profile stored in DEFAULTS / localStorage. Not multi-tenant.
-- **Privacy-first**: Keys stored in localStorage, never sent anywhere except the chosen AI provider.
+- **Privacy-first**: Keys stored locally, sent only to the chosen AI provider — plus, when Dropbox sync is connected, included in the synced settings inside the user's own Dropbox (`/Interests App/sync/`, user decision 2026-07-16). The desktop `updateToken` never syncs.
 
 ## Storage
 
