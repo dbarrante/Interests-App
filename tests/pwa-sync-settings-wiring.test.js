@@ -38,6 +38,12 @@ t("applyMergeToLocal merges settings via mergeSyncedSettings, not blanket local-
   assert.ok(!/keys:\s*local\.keys/.test(body), "old force-preserve of local.keys must be gone");
 });
 
+t("applyMergeToLocal stamps via settingsEnrichedByLocal (fresh when local enriched the union, incoming otherwise)", () => {
+  const body = grab(src, "applyMergeToLocal");
+  assert.ok(/settingsEnrichedByLocal\(\s*merged\s*,\s*plan\.settings\.data\s*\)\s*\?\s*Date\.now\(\)/.test(body),
+    "must re-stamp fresh when the union is richer than the incoming blob — else local-only keys never propagate outward");
+});
+
 t("applyMergeToLocal rejects an oversized settings blob BEFORE writing (mirrors core/db.js's 256KiB guard, fail closed)", () => {
   const body = grab(src, "applyMergeToLocal");
   assert.ok(/262144/.test(body), "must carry the 262144-byte limit");

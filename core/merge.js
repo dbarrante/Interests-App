@@ -114,6 +114,21 @@
     return merged;
   }
 
-  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, mergeSyncedSettings: mergeSyncedSettings, _stable: _stable };
-  if (root) { root.mergeSnapshots = mergeSnapshots; root.mergeSyncedSettings = mergeSyncedSettings; root._iaStable = _stable; }
+  // Whether the union-merged blob carries sync-visible content the incoming
+  // blob lacks (a local-only provider key, a preserved oprKey). If so, the
+  // applier must RE-STAMP fresh instead of adopting the incoming stamp:
+  // adopting it verbatim freezes the enrichment behind mergeSnapshots' strictly-
+  // newer gate forever — a key entered on exactly one device would never
+  // propagate outward (adversarial review 2026-07-16). updateToken is excluded:
+  // it never syncs, so it must never trigger a re-stamp (that would oscillate).
+  // Convergence: each publish carries the union, so what any device "lacks"
+  // shrinks monotonically — re-stamping terminates once the fleet converges.
+  function settingsEnrichedByLocal(merged, incoming) {
+    var m = Object.assign({}, merged); delete m.updateToken;
+    var i = mergeSyncedSettings({}, incoming); delete i.updateToken;
+    return _stable(m) !== _stable(i);
+  }
+
+  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, mergeSyncedSettings: mergeSyncedSettings, settingsEnrichedByLocal: settingsEnrichedByLocal, _stable: _stable };
+  if (root) { root.mergeSnapshots = mergeSnapshots; root.mergeSyncedSettings = mergeSyncedSettings; root.settingsEnrichedByLocal = settingsEnrichedByLocal; root._iaStable = _stable; }
 })(typeof self !== "undefined" ? self : this);

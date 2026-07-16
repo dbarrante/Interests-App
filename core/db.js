@@ -5,7 +5,7 @@
 const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
-const { _stable, mergeSyncedSettings } = require("./merge.js");
+const { _stable, mergeSyncedSettings, settingsEnrichedByLocal } = require("./merge.js");
 
 // A row's id is a TEXT PRIMARY KEY and is bound positionally, so a missing id
 // (undefined) makes the bind THROW and rolls back the whole replaceCards/replaceSaved
@@ -457,7 +457,10 @@ function applySyncedSettings(db, incoming, updatedAt) {
   local = (local && typeof local === "object") ? local : {};
   const merged = mergeSyncedSettings(local, incoming);
   setKV(db, "ia_settings", JSON.stringify(merged));
-  setKV(db, "ia_settings_updatedAt", String(Number(updatedAt) || Date.now()));
+  // If local contributed sync-visible content the incoming blob lacks, stamp
+  // fresh so the enriched union propagates outward; otherwise adopt the
+  // incoming stamp (see core/merge.js settingsEnrichedByLocal).
+  setKV(db, "ia_settings_updatedAt", String(settingsEnrichedByLocal(merged, incoming) ? Date.now() : (Number(updatedAt) || Date.now())));
 }
 function serializeLibrary(db) {
   return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db), settings: settingsForSync(db) };

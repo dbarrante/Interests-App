@@ -242,7 +242,9 @@
           const local = (await idb.kvGet("ia_settings")) || {};
           const merged = mergeSyncedSettings(local, plan.settings.data); // pwa/merge.js — global, like mergeSnapshots
           await idb.kvSet("ia_settings", merged);
-          await idb.kvSet("ia_settings_updatedAt", Number(plan.settings.updatedAt) || Date.now());
+          // Fresh stamp when local enriched the union, else adopt the incoming
+          // stamp — see core/merge.js settingsEnrichedByLocal for why.
+          await idb.kvSet("ia_settings_updatedAt", settingsEnrichedByLocal(merged, plan.settings.data) ? Date.now() : (Number(plan.settings.updatedAt) || Date.now()));
           settingsApplied = true;
         }
       } catch (e) {

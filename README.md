@@ -70,6 +70,6 @@ In Settings, click **Connect app folder** (choose this app's folder) — the app
 
 ## Notes
 
-- Everything (keys, saves, learning history) is stored in your browser's localStorage only. Keys are sent only to the provider you chose. Use **Export my data** for a backup.
+- Everything (keys, saves, learning history) is stored locally on your device. Keys are sent only to the AI provider you chose — except that, when Dropbox sync is connected, your provider keys are also included (in plaintext) in the synced settings inside your own Dropbox (`/Interests App/sync/`) so every device gets them automatically (your choice, 2026-07-16; the desktop's GitHub `updateToken` never syncs). Use **Export my data** for a backup.
 - Each refresh costs a few cents of API usage (Gemini's free tier may cover it).
 - Card thumbnails use the article's preview image when available, otherwise a live screenshot service, otherwise a styled placeholder.

@@ -63,6 +63,36 @@ for (const [label, m] of impls) {
     assert.ok(!("updateToken" in mergeSyncedSettings({}, { updateToken: "X" })), "no local token -> none in result");
   });
 
+  run(label + ": settingsEnrichedByLocal — true only when local contributed sync-visible content", () => {
+    const enriched = m.settingsEnrichedByLocal;
+    assert.strictEqual(typeof enriched, "function");
+    // local-only key survives the union -> the blob is richer than incoming -> must re-stamp
+    assert.strictEqual(enriched(
+      mergeSyncedSettings({ keys: { groq: "LOCAL_ONLY" } }, { about: "x", keys: { openrouter: "OR" } }),
+      { about: "x", keys: { openrouter: "OR" } }
+    ), true, "local-only key must trigger a fresh stamp (else it never propagates outward)");
+    // incoming is a superset -> nothing local contributed -> adopt incoming stamp
+    assert.strictEqual(enriched(
+      mergeSyncedSettings({ keys: { openrouter: "OR" } }, { about: "x", keys: { openrouter: "OR", groq: "G" } }),
+      { about: "x", keys: { openrouter: "OR", groq: "G" } }
+    ), false, "incoming superset must NOT re-stamp (would ping-pong stamps forever)");
+    // updateToken alone must never trigger a re-stamp — it never syncs
+    assert.strictEqual(enriched(
+      mergeSyncedSettings({ updateToken: "GH" }, { about: "x" }),
+      { about: "x" }
+    ), false, "updateToken is sync-invisible and must not oscillate stamps");
+    // preserved local oprKey against an incoming blob lacking it -> enriched
+    assert.strictEqual(enriched(
+      mergeSyncedSettings({ oprKey: "OPR" }, { about: "x" }),
+      { about: "x" }
+    ), true, "preserved oprKey must propagate outward");
+    // identical content -> not enriched
+    assert.strictEqual(enriched(
+      mergeSyncedSettings({}, { about: "x", keys: { a: "1" } }),
+      { about: "x", keys: { a: "1" } }
+    ), false);
+  });
+
   run(label + ": garbage inputs don't throw", () => {
     assert.doesNotThrow(() => mergeSyncedSettings(null, null));
     assert.doesNotThrow(() => mergeSyncedSettings(undefined, { keys: null }));

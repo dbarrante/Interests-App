@@ -39,7 +39,17 @@ run("applySyncedSettings union-merges keys: incoming wins per provider, local-on
   assert.strictEqual(merged.keys.gemini, "PEERGEM", "new provider key arrives");
   assert.strictEqual(merged.oprKey, "MYOPR", "empty incoming oprKey doesn't clobber");
   assert.strictEqual(merged.updateToken, "GH_LOCAL", "updateToken always local");
-  assert.strictEqual(db.getKV(d, "ia_settings_updatedAt"), "2000");
+  // local contributed groq+oprKey the incoming blob lacked -> union is richer ->
+  // must RE-STAMP fresh (not adopt 2000), so the enrichment propagates outward.
+  assert.ok(Number(db.getKV(d, "ia_settings_updatedAt")) > 2000, "enriched union must re-stamp fresh");
+});
+
+run("applySyncedSettings adopts the incoming stamp verbatim when local contributed nothing", () => {
+  const d = newDb();
+  db.setKV(d, "ia_settings", JSON.stringify({ keys: { openrouter: "OR" } }));
+  db.applySyncedSettings(d, { about: "x", keys: { openrouter: "OR", groq: "G" } }, 2000);
+  assert.strictEqual(db.getKV(d, "ia_settings_updatedAt"), "2000",
+    "incoming superset must adopt the incoming stamp — a fresh stamp here would ping-pong forever");
 });
 
 run("applySyncedSettings: a fresh device's keyless blob can't wipe local keys", () => {
@@ -97,6 +107,26 @@ run("END-TO-END: A's settings+keys publish and merge into B; B-only key survives
   assert.strictEqual(bSettings.keys.openrouter, "AKEY", "A's provider key arrived on B");
   assert.strictEqual(bSettings.keys.groq, "B_GROQ_ONLY", "B's own key survived the merge");
   assert.ok(!("updateToken" in bSettings), "no updateToken landed on B");
+
+  // OUTWARD propagation (adversarial review 2026-07-16): B's union was richer
+  // than A's blob, so B must have re-stamped FRESH — making B's snapshot
+  // strictly newer — and A's next cycle must gain B's local-only key. Without
+  // the re-stamp, B adopts A's stamp and the strictly-newer gate freezes
+  // B_GROQ_ONLY on device B forever.
+  const bStamp = Number(db.getKV(ctxB.db, "ia_settings_updatedAt"));
+  assert.ok(bStamp > 5000, "B must re-stamp fresh after enriching the union (got " + bStamp + ")");
+  sync.runSync(ctxA, { syncDir: syncDir, deviceId: "devA", deviceLabel: "A", backupFn: function () {} });
+  const aSettings = JSON.parse(db.getKV(ctxA.db, "ia_settings"));
+  assert.strictEqual(aSettings.keys.groq, "B_GROQ_ONLY", "B's local-only key must propagate outward to A");
+  assert.strictEqual(aSettings.keys.openrouter, "AKEY", "A keeps its own key");
+  assert.strictEqual(aSettings.updateToken, "A_GH_TOKEN", "A's updateToken untouched by the round-trip");
+
+  // Convergence: one more full round must NOT keep bumping stamps (no ping-pong).
+  const aStampAfter = Number(db.getKV(ctxA.db, "ia_settings_updatedAt"));
+  sync.runSync(ctxB, { syncDir: syncDir, deviceId: "devB", deviceLabel: "B", backupFn: function () {} });
+  sync.runSync(ctxA, { syncDir: syncDir, deviceId: "devA", deviceLabel: "A", backupFn: function () {} });
+  assert.strictEqual(Number(db.getKV(ctxA.db, "ia_settings_updatedAt")), aStampAfter,
+    "stamps must settle once the fleet converges — a changing stamp here means an infinite re-stamp loop");
 });
 
 console.log("sync-settings: " + pass + " passed, " + fail + " failed");
