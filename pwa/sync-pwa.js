@@ -57,12 +57,12 @@
     return idb.kvSet("_pwa_device_label", label);
   }
 
-  // Mirrors core/db.js's settingsForSync: strip provider keys / Open PageRank key
-  // / GitHub update token before anything derived from this leaves the device.
+  // Mirrors core/db.js's settingsForSync: provider keys + the Open PageRank key
+  // SYNC as of the 2026-07-16 spec (user decision — plaintext inside the user's
+  // own Dropbox). Only updateToken (desktop auto-updater GitHub credential,
+  // meaningless on an iPad anyway) stays behind.
   function stripSecrets(s) {
     const clean = Object.assign({}, s);
-    delete clean.keys;
-    delete clean.oprKey;
     delete clean.updateToken;
     return clean;
   }
@@ -231,7 +231,7 @@
     if (plan.settings && plan.settings.data) {
       try {
         const local = (await idb.kvGet("ia_settings")) || {};
-        const merged = Object.assign({}, plan.settings.data, { keys: local.keys, oprKey: local.oprKey, updateToken: local.updateToken });
+        const merged = mergeSyncedSettings(local, plan.settings.data); // pwa/merge.js — global, like mergeSnapshots
         await idb.kvSet("ia_settings", merged);
         await idb.kvSet("ia_settings_updatedAt", Number(plan.settings.updatedAt) || Date.now());
         settingsApplied = true;
