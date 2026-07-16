@@ -77,6 +77,13 @@ t("all three triggers are wired: boot, visibilitychange, interval", () => {
   assert.ok(/setInterval\(\(\)=>autoSync\("interval"\), AUTO_SYNC_INTERVAL\)/.test(src), "interval trigger");
 });
 
+t("manual sync passes a progress callback so long catch-ups show movement (auto-sync stays silent)", () => {
+  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 1800);
+  assert.ok(/Store\.syncNow\(p=>\{ if\(p && p\.total\)\{ toast\(/.test(manual), "syncNowClick must surface onProgress via toast");
+  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 2400);
+  assert.ok(/return Store\.syncNow\(\);/.test(auto), "autoSync stays silent — no progress toasts from background syncs");
+});
+
 t("syncNowClick shares the in-flight guard (no overlapping cycles) and clears it in finally", () => {
   const start = src.indexOf("async function syncNowClick(");
   const region = src.slice(start, start + 1600);

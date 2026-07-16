@@ -72,8 +72,19 @@ t("refreshAccessToken: transient failures (network throw; 429/5xx) keep tokens a
   const body = grab(src, "refreshAccessToken");
   const otherCount = (body.match(/err\.code = "OTHER"/g) || []).length;
   assert.ok(otherCount >= 2, "network-throw and non-400/401 HTTP paths must both tag OTHER (found " + otherCount + ")");
-  assert.ok(/try \{[\s\S]*?res = await fetch\(/.test(body),
-    "the token-endpoint fetch itself must be wrapped so an offline moment doesn't look like a dead refresh token");
+  assert.ok(/try \{[\s\S]*?res = await fetchWithTimeout\(/.test(body),
+    "the token-endpoint fetch must be wrapped AND deadline-bounded so an offline/stalled moment doesn't look like a dead refresh token");
+});
+
+t("every Dropbox request is deadline-bounded (iOS can stall a fetch forever and wedge the sync cycle)", () => {
+  assert.ok(/function fetchWithTimeout\(/.test(src), "fetchWithTimeout must exist");
+  assert.ok(/AbortController/.test(grab(src, "fetchWithTimeout")), "must abort via AbortController");
+  assert.ok(/clearTimeout\(t\)/.test(grab(src, "fetchWithTimeout")), "must clear the watchdog timer in finally");
+  const retry = grab(src, "fetchWithRetry");
+  assert.ok(/await fetchWithTimeout\(url, options\)/.test(retry), "fetchWithRetry must go through the deadline");
+  assert.ok(!/await fetch\(url/.test(retry), "no raw un-deadlined fetch left in fetchWithRetry");
+  const acct = grab(src, "getCurrentAccount");
+  assert.ok(/fetchWithTimeout\(/.test(acct), "getCurrentAccount must go through the deadline too");
 });
 
 t("getAccessToken refreshes through the single-flight wrapper", () => {

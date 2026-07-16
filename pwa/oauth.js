@@ -122,7 +122,7 @@ async function refreshAccessToken(appKey) {
   });
   let res;
   try {
-    res = await fetch(DBX_TOKEN_URL, {
+    res = await fetchWithTimeout(DBX_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
@@ -243,13 +243,32 @@ async function getAccessToken(appKey) {
 const MAX_RETRIES = 8;
 let rateLimitedUntil = 0;
 
+// iOS Safari can stall a fetch INDEFINITELY (radio sleep, WiFi hand-off,
+// app freeze/thaw) — observed live 2026-07-16: one stalled upload wedged the
+// whole sync cycle forever, and the page-level in-flight guard then blocked
+// every later manual sync until the app was relaunched. Every Dropbox request
+// gets a hard per-attempt deadline instead; an aborted request throws, the
+// cycle fails cleanly as a retryable OTHER, and the next sync resumes the
+// incremental diff where it left off. 120s comfortably covers the largest
+// single request (a multi-MB snapshot.json upload on slow uplink).
+const FETCH_TIMEOUT_MS = 120000;
+async function fetchWithTimeout(url, options) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, Object.assign({}, options, { signal: ctrl.signal }));
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function fetchWithRetry(url, options) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const now = Date.now();
     if (rateLimitedUntil > now) {
       await new Promise((r) => setTimeout(r, rateLimitedUntil - now));
     }
-    const res = await fetch(url, options);
+    const res = await fetchWithTimeout(url, options);
     if (res.ok) return res;
     if (res.status !== 429 && res.status < 500) return res; // non-retryable client error — let the caller's own error handling take it
     if (attempt === MAX_RETRIES) return res; // out of retries — return the last (failing) response as-is
@@ -322,7 +341,7 @@ async function dbxDownload(accessToken, path) {
 }
 
 async function getCurrentAccount(accessToken) {
-  const res = await dbxAuthedFetch(accessToken, (token) => fetch(`${DBX_API_URL}/users/get_current_account`, {
+  const res = await dbxAuthedFetch(accessToken, (token) => fetchWithTimeout(`${DBX_API_URL}/users/get_current_account`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   }));
