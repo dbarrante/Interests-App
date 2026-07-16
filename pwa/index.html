@@ -1471,12 +1471,54 @@ async function chooseSyncFolder(){
   try{ await Store.setSyncFolder(target); toast("Sync folder set"); await renderSyncStatus(); }
   catch(e){ toast("Couldn't set folder: " + (e&&e.message||e)); }
 }
+/* ============ auto-sync (spec: docs/superpowers/specs/2026-07-16-sync-auth-keys-design.md) ============ */
+// The PWA used to sync ONLY from the manual button — settings and cards changed
+// on other devices never arrived unless the user remembered to tap it (and
+// silently stopped forever when a tap failed). Auto-sync runs on app open, on
+// returning to the foreground, and on a timer, sharing ONE in-flight guard with
+// the manual button so two cycles can never overlap.
+const AUTO_SYNC_COOLDOWN = 5*60*1000;   // min gap between AUTO syncs; manual taps bypass this (they only respect the in-flight guard)
+const AUTO_SYNC_INTERVAL = 15*60*1000;  // periodic cadence while the app stays open
+let _syncInFlight = null;               // Promise while a cycle runs — shared by autoSync + syncNowClick
+let _lastAutoSyncAt = 0;
+let _authToastShown = false;            // one reconnect toast per disconnect, not one per 15-minute tick
+async function autoSync(trigger){
+  if(!_booted || _syncInFlight) return;
+  if(Date.now() - _lastAutoSyncAt < AUTO_SYNC_COOLDOWN) return;
+  let st = null; try{ st = await Store.syncStatus(); }catch(e){ return; }
+  if(!st || !st.enabled || !st.connected) return;
+  _lastAutoSyncAt = Date.now();
+  let r = null;
+  try{
+    _syncInFlight = Store.syncNow();
+    r = await _syncInFlight;
+  }catch(e){
+    console.warn("auto-sync ("+trigger+") threw:", e && e.message);
+  }finally{
+    _syncInFlight = null;
+  }
+  if(!r) return;
+  if(r.code === "AUTH_EXPIRED"){
+    if(!_authToastShown){ _authToastShown = true; toast("Dropbox connection expired — reconnect in Settings", 8000); }
+    renderSyncStatus();
+    return;
+  }
+  if(r.ok === false){ console.warn("auto-sync ("+trigger+") failed:", r.reason); return; }   // transient: Settings' "Last sync" line is the surface, no toast spam
+  _authToastShown = false;
+  if(r.changed){ toast("✨ Updates synced from your other devices — tap to refresh", 8000, ()=>location.reload()); }
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) autoSync("visible"); });
+setInterval(()=>autoSync("interval"), AUTO_SYNC_INTERVAL);
 async function syncNowClick(){
+  if(_syncInFlight){ toast("Sync already running…"); return; }
   toast("Syncing…");
   try{
-    const r = await Store.syncNow();
+    _syncInFlight = Store.syncNow();
+    const r = await _syncInFlight;
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
     if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
+    _authToastShown = false;
+    _lastAutoSyncAt = Date.now();
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
     await renderSyncStatus();
     if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
@@ -1484,6 +1526,9 @@ async function syncNowClick(){
   catch(e){
     toast("Sync failed: " + (e&&e.message||e));
     await renderSyncStatus();
+  }
+  finally{
+    _syncInFlight = null;
   }
 }
 
@@ -5194,6 +5239,7 @@ async function bootData(){
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
   _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
   maybeAutoBackup();
+  autoSync("boot");   // fire-and-forget: first sync of the session, now that the real library is loaded
 }
 // UX-4: if boot can't reach the local app service (Core down / network), don't fail
 // silently into an empty screen — show a dismissible banner with a Retry (LOOP-06 node 4).

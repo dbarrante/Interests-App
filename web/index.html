@@ -1432,12 +1432,23 @@ async function chooseSyncFolder(){
   try{ await Store.setSyncFolder(target); toast("Sync folder set"); await renderSyncStatus(); }
   catch(e){ toast("Couldn't set folder: " + (e&&e.message||e)); }
 }
+// Shared with the PWA build's auto-sync (pwa/index.html) — the guard/flags are
+// declared here too so syncNowClick stays byte-identical across both files
+// (tests/ux-loop06.test.js binding-parity check). The desktop app itself syncs
+// on the Core service's timers (core/synctimers.js); only the PWA has autoSync().
+let _syncInFlight = null;   // Promise while a cycle runs — no overlapping cycles
+let _lastAutoSyncAt = 0;
+let _authToastShown = false;
 async function syncNowClick(){
+  if(_syncInFlight){ toast("Sync already running…"); return; }
   toast("Syncing…");
   try{
-    const r = await Store.syncNow();
+    _syncInFlight = Store.syncNow();
+    const r = await _syncInFlight;
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
     if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
+    _authToastShown = false;
+    _lastAutoSyncAt = Date.now();
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
     await renderSyncStatus();
     if(r && r.changed){ setTimeout(()=>location.reload(), 900); }
@@ -1445,6 +1456,9 @@ async function syncNowClick(){
   catch(e){
     toast("Sync failed: " + (e&&e.message||e));
     await renderSyncStatus();
+  }
+  finally{
+    _syncInFlight = null;
   }
 }
 
