@@ -86,6 +86,34 @@
     return out;
   }
 
-  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, _stable: _stable };
-  if (root) { root.mergeSnapshots = mergeSnapshots; root._iaStable = _stable; }
+  // Apply-side merge for synced settings (2026-07-16 spec): `incoming` won
+  // last-writer-wins at the blob level, but credentials merge per-field —
+  // a device that has never held a key publishes an empty keys object before
+  // its first receive, and must not wipe the fleet's keys. updateToken is a
+  // desktop-local GitHub credential: never travels, never overwritten.
+  function _nonEmptyStrings(obj) {
+    var out = {};
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      Object.keys(obj).forEach(function (k) {
+        if (typeof obj[k] === "string" && obj[k].trim()) out[k] = obj[k];
+      });
+    }
+    return out;
+  }
+  function mergeSyncedSettings(local, incoming) {
+    local = (local && typeof local === "object") ? local : {};
+    incoming = (incoming && typeof incoming === "object") ? incoming : {};
+    var merged = Object.assign({}, incoming);
+    var localKeys = (local.keys && typeof local.keys === "object" && !Array.isArray(local.keys)) ? local.keys : {};
+    merged.keys = Object.assign({}, localKeys, _nonEmptyStrings(incoming.keys));
+    if (typeof incoming.oprKey === "string" && incoming.oprKey.trim()) merged.oprKey = incoming.oprKey;
+    else if (local.oprKey != null) merged.oprKey = local.oprKey;
+    else delete merged.oprKey;
+    if (local.updateToken != null) merged.updateToken = local.updateToken;
+    else delete merged.updateToken;
+    return merged;
+  }
+
+  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, mergeSyncedSettings: mergeSyncedSettings, _stable: _stable };
+  if (root) { root.mergeSnapshots = mergeSnapshots; root.mergeSyncedSettings = mergeSyncedSettings; root._iaStable = _stable; }
 })(typeof self !== "undefined" ? self : this);
