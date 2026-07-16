@@ -58,13 +58,27 @@ t("every Dropbox-call throw site uses dbxError(...) instead of a bare new Error(
   }
 });
 
-t("refreshAccessToken tags a failed refresh AUTH_EXPIRED and disconnects", () => {
+t("refreshAccessToken: definitive failures (no token on file; 400/401) disconnect + AUTH_EXPIRED", () => {
   const body = grab(src, "refreshAccessToken");
-  // two failure paths: no refresh token on file, and a non-ok token-endpoint response
   const disconnectCount = (body.match(/disconnect\(\)/g) || []).length;
-  assert.ok(disconnectCount >= 2, "both failure paths must call disconnect()");
-  const codeCount = (body.match(/err\.code\s*=\s*"AUTH_EXPIRED"/g) || []).length;
-  assert.ok(codeCount >= 2, "both failure paths must tag err.code = AUTH_EXPIRED");
+  assert.strictEqual(disconnectCount, 2, "exactly two disconnect() calls: no-refresh-token and invalid_grant (400/401)");
+  assert.ok(/res\.status === 400 \|\| res\.status === 401/.test(body),
+    "the token-endpoint disconnect must be gated on 400/401 (Dropbox rejects a dead refresh token with 400 invalid_grant)");
+  const codeCount = (body.match(/err\.code = "AUTH_EXPIRED"/g) || []).length;
+  assert.strictEqual(codeCount, 2, "exactly the two definitive paths tag AUTH_EXPIRED");
+});
+
+t("refreshAccessToken: transient failures (network throw; 429/5xx) keep tokens and tag OTHER", () => {
+  const body = grab(src, "refreshAccessToken");
+  const otherCount = (body.match(/err\.code = "OTHER"/g) || []).length;
+  assert.ok(otherCount >= 2, "network-throw and non-400/401 HTTP paths must both tag OTHER (found " + otherCount + ")");
+  assert.ok(/try \{[\s\S]*?res = await fetch\(/.test(body),
+    "the token-endpoint fetch itself must be wrapped so an offline moment doesn't look like a dead refresh token");
+});
+
+t("getAccessToken refreshes through the single-flight wrapper", () => {
+  const body = grab(src, "getAccessToken");
+  assert.ok(/sharedRefreshAccessToken\(appKey\)/.test(body), "must use sharedRefreshAccessToken, not a direct refresh");
 });
 
 t("listDeviceImageIds: re-throws AUTH_EXPIRED before the path/not_found swallow", () => {

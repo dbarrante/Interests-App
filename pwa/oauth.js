@@ -120,21 +120,53 @@ async function refreshAccessToken(appKey) {
     refresh_token: refreshToken,
     client_id: appKey,
   });
-  const res = await fetch(DBX_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  const json = await res.json();
+  let res;
+  try {
+    res = await fetch(DBX_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+  } catch (e) {
+    // Offline / DNS / captive portal — says NOTHING about the refresh token's
+    // validity. Tokens stay; the next attempt retries with the same one.
+    const err = new Error("Token refresh failed (network): " + ((e && e.message) || e));
+    err.code = "OTHER";
+    throw err;
+  }
+  let json = null;
+  try { json = await res.json(); } catch (e) { json = null; }
   if (!res.ok) {
-    disconnect();
-    const err = new Error(json.error_description || json.error || res.statusText);
-    err.code = "AUTH_EXPIRED";
+    const detail = (json && (json.error_description || json.error)) || res.statusText;
+    // Dropbox rejects a revoked/expired refresh token with 400 invalid_grant
+    // (401 for a bad client). Only THAT is definitive. A 429/5xx is a bad
+    // moment at the token endpoint — wiping a still-valid refresh token here
+    // is exactly the "keeps disconnecting" bug this replaces.
+    if (res.status === 400 || res.status === 401) {
+      disconnect();
+      const err = new Error(detail);
+      err.code = "AUTH_EXPIRED";
+      err.status = res.status;
+      throw err;
+    }
+    const err = new Error("Token refresh failed (" + res.status + "): " + detail);
+    err.code = "OTHER";
     err.status = res.status;
     throw err;
   }
   storeTokens(json);
   return json.access_token;
+}
+
+// Single-flight: N concurrent workers (4 image workers all 401ing at the same
+// instant) share ONE refresh call instead of stampeding the token endpoint —
+// same shared-gate reasoning as fetchWithRetry's rateLimitedUntil below.
+let _refreshPromise = null;
+function sharedRefreshAccessToken(appKey) {
+  if (!_refreshPromise) {
+    _refreshPromise = refreshAccessToken(appKey).finally(() => { _refreshPromise = null; });
+  }
+  return _refreshPromise;
 }
 
 function storeTokens(tokens) {
@@ -157,7 +189,7 @@ function disconnect() {
 async function getAccessToken(appKey) {
   const expiresAt = Number(localStorage.getItem(LS_KEYS.expiresAt) || 0);
   if (Date.now() < expiresAt - 60000) return localStorage.getItem(LS_KEYS.accessToken);
-  return refreshAccessToken(appKey);
+  return sharedRefreshAccessToken(appKey);
 }
 
 // Concurrent image downloads/uploads (see pwa/sync-pwa.js's worker pools) can
