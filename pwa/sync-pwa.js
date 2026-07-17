@@ -96,11 +96,15 @@
       // propagates so the caller actually finds out.
       if (/path\/not_found/.test(e && e.message)) {
         console.log("sync: readPeers — no sync root yet (nobody has ever synced):", e.message);
-        return { peers: [], skewSkipped: 0, partialFailures: [], peersSkipped: 0 };
+        return { peers: [], skewSkipped: 0, partialFailures: [], peersSkipped: 0, selfFolderPresent: false };
       }
       throw e;
     }
     const deviceIds = entries.filter((e) => e[".tag"] === "folder").map((e) => e.name).filter((id) => id !== selfDeviceId);
+    // Free signal for the publish-skip existence guard (final review Finding
+    // 2b): if our own folder vanished from the listing (remote wipe/rewind),
+    // publish-skip must be refused so the snapshot gets re-created.
+    const selfFolderPresent = entries.some((e) => e[".tag"] === "folder" && e.name === selfDeviceId);
     console.log("sync: readPeers — found device folders:", deviceIds);
 
     const now = Date.now();
@@ -148,7 +152,7 @@
       peers.push(snap);
     }
     console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped + " partialFailures=" + partialFailures.length + " peersSkipped=" + peersSkipped);
-    return { peers, skewSkipped, partialFailures, peersSkipped };
+    return { peers, skewSkipped, partialFailures, peersSkipped, selfFolderPresent };
   }
 
   // Batches the actual IndexedDB writes into one transaction per store instead of
@@ -247,7 +251,7 @@
       await idb.putMany("tombstones", tombRows);
     }
 
-    let settingsApplied = false;
+    let settingsApplied = false, applyFailures = 0;
     if (plan.settings && plan.settings.data) {
       try {
         // Mirror core/db.js applySyncedSettings' oversized-blob rejection: settings
@@ -268,12 +272,18 @@
           settingsApplied = true;
         }
       } catch (e) {
+        // TRANSIENT apply failure (e.g. idb quota) — must dirty the cycle so the
+        // winning peer's watermark doesn't advance past unapplied settings
+        // (final review 2026-07-16, Finding 1 / data-safety F1). The oversized-
+        // blob rejection above is a PERMANENT condition and deliberately does
+        // not count (it would disable skipping forever).
+        applyFailures++;
         console.error("sync: applying synced settings failed:", e.message);
       }
     }
 
     const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
-    return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed };
+    return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed, applyFailures: applyFailures };
   }
 
   async function publishSnapshot(accessToken, deviceId, deviceLabel, onProgress, mergeChanged) {
@@ -312,11 +322,21 @@
         .map((v) => v.slice(4))
     );
     console.log("sync: publishSnapshot — resolving existing remote images for", deviceId);
-    let cachedIds = null;
-    try { cachedIds = await idb.kvGet("_pwa_published_imgids"); } catch (e) { cachedIds = null; }
-    const alreadyPublished = Array.isArray(cachedIds)
-      ? new Set(cachedIds)
-      : new Set(await Dbx.listDeviceImageIds(accessToken, deviceId)); // seed once (or after any cache error)
+    // Own-published-images cache — NAMESPACED BY deviceId (data-safety F5b: a
+    // regenerated device identity publishes to a fresh empty folder and must
+    // never inherit the old identity's cache). Revalidated against a REAL
+    // listing after any dirty publish and every 20th publish regardless
+    // (final review Finding 2a: out-of-band remote deletion — Dropbox rewind,
+    // manual cleanup — would otherwise suppress a needed re-upload forever).
+    const cacheKey = "_pwa_published_imgids_" + deviceId;
+    let cachedIds = null, pubN = 0;
+    try { cachedIds = await idb.kvGet(cacheKey); pubN = (await idb.kvGet("_pwa_pubcache_n_" + deviceId)) | 0; } catch (e) { cachedIds = null; }
+    const reseed = !Array.isArray(cachedIds) || !lastClean || pubN % 20 === 0;
+    if (reseed) console.log("sync: publishSnapshot — reseeding published-images cache from a full listing");
+    const alreadyPublished = reseed
+      ? new Set(await Dbx.listDeviceImageIds(accessToken, deviceId))
+      : new Set(cachedIds);
+    try { await idb.kvSet("_pwa_pubcache_n_" + deviceId, pubN + 1); } catch (e) {}
     console.log("sync: publishSnapshot — image diff: local=" + localImageIds.size + " alreadyRemote=" + alreadyPublished.size);
     const toUpload = [...localImageIds].filter((id) => !alreadyPublished.has(id));
     let uploadedCount = 0, uploadIndex = 0, uploadFailures = 0;
@@ -346,7 +366,7 @@
     // Persist the cache after the wave: successful ids stick even if the cycle
     // fails later. A stale/missing entry only ever costs one redundant upload
     // (Dropbox overwrite mode is idempotent) — never a missing file.
-    try { await idb.kvSet("_pwa_published_imgids", [...alreadyPublished]); } catch (e) {}
+    try { await idb.kvSet(cacheKey, [...alreadyPublished]); } catch (e) {}
 
     // 2) snapshot.json
     const publishedAt = Date.now();
@@ -389,15 +409,15 @@
       ({ deviceId, deviceLabel } = await ensureDeviceIdentity());
       console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
 
-      let peers, skewSkipped, partialFailures, peersSkipped = 0;
+      let peers, skewSkipped, partialFailures, peersSkipped = 0, selfFolderPresent = false;
       try {
-        ({ peers, skewSkipped, partialFailures, peersSkipped } = await readPeers(accessToken, deviceId));
+        ({ peers, skewSkipped, partialFailures, peersSkipped, selfFolderPresent } = await readPeers(accessToken, deviceId));
       } catch (e) {
         console.error("sync: runSyncCycle — aborting, peer read failed:", e && e.message);
         return Object.assign({ ok: false, deviceId, deviceLabel }, classifySyncError(e));
       }
 
-      let changed = false, conflicts = 0, upserts = 0, deletes = 0, imagesFailed = 0;
+      let changed = false, conflicts = 0, upserts = 0, deletes = 0, imagesFailed = 0, applyFailures = 0;
       if (peers.length) {
         console.log("sync: runSyncCycle — building local snapshot for merge");
         const local = await buildLocal();
@@ -409,14 +429,15 @@
             if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
           });
           changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
-          imagesFailed = r.imagesFailed | 0;
+          imagesFailed = r.imagesFailed | 0; applyFailures = r.applyFailures | 0;
           console.log("sync: runSyncCycle — merge applied");
         }
       }
 
       // Advance peer watermarks ONLY after a clean cycle (no deferred images,
-      // no per-peer read failures) — a dirty cycle must re-read its peers.
-      if (imagesFailed === 0 && partialFailures.length === 0) {
+      // no transient apply failures, no per-peer read failures) — a dirty
+      // cycle must re-read its peers (final review 2026-07-16, Finding 1).
+      if (imagesFailed === 0 && applyFailures === 0 && partialFailures.length === 0) {
         for (const p of peers) {
           if (p.publishedAt != null && isFinite(p.publishedAt)) {
             try { await idb.kvSet("_pwa_peer_seen_" + p.deviceId, Number(p.publishedAt)); } catch (e) {}
@@ -427,9 +448,13 @@
       let publishResult = null;
       try {
         if (opts.publish !== false) {
+          // `changed || !selfFolderPresent` forces a real publish when our own
+          // folder vanished from the sync root (remote wipe — Finding 2b);
+          // sig+clean would otherwise skip re-creating a snapshot that no
+          // longer exists.
           publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
             if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
-          }, changed);
+          }, changed || !selfFolderPresent);
         }
       } catch (e) {
         console.error("sync: runSyncCycle — publish failed:", e && e.message);

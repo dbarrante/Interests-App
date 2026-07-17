@@ -182,7 +182,14 @@ function applyMerge(ctx, plan) {
   const copyById = {};
   for (const ic of plan.imageCopies) copyById[ic.id] = ic;
 
-  let upsertsApplied = 0, imageCopiesDone = 0, deferred = 0;
+  // applyFailures counts TRANSIENT apply trouble (a thrown upsert, a thrown
+  // settings apply) — it dirties the cycle alongside `deferred` so peer
+  // watermarks don't advance past un-merged data (final review 2026-07-16,
+  // Finding 1: with publish-skip freezing the peer's publishedAt, an advanced
+  // watermark would hide the miss INDEFINITELY, not one cycle). Permanent
+  // skips (unsafe id, oversized settings blob) are deliberately NOT counted —
+  // they'd disable skipping forever.
+  let upsertsApplied = 0, imageCopiesDone = 0, deferred = 0, applyFailures = 0;
   for (const u of plan.upserts) {
     // The id comes from a peer's (corrupt/hostile) snapshot.json and is used to
     // build fs/db paths. Validate it FIRST: an unsafe id is skipped (not written,
@@ -213,6 +220,7 @@ function applyMerge(ctx, plan) {
       else db.upsertSavedSynced(ctx.db, u.item, u.updatedAt);
       upsertsApplied++;
     } catch (e) {
+      applyFailures++;
       console.error("sync: skipping upsert that failed to apply:", (u.item && u.item.id), e && e.message);
     }
   }
@@ -229,10 +237,10 @@ function applyMerge(ctx, plan) {
   let settingsApplied = false;
   if (plan.settings && plan.settings.data) {
     try { db.applySyncedSettings(ctx.db, plan.settings.data, plan.settings.updatedAt); settingsApplied = true; }
-    catch (e) { console.error("sync: applying synced settings failed:", e && e.message); }
+    catch (e) { applyFailures++; console.error("sync: applying synced settings failed:", e && e.message); }
   }
   const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
-  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, deferred: deferred };
+  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, deferred: deferred, applyFailures: applyFailures };
 }
 
 // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
@@ -262,7 +270,7 @@ function runSync(ctx, opts) {
       if (backedUp) {
         const r = applyMerge(ctx, plan);
         changed = r.changed; conflicts = plan.conflicts;
-        mergeClean = (r.deferred | 0) === 0;
+        mergeClean = (r.deferred | 0) === 0 && (r.applyFailures | 0) === 0;
       } else {
         mergeClean = false;
       }
@@ -283,7 +291,10 @@ function runSync(ctx, opts) {
     let lastSig = null, lastClean = false;
     try { lastSig = db.getKV(ctx.db, "ia_last_publish_sig"); lastClean = db.getKV(ctx.db, "ia_last_publish_clean") === "1"; } catch (e) {}
     const sig = contentSignature(db.signatureAggregates(ctx.db));
-    if (sig === lastSig && lastClean && !changed) {
+    // The existsSync guard (final review Finding 2b): if the remote folder was
+    // wiped out-of-band (Dropbox rewind, manual delete), sig+clean still match —
+    // never skip re-creating a snapshot that no longer exists.
+    if (sig === lastSig && lastClean && !changed && fs.existsSync(path.join(syncDir, opts.deviceId, "meta.json"))) {
       publishSkipped = true;   // identical content already published cleanly — zero writes
     } else {
       fs.mkdirSync(syncDir, { recursive: true });

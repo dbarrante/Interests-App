@@ -69,6 +69,28 @@ t("publish uploads count failures and store the clean flag", () => {
   assert.ok(/_pwa_last_publish_clean.*uploadFailures === 0/.test(body) || /uploadFailures === 0/.test(body), "clean flag must reflect zero failures");
 });
 
+t("transient settings-apply failure dirties the cycle (applyFailures) and blocks watermark advance", () => {
+  const apply = grab(src, "applyMergeToLocal");
+  assert.ok(/applyFailures\+\+/.test(apply), "settings-apply catch must count as a transient failure");
+  assert.ok(/applyFailures:\s*applyFailures/.test(apply), "return must include applyFailures");
+  const cycle = grab(src, "runSyncCycle");
+  assert.ok(/applyFailures === 0/.test(cycle), "watermark gate must require applyFailures === 0 (final review Finding 1)");
+});
+
+t("published-images cache is namespaced by deviceId and revalidates (reseed on dirty publish + every 20th)", () => {
+  const body = grab(src, "publishSnapshot");
+  assert.ok(/_pwa_published_imgids_" \+ deviceId/.test(body), "cache key must be namespaced by deviceId (data-safety F5b)");
+  assert.ok(/!Array\.isArray\(cachedIds\) \|\| !lastClean \|\| pubN % 20 === 0/.test(body),
+    "must reseed from a REAL listing on invalid cache, dirty last publish, or every 20th publish (final review Finding 2a)");
+});
+
+t("publish-skip refused when our own folder vanished from the sync root (remote wipe)", () => {
+  const rp = grab(src, "readPeers");
+  assert.ok(/selfFolderPresent/.test(rp), "readPeers must report whether the self folder exists");
+  const cycle = grab(src, "runSyncCycle");
+  assert.ok(/changed \|\| !selfFolderPresent/.test(cycle), "a missing self folder must force a real publish (Finding 2b)");
+});
+
 t("runSyncCycle surfaces peersSkipped + publishSkipped in its result", () => {
   const body = grab(src, "runSyncCycle");
   assert.ok(/peersSkipped/.test(body) && /publishSkipped/.test(body), "counters must flow to the persisted last-sync result");

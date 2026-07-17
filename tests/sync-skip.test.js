@@ -74,5 +74,45 @@ run("readPeerSnapshots without seenByDevice (old callers) behaves exactly as bef
   assert.strictEqual(rp.peersSkipped, 0);
 });
 
+run("a THROWN upsert dirties the cycle: watermark must not advance past un-merged peer data (final review Finding 1)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-skip4-"));
+  const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+  const A = mkCtx(root, "A"), B = mkCtx(root, "B");
+  db.upsertCard(A.db, { id: "a1", url: "http://a/1", ts: 1 });
+  sync.runSync(A, { syncDir, deviceId: "devA", deviceLabel: "A", backupFn: noBackup });
+
+  // Transient failure: the shared db module's upsertCardSynced throws ONCE
+  // (SQLITE_BUSY / disk blip stand-in). Pre-fix, the cycle still counted as
+  // clean, the watermark advanced, and — because A's own publish-skip freezes
+  // its publishedAt — a1 would have been hidden from B FOREVER.
+  const real = db.upsertCardSynced;
+  db.upsertCardSynced = function () { throw new Error("simulated transient SQLITE_BUSY"); };
+  let r1;
+  try { r1 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup }); }
+  finally { db.upsertCardSynced = real; }
+  assert.ok(!db.allCards(B.db).some(c => c.id === "a1"), "a1 not applied (throw swallowed per-upsert)");
+
+  const r2 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r2.peersSkipped, 0, "dirty cycle must NOT have advanced the watermark — A re-read");
+  assert.ok(db.allCards(B.db).some(c => c.id === "a1"), "a1 arrives on the retry");
+  const r3 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r3.peersSkipped, 1, "clean retry advances the watermark normally");
+});
+
+run("publish-skip refuses when the published folder was wiped out-of-band (final review Finding 2b)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-skip5-"));
+  const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+  const B = mkCtx(root, "B");
+  db.upsertCard(B.db, { id: "b1", url: "http://b/1", ts: 1 });
+  sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  const r1 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r1.publishSkipped, true, "steady state: skip established");
+
+  fs.rmSync(path.join(syncDir, "devB"), { recursive: true, force: true });   // Dropbox rewind / manual wipe
+  const r2 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r2.publishSkipped, false, "missing meta.json must force a real publish");
+  assert.ok(fs.existsSync(path.join(syncDir, "devB", "meta.json")), "snapshot re-created");
+});
+
 console.log("sync-skip: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

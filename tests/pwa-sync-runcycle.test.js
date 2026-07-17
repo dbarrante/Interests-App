@@ -54,7 +54,9 @@ t("runSyncCycle's success return includes ok:true and partialFailures", () => {
 t("runSyncCycle wraps publishSnapshot in try/catch too (a publish-time 401 must also classify, not throw raw)", () => {
   const publishIdx = body.indexOf("publishSnapshot(");
   assert.ok(publishIdx >= 0, "publishSnapshot must still be called");
-  const around = body.slice(Math.max(0, publishIdx - 200), publishIdx + 400);
+  // Window widened 200 -> 500: an explanatory comment (Finding 2b — forced
+  // publish when the self folder vanished) now sits between the try and the call.
+  const around = body.slice(Math.max(0, publishIdx - 500), publishIdx + 400);
   assert.ok(/try\s*\{/.test(around), "publishSnapshot call must be inside a try block");
 });
 
