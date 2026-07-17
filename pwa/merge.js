@@ -134,6 +134,19 @@
     return _stable(m) !== _stable(i);
   }
 
-  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, mergeSyncedSettings: mergeSyncedSettings, settingsEnrichedByLocal: settingsEnrichedByLocal, _stable: _stable };
-  if (root) { root.mergeSnapshots = mergeSnapshots; root.mergeSyncedSettings = mergeSyncedSettings; root.settingsEnrichedByLocal = settingsEnrichedByLocal; root._iaStable = _stable; }
+  // Deterministic signature over the aggregates that can affect a published
+  // snapshot. Signature-equality ⇒ republishing would produce identical
+  // content: every mutating path bumps one of these (edits stamp updatedAt,
+  // deletes add tombstones with deletedAt, settings edits stamp
+  // ia_settings_updatedAt). Used by both sides' publish-skip. "v1|" prefix so
+  // a future field change can never alias an old signature.
+  function contentSignature(agg) {
+    agg = (agg && typeof agg === "object") ? agg : {};
+    function n(v) { v = Number(v); return isFinite(v) ? v : 0; }
+    return "v1|" + n(agg.cards) + "|" + n(agg.saved) + "|" + n(agg.tombstones) + "|" +
+      n(agg.maxCardUpdatedAt) + "|" + n(agg.maxSavedUpdatedAt) + "|" + n(agg.maxTombDeletedAt) + "|" + n(agg.settingsUpdatedAt);
+  }
+
+  if (typeof module !== "undefined" && module.exports) module.exports = { mergeSnapshots: mergeSnapshots, mergeSyncedSettings: mergeSyncedSettings, settingsEnrichedByLocal: settingsEnrichedByLocal, _stable: _stable, contentSignature: contentSignature };
+  if (root) { root.mergeSnapshots = mergeSnapshots; root.mergeSyncedSettings = mergeSyncedSettings; root.settingsEnrichedByLocal = settingsEnrichedByLocal; root._iaStable = _stable; root.contentSignature = contentSignature; }
 })(typeof self !== "undefined" ? self : this);

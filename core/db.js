@@ -462,6 +462,19 @@ function applySyncedSettings(db, incoming, updatedAt) {
   // incoming stamp (see core/merge.js settingsEnrichedByLocal).
   setKV(db, "ia_settings_updatedAt", String(settingsEnrichedByLocal(merged, incoming) ? Date.now() : (Number(updatedAt) || Date.now())));
 }
+// Cheap aggregates for the publish-skip signature (see core/merge.js
+// contentSignature) — SQL only, no serializeLibrary. updatedAt is a real
+// column on cards/saved (ensureColumns migration); tombstones carry deletedAt.
+function signatureAggregates(db) {
+  const c = db.prepare("SELECT COUNT(*) AS n, MAX(updatedAt) AS m FROM cards").get();
+  const s = db.prepare("SELECT COUNT(*) AS n, MAX(updatedAt) AS m FROM saved").get();
+  const t = db.prepare("SELECT COUNT(*) AS n, MAX(deletedAt) AS m FROM tombstones").get();
+  return {
+    cards: Number(c.n) || 0, saved: Number(s.n) || 0, tombstones: Number(t.n) || 0,
+    maxCardUpdatedAt: Number(c.m) || 0, maxSavedUpdatedAt: Number(s.m) || 0, maxTombDeletedAt: Number(t.m) || 0,
+    settingsUpdatedAt: Number(getKV(db, "ia_settings_updatedAt") || 0) || 0,
+  };
+}
 function serializeLibrary(db) {
   return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db), settings: settingsForSync(db) };
 }
@@ -473,5 +486,5 @@ module.exports = {
   getFp, setFp, delFp, allFp,
   addTombstone, allTombstones, delTombstone, pruneTombstones,
   cardsSince, savedSince, tombstonesSince,
-  serializeLibrary, settingsForSync, applySyncedSettings,
+  serializeLibrary, settingsForSync, applySyncedSettings, signatureAggregates,
 };
