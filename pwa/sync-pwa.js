@@ -158,24 +158,22 @@
   // Batches the actual IndexedDB writes into one transaction per store instead of
   // one transaction per item — with a real library this is hundreds/thousands of
   // items, and awaiting a separate transaction per item made a legitimate large
-  // first-sync look identical to a hang. The per-item work that genuinely can't be
-  // batched (checking/copying an idb: image, which needs a conditional network
-  // fetch) stays in its own sequential loop; only the DB writes are deferred and
-  // flushed in bulk at the end.
+  // first-sync look identical to a hang.
   // 8 concurrent workers tripped Dropbox's per-app rate limit (HTTP 429) almost
   // immediately against a real ~5000-image library. 4 plus oauth.js's retry-with-
-  // backoff on 429 is a safer balance of speed vs. staying under the limit.
+  // backoff on 429 is a safer balance of speed vs. staying under the limit — used
+  // by publishSnapshot's image uploads below (images no longer download in-cycle
+  // here; see the on-demand fetcher's own cap further down, spec 2026-07-17).
   const IMAGE_DOWNLOAD_CONCURRENCY = 4;
 
-  async function applyMergeToLocal(plan, accessToken, onProgress, imageSizeByKey) {
-    imageSizeByKey = imageSizeByKey || {};
-    const copyById = {};
-    plan.imageCopies.forEach((ic) => { copyById[ic.id] = ic; });
-
-    // Phase 1: classify synchronously (cheap) — split into items that can be
-    // written immediately vs items that need an image downloaded first.
+  async function applyMergeToLocal(plan, accessToken, onProgress) {
+    // Phase 1: classify synchronously (cheap) — every safe-id upsert applies
+    // immediately; images are no longer downloaded during sync (spec
+    // 2026-07-17 — on-demand images: the renderer fetches via ensureImage()
+    // on first view, gated by the _pwa_image_sources map runSyncCycle refreshes
+    // below). imagesFailed/imagesReused stay in the return shape as 0 — nothing
+    // downloads here anymore, so nothing can fail or be reused.
     const readyCards = [], readySaved = [];
-    const needsImage = []; // [{ u, id }]
     let skippedNoItem = 0, skippedUnsafeId = 0;
     const unsafeIdSamples = [];
     for (const u of plan.upserts) {
@@ -186,59 +184,15 @@
         if (unsafeIdSamples.length < 5) unsafeIdSamples.push(id);
         continue;
       }
-      const ref = u.kind === "card" ? u.item.img : u.item.image;
-      if (typeof ref === "string" && ref.indexOf("idb:") === 0 && copyById[id]) {
-        needsImage.push({ u, id });
-      } else {
-        (u.kind === "card" ? readyCards : readySaved).push(u.item);
-      }
+      (u.kind === "card" ? readyCards : readySaved).push(u.item);
     }
-
-    // Phase 2: download needed images with a bounded CONCURRENT pool — doing this
-    // one at a time (the original approach) meant thousands of sequential network
-    // round-trips, which is legitimately slow enough to look identical to a hang.
-    let imageCopiesDone = 0, imagesFailed = 0, imagesReused = 0, nextIndex = 0;
-    async function imageWorker() {
-      while (nextIndex < needsImage.length) {
-        const { u, id } = needsImage[nextIndex++];
-        const ic = copyById[id];
-        try {
-          // Same-size local copy ⇒ the bytes didn't change ⇒ skip the download.
-          // A mass metadata-only re-stamp (observed live 2026-07-16: ~6,600
-          // cards updatedAt-bumped with NO content change) used to force a
-          // full-library re-download — hours of transfer for images we already
-          // hold. Size is the same change-detector the desktop's
-          // changedImageIds uses; a genuine recapture (same id, new bytes)
-          // virtually always changes size. No size known ⇒ download (doubt bias).
-          const remoteSize = imageSizeByKey[ic.fromDir + "|" + id];
-          const existing = (remoteSize != null) ? await idb.get("images", id) : null;
-          if (existing && existing.blob && existing.blob.size === remoteSize) {
-            imagesReused++;
-            (u.kind === "card" ? readyCards : readySaved).push(u.item);
-          } else {
-            const bytes = await Dbx.dbxDownloadBinary(accessToken, `${ic.fromDir}/images/${id}.jpg`);
-            await idb.put("images", { id, blob: new Blob([bytes]), type: sniffImageType(bytes) });
-            imageCopiesDone++;
-            (u.kind === "card" ? readyCards : readySaved).push(u.item);
-          }
-        } catch (e) {
-          imagesFailed++; // DEFER: image unavailable — local's lower updatedAt self-heals next cycle
-        }
-        const done = imageCopiesDone + imagesFailed + imagesReused;
-        if (onProgress && done % 25 === 0) onProgress(done, needsImage.length);
-      }
-    }
-    if (needsImage.length) {
-      await Promise.all(Array.from({ length: Math.min(IMAGE_DOWNLOAD_CONCURRENCY, needsImage.length) }, imageWorker));
-      if (onProgress) onProgress(needsImage.length, needsImage.length);
-    }
+    const imagesFailed = 0; // shape stability — see comment above
 
     if (readyCards.length) await idb.putMany("cards", readyCards);
     if (readySaved.length) await idb.putMany("saved", readySaved);
     const upsertsApplied = readyCards.length + readySaved.length;
     console.log("sync: applyMerge — batched write done: cards=" + readyCards.length + " saved=" + readySaved.length +
       " | skipped(noItem)=" + skippedNoItem + " skipped(unsafeId)=" + skippedUnsafeId +
-      " imagesCopied=" + imageCopiesDone + " imagesReused(same size)=" + imagesReused + " imagesFailed/deferred=" + imagesFailed +
       (unsafeIdSamples.length ? " | unsafe id samples: " + JSON.stringify(unsafeIdSamples) : ""));
 
     const cardDeletes = [], savedDeletes = [], imageDeletes = [];
@@ -297,7 +251,7 @@
       }
     }
 
-    const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
+    const changed = (upsertsApplied + plan.deletes.length) > 0 || settingsApplied;
     return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed, applyFailures: applyFailures };
   }
 
@@ -486,17 +440,9 @@
         console.log("sync: runSyncCycle — merge plan: upserts=" + plan.upserts.length + " deletes=" + plan.deletes.length + " imageCopies=" + plan.imageCopies.length);
         if (opts.onProgress) opts.onProgress({ phase: "merging", done: 0, total: plan.imageCopies.length });
         if (plan.upserts.length + plan.deletes.length + plan.imageCopies.length > 0 || plan.settings) {
-          // Peer image sizes, keyed "<peer dir>|<id>" — lets the download phase
-          // reuse identical local bytes instead of re-fetching the whole library
-          // after a mass metadata-only re-stamp.
-          const imageSizeByKey = {};
-          for (const p of peers) {
-            const sizes = p.imageSizes || {};
-            for (const iid of Object.keys(sizes)) imageSizeByKey[p.dir + "|" + iid] = sizes[iid];
-          }
           const r = await applyMergeToLocal(plan, accessToken, (done, total) => {
             if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
-          }, imageSizeByKey);
+          });
           changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
           imagesFailed = r.imagesFailed | 0; applyFailures = r.applyFailures | 0;
           console.log("sync: runSyncCycle — merge applied");

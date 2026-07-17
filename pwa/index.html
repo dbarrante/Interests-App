@@ -2577,12 +2577,13 @@ function attachCardImages(){
     const imgs = document.querySelectorAll("img[data-imgid],img[data-imgsrc]");
     if(!imgs.length){ if(_imgObserver){ _imgObserver.disconnect(); _imgObserver=null; } return; }
     if(_imgObserver) _imgObserver.disconnect();
+    const setSrc = (im, id) => { Store.ensureImage(id).then(()=>{ im.src = Store.imgUrl(id); }); };
     const load = im=>{
       if(im.getAttribute("src")) return;
       const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
-      if(idbId){ im.loading="lazy"; im.src=Store.imgUrl(idbId); return; }
+      if(idbId){ im.loading="lazy"; setSrc(im, idbId); return; }
       const sid = im.getAttribute("data-imgsrc");          // Discovery/Saved card: resolve the item's image
-      if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; im.src=Store.imgUrl(String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
+      if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; setSrc(im, String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
     };
     if(!("IntersectionObserver" in window)){ imgs.forEach(load); return; }
     _imgObserver=new IntersectionObserver((entries,obs)=>{ for(const e of entries){ if(e.isIntersecting){ load(e.target); obs.unobserve(e.target); } } },{root:null,rootMargin:"800px 0px"});

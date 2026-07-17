@@ -91,18 +91,11 @@ t("publish-skip refused when our own folder vanished from the sync root (remote 
   assert.ok(/changed \|\| !selfFolderPresent/.test(cycle), "a missing self folder must force a real publish (Finding 2b)");
 });
 
-t("image downloads are skipped when local bytes match the peer's size (mass re-stamp amplification fix)", () => {
-  const oauthSrc = fs.readFileSync(path.join(__dirname, "..", "pwa", "oauth.js"), "utf8");
-  assert.ok(/imageSizes\[id\] = e\.size/.test(oauthSrc), "readFullPeerSnapshot must capture per-image sizes from the listing");
+t("applyMergeToLocal applies items directly — no download pool (on-demand images, spec 2026-07-17)", () => {
   const apply = grab(src, "applyMergeToLocal");
-  assert.ok(/imageSizeByKey\[ic\.fromDir \+ "\|" \+ id\]/.test(apply), "worker must look up the peer's size for this image");
-  assert.ok(/existing\.blob\.size === remoteSize/.test(apply), "must reuse identical-size local bytes instead of re-downloading");
-  const dlIdx = apply.indexOf("dbxDownloadBinary");
-  const checkIdx = apply.indexOf("existing.blob.size === remoteSize");
-  assert.ok(checkIdx >= 0 && dlIdx > checkIdx, "the size check must gate the download");
-  assert.ok(/remoteSize != null\) \? await idb\.get/.test(apply), "no size known -> download (doubt bias)");
-  const cycle = grab(src, "runSyncCycle");
-  assert.ok(/p\.dir \+ "\|" \+ iid/.test(cycle), "runSyncCycle must thread peer sizes into the merge");
+  assert.ok(!/dbxDownloadBinary/.test(apply), "the in-cycle image download pool must be gone");
+  assert.ok(!/needsImage/.test(apply), "no deferred-image classification — items apply immediately");
+  assert.ok(/imagesFailed:\s*0|imagesFailed = 0/.test(apply), "imagesFailed stays in the return shape as 0");
 });
 
 t("runSyncCycle surfaces peersSkipped + publishSkipped in its result", () => {
