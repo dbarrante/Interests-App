@@ -167,7 +167,8 @@
   // backoff on 429 is a safer balance of speed vs. staying under the limit.
   const IMAGE_DOWNLOAD_CONCURRENCY = 4;
 
-  async function applyMergeToLocal(plan, accessToken, onProgress) {
+  async function applyMergeToLocal(plan, accessToken, onProgress, imageSizeByKey) {
+    imageSizeByKey = imageSizeByKey || {};
     const copyById = {};
     plan.imageCopies.forEach((ic) => { copyById[ic.id] = ic; });
 
@@ -196,20 +197,34 @@
     // Phase 2: download needed images with a bounded CONCURRENT pool — doing this
     // one at a time (the original approach) meant thousands of sequential network
     // round-trips, which is legitimately slow enough to look identical to a hang.
-    let imageCopiesDone = 0, imagesFailed = 0, nextIndex = 0;
+    let imageCopiesDone = 0, imagesFailed = 0, imagesReused = 0, nextIndex = 0;
     async function imageWorker() {
       while (nextIndex < needsImage.length) {
         const { u, id } = needsImage[nextIndex++];
         const ic = copyById[id];
         try {
-          const bytes = await Dbx.dbxDownloadBinary(accessToken, `${ic.fromDir}/images/${id}.jpg`);
-          await idb.put("images", { id, blob: new Blob([bytes]), type: sniffImageType(bytes) });
-          imageCopiesDone++;
-          (u.kind === "card" ? readyCards : readySaved).push(u.item);
+          // Same-size local copy ⇒ the bytes didn't change ⇒ skip the download.
+          // A mass metadata-only re-stamp (observed live 2026-07-16: ~6,600
+          // cards updatedAt-bumped with NO content change) used to force a
+          // full-library re-download — hours of transfer for images we already
+          // hold. Size is the same change-detector the desktop's
+          // changedImageIds uses; a genuine recapture (same id, new bytes)
+          // virtually always changes size. No size known ⇒ download (doubt bias).
+          const remoteSize = imageSizeByKey[ic.fromDir + "|" + id];
+          const existing = (remoteSize != null) ? await idb.get("images", id) : null;
+          if (existing && existing.blob && existing.blob.size === remoteSize) {
+            imagesReused++;
+            (u.kind === "card" ? readyCards : readySaved).push(u.item);
+          } else {
+            const bytes = await Dbx.dbxDownloadBinary(accessToken, `${ic.fromDir}/images/${id}.jpg`);
+            await idb.put("images", { id, blob: new Blob([bytes]), type: sniffImageType(bytes) });
+            imageCopiesDone++;
+            (u.kind === "card" ? readyCards : readySaved).push(u.item);
+          }
         } catch (e) {
           imagesFailed++; // DEFER: image unavailable — local's lower updatedAt self-heals next cycle
         }
-        const done = imageCopiesDone + imagesFailed;
+        const done = imageCopiesDone + imagesFailed + imagesReused;
         if (onProgress && done % 25 === 0) onProgress(done, needsImage.length);
       }
     }
@@ -223,7 +238,7 @@
     const upsertsApplied = readyCards.length + readySaved.length;
     console.log("sync: applyMerge — batched write done: cards=" + readyCards.length + " saved=" + readySaved.length +
       " | skipped(noItem)=" + skippedNoItem + " skipped(unsafeId)=" + skippedUnsafeId +
-      " imagesCopied=" + imageCopiesDone + " imagesFailed/deferred=" + imagesFailed +
+      " imagesCopied=" + imageCopiesDone + " imagesReused(same size)=" + imagesReused + " imagesFailed/deferred=" + imagesFailed +
       (unsafeIdSamples.length ? " | unsafe id samples: " + JSON.stringify(unsafeIdSamples) : ""));
 
     const cardDeletes = [], savedDeletes = [], imageDeletes = [];
@@ -425,9 +440,17 @@
         console.log("sync: runSyncCycle — merge plan: upserts=" + plan.upserts.length + " deletes=" + plan.deletes.length + " imageCopies=" + plan.imageCopies.length);
         if (opts.onProgress) opts.onProgress({ phase: "merging", done: 0, total: plan.imageCopies.length });
         if (plan.upserts.length + plan.deletes.length + plan.imageCopies.length > 0 || plan.settings) {
+          // Peer image sizes, keyed "<peer dir>|<id>" — lets the download phase
+          // reuse identical local bytes instead of re-fetching the whole library
+          // after a mass metadata-only re-stamp.
+          const imageSizeByKey = {};
+          for (const p of peers) {
+            const sizes = p.imageSizes || {};
+            for (const iid of Object.keys(sizes)) imageSizeByKey[p.dir + "|" + iid] = sizes[iid];
+          }
           const r = await applyMergeToLocal(plan, accessToken, (done, total) => {
             if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
-          });
+          }, imageSizeByKey);
           changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
           imagesFailed = r.imagesFailed | 0; applyFailures = r.applyFailures | 0;
           console.log("sync: runSyncCycle — merge applied");

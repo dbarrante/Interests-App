@@ -434,7 +434,25 @@ async function readFullPeerSnapshot(accessToken, deviceId) {
   const savedMatch = (snap.saved || []).length === (meta.counts?.saved | 0);
   if (!cardsMatch || !savedMatch) return null; // mid-write on the writer's side — skip this cycle
 
-  const imageIds = await listDeviceImageIds(accessToken, deviceId);
+  // One listing, ids AND sizes: sizes let the merge's image-copy phase skip
+  // downloading bytes it already holds (see applyMergeToLocal). Same error
+  // semantics listDeviceImageIds had: path/not_found = "no images yet".
+  const imageIds = [];
+  const imageSizes = {};
+  try {
+    const entries = await dbxListFolder(accessToken, `${base}/images`);
+    for (const e of entries) {
+      if (e[".tag"] !== "file") continue;
+      const id = e.name.replace(/\.jpg$/i, "");
+      imageIds.push(id);
+      if (typeof e.size === "number") imageSizes[id] = e.size;
+    }
+  } catch (e) {
+    if (e && e.code === "AUTH_EXPIRED") throw e; // a dead token must propagate, not be absorbed as "no images"
+    if (!/path\/not_found/.test(e.message)) {
+      console.error("readFullPeerSnapshot: unexpected error listing images for", deviceId, "-", e.message);
+    }
+  }
 
   return {
     deviceId,
@@ -447,6 +465,7 @@ async function readFullPeerSnapshot(accessToken, deviceId) {
     tombstones: snap.tombstones || [],
     settings: snap.settings || null,
     imageIds,
+    imageSizes,
   };
 }
 
