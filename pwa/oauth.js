@@ -276,7 +276,12 @@ async function fetchWithRetry(url, options) {
     const retryAfterSecs = retryAfterHeader ? Number(retryAfterHeader) : null;
     // +/-20% jitter so, once the shared pause lifts, four workers resuming at
     // the exact same instant don't just re-synchronize and trip 429 together again.
-    const base = (retryAfterSecs && isFinite(retryAfterSecs)) ? retryAfterSecs * 1000 : Math.min(1000 * 2 ** attempt, 30000);
+    // Retry-After is CAPPED at 60s: Dropbox can send multi-minute values, and 8
+    // uncapped waits parked every worker silently for tens of minutes — no
+    // progress toasts (nothing completes), no watchdog (a sleep isn't a fetch) —
+    // indistinguishable from a hang (live iPad complaint 2026-07-16). Better to
+    // retry sooner and burn an attempt than to look dead.
+    const base = (retryAfterSecs && isFinite(retryAfterSecs)) ? Math.min(retryAfterSecs * 1000, 60000) : Math.min(1000 * 2 ** attempt, 30000);
     const waitMs = Math.round(base * (0.8 + Math.random() * 0.4));
     rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + waitMs);
     console.warn(`dropbox: ${res.status} — pausing all requests for ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
