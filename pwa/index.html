@@ -1521,7 +1521,11 @@ async function autoSync(trigger){
     let st = null; try{ st = await Store.syncStatus(); }catch(e){ return null; }
     if(!st || !st.enabled || !st.connected) return null;
     _lastAutoSyncAt = Date.now();
-    return Store.syncNow();
+    // Progress toasts for BIG phases only (50+ items): a boot-time catch-up
+    // sync used to run completely invisibly — "not seeing any toast" while
+    // thousands of images moved (live complaint 2026-07-16). Routine no-change
+    // ticks never hit a 50-item phase, so the every-15-min syncs stay silent.
+    return Store.syncNow(p=>{ if(p && p.total >= 50){ toast("Sync: "+p.phase+" "+p.done+"/"+p.total, 4000); } });
   })();
   acquireSyncWakeLock();
   let r = null;
