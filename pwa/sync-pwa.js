@@ -301,6 +301,52 @@
     return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed, applyFailures: applyFailures };
   }
 
+  // ---- on-demand images (spec 2026-07-17) ----
+  // Sync no longer downloads images; the renderer fetches each image on first
+  // view via ensureImage(). _pwa_image_sources maps every image id to a peer
+  // folder + size, refreshed each cycle from the listings readFullPeerSnapshot
+  // already makes. Missing entry ⇒ renderer placeholder (doubt bias).
+  const _IMG_FETCH_LIMIT = 4;
+  let _imgFetchActive = 0;
+  const _imgFetchQueue = [];
+  const _imgInFlight = {}; // id -> Promise<boolean>: coalesce duplicate requests
+
+  function _imgSlot() {
+    if (_imgFetchActive < _IMG_FETCH_LIMIT) { _imgFetchActive++; return Promise.resolve(); }
+    return new Promise((r) => _imgFetchQueue.push(r));
+  }
+  function _imgRelease() {
+    const next = _imgFetchQueue.shift();
+    if (next) next(); else _imgFetchActive--;
+  }
+
+  async function ensureImage(id) {
+    if (!safeImgId(id)) return false;
+    if (_imgInFlight[id]) return _imgInFlight[id];
+    const p = (async () => {
+      try {
+        const row = await idb.get("images", id);
+        if (row && row.blob) return true;
+        const sources = (await idb.kvGet("_pwa_image_sources")) || {};
+        const srcInfo = sources[id];
+        if (!srcInfo || !srcInfo.dir) return false;
+        await _imgSlot();
+        try {
+          const bytes = await Dbx.dbxDownloadBinary(null, `${srcInfo.dir}/images/${id}.jpg`);
+          await idb.put("images", { id, blob: new Blob([bytes]), type: sniffImageType(bytes) });
+          return true;
+        } finally {
+          _imgRelease();
+        }
+      } catch (e) {
+        return false; // 404/offline/auth — placeholder now, retried on a later view
+      }
+    })();
+    _imgInFlight[id] = p;
+    p.finally(() => { delete _imgInFlight[id]; });
+    return p;
+  }
+
   async function publishSnapshot(accessToken, deviceId, deviceLabel, onProgress, mergeChanged) {
     console.log("sync: publishSnapshot — starting for device", deviceId);
     const [cardRows, savedRows, tombRows] = await Promise.all([idb.getAll("cards"), idb.getAll("saved"), idb.getAll("tombstones")]);
@@ -468,6 +514,25 @@
         }
       }
 
+      // Refresh the on-demand image source map: each read peer's entries fully
+      // replace its own prior entries; skipped peers' stored entries stay valid
+      // (their folders provably didn't change). kv errors ⇒ keep the old map.
+      if (peers.length) {
+        try {
+          const sources = (await idb.kvGet("_pwa_image_sources")) || {};
+          for (const p of peers) {
+            for (const iid of Object.keys(sources)) {
+              if (sources[iid] && sources[iid].dir === p.dir) delete sources[iid];
+            }
+            const sizes = p.imageSizes || {};
+            for (const iid of (p.imageIds || [])) {
+              if (safeImgId(iid)) sources[iid] = { dir: p.dir, size: sizes[iid] };
+            }
+          }
+          await idb.kvSet("_pwa_image_sources", sources);
+        } catch (e) { console.warn("sync: image source map refresh failed:", e && e.message); }
+      }
+
       let publishResult = null;
       try {
         if (opts.publish !== false) {
@@ -509,5 +574,5 @@
     }
   }
 
-  window.IASync = { ensureDeviceIdentity, setDeviceLabel, runSyncCycle };
+  window.IASync = { ensureDeviceIdentity, setDeviceLabel, runSyncCycle, ensureImage };
 })();

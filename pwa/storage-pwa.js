@@ -104,6 +104,9 @@
     },
     imgDel(id) { return idb.delete("images", id).then(() => {}); },
     imgHas(id) { return idb.get("images", id).then((row) => !!row); },
+    // On-demand image fetch (spec 2026-07-17): resolves true when the image is
+    // in idb (already or after fetching from a peer's Dropbox folder).
+    ensureImage(id) { return window.IASync && window.IASync.ensureImage ? window.IASync.ensureImage(id) : Promise.resolve(false); },
 
     // --- fingerprints ---
     fpGet(id) { return idb.get("fp", id).then((row) => (row ? row.fp : null)); },

@@ -114,6 +114,9 @@
       imgHas: function (id) {
         return root.fetch(SE.imgUrl(id), { method: "GET" }).then(function (r) { return r.ok; }).catch(function () { return false; });
       },
+      // Desktop images are service-backed and always present locally — the
+      // shared renderer calls ensureImage unconditionally (spec 2026-07-17).
+      ensureImage: function () { return Promise.resolve(true); },
 
       // --- fingerprints (placeholder detection; no image bytes) ---
       fpGet: function (id) { return jget(SE.fp()).then(function (j) { return ((j && j.fp) || {})[id] || null; }); },
