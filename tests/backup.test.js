@@ -3,6 +3,14 @@ const assert = require("assert");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+
+// ISOLATE the config in a temp APPDATA *before* requiring core/backup (which
+// loads core/config) — withBackupDir() mutates config.backupDir, and a killed
+// run used to leave the REAL production backups pointed at a temp dir (root
+// cause of "backups silently stopped 2026-07-14"). Same pattern as
+// backup-dropbox-path.
+process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), "ia-ad-"));
+
 const backup = require("../core/backup.js");
 
 let pass = 0, fail = 0;

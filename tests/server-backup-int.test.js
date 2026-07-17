@@ -5,6 +5,12 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
+// ISOLATE the config in a temp APPDATA *before* requiring anything that loads
+// core/config — this test moves the store via the API, and a killed run used
+// to leave the REAL production pointer aimed at a temp dir (root cause of the
+// 2026-07-16 data-loss event). Same pattern as backup-dropbox-path.
+process.env.APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), "ia-ad-"));
+
 const { createServer } = require("../core/server.js");
 const { openDb, upsertCard, counts } = require("../core/db.js");
 const images = require("../core/images.js");

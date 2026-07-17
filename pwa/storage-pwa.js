@@ -61,6 +61,14 @@
     return row;
   }
 
+  // Content signature EXCLUDING updatedAt — mirrors core/db.js's cardSig intent.
+  // Stable stringify (pwa/merge.js's _iaStable, resolved lazily at call time)
+  // so key order can never fake a content change.
+  function contentSig(row) {
+    const c = Object.assign({}, row); delete c.updatedAt;
+    return (window._iaStable || JSON.stringify)(c);
+  }
+
   // Mirrors the desktop's mass-delete guard (see storage.js's `asOf`/`confirm`
   // comment): refuses a full-array PUT that looks like it would wipe more than
   // half the existing store, unless the caller explicitly confirms.
@@ -73,7 +81,21 @@
           `Refusing to replace ${storeName}: ${existing.length} -> ${incoming.length} looks like a mass delete. Pass {confirm:true} if intentional.`
         ));
       }
-      return idb.clear(storeName).then(() => idb.putMany(storeName, incoming.map(nowStamp)));
+      // Preserve updatedAt for content-identical rows — stamping unconditionally
+      // let a freshly-synced device re-stamp its ENTIRE library newest and
+      // steamroll the whole fleet via LWW (ROOT CAUSE of the 2026-07-16 event:
+      // ~6,600 phantom re-stamps originated from one PWA full-array persist).
+      // Mirrors core/db.js upsertCard's sig-compare stamping.
+      const prior = {};
+      existing.forEach((r) => { if (r && r.id != null) prior[r.id] = r; });
+      const stamped = incoming.map((row) => {
+        const p = prior[row.id];
+        if (p && p.updatedAt != null && contentSig(p) === contentSig(row)) {
+          const keep = Object.assign({}, row); keep.updatedAt = p.updatedAt; return keep;
+        }
+        return nowStamp(Object.assign({}, row));
+      });
+      return idb.clear(storeName).then(() => idb.putMany(storeName, stamped));
     });
   }
 

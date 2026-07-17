@@ -8,8 +8,19 @@ const { spawnSync } = require("child_process");
 const testsDir = __dirname;
 const node = process.execPath;
 
+// BLANKET ISOLATION: every child gets a throwaway APPDATA, so no test — present
+// or future — can touch the REAL %APPDATA%\Interests App\config.json. A test
+// run killed mid-flight used to leave the production store/backup pointers
+// aimed at temp dirs, which hijacked the installed app's store on
+// 2026-07-14..16 (root cause of the 07-16 data-loss event). The three known
+// config-writing tests also isolate themselves individually (defense in depth
+// for direct `node tests/<file>` runs).
+const os = require("os");
+const isolatedAppData = fs.mkdtempSync(path.join(os.tmpdir(), "ia-run-ad-"));
+const childEnv = Object.assign({}, process.env, { APPDATA: isolatedAppData });
+
 function run(file) {
-  const r = spawnSync(node, [path.join(testsDir, file)], { stdio: "inherit" });
+  const r = spawnSync(node, [path.join(testsDir, file)], { stdio: "inherit", env: childEnv });
   return r.status === 0;
 }
 
