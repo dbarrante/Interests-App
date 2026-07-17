@@ -43,7 +43,10 @@ t("readPeers propagates an AUTH_EXPIRED error from dbxListFolder instead of swal
 
 t("readPeers still soft-returns empty peers for the benign path/not_found case", () => {
   assert.ok(/path\\\/not_found/.test(body), "must check for Dropbox's path/not_found error");
-  assert.ok(/return \{ ?peers: \[\], ?skewSkipped: 0, ?partialFailures: \[\] ?\}/.test(body.replace(/\s+/g, " ")),
+  // Gained peersSkipped: 0 alongside the pre-existing fields — see
+  // docs/superpowers/specs/2026-07-16-sync-skip-optimization-design.md ("readPeers
+  // returns extra peersSkipped").
+  assert.ok(/return \{ ?peers: \[\], ?skewSkipped: 0, ?partialFailures: \[\], ?peersSkipped: 0 ?\}/.test(body.replace(/\s+/g, " ")),
     "must return an empty-but-valid result for path/not_found");
 });
 
@@ -62,7 +65,9 @@ t("a per-peer AUTH_EXPIRED also aborts the whole cycle (not just that one peer)"
 
 t("a per-peer non-auth failure is recorded in partialFailures and the loop continues", () => {
   assert.ok(/partialFailures\.push\(\{\s*deviceId,\s*reason:/.test(body), "must push {deviceId, reason} on a per-peer failure");
-  assert.ok(/return \{ ?peers, ?skewSkipped, ?partialFailures ?\}/.test(body.replace(/\s+/g, " ")),
+  // Gained peersSkipped alongside partialFailures — see
+  // docs/superpowers/specs/2026-07-16-sync-skip-optimization-design.md.
+  assert.ok(/return \{ ?peers, ?skewSkipped, ?partialFailures, ?peersSkipped ?\}/.test(body.replace(/\s+/g, " ")),
     "the final return must include partialFailures");
 });
 

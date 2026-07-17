@@ -96,7 +96,7 @@
       // propagates so the caller actually finds out.
       if (/path\/not_found/.test(e && e.message)) {
         console.log("sync: readPeers — no sync root yet (nobody has ever synced):", e.message);
-        return { peers: [], skewSkipped: 0, partialFailures: [] };
+        return { peers: [], skewSkipped: 0, partialFailures: [], peersSkipped: 0 };
       }
       throw e;
     }
@@ -105,10 +105,30 @@
 
     const now = Date.now();
     let skewSkipped = 0;
+    let peersSkipped = 0;
     const peers = [];
     const partialFailures = [];
     for (const deviceId of deviceIds) {
       console.log("sync: readPeers — reading peer", deviceId);
+
+      // Peer-skip: meta.json is tiny and written LAST (the torn-write completion
+      // marker) — an unchanged publishedAt proves the folder is unchanged, so the
+      // multi-MB snapshot download and the peer's images listing are skipped.
+      // Watermarks only advance after a CLEAN cycle (see runSyncCycle), so any
+      // deferral re-reads the peer next cycle. kv errors ⇒ treat as never-seen.
+      let seen = null;
+      try { seen = await idb.kvGet("_pwa_peer_seen_" + deviceId); } catch (e) { seen = null; }
+      if (seen != null) {
+        let meta = null;
+        try {
+          meta = JSON.parse(await Dbx.dbxDownload(accessToken, `${SYNC_ROOT}/${deviceId}/meta.json`));
+        } catch (e) {
+          if (e && e.code === "AUTH_EXPIRED") throw e; // dead token kills the cycle here too
+          meta = null; // unreadable meta ⇒ fall through to the full read (which has its own handling)
+        }
+        if (meta && Number(meta.publishedAt) === Number(seen)) { peersSkipped++; continue; }
+      }
+
       let snap;
       try {
         snap = await Dbx.readFullPeerSnapshot(accessToken, deviceId);
@@ -127,8 +147,8 @@
       }
       peers.push(snap);
     }
-    console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped + " partialFailures=" + partialFailures.length);
-    return { peers, skewSkipped, partialFailures };
+    console.log("sync: readPeers — done, peers=" + peers.length + " skewSkipped=" + skewSkipped + " partialFailures=" + partialFailures.length + " peersSkipped=" + peersSkipped);
+    return { peers, skewSkipped, partialFailures, peersSkipped };
   }
 
   // Batches the actual IndexedDB writes into one transaction per store instead of
@@ -253,10 +273,10 @@
     }
 
     const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
-    return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied };
+    return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed };
   }
 
-  async function publishSnapshot(accessToken, deviceId, deviceLabel, onProgress) {
+  async function publishSnapshot(accessToken, deviceId, deviceLabel, onProgress, mergeChanged) {
     console.log("sync: publishSnapshot — starting for device", deviceId);
     const [cardRows, savedRows, tombRows] = await Promise.all([idb.getAll("cards"), idb.getAll("saved"), idb.getAll("tombstones")]);
     const settingsRaw = await idb.kvGet("ia_settings");
@@ -264,6 +284,24 @@
     console.log("sync: publishSnapshot — local read done. cards=" + cardRows.length + " saved=" + savedRows.length);
 
     const counts = { cards: cardRows.length, saved: savedRows.length };
+
+    // Publish-skip: identical content already published cleanly ⇒ zero network.
+    // Gate on mergeChanged too (belt and braces — an applied merge always moves
+    // the signature). kv errors ⇒ publish fully (doubt bias).
+    const agg = {
+      cards: cardRows.length, saved: savedRows.length, tombstones: tombRows.length,
+      maxCardUpdatedAt: cardRows.reduce((m, r) => Math.max(m, Number(r.updatedAt) || 0), 0),
+      maxSavedUpdatedAt: savedRows.reduce((m, r) => Math.max(m, Number(r.updatedAt) || 0), 0),
+      maxTombDeletedAt: tombRows.reduce((m, r) => Math.max(m, Number(r.deletedAt) || 0), 0),
+      settingsUpdatedAt: Number(settingsUpdatedAt) || 0,
+    };
+    const sig = contentSignature(agg); // pwa/merge.js — global, like mergeSnapshots
+    let lastSig = null, lastClean = false;
+    try { lastSig = await idb.kvGet("_pwa_last_publish_sig"); lastClean = (await idb.kvGet("_pwa_last_publish_clean")) === true; } catch (e) {}
+    if (!mergeChanged && sig === lastSig && lastClean) {
+      console.log("sync: publishSnapshot — content unchanged since last clean publish, skipping");
+      return { skipped: true };
+    }
 
     // 1) images first, incrementally — diff local idb: image ids against what's
     //    already in this device's own Dropbox images/ folder (mirrors core/sync.js's
@@ -273,11 +311,15 @@
         .filter((v) => typeof v === "string" && v.indexOf("idb:") === 0)
         .map((v) => v.slice(4))
     );
-    console.log("sync: publishSnapshot — listing existing remote images for", deviceId);
-    const alreadyPublished = new Set(await Dbx.listDeviceImageIds(accessToken, deviceId));
+    console.log("sync: publishSnapshot — resolving existing remote images for", deviceId);
+    let cachedIds = null;
+    try { cachedIds = await idb.kvGet("_pwa_published_imgids"); } catch (e) { cachedIds = null; }
+    const alreadyPublished = Array.isArray(cachedIds)
+      ? new Set(cachedIds)
+      : new Set(await Dbx.listDeviceImageIds(accessToken, deviceId)); // seed once (or after any cache error)
     console.log("sync: publishSnapshot — image diff: local=" + localImageIds.size + " alreadyRemote=" + alreadyPublished.size);
     const toUpload = [...localImageIds].filter((id) => !alreadyPublished.has(id));
-    let uploadedCount = 0, uploadIndex = 0;
+    let uploadedCount = 0, uploadIndex = 0, uploadFailures = 0;
     async function uploadWorker() {
       while (uploadIndex < toUpload.length) {
         const id = toUpload[uploadIndex++];
@@ -286,7 +328,9 @@
         try {
           const bytes = await row.blob.arrayBuffer();
           await Dbx.dbxUpload(accessToken, `${SYNC_ROOT}/${deviceId}/images/${id}.jpg`, bytes);
+          alreadyPublished.add(id);
         } catch (e) {
+          uploadFailures++;
           console.error("sync: image upload failed for", id, e.message);
         }
         uploadedCount++;
@@ -297,7 +341,12 @@
       await Promise.all(Array.from({ length: Math.min(IMAGE_DOWNLOAD_CONCURRENCY, toUpload.length) }, uploadWorker));
       if (onProgress) onProgress(toUpload.length, toUpload.length);
     }
-    console.log("sync: publishSnapshot — images done (" + toUpload.length + " uploaded), uploading snapshot.json");
+    console.log("sync: publishSnapshot — images done (" + toUpload.length + " uploaded, " + uploadFailures + " failed), uploading snapshot.json");
+
+    // Persist the cache after the wave: successful ids stick even if the cycle
+    // fails later. A stale/missing entry only ever costs one redundant upload
+    // (Dropbox overwrite mode is idempotent) — never a missing file.
+    try { await idb.kvSet("_pwa_published_imgids", [...alreadyPublished]); } catch (e) {}
 
     // 2) snapshot.json
     const publishedAt = Date.now();
@@ -317,7 +366,11 @@
     }));
     console.log("sync: publishSnapshot — meta.json uploaded, done");
 
-    return { publishedAt, counts };
+    try {
+      await idb.kvSet("_pwa_last_publish_sig", sig);
+      await idb.kvSet("_pwa_last_publish_clean", uploadFailures === 0);
+    } catch (e) {}
+    return { publishedAt, counts, uploadFailures };
   }
 
   function classifySyncError(e) {
@@ -336,15 +389,15 @@
       ({ deviceId, deviceLabel } = await ensureDeviceIdentity());
       console.log("sync: runSyncCycle — device identity ready:", deviceId, deviceLabel);
 
-      let peers, skewSkipped, partialFailures;
+      let peers, skewSkipped, partialFailures, peersSkipped = 0;
       try {
-        ({ peers, skewSkipped, partialFailures } = await readPeers(accessToken, deviceId));
+        ({ peers, skewSkipped, partialFailures, peersSkipped } = await readPeers(accessToken, deviceId));
       } catch (e) {
         console.error("sync: runSyncCycle — aborting, peer read failed:", e && e.message);
         return Object.assign({ ok: false, deviceId, deviceLabel }, classifySyncError(e));
       }
 
-      let changed = false, conflicts = 0, upserts = 0, deletes = 0;
+      let changed = false, conflicts = 0, upserts = 0, deletes = 0, imagesFailed = 0;
       if (peers.length) {
         console.log("sync: runSyncCycle — building local snapshot for merge");
         const local = await buildLocal();
@@ -356,7 +409,18 @@
             if (opts.onProgress) opts.onProgress({ phase: "downloading images", done, total });
           });
           changed = r.changed; conflicts = plan.conflicts; upserts = r.upserts; deletes = r.deletes;
+          imagesFailed = r.imagesFailed | 0;
           console.log("sync: runSyncCycle — merge applied");
+        }
+      }
+
+      // Advance peer watermarks ONLY after a clean cycle (no deferred images,
+      // no per-peer read failures) — a dirty cycle must re-read its peers.
+      if (imagesFailed === 0 && partialFailures.length === 0) {
+        for (const p of peers) {
+          if (p.publishedAt != null && isFinite(p.publishedAt)) {
+            try { await idb.kvSet("_pwa_peer_seen_" + p.deviceId, Number(p.publishedAt)); } catch (e) {}
+          }
         }
       }
 
@@ -365,7 +429,7 @@
         if (opts.publish !== false) {
           publishResult = await publishSnapshot(accessToken, deviceId, deviceLabel, (done, total) => {
             if (opts.onProgress) opts.onProgress({ phase: "publishing images", done, total });
-          });
+          }, changed);
         }
       } catch (e) {
         console.error("sync: runSyncCycle — publish failed:", e && e.message);
@@ -380,7 +444,8 @@
         ok: true,
         deviceId, deviceLabel, changed, conflicts, upserts, deletes,
         peersRead: peers.length, skewSkipped, partialFailures,
-        published: !!publishResult, publishedAt: publishResult && publishResult.publishedAt,
+        peersSkipped: peersSkipped | 0, publishSkipped: !!(publishResult && publishResult.skipped),
+        published: !!(publishResult && publishResult.publishedAt), publishedAt: publishResult && publishResult.publishedAt,
       };
     } catch (e) {
       // Safety net for anything NOT already handled above — ensureDeviceIdentity,
