@@ -5,7 +5,7 @@ const db = require("./db");
 const images = require("./images");
 const backup = require("./backup");
 const config = require("./config");
-const { mergeSnapshots } = require("./merge");
+const { mergeSnapshots, contentSignature } = require("./merge");
 
 function defaultSyncDir() {
   const root = backup.detectDropboxRoot();
@@ -46,9 +46,10 @@ function publishSnapshot(ctx, syncDir, deviceId, deviceLabel) {
   const counts = { cards: c.cards | 0, saved: c.saved | 0, images: images.imageCount(ctx.storeDir) | 0 };
 
   // 1) images first (incremental — only new/changed vs our own folder)
+  let imageFailures = 0;
   const srcImages = images.imagesDir(ctx.storeDir);
   for (const id of backup.changedImageIds(ctx.storeDir, destImages)) {
-    try { fs.copyFileSync(path.join(srcImages, id + ".jpg"), path.join(destImages, id + ".jpg")); } catch (e) {}
+    try { fs.copyFileSync(path.join(srcImages, id + ".jpg"), path.join(destImages, id + ".jpg")); } catch (e) { imageFailures++; }
   }
 
   // 2) snapshot.json (atomic)
@@ -80,7 +81,7 @@ function publishSnapshot(ctx, syncDir, deviceId, deviceLabel) {
     counts: counts,
   }));
 
-  return { name: deviceId, counts: counts };
+  return { name: deviceId, counts: counts, imageFailures: imageFailures };
 }
 
 // Read a peer/own snapshot folder.
@@ -125,14 +126,28 @@ const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
 // gate only; we do NOT clamp individual item timestamps (too invasive for Phase 4).
 // A MISSING publishedAt is treated as TRUSTED (not skipped): older snapshots
 // predate the field, and absence is not evidence of a bad clock.
-function readPeerSnapshots(syncDir, selfDeviceId) {
-  var skewSkipped = 0;
+function readPeerSnapshots(syncDir, selfDeviceId, seenByDevice) {
+  seenByDevice = seenByDevice || {};
+  var skewSkipped = 0, peersSkipped = 0;
   var now = Date.now();
-  var peers = peerDirs(syncDir, selfDeviceId)
+  var peers = [];
+  peerDirs(syncDir, selfDeviceId).forEach(function (p) {
+    // Peer-skip: meta.json is tiny and written LAST (the torn-write completion
+    // marker), so an unchanged publishedAt proves the whole folder is unchanged
+    // — the multi-MB snapshot read/parse is skipped. Watermarks only advance
+    // after a CLEAN merge (see runSync), so deferrals always re-read next cycle.
+    var seen = seenByDevice[p.deviceId];
+    if (seen != null) {
+      var meta = null;
+      try { meta = JSON.parse(fs.readFileSync(path.join(p.dir, "meta.json"), "utf8")); } catch (e) { meta = null; }
+      if (meta && Number(meta.publishedAt) === Number(seen)) { peersSkipped++; return; }
+    }
     // Thread the REAL on-disk folder path (p.dir) — NOT the snapshot's
     // self-asserted deviceId — so mergeSnapshots/applyMerge copy images from the
     // trustworthy folder we actually read, never a JSON-controlled redirection.
-    .map(function (p) { var s = readSnapshot(p.dir); return s ? Object.assign({}, s, { dir: p.dir }) : null; })
+    var s = readSnapshot(p.dir);
+    if (!s) return;
+    s = Object.assign({}, s, { dir: p.dir });
     // FORWARD-COMPAT CONTRACT (schemaVersion gate): a peer at or below our
     // SCHEMA_VERSION is mergeable. Additive fields at the SAME version are always
     // safe — merge reads only the keys it knows and ignores the rest (e.g. an old
@@ -140,19 +155,17 @@ function readPeerSnapshots(syncDir, selfDeviceId) {
     // bump SCHEMA_VERSION and ship app-first: every peer must be running the new
     // app before any peer publishes the new version, so older peers cleanly skip
     // (schemaVersion > ours) rather than mis-merging.
-    .filter(function (s) { return s && (s.schemaVersion | 0) <= db.SCHEMA_VERSION; })
-    .filter(function (s) {
-      // Absent publishedAt (older snapshots) => trusted, keep.
-      if (s.publishedAt == null || !isFinite(s.publishedAt)) return true;
-      if (Number(s.publishedAt) - now > MAX_FUTURE_SKEW_MS) {
-        skewSkipped++;
-        console.error("sync: skipping future-skewed peer snapshot (clock skew) deviceId=" +
-          s.deviceId + " dir=" + s.dir + " publishedAt=" + s.publishedAt + " now=" + now);
-        return false;
-      }
-      return true;
-    });
-  return { peers: peers, skewSkipped: skewSkipped };
+    if ((s.schemaVersion | 0) > db.SCHEMA_VERSION) return;
+    // Absent publishedAt (older snapshots) => trusted, keep.
+    if (s.publishedAt != null && isFinite(s.publishedAt) && Number(s.publishedAt) - now > MAX_FUTURE_SKEW_MS) {
+      skewSkipped++;
+      console.error("sync: skipping future-skewed peer snapshot (clock skew) deviceId=" +
+        s.deviceId + " dir=" + s.dir + " publishedAt=" + s.publishedAt + " now=" + now);
+      return;
+    }
+    peers.push(s);
+  });
+  return { peers: peers, skewSkipped: skewSkipped, peersSkipped: peersSkipped };
 }
 
 function buildLocal(ctx) {
@@ -169,7 +182,7 @@ function applyMerge(ctx, plan) {
   const copyById = {};
   for (const ic of plan.imageCopies) copyById[ic.id] = ic;
 
-  let upsertsApplied = 0, imageCopiesDone = 0;
+  let upsertsApplied = 0, imageCopiesDone = 0, deferred = 0;
   for (const u of plan.upserts) {
     // The id comes from a peer's (corrupt/hostile) snapshot.json and is used to
     // build fs/db paths. Validate it FIRST: an unsafe id is skipped (not written,
@@ -194,7 +207,7 @@ function applyMerge(ctx, plan) {
             console.error("sync: image copy failed for " + id + ":", e && e.message);
           }
         }
-        if (!images.hasImg(ctx.storeDir, id)) continue;   // DEFER: image not available locally yet
+        if (!images.hasImg(ctx.storeDir, id)) { deferred++; continue; }   // DEFER: image not available locally yet
       }
       if (u.kind === "card") db.upsertCardSynced(ctx.db, u.item, u.updatedAt);
       else db.upsertSavedSynced(ctx.db, u.item, u.updatedAt);
@@ -219,7 +232,7 @@ function applyMerge(ctx, plan) {
     catch (e) { console.error("sync: applying synced settings failed:", e && e.message); }
   }
   const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
-  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied };
+  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, deferred: deferred };
 }
 
 // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
@@ -228,9 +241,19 @@ function runSync(ctx, opts) {
   const syncDir = opts.syncDir;
   const backupFn = opts.backupFn || function () { backup.runBackup(ctx.db, ctx.storeDir); };
   let changed = false, conflicts = 0;
-  const rp = readPeerSnapshots(syncDir, opts.deviceId);
+  // Peer watermarks: last fully-merged publishedAt per peer (kv). Unreadable ⇒
+  // absent ⇒ full read (safety bias: when in doubt, don't skip).
+  const seenByDevice = {};
+  try {
+    peerDirs(syncDir, opts.deviceId).forEach(function (p) {
+      const v = db.getKV(ctx.db, "ia_peer_seen_" + p.deviceId);
+      if (v != null && v !== "") seenByDevice[p.deviceId] = Number(v);
+    });
+  } catch (e) {}
+  const rp = readPeerSnapshots(syncDir, opts.deviceId, seenByDevice);
   const peers = rp.peers;
   const skewSkipped = rp.skewSkipped;
+  let mergeClean = true;
   if (peers.length) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
@@ -239,16 +262,42 @@ function runSync(ctx, opts) {
       if (backedUp) {
         const r = applyMerge(ctx, plan);
         changed = r.changed; conflicts = plan.conflicts;
+        mergeClean = (r.deferred | 0) === 0;
+      } else {
+        mergeClean = false;
       }
     }
   }
-  let publishedAt = null;
-  if (opts.publish !== false) {
-    fs.mkdirSync(syncDir, { recursive: true });
-    publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
-    publishedAt = Date.now();
+  // Advance watermarks for the peers actually read this cycle ONLY when the
+  // merge was clean — a deferral must re-read its peer next cycle (the
+  // "self-heals next cycle" contract). Skipped peers keep their watermark.
+  if (mergeClean) {
+    peers.forEach(function (p) {
+      if (p.publishedAt != null && isFinite(p.publishedAt)) {
+        try { db.setKV(ctx.db, "ia_peer_seen_" + p.deviceId, String(p.publishedAt)); } catch (e) {}
+      }
+    });
   }
-  return { changed: changed, conflicts: conflicts, skewSkipped: skewSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
+  let publishedAt = null, publishSkipped = false;
+  if (opts.publish !== false) {
+    let lastSig = null, lastClean = false;
+    try { lastSig = db.getKV(ctx.db, "ia_last_publish_sig"); lastClean = db.getKV(ctx.db, "ia_last_publish_clean") === "1"; } catch (e) {}
+    const sig = contentSignature(db.signatureAggregates(ctx.db));
+    if (sig === lastSig && lastClean && !changed) {
+      publishSkipped = true;   // identical content already published cleanly — zero writes
+    } else {
+      fs.mkdirSync(syncDir, { recursive: true });
+      const pub = publishSnapshot(ctx, syncDir, opts.deviceId, opts.deviceLabel);
+      publishedAt = Date.now();
+      try {
+        // Recompute AFTER the publish so the stored sig matches exactly what
+        // was serialized (the merge above may have been the change).
+        db.setKV(ctx.db, "ia_last_publish_sig", contentSignature(db.signatureAggregates(ctx.db)));
+        db.setKV(ctx.db, "ia_last_publish_clean", (pub.imageFailures | 0) === 0 ? "1" : "0");
+      } catch (e) {}
+    }
+  }
+  return { changed: changed, conflicts: conflicts, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }
 
 module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot, readPeerSnapshots, buildLocal, applyMerge, runSync };
