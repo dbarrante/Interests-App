@@ -3,6 +3,10 @@
 A running list of requested features and deferred items. Each entry has enough context to pick up cold
 (brainstorm → spec → plan → build when started). Newest requests at the top.
 
+## Investigate 2026-07-16 (from live sync debugging)
+
+- [ ] **Root-cause the desktop's mass phantom updatedAt re-stamp.** On 2026-07-16 ~6,600 of 6,673 cards got `updatedAt` bumped with NO content change (only 69 cards genuinely differed — the 7/15 image repairs). Every peer then treated the whole library as newer (full re-merge; before the v27 size-reuse fix, also a full ~5,600-image re-download per device). Suspects: a full-array `Store.putCards` where the `data` JSON's key order/shape changed across the v1.12.21→22 boundary (cardSig compares the raw data string), or a link/content/safety-check wave stamping `lc`/`sb` into every card. Find the trigger and either make cardSig shape-insensitive (stable-stringify) or exclude check-freshness stamps from the content signature. The v27 size-reuse fix caps the blast radius, but phantom stamps still force full snapshot re-merges fleet-wide.
+
 ## Requested 2026-07-14 (Dave)
 
 - [ ] **Clear message when out of AI tokens/credits for Stumble.** When an AI-search Stumble call fails because the configured provider account is out of tokens/credits (not a generic network/API error), show a specific, actionable message — e.g. "Your [provider] account is out of credits — add funds or switch models in Settings" — instead of whatever generic failure text shows today. Needs a brainstorm: how to detect this specifically (provider error codes/messages vary — OpenAI/OpenRouter/Anthropic/Gemini each signal insufficient-balance differently) vs. other failure modes (rate limit, invalid key, network), and where the message surfaces (toast vs. inline in the Stumble empty state).
