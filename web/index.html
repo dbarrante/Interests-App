@@ -1439,6 +1439,20 @@ async function chooseSyncFolder(){
 let _syncInFlight = null;   // Promise while a cycle runs — no overlapping cycles
 let _lastAutoSyncAt = 0;
 let _authToastShown = false;
+// Hold a screen wake lock while a sync cycle runs (iOS 16.4+): auto-lock used
+// to freeze the PWA mid-catch-up (iOS suspends all JS on lock), stranding
+// multi-minute image syncs. Best-effort — unsupported browsers just skip it.
+// The OS releases the lock itself whenever the page hides; the visibilitychange
+// re-acquire below picks it back up if a sync is still running when we return.
+let _wakeLock = null;
+async function acquireSyncWakeLock(){
+  try{ if(!_wakeLock && navigator.wakeLock){ _wakeLock = await navigator.wakeLock.request("screen"); } }catch(e){ _wakeLock = null; }
+}
+function releaseSyncWakeLock(){
+  try{ if(_wakeLock){ _wakeLock.release(); } }catch(e){}
+  _wakeLock = null;
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && _syncInFlight) acquireSyncWakeLock(); });
 // After a sync cycle changed the store underneath the page, the in-memory
 // globals (S / imported / saved) are STALE — and every persist path is a blind
 // overwrite (save(), putSaved's clear+putMany), so acting on stale state would
@@ -1462,6 +1476,7 @@ async function syncNowClick(){
     // multi-thousand-image catch-up shows movement instead of a silent minutes-long
     // "Syncing…" (indistinguishable from a hang — live complaint 2026-07-16).
     _syncInFlight = Store.syncNow(p=>{ if(p && p.total){ toast("Sync: "+p.phase+" "+p.done+"/"+p.total, 4000); } });
+    acquireSyncWakeLock();
     const r = await _syncInFlight;
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
     if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
@@ -1477,6 +1492,7 @@ async function syncNowClick(){
   }
   finally{
     _syncInFlight = null;
+    releaseSyncWakeLock();
   }
 }
 

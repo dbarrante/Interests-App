@@ -52,6 +52,20 @@ t("every changed-sync path re-hydrates in-memory state BEFORE the user can act o
   assert.ok(/await rehydrateAfterSync\(\)/.test(poll), "pollSyncChanged must rehydrate when the service's timer merge changed the store");
 });
 
+t("wake lock held during sync cycles: acquired on start, released in finally, re-acquired on return", () => {
+  assert.ok(/async function acquireSyncWakeLock\(/.test(src), "acquireSyncWakeLock must exist");
+  assert.ok(/navigator\.wakeLock\.request\("screen"\)/.test(src), "must request a screen wake lock");
+  assert.ok(/function releaseSyncWakeLock\(/.test(src), "releaseSyncWakeLock must exist");
+  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 1900);
+  assert.ok(/acquireSyncWakeLock\(\);/.test(manual), "manual sync must acquire the lock");
+  assert.ok(/finally\{[\s\S]{0,120}releaseSyncWakeLock\(\)/.test(manual), "manual sync must release in finally");
+  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 2400);
+  assert.ok(/acquireSyncWakeLock\(\);/.test(auto), "auto sync must acquire the lock");
+  assert.ok(/finally\{ _syncInFlight = null; releaseSyncWakeLock\(\); \}/.test(auto), "auto sync must release in finally");
+  assert.ok(/visibilitychange[\s\S]{0,120}_syncInFlight\) acquireSyncWakeLock\(\)/.test(src),
+    "must re-acquire on returning to the page mid-sync (the OS drops the lock whenever the page hides)");
+});
+
 t("rehydrateAfterSync is byte-identical between web/index.html and pwa/index.html", () => {
   const webSrc = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
   function grabFn(source) {
