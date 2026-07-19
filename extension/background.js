@@ -296,6 +296,33 @@ async function durableImage(url) {
   return data || url;
 }
 
+// Auto-import delivery variant (live-tuning 2026-07-19): the core's
+// /api/auto-import endpoint enforces a 1MB BODY cap (security review F2) and
+// a 256KB per-image field cap — but a full-res Instagram tile converts to a
+// ~500KB+ data: URL, so one 10-item batch blows the cap and the whole
+// delivery 413s (silently — the status record never updates). Downscale to a
+// grid-sized JPEG thumbnail instead; the app's capture-enrichment backfills a
+// full image later if the card ever needs one. Same isExpiringCdnImage gate
+// as durableImage — this is ONLY ever called for genuine signed-CDN URLs
+// (security review F1: never credential-fetch arbitrary scraped image URLs).
+const AUTOIMPORT_THUMB_MAX = 640;   // px, longest edge — grid-card sized
+async function durableThumb(url) {
+  const full = await fetchAsDataUrl(url);   // credentialed fetch, 6s timeout, image/* + 4MB guard
+  if (!full) return "";
+  try {
+    const blob = await (await fetch(full)).blob();   // data: URL -> Blob, no network
+    const bmp = await createImageBitmap(blob);
+    const scale = Math.min(1, AUTOIMPORT_THUMB_MAX / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && blob.type === "image/jpeg") { bmp.close(); return full; }   // already small
+    const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+    const cv = new OffscreenCanvas(w, h);
+    cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    bmp.close();
+    const out = await cv.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+    return (await blobToDataUrl(out)) || full;
+  } catch (e) { return full; }   // canvas/bitmap hiccup: better a big image than none
+}
+
 // Fetch a Facebook permalink's RAW server HTML and pull out the og:image URL.
 // The rendered SPA leaves og:image out of the live DOM (so the in-page engine
 // can't see it), but the server HTML — the same thing that powers link previews —
@@ -650,8 +677,16 @@ async function pollBatchState() {
 const AUTOIMPORT_ALARM = "ia-autoimport";
 const AUTOIMPORT_URLS = {
   fb: "https://www.facebook.com/saved/",
-  ig: "https://www.instagram.com/saved/all-posts/",
+  // IG lands on HOME first — instagram.com/saved/ is the PROFILE of the
+  // account literally named "saved", NOT the viewer's saved posts (live-tuning
+  // 2026-07-19: a hidden tab at /saved/all-posts/ imported @saved's own posts
+  // as if they were the user's). The real page is
+  // /<username>/saved/all-posts/, so the scrape discovers the viewer's
+  // username from the home nav avatar, then navigates there (see
+  // autoImportScrapePlatform's ig two-step).
+  ig: "https://www.instagram.com/",
 };
+const IG_SAVED_PAGE = (username) => "https://www.instagram.com/" + username + "/saved/all-posts/";
 // In-flight guard: the daily alarm and a manual "Check now" poll both funnel
 // through runAutoImportCheck — only one scrape may run at a time.
 let autoImportBusy = false;
@@ -689,23 +724,79 @@ async function autoImportScrapePlatform(platform) {
     catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
     tabId = tab.id;
     await waitTabComplete(tabId, 30000);
+    // IG two-step: discover the viewer's username from the home page's nav
+    // avatar (<img alt="…profile picture"> inside the profile link), then hop
+    // the SAME tab to the real saved page. Fail SOFT if the avatar never
+    // mounts (logged out / layout change): deliver parse-failed, import nothing.
+    if (platform === "ig") {
+      let username = "";
+      for (let i = 0; i < 10 && !username; i++) {
+        try {
+          const r = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              const img = document.querySelector('img[alt$="profile picture"]');
+              const a = img && img.closest("a");
+              const m = /^\/([A-Za-z0-9._]+)\/?$/.exec((a && a.getAttribute("href")) || "");
+              return m ? m[1] : "";
+            },
+          });
+          username = (r && r[0] && r[0].result) || "";
+        } catch (e) { log("auto-import ig: username probe failed: " + e.message); break; }
+        if (!username) await new Promise((res) => setTimeout(res, 1000));
+      }
+      if (!username) { log("auto-import ig: viewer username NOT found on home page — skipping (logged out?)"); return result; }
+      log("auto-import ig: scraping saved page of @" + username);
+      await chrome.tabs.update(tabId, { url: IG_SAVED_PAGE(username) });
+      await new Promise((res) => setTimeout(res, 500));   // let the navigation start before waiting on "complete"
+      await waitTabComplete(tabId, 30000);
+    }
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: [libFile] });
       const results = await chrome.scripting.executeScript({
         target: { tabId },
         func: async (name) => {
-          // scroll ~2 screens, 1s apart, so lazy-loaded entries are in the DOM
-          // before the parser walks it
-          window.scrollTo(0, document.body.scrollHeight);
-          await new Promise((r) => setTimeout(r, 1000));
-          window.scrollTo(0, document.body.scrollHeight);
-          await new Promise((r) => setTimeout(r, 1000));
+          // Lazy grids (especially Instagram's) can take several seconds to
+          // mount tiles in a HIDDEN tab — a fixed 2-scroll wait parses an
+          // empty shell. Poll instead: scroll, settle 1s, parse; the parser
+          // itself is the readiness probe (no per-platform selectors here).
+          // Stop as soon as it reports anything other than parse-failed
+          // (ok OR login-required — neither improves with more waiting);
+          // give up after ~15 rounds. Hidden-tab timers are throttled to
+          // >=1s ticks, which is exactly the cadence used.
           const api = self[name];
-          return api ? api.parseSavedDoc(document) : { status: "parse-failed", items: [] };
+          let res = { status: "parse-failed", items: [] };
+          let tries = 0;
+          for (; tries < 15; tries++) {
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise((r) => setTimeout(r, 1000));
+            res = api ? api.parseSavedDoc(document) : { status: "parse-failed", items: [] };
+            if (res.status !== "parse-failed") break;
+          }
+          // Diagnostic breadcrumb (SW-console only, stripped before delivery):
+          // what page did this hidden tab ACTUALLY land on, how much of it was
+          // rendered, and what do its post-ish hrefs literally look like?
+          res.diag = {
+            parser: api ? "loaded" : "MISSING",
+            href: location.href,
+            tries: tries + 1,
+            htmlLen: document.documentElement ? document.documentElement.outerHTML.length : 0,
+            anchors: document.querySelectorAll("a[href]").length,
+            postAnchors: document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"], a[href*="/posts/"], a[href*="permalink"], a[href*="/watch"]').length,
+            sample: Array.prototype.slice.call(
+              document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'), 0, 8
+            ).map(function (a) { return String(a.getAttribute("href") || "").slice(0, 80); }),
+          };
+          return res;
         },
         args: [globalName],
       });
       result = (results && results[0] && results[0].result) || { status: "parse-failed", items: [] };
+      if (result.diag) {
+        log("auto-import " + platform + " diag: " + JSON.stringify(result.diag) +
+          " -> status=" + result.status + " items=" + (result.items || []).length);
+        delete result.diag;   // local breadcrumb only — never delivered
+      }
     } catch (e) {
       log("auto-import: " + platform + " scrape failed: " + e.message);
       result = { status: "parse-failed", items: [] };
@@ -729,9 +820,14 @@ async function runAutoImportPlatform(platform, port) {
     return;
   }
   const items = [];
+  // The whole batch must fit the core's 1MB body cap — budget the converted
+  // data: URLs; once spent, remaining items ship their raw CDN URL instead
+  // (isBadImg flags it app-side, so it enters the normal retry/enrich tooling
+  // rather than rotting silently).
+  let imgBudget = 850 * 1024;
   for (const it of (result.items || [])) {
     // SECURITY (security review 2026-07-18, F1): a saved-page listing is
-    // MULTI-AUTHOR — its <img src> can be any attacker-chosen URL. durableImage
+    // MULTI-AUTHOR — its <img src> can be any attacker-chosen URL. durableThumb
     // fetches with credentials:"include", so converting an arbitrary URL turns
     // the daily scrape into a credentialed tracking beacon / loopback-SSRF
     // probe from the user's IP. ONLY convert genuine signed-CDN images (which
@@ -739,10 +835,17 @@ async function runAutoImportPlatform(platform, port) {
     // any other URL is passed through raw and unfetched — the app's own
     // capture-enrichment backfills a durable image later if the card needs one.
     const raw = it.image || "";
-    items.push({
-      url: it.url || "", title: it.title || "", platformKey: it.platformKey || "",
-      image: isExpiringCdnImage(raw) ? await durableImage(raw) : raw,
-    });
+    let image = raw;
+    if (isExpiringCdnImage(raw)) {
+      const thumb = await durableThumb(raw);
+      // 250KB per-field ceiling mirrors the core's CAPS.image (256KB) — an
+      // oversized field would be dropped server-side anyway.
+      if (thumb && thumb.length <= Math.min(imgBudget, 250 * 1024)) {
+        image = thumb;
+        imgBudget -= thumb.length;
+      }
+    }
+    items.push({ url: it.url || "", title: it.title || "", platformKey: it.platformKey || "", image });
   }
   await autoImportPostBatch(port, { platform, status: "ok", items, checkedAt });
 }

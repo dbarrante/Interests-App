@@ -56,7 +56,14 @@ ok("a platform can be disabled via its config checkbox", /platforms\[platform\] 
 ok("opens the saved-items page in an INACTIVE tab", /chrome\.tabs\.create\(\{\s*url,\s*active:\s*false\s*\}\)/.test(src));
 ok("waits for the tab to finish loading before scraping", /await waitTabComplete\(tabId, 30000\)/.test(src));
 ok("injects the pure parser lib via executeScript files", /files:\s*\[libFile\]/.test(src) && /lib\/saved-parse-fb\.js/.test(src) && /lib\/saved-parse-ig\.js/.test(src));
-ok("scrolls twice, ~1s apart, before parsing", (src.match(/setTimeout\(\(r\) => setTimeout\(r, 1000\)|setTimeout\(r, 1000\)/g) || []).length >= 2 && /window\.scrollTo\(0, document\.body\.scrollHeight\)[\s\S]{0,400}?window\.scrollTo\(0, document\.body\.scrollHeight\)/.test(src));
+// Live-tuning 2026-07-19: a fixed 2-scroll wait parsed an EMPTY shell on
+// Instagram — its lazy grid takes several seconds to mount tiles in a hidden
+// tab. The collector now polls scroll->settle(1s)->parse up to 15 rounds,
+// using the parser itself as the readiness probe, and stops early on any
+// non-parse-failed status (ok or login-required).
+ok("polls scroll->settle(1s)->parse up to 15 rounds (lazy hidden-tab grids)", /tries < 15/.test(src) && /window\.scrollTo\(0, document\.body\.scrollHeight\)/.test(src) && /setTimeout\(r, 1000\)/.test(src));
+ok("poll stops early on any non-parse-failed status", /if\s*\(res\.status !== "parse-failed"\)\s*break;/.test(src));
+ok("scrape diagnostics stay SW-console-only (diag stripped before delivery)", /delete result\.diag;/.test(src));
 ok("calls parseSavedDoc(document) in-page", /api\.parseSavedDoc\(document\)/.test(src));
 ok("the tab is ALWAYS closed, in a finally block", /finally\s*{\s*if\s*\(tabId != null\)\s*{\s*try\s*{\s*await chrome\.tabs\.remove\(tabId\); }/.test(src));
 
@@ -65,8 +72,25 @@ ok("the tab is ALWAYS closed, in a finally block", /finally\s*{\s*if\s*\(tabId !
 // attacker-chosen <img src> from a multi-author saved page is passed through
 // raw, never fetched — else the daily scrape becomes a credentialed tracking
 // beacon / loopback-SSRF probe from the user's IP.
-ok("only converts signed-CDN images via durableImage; other URLs pass through raw", /isExpiringCdnImage\(raw\)\s*\?\s*await durableImage\(raw\)\s*:\s*raw/.test(src));
+// Live-tuning 2026-07-19: delivery converts via durableThumb (640px JPEG),
+// not full-res durableImage — the core's /api/auto-import enforces a 1MB body
+// cap + 256KB per-image cap, and one full-res IG tile batch blew both (413,
+// swallowed silently). Same isExpiringCdnImage gate as before (F1).
+ok("only converts signed-CDN images (durableThumb behind isExpiringCdnImage); other URLs pass through raw", /if\s*\(isExpiringCdnImage\(raw\)\)\s*{\s*const thumb = await durableThumb\(raw\);/.test(src));
+ok("per-batch image budget + per-field ceiling keep the delivery under the core's caps", /imgBudget\s*=\s*850 \* 1024/.test(src) && /Math\.min\(imgBudget,\s*250 \* 1024\)/.test(src));
+ok("durableThumb downscales to a bounded longest edge", /AUTOIMPORT_THUMB_MAX = 640/.test(src) && /OffscreenCanvas/.test(src));
 ok("does NOT unconditionally durableImage every scraped image (the vulnerable pattern is gone)", !/image:\s*await durableImage\(it\.image \|\| ""\)/.test(src));
+
+// --- IG two-step: home -> username discovery -> /<username>/saved/all-posts/ --
+// 2026-07-19 incident: instagram.com/saved/ is the PROFILE of a real account
+// named @saved — scraping it imported @saved's own posts as the user's saves.
+// The scrape must start at HOME, read the viewer's username from the nav
+// avatar, and only then navigate to the real saved page; no username = fail
+// soft (import nothing).
+ok("IG scrape starts at instagram.com HOME, never at /saved/", /ig:\s*"https:\/\/www\.instagram\.com\/"/.test(src) && !/ig:\s*"https:\/\/www\.instagram\.com\/saved/.test(src));
+ok("IG saved page is built from the DISCOVERED username", /IG_SAVED_PAGE = \(username\) => "https:\/\/www\.instagram\.com\/" \+ username \+ "\/saved\/all-posts\/"/.test(src));
+ok("username comes from the nav avatar profile link", /img\[alt\$="profile picture"\]/.test(src));
+ok("no discovered username -> fail soft, import nothing", /if \(!username\) \{ log\("auto-import ig: viewer username NOT found[\s\S]{0,80}?return result; \}/.test(src));
 
 // --- Delivery: batch + statuses ----------------------------------------------
 ok("posts the batch to POST /api/auto-import", /autoImportPostBatch[\s\S]{0,200}\/api\/auto-import["'`]/.test(src) || /fetch\("http:\/\/127\.0\.0\.1" \+ port \+ "\/api\/auto-import"/.test(src));
