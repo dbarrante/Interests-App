@@ -49,15 +49,6 @@ if (!gotLock) {
       // and the sync timers reach.
       ctx = buildContext(storeDir);
 
-      // Dropbox sync (non-fatal): merge peers + publish before the server serves data.
-      try {
-        const sc = config.getSyncConfig();
-        if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
-          const syncDir = sc.dir || sync.defaultSyncDir();
-          sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
-        }
-      } catch (e) { console.error("launch sync skipped:", e && e.message); }   // NEVER hard-fail launch
-
       // Sync timers self-gate on live config (re-read every tick), so start them
       // unconditionally — enabling/disabling Dropbox sync in Settings takes effect
       // on the next tick with no app restart required.
@@ -70,6 +61,24 @@ if (!gotLock) {
       config.saveConfig(Object.assign({}, config.loadConfig(), { port }));
 
       createWindow(port);
+
+      // Launch merge AFTER the window exists. It used to run synchronously
+      // BEFORE the server/window: with a big peer delta the app showed no
+      // window at all for the whole merge — "clicking does nothing" — and the
+      // single-instance lock made a second click a silent no-op (live
+      // complaint 2026-07-18). The renderer boots from the local store
+      // immediately; the launch merge lands like any timer merge, signalled
+      // via ia_sync_changed_at so the "updates synced" toast + rehydrate fire.
+      setTimeout(() => {
+        try {
+          const sc = config.getSyncConfig();
+          if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
+            const syncDir = sc.dir || sync.defaultSyncDir();
+            const res = sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
+            if (res && res.changed) { try { setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+          }
+        } catch (e) { console.error("launch sync failed:", e && e.message); }   // NEVER hard-fail launch
+      }, 3000);
 
       app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow(port);

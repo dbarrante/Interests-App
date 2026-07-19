@@ -64,7 +64,10 @@
       if (!winner || winner.source === "local") return;     // local already current
       if (localMap[id] && (winner.updatedAt <= (localMap[id].updatedAt || 0))) return;
 
-      out.upserts.push({ kind: kind, item: winner.item, updatedAt: winner.updatedAt });
+      // `from` = the winning peer's deviceId — lets appliers attribute a
+      // deferred upsert to its source peer, so ONE peer's missing images
+      // can't block every other peer's watermark (per-peer clean gating).
+      out.upserts.push({ kind: kind, item: winner.item, updatedAt: winner.updatedAt, from: winner.source });
       if (localMap[id] && !sameContent(localMap[id], winner.item)) out.conflicts++;
       if (isIdbImage(winner.item, kind) && winner.imageIds && winner.imageIds.indexOf(id) >= 0) {
         out.imageCopies.push({ id: id, fromDir: winner.dir });

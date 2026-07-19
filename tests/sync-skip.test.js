@@ -114,5 +114,51 @@ run("publish-skip refuses when the published folder was wiped out-of-band (final
   assert.ok(fs.existsSync(path.join(syncDir, "devB", "meta.json")), "snapshot re-created");
 });
 
+run("any-holder fallback: an image missing from the winner's folder but present in OUR OWN sync folder applies immediately", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-skip6-"));
+  const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+  const A = mkCtx(root, "A"), B = mkCtx(root, "B");
+  // A wins card a1 with an idb: image but A's folder lacks the file; B's OWN
+  // published folder has it (the exact 07-16 shape: 125/126 images sat in the
+  // desktop's own folder, skipped as "self").
+  db.upsertCard(A.db, { id: "a1", url: "http://a/1", ts: 1, img: "idb:a1" });
+  sync.runSync(A, { syncDir, deviceId: "devA", deviceLabel: "A", backupFn: noBackup });
+  fs.mkdirSync(path.join(syncDir, "devB", "images"), { recursive: true });
+  fs.writeFileSync(path.join(syncDir, "devB", "images", "a1.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0x01]));
+
+  const r1 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.ok(db.allCards(B.db).some(c => c.id === "a1"), "a1 applied via the self-folder image fallback (no defer)");
+  const r2 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r2.peersSkipped, 1, "clean cycle (fallback satisfied the image) advances the watermark");
+});
+
+run("per-peer gating: one peer's missing image blocks ONLY that peer's watermark", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-skip7-"));
+  const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+  const A = mkCtx(root, "A"), C = mkCtx(root, "C"), B = mkCtx(root, "B");
+  db.upsertCard(A.db, { id: "a1", url: "http://a/1", ts: 1 });                      // clean peer
+  db.upsertCard(C.db, { id: "c9", url: "http://c/9", ts: 1, img: "idb:c9" });       // image nowhere -> defers
+  sync.runSync(A, { syncDir, deviceId: "devA", deviceLabel: "A", backupFn: noBackup });
+  sync.runSync(C, { syncDir, deviceId: "devC", deviceLabel: "C", backupFn: noBackup });
+
+  sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.ok(db.allCards(B.db).some(c => c.id === "a1"), "clean peer's card applied");
+  assert.ok(!db.allCards(B.db).some(c => c.id === "c9"), "deferring peer's card not applied");
+  const r2 = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(r2.peersSkipped, 1, "clean peer A skipped (watermark advanced) while deferring peer C is re-read");
+});
+
+run("main.js: window is created BEFORE the launch merge (no more windowless launch stall)", () => {
+  const mainSrc = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const winIdx = mainSrc.indexOf("createWindow(port)");
+  const launchMergeIdx = mainSrc.indexOf("sync.runSync(ctx", winIdx);
+  assert.ok(winIdx >= 0, "createWindow(port) call present");
+  assert.ok(launchMergeIdx > winIdx, "the launch runSync must come AFTER createWindow");
+  const between = mainSrc.slice(winIdx, launchMergeIdx);
+  assert.ok(/setTimeout\(/.test(between), "launch merge must be deferred off the startup path");
+  assert.ok(/ia_sync_changed_at/.test(mainSrc.slice(launchMergeIdx, launchMergeIdx + 800)),
+    "a changed launch merge must signal the renderer (toast + rehydrate)");
+});
+
 console.log("sync-skip: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

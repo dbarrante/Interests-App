@@ -177,10 +177,11 @@ function buildLocal(ctx) {
   return { cards: cards, saved: saved, tombstones: tombs, settings: lib.settings || null };
 }
 
-function applyMerge(ctx, plan) {
+function applyMerge(ctx, plan, fallbackDirs) {
   // Index imageCopies by id so each upsert can pair with its (single) copy.
   const copyById = {};
   for (const ic of plan.imageCopies) copyById[ic.id] = ic;
+  fallbackDirs = fallbackDirs || [];
 
   // applyFailures counts TRANSIENT apply trouble (a thrown upsert, a thrown
   // settings apply) — it dirties the cycle alongside `deferred` so peer
@@ -190,6 +191,7 @@ function applyMerge(ctx, plan) {
   // skips (unsafe id, oversized settings blob) are deliberately NOT counted —
   // they'd disable skipping forever.
   let upsertsApplied = 0, imageCopiesDone = 0, deferred = 0, applyFailures = 0;
+  const deferredBy = {};   // peer deviceId -> deferred count (per-peer watermark gating)
   for (const u of plan.upserts) {
     // The id comes from a peer's (corrupt/hostile) snapshot.json and is used to
     // build fs/db paths. Validate it FIRST: an unsafe id is skipped (not written,
@@ -214,7 +216,26 @@ function applyMerge(ctx, plan) {
             console.error("sync: image copy failed for " + id + ":", e && e.message);
           }
         }
-        if (!images.hasImg(ctx.storeDir, id)) { deferred++; continue; }   // DEFER: image not available locally yet
+        if (!images.hasImg(ctx.storeDir, id) && fallbackDirs.length) {
+          // Any-holder fallback (2026-07-17 incident hardening): the WINNER's
+          // folder may lack the image while another sync folder — very often
+          // our OWN published one — holds it. 125 of the 126 saved items
+          // dropped on 07-16 had their images sitting in the desktop's own
+          // sync folder, which was skipped as "self". Try every known folder
+          // before deferring.
+          for (const fdir of fallbackDirs) {
+            try {
+              fs.copyFileSync(path.join(fdir, "images", id + ".jpg"), path.join(images.imagesDir(ctx.storeDir), id + ".jpg"));
+              imageCopiesDone++;
+              break;
+            } catch (e) { /* not in this folder — try the next */ }
+          }
+        }
+        if (!images.hasImg(ctx.storeDir, id)) {
+          deferred++;   // DEFER: image not available anywhere yet — retry next cycle
+          if (u.from) deferredBy[u.from] = (deferredBy[u.from] | 0) + 1;
+          continue;
+        }
       }
       if (u.kind === "card") db.upsertCardSynced(ctx.db, u.item, u.updatedAt);
       else db.upsertSavedSynced(ctx.db, u.item, u.updatedAt);
@@ -240,7 +261,7 @@ function applyMerge(ctx, plan) {
     catch (e) { applyFailures++; console.error("sync: applying synced settings failed:", e && e.message); }
   }
   const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
-  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, deferred: deferred, applyFailures: applyFailures };
+  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, deferred: deferred, deferredBy: deferredBy, applyFailures: applyFailures };
 }
 
 // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
@@ -262,25 +283,36 @@ function runSync(ctx, opts) {
   const peers = rp.peers;
   const skewSkipped = rp.skewSkipped;
   let mergeClean = true;
+  let deferredBy = {};
   if (peers.length) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
       let backedUp = true;
       try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
       if (backedUp) {
-        const r = applyMerge(ctx, plan);
+        // Any-holder image fallback: our OWN sync folder first (the most
+        // common holder), then every peer folder — see applyMerge.
+        const fallbackDirs = [path.join(syncDir, opts.deviceId)].concat(peers.map(function (p) { return p.dir; }));
+        const r = applyMerge(ctx, plan, fallbackDirs);
         changed = r.changed; conflicts = plan.conflicts;
-        mergeClean = (r.deferred | 0) === 0 && (r.applyFailures | 0) === 0;
+        deferredBy = r.deferredBy || {};
+        // Global gate keeps only the truly-global failure modes (transient
+        // apply throws, failed safety backup). Deferrals gate PER PEER below —
+        // one peer's not-yet-uploaded images must not force full re-reads of
+        // every OTHER peer on every tick (that pattern blocked the event loop
+        // for 45+ seconds every merge, live 2026-07-18).
+        mergeClean = (r.applyFailures | 0) === 0;
       } else {
         mergeClean = false;
       }
     }
   }
-  // Advance watermarks for the peers actually read this cycle ONLY when the
-  // merge was clean — a deferral must re-read its peer next cycle (the
-  // "self-heals next cycle" contract). Skipped peers keep their watermark.
+  // Advance watermarks per peer: only peers with ZERO deferred items this
+  // cycle advance — a peer whose item was deferred must be re-read next cycle
+  // (the "self-heals next cycle" contract), but it no longer drags the others.
   if (mergeClean) {
     peers.forEach(function (p) {
+      if ((deferredBy[p.deviceId] | 0) > 0) return;
       if (p.publishedAt != null && isFinite(p.publishedAt)) {
         try { db.setKV(ctx.db, "ia_peer_seen_" + p.deviceId, String(p.publishedAt)); } catch (e) {}
       }
