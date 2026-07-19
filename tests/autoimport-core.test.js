@@ -112,7 +112,10 @@ t("processBatch: happy path adds survivors to the SAME ia_capture_queue, shaped 
   assert.strictEqual(c.url, "https://facebook.com/posts/1");
   assert.strictEqual(c.title, "Post One");             // trimmed
   assert.strictEqual(c.clipImage, "data:image/png;base64,AAAA");
-  assert.strictEqual(c.clip, true);                     // routeCapture: clip -> action "saved"
+  // REVIEW FIX 1: no clip flag — clip:true would force route-capture's
+  // unconditional Saved path; `source` is the discriminator the renderer's
+  // auto-import routing branch (Task 4) keys on.
+  assert.ok(!c.clip, "survivors must NOT carry clip:true");
   assert.strictEqual(c.source, "fb-auto");
   assert.strictEqual(c.ts, 1000);
   const ledger = readJsonKV(db, "ia_autoimport_seen_fb");
@@ -230,14 +233,38 @@ t("processBatch: oversized title is TRUNCATED (item kept)", () => {
   assert.strictEqual(queue[0].title.length, autoimport.CAPS.title);
 });
 
-t("processBatch: caps a batch at 200 items (extras silently ignored)", () => {
+t("processBatch: >200 items REJECTS the whole batch as invalid (review adjudication — no truncate-and-continue)", () => {
   const db = openDb(tmpStore());
   const items = [];
-  for (let i = 0; i < 205; i++) items.push(item({ url: "https://example.com/p/" + i, platformKey: "pk_" + i }));
+  for (let i = 0; i < autoimport.MAX_ITEMS + 5; i++) items.push(item({ url: "https://example.com/p/" + i, platformKey: "pk_" + i }));
   const r = autoimport.processBatch({ db }, { platform: "fb", status: "ok", checkedAt: 1, items });
+  assert.deepStrictEqual(r, { added: 0, duplicates: 0, status: "invalid" });
+  assert.strictEqual(getKV(db, "ia_capture_queue"), null, "nothing queued");
+  assert.strictEqual(getKV(db, "ia_autoimport_seen_fb"), null, "nothing ledgered");
+  assert.strictEqual(getKV(db, "ia_autoimport_last_fb"), null, "no status record for a rejected batch");
+});
+
+t("processBatch: exactly 200 items is accepted", () => {
+  const db = openDb(tmpStore());
+  const items = [];
+  for (let i = 0; i < autoimport.MAX_ITEMS; i++) items.push(item({ url: "https://example.com/p/" + i, platformKey: "pk_" + i }));
+  const r = autoimport.processBatch({ db }, { platform: "fb", status: "ok", checkedAt: 1, items });
+  assert.strictEqual(r.status, "ok");
   assert.strictEqual(r.added, autoimport.MAX_ITEMS);
-  const last = readJsonKV(db, "ia_autoimport_last_fb");
-  assert.strictEqual(last.found, autoimport.MAX_ITEMS);
+});
+
+// --- ledger hardening: "__proto__" as a platformKey ------------------------
+
+t("processBatch: a '__proto__' platformKey is RECORDED in the ledger and blocks its second delivery", () => {
+  const db = openDb(tmpStore());
+  const ctx = { db };
+  const r1 = autoimport.processBatch(ctx, { platform: "fb", status: "ok", checkedAt: 7, items: [item({ url: "https://facebook.com/proto-post", platformKey: "__proto__" })] });
+  assert.deepStrictEqual(r1, { added: 1, duplicates: 0, status: "ok" });
+  const ledger = readJsonKV(db, "ia_autoimport_seen_fb");
+  assert.ok(Object.prototype.hasOwnProperty.call(ledger, "__proto__"), "'__proto__' persisted as an OWN ledger key");
+  assert.strictEqual(ledger["__proto__"], 7);
+  const r2 = autoimport.processBatch(ctx, { platform: "fb", status: "ok", checkedAt: 8, items: [item({ url: "https://facebook.com/proto-post-2", platformKey: "__proto__" })] });
+  assert.deepStrictEqual(r2, { added: 0, duplicates: 1, status: "ok" }, "second '__proto__' delivery is ledger-blocked");
 });
 
 // --- processBatch: ledger 5000-key cap, prune oldest ------------------------

@@ -70,6 +70,15 @@ function fbItem(over) {
     assert.strictEqual(r.status, 400);
   });
 
+  await run("POST /api/auto-import: >200 items -> 400 (batch rejected, not truncated)", async () => {
+    const items = [];
+    for (let i = 0; i < 201; i++) items.push(fbItem({ url: "https://facebook.com/flood/" + i, platformKey: "flood_" + i }));
+    const r = await jpost(base, "/api/auto-import", { platform: "fb", status: "ok", checkedAt: 1, items });
+    assert.strictEqual(r.status, 400);
+    const caps = await jget(base, "/api/captures");
+    assert.strictEqual(caps.body.captures.length, 0, "nothing from the rejected flood reaches the mailbox");
+  });
+
   await run("POST /api/auto-import: oversized body (>1MB) -> 413", async () => {
     const huge = "A".repeat(1024 * 1024 + 100);
     const r = await jpost(base, "/api/auto-import", { platform: "fb", status: "ok", checkedAt: 1, items: [fbItem({ image: huge })] });
@@ -87,7 +96,7 @@ function fbItem(over) {
     const c = caps.body.captures[0];
     assert.strictEqual(c.url, "https://facebook.com/posts/aaa");
     assert.strictEqual(c.title, "A saved post");
-    assert.strictEqual(c.clip, true);
+    assert.ok(!c.clip, "no clip flag — source is the discriminator, routing is the renderer's job");
     assert.strictEqual(c.source, "fb-auto");
     assert.strictEqual(c.ts, 12345);
 

@@ -13,11 +13,13 @@
 // the HTTP routes and calls processBatch()/getConfig()/getStatus() below.
 //
 // Survivors (new, non-duplicate items) are appended to the SAME capture
-// mailbox (`ia_capture_queue`) that /api/captures POST feeds, shaped like an
-// extension clip capture (`clip:true`) so the renderer's existing
-// drainCaptures/routeCapture/addClip pipeline ingests them completely
-// unchanged — see web/route-capture.js (`cap.clip` -> action "saved") and
-// web/index.html's addClip() (consumes url/title/clipImage).
+// mailbox (`ia_capture_queue`) that /api/captures POST feeds, using the same
+// field names as an extension clip capture (url/title/clipImage) PLUS
+// `source: "<platform>-auto"` as the discriminator. Deliberately NO
+// `clip: true` flag: web/route-capture.js routes any clip:true
+// unconditionally into Saved, which would make it impossible for the
+// renderer to ever route an auto-import into Imported cards — the renderer's
+// auto-import routing branch (Task 4) keys on `source` instead.
 "use strict";
 const dbm = require("./db");
 
@@ -72,6 +74,22 @@ function readJson(db, key, fallback) {
   const raw = dbm.getKV(db, key);
   if (!raw) return fallback;
   try { const v = JSON.parse(raw); return v == null ? fallback : v; } catch (e) { return fallback; }
+}
+
+// The in-memory ledger MUST be a null-prototype object: on a plain {} object,
+// `ledger["__proto__"] = ts` silently no-ops through the inherited
+// Object.prototype accessor, so a post whose platformKey is literally
+// "__proto__" would never be recorded (and therefore never blocked). A
+// null-prototype object has no such accessor — every key, including
+// "__proto__", becomes an ordinary own property. Parsed kv JSON is re-seated
+// into a fresh null-prototype object for the same reason.
+function readLedger(db, platform) {
+  const parsed = readJson(db, ledgerKvKey(platform), null);
+  const ledger = Object.create(null);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const k of Object.getOwnPropertyNames(parsed)) ledger[k] = parsed[k];
+  }
+  return ledger;
 }
 function writeJson(db, key, value) { dbm.setKV(db, key, JSON.stringify(value)); }
 
@@ -135,14 +153,18 @@ function processBatch(ctx, batch) {
   const incomingStatus = (typeof batch.status === "string" && batch.status) ? batch.status : "parse-failed";
   const checkedAt = Number(batch.checkedAt) || Date.now();
   let rawItems = Array.isArray(batch.items) ? batch.items : [];
+  // Oversized batch REJECTS outright (review adjudication): the scraper's own
+  // CAP bounds a legitimate run to ~100 entries, so >200 is malformed or
+  // abusive — truncate-and-continue would let a flood re-split itself into
+  // fitting batches. No kv side effects on the reject path.
+  if (rawItems.length > MAX_ITEMS) return { added: 0, duplicates: 0, status: "invalid" };
   // Fail-soft, enforced core-side too (never trust the client alone): only a
   // clean "ok" scrape may add items. A login wall / parse failure imports
   // nothing even if a buggy or malicious POST attached items anyway.
   if (incomingStatus !== "ok") rawItems = [];
-  if (rawItems.length > MAX_ITEMS) rawItems = rawItems.slice(0, MAX_ITEMS);
   const found = rawItems.length;
 
-  const ledger = readJson(db, ledgerKvKey(platform), {});
+  const ledger = readLedger(db, platform);
   const existingUrls = existingUrlSet(db);
   const queue = readCaptureQueue(db);
   const survivors = [];
@@ -167,7 +189,8 @@ function processBatch(ctx, batch) {
       url: item.url,
       title: item.title,
       clipImage: item.image || "",
-      clip: true,                          // routeCapture: cap.clip -> action "saved" (new Saved card, never touches Imported)
+      // NO clip:true — see the module header: `source` is the discriminator;
+      // forcing route-capture's Saved path would be a spec violation.
       source: platform + "-auto",
       ts: checkedAt,
     });
