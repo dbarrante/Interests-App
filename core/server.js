@@ -19,6 +19,7 @@ const contentcheck = require("./contentcheck");
 const safebrowse = require("./safebrowse");
 const capturemeta = require("./capturemeta");
 const news = require("./news");
+const autoimport = require("./autoimport");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -381,6 +382,39 @@ function createServer(ctx) {
   jsonKvEndpoints(app, "/api/capture-request", "ia_capture_request", "request");
   jsonKvEndpoints(app, "/api/batch-state", "ia_batch_state", "state");
   jsonKvEndpoints(app, "/api/batch-progress", "ia_batch_progress", "progress");
+
+  // --- Platform auto-import (FB/IG saved-page daily scheduler; core/autoimport.js) ---
+  // POST /api/auto-import — extension->core delivery (auth'd by the same
+  // requireToken gate as everything else in this file; see app.use above).
+  // Capped at 1MB here on top of the global 64mb express.json() limit: an
+  // auto-import batch is a small JSON payload (<=200 items, each field-capped),
+  // so anything near 1MB is already abusive.
+  const AUTOIMPORT_BODY_CAP = 1024 * 1024;
+  app.post("/api/auto-import", (req, res) => {
+    const declaredLen = Number(req.headers["content-length"] || 0);
+    let actualLen = 0;
+    try { actualLen = Buffer.byteLength(JSON.stringify(req.body || {}), "utf8"); } catch (e) { actualLen = 0; }
+    if (declaredLen > AUTOIMPORT_BODY_CAP || actualLen > AUTOIMPORT_BODY_CAP) {
+      return res.status(413).json({ ok: false, error: "body too large" });
+    }
+    const result = autoimport.processBatch(ctx, req.body);
+    if (result && result.status === "invalid") {
+      return res.status(400).json({ ok: false, error: "invalid batch" });
+    }
+    ctx.syncDirty = true;   // survivors land in the same ia_capture_queue /api/captures feeds
+    res.json(Object.assign({ ok: true }, result));
+  });
+  // GET /api/auto-import/config — extension polls before/around each scrape.
+  app.get("/api/auto-import/config", (req, res) => {
+    res.json(autoimport.getConfig(ctx));
+  });
+  // Request mailbox: renderer's "Check now" POSTs a truthy request; extension
+  // polls GET then claims it with POST {request:null} — mirrors /api/capture-request.
+  jsonKvEndpoints(app, "/api/auto-import/request", "ia_autoimport_request", "request");
+  // GET /api/auto-import/status — renderer's Settings section reads both platforms' last-run records.
+  app.get("/api/auto-import/status", (req, res) => {
+    res.json(autoimport.getStatus(ctx));
+  });
 
   // --- Browser Stumble (StumbleUpon-style discovery in the browser) ---------
   // Loopback mailboxes bridging the extension and the renderer. The extension
