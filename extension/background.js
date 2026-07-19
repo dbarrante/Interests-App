@@ -637,9 +637,149 @@ async function pollBatchState() {
   }
 }
 
-function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); flushQueue().catch(() => {}); }
+// === Platform auto-import (FB/IG saved-page daily scheduler) ================
+// Picks up saves made natively on Facebook/Instagram (any device) that never
+// went through the capture pipeline. A daily chrome.alarms alarm (+ a bridge
+// poll so the app's "Check now" button works immediately) opens each enabled
+// platform's saved-items page in ONE inactive tab at a time, injects the pure
+// parser from extension/lib/saved-parse-{fb,ig}.js, scrolls it a couple
+// screens to lazy-load more entries, parses, closes the tab, then POSTs the
+// result (or a login-required/parse-failed status — never partial garbage) to
+// the Core service. Dedup/import happens core-side (core/autoimport.js,
+// Task 3) — this file only scrapes and delivers.
+const AUTOIMPORT_ALARM = "ia-autoimport";
+const AUTOIMPORT_URLS = {
+  fb: "https://www.facebook.com/saved/",
+  ig: "https://www.instagram.com/saved/all-posts/",
+};
+// In-flight guard: the daily alarm and a manual "Check now" poll both funnel
+// through runAutoImportCheck — only one scrape may run at a time.
+let autoImportBusy = false;
+
+async function autoImportGetConfig(port) {
+  try {
+    const r = await fetch("http://127.0.0.1:" + port + "/api/auto-import/config");
+    if (r && r.ok) { const j = await r.json(); return j || {}; }
+  } catch (e) {}
+  return {};
+}
+async function autoImportPostBatch(port, body) {
+  try {
+    await fetch("http://127.0.0.1:" + port + "/api/auto-import", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+  } catch (e) {}
+}
+
+// Scrape ONE platform's saved-items page in a fresh, inactive tab: navigate,
+// wait for load, inject the pure parser lib + an in-page collector that
+// scrolls ~2 screens (1s apart, to lazy-load more entries — the parser's own
+// CAP already bounds the result to ~100 items) before calling parseSavedDoc.
+// The tab is ALWAYS closed in a finally, whatever happens (parse error,
+// timeout, crash) — never left open across a run.
+async function autoImportScrapePlatform(platform) {
+  const url = AUTOIMPORT_URLS[platform];
+  const libFile = platform === "fb" ? "lib/saved-parse-fb.js" : "lib/saved-parse-ig.js";
+  const globalName = platform === "fb" ? "IASavedParseFB" : "IASavedParseIG";
+  let tabId = null;
+  let result = { status: "parse-failed", items: [] };
+  try {
+    let tab;
+    try { tab = await chrome.tabs.create({ url, active: false }); }
+    catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
+    tabId = tab.id;
+    await waitTabComplete(tabId, 30000);
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: [libFile] });
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (name) => {
+          // scroll ~2 screens, 1s apart, so lazy-loaded entries are in the DOM
+          // before the parser walks it
+          window.scrollTo(0, document.body.scrollHeight);
+          await new Promise((r) => setTimeout(r, 1000));
+          window.scrollTo(0, document.body.scrollHeight);
+          await new Promise((r) => setTimeout(r, 1000));
+          const api = self[name];
+          return api ? api.parseSavedDoc(document) : { status: "parse-failed", items: [] };
+        },
+        args: [globalName],
+      });
+      result = (results && results[0] && results[0].result) || { status: "parse-failed", items: [] };
+    } catch (e) {
+      log("auto-import: " + platform + " scrape failed: " + e.message);
+      result = { status: "parse-failed", items: [] };
+    }
+  } finally {
+    if (tabId != null) { try { await chrome.tabs.remove(tabId); } catch (e) {} }
+  }
+  return result;
+}
+
+// Scrape + deliver ONE platform, then report the outcome to the app. A
+// login wall or a zero-entry parse (status !== "ok") posts the status with
+// NO items — scrapers fail soft, never partial garbage. A clean parse
+// converts every item's (possibly signed-CDN, short-lived) image to a
+// durable data: URL before delivery, same rule as the manual capture path.
+async function runAutoImportPlatform(platform, port) {
+  const result = await autoImportScrapePlatform(platform);
+  const checkedAt = Date.now();
+  if (!result || result.status !== "ok") {
+    await autoImportPostBatch(port, { platform, status: (result && result.status) || "parse-failed", items: [], checkedAt });
+    return;
+  }
+  const items = [];
+  for (const it of (result.items || [])) {
+    items.push({
+      url: it.url || "", title: it.title || "", platformKey: it.platformKey || "",
+      image: await durableImage(it.image || ""),
+    });
+  }
+  await autoImportPostBatch(port, { platform, status: "ok", items, checkedAt });
+}
+
+// Entry point for both triggers: the daily alarm (manual=false, respects the
+// autoImportOn config gate) and a "Check now" poll claim (manual=true, always
+// runs regardless of the gate). Platforms run SEQUENTIALLY — one page visit
+// per platform per run, never in parallel.
+async function runAutoImportCheck(manual) {
+  if (autoImportBusy) return;
+  autoImportBusy = true;
+  try {
+    let port; try { port = await findAppPort(); } catch (e) { return; }
+    if (port == null) return;
+    const cfg = await autoImportGetConfig(port);
+    if (!manual && !cfg.on) return;   // config gate applies ONLY to the alarm path
+    const platforms = cfg.platforms || {};
+    for (const platform of ["fb", "ig"]) {
+      if (platforms[platform] === false) continue;   // per-platform checkbox off
+      await runAutoImportPlatform(platform, port);
+    }
+  } finally {
+    autoImportBusy = false;
+  }
+}
+
+// Bridge poll for the app's "Check now" button — mirrors pollCaptureRequest's
+// mailbox pattern: GET the request, POST null to claim/clear it, then run.
+async function pollAutoImportRequest() {
+  let port; try { port = await findAppPort(); } catch (e) { return; }
+  if (port == null) return;
+  let req = null;
+  try {
+    const r = await fetch("http://127.0.0.1:" + port + "/api/auto-import/request");
+    if (r && r.ok) { const j = await r.json(); req = j && j.request; }
+  } catch (e) { return; }
+  if (!req) return;
+  try { await fetch("http://127.0.0.1:" + port + "/api/auto-import/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
+  log("SW poller claimed auto-import Check-now request");
+  try { await runAutoImportCheck(true); } catch (e) { log("auto-import manual check failed: " + (e && e.message)); }
+}
+
+function iaPollAll() { pollCaptureRequest().catch(() => {}); pollBatchState().catch(() => {}); flushQueue().catch(() => {}); pollAutoImportRequest().catch(() => {}); }
 try {
   chrome.alarms.create("iaCapturePoll", { periodInMinutes: 0.5 });   // 30s is the MV3 minimum period
+  chrome.alarms.create(AUTOIMPORT_ALARM, { periodInMinutes: 1440, delayInMinutes: 30 });   // daily, first fire 30min after install/startup
   chrome.alarms.onAlarm.addListener((a) => {
     if (!a) return;
     if (a.name === "iaCapturePoll") iaPollAll();
@@ -647,6 +787,7 @@ try {
     // (survives SW suspension). restorePendingRequest re-dispatches a fresh claim,
     // marks a stale one attempted, and no-ops if a live dispatch still owns it.
     else if (a.name === PENDING_ALARM) restorePendingRequest().catch(() => {});
+    else if (a.name === AUTOIMPORT_ALARM) runAutoImportCheck(false).catch(() => {});
   });
 } catch (e) { log("alarms unavailable: " + (e && e.message)); }
 iaPollAll();   // poll once on SW spin-up
