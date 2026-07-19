@@ -528,10 +528,23 @@ function createServer(ctx) {
     const c = counts(ctx.db);
     const list = backup.listBackups();
     const lastBackup = list.length ? { name: list[0].name, counts: list[0].counts } : null;
+    // Store-safety flags (2026-07-17 incident hardening): a store dir under
+    // %TEMP% (poisoned config pointer from a killed test run) or counts
+    // collapsed vs the last-backup record persisted in config.json. Flags
+    // only — main.js surfaces a boot dialog; nothing is auto-"healed".
+    let safety = null;
+    try {
+      safety = config.evaluateStoreSafety({
+        storeDir: ctx.storeDir,
+        counts: { cards: c.cards | 0, saved: c.saved | 0 },
+        lastCounts: config.getLastCounts(),
+      });
+    } catch (e) { safety = null; }
     res.json({
       storePath: ctx.storeDir,
       counts: { cards: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 },
-      lastBackup
+      lastBackup,
+      safety
     });
   });
 

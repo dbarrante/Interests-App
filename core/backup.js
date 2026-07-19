@@ -4,7 +4,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { loadConfig } = require("./config.js");
+const { loadConfig, isTempPath, recordLastCounts, appDataDir } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
 const { counts, openDb, allCards, allSaved, allTombstones, getKV } = require("./db.js");
 const { setStorePath } = require("./config.js");
@@ -32,7 +32,20 @@ function detectDropboxRoot() {
 // fallback. (The fallback alone was wrong for Dropbox installs on another drive.)
 function dropboxBackupDir() {
   const cfg = loadConfig() || {};
-  if (cfg.backupDir) return cfg.backupDir;
+  // Sanity guard (2026-07-17 incident hardening): a killed test run once left
+  // the REAL config's backupDir pointing into %TEMP%, and daily backups
+  // silently landed in throwaway dirs for days. A temp backupDir in the real
+  // %APPDATA% config is never legitimate — ignore the poisoned value (loudly)
+  // and fall through to the real Dropbox root. BUT: when APPDATA itself is
+  // under the temp dir we are inside an ISOLATED TEST SANDBOX, where a temp
+  // backupDir is exactly right — honoring it is what keeps sandboxed tests
+  // from ever touching the real Dropbox folder (live lesson 2026-07-19: the
+  // first version of this guard redirected a sandboxed test's backup writes
+  // INTO the real backups folder).
+  const sandboxed = isTempPath(appDataDir());
+  if (cfg.backupDir && !sandboxed && isTempPath(cfg.backupDir)) {
+    console.error("backup: IGNORING configured backupDir under the OS temp dir (poisoned pointer?): " + cfg.backupDir);
+  } else if (cfg.backupDir) return cfg.backupDir;
   const dbx = detectDropboxRoot();
   if (dbx) return path.join(dbx, "Interests App", "backups");
   const home = process.env.USERPROFILE || process.env.HOME || ".";
@@ -138,6 +151,10 @@ function runBackup(db, storeDir) {
 
   // meta.json LAST
   fs.writeFileSync(path.join(destRoot, "meta.json"), JSON.stringify({ _counts: cnt, ts: Date.now() }));
+  // Record last-known-healthy counts OUTSIDE the store (config.json) so a
+  // future boot can notice a collapsed/swapped store that can't vouch for
+  // itself (2026-07-17 incident hardening; see config.evaluateStoreSafety).
+  try { recordLastCounts({ cards: cnt.imported, saved: cnt.saved }); } catch (e) {}
   return { name, counts: cnt };
 }
 
@@ -259,6 +276,11 @@ function restore(name, ctx) {
 
   // 4) reopen
   ctx.db = ctx.reopen();
+  // A restore is a DELIBERATE store transition — re-baseline the boot-guard's
+  // last-known counts so restoring an intentionally smaller/older backup does
+  // not trip the collapsed-counts dialog on next launch (false-positive
+  // hardening; see config.evaluateStoreSafety).
+  try { const rc = counts(ctx.db); recordLastCounts({ cards: rc.cards | 0, saved: rc.saved | 0 }); } catch (e) {}
   return { ok: true };
 }
 

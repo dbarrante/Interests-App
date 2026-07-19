@@ -6,7 +6,7 @@ const { startServer } = require("./core/server");
 const sync = require("./core/sync");
 const { createAsyncSync } = require("./core/syncworker");
 const undiciGuard = require("./core/undici-guard");
-const { setKV } = require("./core/db");
+const { setKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
@@ -49,6 +49,39 @@ if (!gotLock) {
       // Assign (no const/let) so it binds the module-scope `ctx` that will-quit
       // and the sync timers reach.
       ctx = buildContext(storeDir);
+
+      // Boot store-safety guard (2026-07-17 incident hardening): a killed test
+      // run once poisoned config.json's storePath toward a %TEMP% fixture and
+      // the next restart silently booted on a 2-card store. Flag — with a
+      // BLOCKING dialog, before any window/sync — a store dir under the OS
+      // temp dir, or counts collapsed to <10% of the last-backup record kept
+      // in config.json. The HUMAN decides: auto-"healing" either direction
+      // can freeze real data (in the incident, the temp store WAS the healthy
+      // one for a day). "Quit" leaves everything untouched for inspection.
+      try {
+        const c0 = counts(ctx.db);
+        const safety = config.evaluateStoreSafety({
+          storeDir,
+          counts: { cards: c0.cards | 0, saved: c0.saved | 0 },
+          lastCounts: config.getLastCounts(),
+        });
+        if (!safety.ok) {
+          const lines = [];
+          if (safety.tempStore) lines.push("Your data folder points INSIDE the Windows temp directory:\n" + storeDir + "\n\nThis usually means a crashed test run poisoned the app's config pointer — the real library is probably elsewhere.");
+          if (safety.collapsedCounts) lines.push("This store holds " + safety.collapsedCounts.nowCards + " cards, but the last backup recorded " + safety.collapsedCounts.lastCards + ". The library may have been swapped or truncated.");
+          lines.push("Continue only if this is expected. Quit leaves everything untouched (recommended: check Settings → Data location, or restore from a backup).");
+          const choice = dialog.showMessageBoxSync({
+            type: "warning",
+            title: "Interests App — data store looks wrong",
+            message: "The data store looks wrong",
+            detail: lines.join("\n\n"),
+            buttons: ["Quit (recommended)", "Continue anyway"],
+            defaultId: 0, cancelId: 0, noLink: true,
+          });
+          if (choice === 0) { app.quit(); return; }
+          console.error("boot: user chose to continue despite store-safety flags:", JSON.stringify(safety));
+        }
+      } catch (e) { console.error("boot store-safety check failed (continuing):", e && e.message); }
 
       // All periodic/launch/manual sync cycles run OFF the main process via a
       // worker-thread façade — a synchronous merge on the main process froze

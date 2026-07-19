@@ -155,6 +155,78 @@ function getPairingToken() {
   return typeof cfg.pairingToken === "string" && cfg.pairingToken ? cfg.pairingToken : null;
 }
 
+// --- Store-safety guards (2026-07-17 incident hardening) --------------------
+// Killed test runs once left config.json's storePath/backupDir pointing at
+// throwaway %TEMP% fixture dirs; the next app restart silently booted on a
+// 2-card fixture store and daily backups landed in temp. These helpers let
+// boot (main.js + /api/health) and backup resolution refuse/flag that state.
+
+// True when p is os.tmpdir() itself or any path inside it. Case-insensitive
+// on win32 (C:\Users\X\AppData\Local\Temp vs c:\users\...). tmpdirOverride is
+// for tests only.
+function isTempPath(p, tmpdirOverride) {
+  if (!p || typeof p !== "string") return false;
+  let tmp = tmpdirOverride || require("os").tmpdir();
+  let a = path.resolve(String(p)), b = path.resolve(tmp);
+  if (process.platform === "win32") { a = a.toLowerCase(); b = b.toLowerCase(); }
+  return a === b || a.startsWith(b + path.sep);
+}
+
+// Last-known-healthy library counts, persisted OUTSIDE the store precisely so
+// a swapped-in fixture store can't vouch for itself. Written after each
+// successful backup (core/backup.js).
+//
+// OWN SIDECAR FILE (%APPDATA%\Interests App\lastcounts.json), deliberately
+// NOT config.json (data-safety review 2026-07-19, HIGH): runBackup also runs
+// on the SYNC WORKER thread, and a read-modify-write of the whole config.json
+// there can race a main-thread setStorePath/setSyncConfig — last-writer-wins
+// on the whole document could silently REVERT the store pointer (the exact
+// incident class this feature guards against). A dedicated file whose only
+// content is the counts record makes concurrent whole-file overwrites
+// harmless. Tmp sidecar name includes pid + a random suffix because worker
+// threads SHARE process.pid.
+function lastCountsPath() {
+  return path.join(appDataDir(), "lastcounts.json");
+}
+function recordLastCounts(counts) {
+  fs.mkdirSync(appDataDir(), { recursive: true });
+  const target = lastCountsPath();
+  const tmpFile = target + ".tmp." + process.pid + "." + Math.random().toString(36).slice(2, 8);
+  const rec = {
+    cards: (counts && counts.cards) | 0,
+    saved: (counts && counts.saved) | 0,
+    at: Date.now(),
+  };
+  fs.writeFileSync(tmpFile, JSON.stringify(rec), "utf8");
+  try { fs.renameSync(tmpFile, target); }
+  catch (e) { try { fs.unlinkSync(tmpFile); } catch (_) {} throw e; }
+}
+function getLastCounts() {
+  try {
+    const rec = JSON.parse(fs.readFileSync(lastCountsPath(), "utf8"));
+    return rec && typeof rec === "object" ? rec : null;
+  } catch (_) { return null; }
+}
+
+// Pure evaluation of boot-time store safety. Flags, never fixes: the caller
+// (main.js dialog / /api/health) surfaces the state and the HUMAN decides —
+// auto-"healing" either direction can freeze real data (the 07-16 incident's
+// temp store WAS the healthy one for a day).
+//   tempStore:      the live store dir sits under os.tmpdir()
+//   collapsedCounts: cards collapsed to <10% of the last-backup record
+//                    (only when the record is substantial — >=100 cards)
+function evaluateStoreSafety(opts) {
+  opts = opts || {};
+  const tempStore = isTempPath(opts.storeDir, opts.tmpdir);
+  let collapsedCounts = null;
+  const last = opts.lastCounts;
+  const now = opts.counts;
+  if (last && now && (last.cards | 0) >= 100 && (now.cards | 0) < (last.cards | 0) * 0.1) {
+    collapsedCounts = { nowCards: now.cards | 0, lastCards: last.cards | 0, lastAt: last.at || 0 };
+  }
+  return { tempStore: tempStore, collapsedCounts: collapsedCounts, ok: !tempStore && !collapsedCounts };
+}
+
 function getSafeBrowsingKey() {
   const cfg = loadConfig();
   return typeof cfg.safeBrowsingKey === "string" ? cfg.safeBrowsingKey : "";
@@ -183,4 +255,8 @@ module.exports = {
   getPairingToken,
   getSafeBrowsingKey,
   setSafeBrowsingKey,
+  isTempPath,
+  recordLastCounts,
+  getLastCounts,
+  evaluateStoreSafety,
 };
