@@ -44,6 +44,8 @@
     ,bstumbleResults: function () { return "/api/bstumble/results"; }
     ,bstumbleFeedback: function () { return "/api/bstumble/feedback"; }
     ,news: function (interests) { return "/api/news?interests=" + encodeURIComponent((interests || []).join(",")); }
+    ,autoImportRequest: function () { return "/api/auto-import/request"; }
+    ,autoImportStatus: function () { return "/api/auto-import/status"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -163,7 +165,15 @@
       getBrowserStumbleRequest: function () { return jget(SE.bstumbleRequest()).then(function (j) { return (j && j.request) || null; }); },
       clearBrowserStumbleRequest: function () { return jsend("POST", SE.bstumbleRequest(), { request: null }).then(function () {}); },
       deliverBrowserStumbleResults: function (items) { return jsend("POST", SE.bstumbleResults(), { items: items || [] }).then(function () {}); },
-      drainBrowserStumbleFeedback: function () { return jget(SE.bstumbleFeedback()).then(function (j) { return (j && j.feedback) || []; }); }
+      drainBrowserStumbleFeedback: function () { return jget(SE.bstumbleFeedback()).then(function (j) { return (j && j.feedback) || []; }); },
+
+      // --- FB/IG auto-import (desktop-only; core/autoimport.js) ---
+      // Master/per-platform toggles live in ia_settings (kvSet("settings",...) — same
+      // kv the extension's GET /api/auto-import/config reads) so no dedicated
+      // endpoint is needed for those. Only the "Check now" request mailbox and the
+      // last-run status readback are dedicated routes.
+      setAutoImportRequest: function (req) { return jsend("POST", SE.autoImportRequest(), { request: req }).then(function () {}); },
+      getAutoImportStatus: function () { return jget(SE.autoImportStatus()).then(function (j) { return j || { fb: null, ig: null }; }); }
     };
 
     root.Store = Store;

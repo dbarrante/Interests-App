@@ -82,7 +82,7 @@ t("fail modal renders live Success/REMOVED/Recapturing status, refreshed by drai
   assert.ok(b.indexOf("isBadImg") >= 0 && b.indexOf('"success"') >= 0, "good image → success");
   assert.ok(html.indexOf("function refreshFailStatuses(") >= 0, "refreshFailStatuses defined");
   const di = html.indexOf("async function drainCaptures(");
-  const dbody = html.slice(di, di + 9000);
+  const dbody = html.slice(di, di + 11000);   // widened for Task 4's import-auto branch (drainCaptures legitimately grew)
   assert.ok(dbody.indexOf("refreshFailStatuses(") >= 0, "drainCaptures refreshes fail statuses");
   const fi = html.indexOf("function failRowHTML(");
   const fbody = html.slice(fi, fi + 900);

@@ -16,6 +16,16 @@
 
     if (!cap || !cap.url) return { action: "skip", reason: "no url" };
     if (cap.dead) return { action: "dead", reason: "extension reported dead/removed" };
+    // Auto-import survivors (FB/IG daily scheduler; core/autoimport.js) are tagged
+    // source: "fb-auto" | "ig-auto" and deliberately carry NO clip flag (see that
+    // module's header). This check MUST run before every other branch below —
+    // clip/recap, id/url card-matching, and the active-card window all key on
+    // fields (url, id) an auto-import item can innocently share with an open or
+    // existing card, and any of them claiming it first would silently stamp that
+    // card's image instead of creating a new Imported card (or worse, file it into
+    // Saved). The renderer (web/index.html drainCaptures) routes this action into
+    // Imported via dedupeImported/ingestImported, never addClip/Saved.
+    if (/-auto$/.test(cap.source || "")) return { action: "import-auto", reason: "platform auto-import survivor" };
     // A clip arriving while the user is actively recapturing a failed card (they clicked its
     // title in the failures modal within RECAP_WINDOW) heals THAT card instead of creating a new
     // Saved entry. The target is the explicit card they clicked, so the clip URL need NOT match

@@ -76,5 +76,44 @@ t("dead + recapTarget still -> dead (Remove unaffected)", () => {
   assert.strictEqual(r.action, "dead");
 });
 
+// --- Auto-import routing (Task 4) ---------------------------------------
+t("fb-auto source -> import-auto", () => {
+  const r = routeCapture({ url: "https://www.facebook.com/permalink/1", source: "fb-auto", title: "A post", ts: 5000 }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
+t("ig-auto source -> import-auto", () => {
+  const r = routeCapture({ url: "https://www.instagram.com/p/abc/", source: "ig-auto" }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE (binding, task-3 carry-forward): -auto capture with a matching OPEN active card still routes import-auto, never card-image", () => {
+  const imported = [{ id: "a", url: "https://www.facebook.com/permalink/1" }];
+  const r = routeCapture(
+    { url: "https://www.facebook.com/permalink/1", source: "fb-auto" },
+    base({ imported, lastOpened: { id: "a", ts: 999000 } })
+  );
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE: -auto capture carrying clip-like fields (clip:true, force:true) still routes import-auto, not saved", () => {
+  const r = routeCapture({ url: "https://www.instagram.com/p/xyz/", source: "ig-auto", clip: true, force: true }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE: -auto capture matching an imported card by exact id still routes import-auto, not card-image", () => {
+  const imported = [{ id: "a", url: "https://www.facebook.com/permalink/1" }];
+  const r = routeCapture({ id: "a", url: "https://www.facebook.com/permalink/1", source: "fb-auto" }, base({ imported }));
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE: -auto capture matching a live recapTarget still routes import-auto, not the heal card-image", () => {
+  const imported = [{ id: "f1", url: "https://www.facebook.com/permalink/1" }];
+  const r = routeCapture(
+    { url: "https://www.facebook.com/permalink/1", source: "fb-auto" },
+    base({ imported, recapTarget: { id: "f1", ts: 999000 } })
+  );
+  assert.strictEqual(r.action, "import-auto");
+});
+t("non-auto source (undefined/plain) is unaffected -> falls through to normal routing", () => {
+  const r = routeCapture({ url: "https://x.com/p", source: "manual" }, base());
+  assert.strictEqual(r.action, "unmatched");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -663,6 +663,26 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <div class="hint">Already-captured cards are normally skipped. Pick an age here to re-capture (and refresh the image &amp; description of) a card the next time you open it, once its last capture is older than the threshold.</div>
       </div>
 
+      <div class="sec" id="secAutoImport">
+        <h3>Facebook &amp; Instagram auto-import</h3>
+        <div class="hint" style="margin-bottom:10px">Once a day, the browser extension quietly checks your Facebook and Instagram Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on Facebook or Instagram.</div>
+        <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
+          <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically, once a day
+        </label>
+        <div style="margin-top:10px;display:flex;gap:18px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
+            <input type="checkbox" id="autoImportFbToggle" style="width:auto"> Facebook
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
+            <input type="checkbox" id="autoImportIgToggle" style="width:auto"> Instagram
+          </label>
+        </div>
+        <div style="margin-top:12px">
+          <button class="btn btn-ghost" onclick="autoImportCheckNow()">&#8635; Check now</button>
+        </div>
+        <div id="autoImportStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
+      </div>
+
       <div class="sec">
         <h3>Backup &amp; restore</h3>
         <div class="hint" style="margin-bottom:10px">Full backups — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history — are written and verified by the app into its backups folder. Each one is kept so you can roll back.</div>
@@ -775,6 +795,9 @@ const DEFAULTS = {
   recaptureMonths:0,
   showDates:false,
   autoBackup:0,
+  autoImportOn:false,   // master switch for the FB/IG daily auto-import scheduler — OFF by default (extension alarm no-ops until this is true); desktop-only, section hidden here
+  autoImportFb:true,    // per-platform checkboxes, only consulted once autoImportOn is true
+  autoImportIg:true,
   tagSidebar:false,
   catSidebar:false,
   reuseWindow:false,
@@ -1709,6 +1732,44 @@ function renderSettings(){
   if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
   if(typeof renderBackupList === "function") renderBackupList();
   if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
+  // Desktop-only (secAutoImport is hidden on the PWA via window.IA_IDB below) — the
+  // PWA's Store has no auto-import methods, so this block must never run there.
+  if(!window.IA_IDB && document.getElementById("autoImportToggle")){
+    document.getElementById("autoImportToggle").checked = !!S.autoImportOn;
+    document.getElementById("autoImportToggle").onchange = e=>{ S.autoImportOn=e.target.checked; save("settings",S); toast(S.autoImportOn?"Facebook/Instagram auto-import: checking once a day":"Auto-import off"); };
+    document.getElementById("autoImportFbToggle").checked = S.autoImportFb!==false;
+    document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
+    document.getElementById("autoImportIgToggle").checked = S.autoImportIg!==false;
+    document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
+    renderAutoImportStatus();
+  }
+}
+// "Check now": POSTs the request mailbox (/api/auto-import/request, mirrors
+// /api/capture-request) — the extension's 30s poller claims it and runs
+// regardless of the autoImportOn gate (that gate only applies to the daily
+// alarm). A generous delay before refreshing the status line gives the
+// extension time to poll, open the tab(s), scrape, and deliver.
+async function autoImportCheckNow(){
+  toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
+  try{ await Store.setAutoImportRequest(Date.now()); }catch(e){ toast("Couldn't reach the app service"); return; }
+  setTimeout(renderAutoImportStatus, 15000);
+}
+function _autoImportLine(label, st){
+  if(!st) return label+": not checked yet";
+  const when = new Date(st.at).toLocaleString();
+  if(st.status !== "ok"){
+    const why = st.status==="login-required" ? ("log in to "+label+" in your browser, then try again") : "couldn't read the page";
+    return label+": "+when+" — "+why;
+  }
+  return label+": "+when+" — "+st.added+" new"+(st.duplicates?", "+st.duplicates+" already seen":"");
+}
+// Reads GET /api/auto-import/status, which surfaces the ia_autoimport_last_fb /
+// ia_autoimport_last_ig kv records written by core/autoimport.js's processBatch.
+async function renderAutoImportStatus(){
+  const el = document.getElementById("autoImportStatus"); if(!el) return;
+  let st = {fb:null, ig:null};
+  try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
+  el.innerHTML = "<div>"+esc(_autoImportLine("Facebook", st.fb))+"</div><div>"+esc(_autoImportLine("Instagram", st.ig))+"</div>";
 }
 function saveSettings(notify){
   S.about = document.getElementById("aboutMe").value;
@@ -2223,6 +2284,20 @@ function parseImportText(text, name){
   return {items: out.map(clean), ids: []};
 }
 // normTs + clean moved to web/lib/import-parsers.js (root-attached bare names).
+// Maps one drainCaptures "import-auto" survivor (core/autoimport.js, tagged
+// source: "fb-auto"|"ig-auto", no clip:true — see that module's header) into
+// the {title,url,ts,img?,src,desc} shape ingestImported/dedupeImported expect.
+// Mirrors the existing FB/IG file-import convention (clean(i)+{src:"facebook"...}
+// and the "Saved from X" desc marker dedupeImported treats as replaceable).
+// Imageless is fine by design: the FB/IG "Get pictures" flow backfills later —
+// never route through addClip/Saved (route-capture.js resolves this action
+// BEFORE any clip/card-matching branch precisely so this never happens).
+function autoImportItemFromCap(cap, now){
+  const src = /^fb-auto$/.test(cap.source||"") ? "facebook" : "instagram";
+  const it = { title: cap.title || domain(cap.url) || cap.url, url: cap.url, ts: cap.ts || now, src, desc: "Saved from "+(src==="facebook"?"Facebook":"Instagram") };
+  if(cap.clipImage) it.img = cap.clipImage;
+  return it;
+}
 async function resolveYT(ids){
   ids=[...new Set(ids)].slice(0,60);
   const out=[];
@@ -4953,6 +5028,7 @@ async function drainCaptures(){
   if(!Array.isArray(queue)||!queue.length) return;
   let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0;
   const remaining=[];
+  const autoImported=[];   // FB/IG auto-import survivors this run (see ingestImported call below)
   const now=Date.now();
   // The "active card": the card the user most recently opened (set by impOpen).
   // A manual capture has no id, so when its URL doesn't match any card it's
@@ -4977,6 +5053,11 @@ async function drainCaptures(){
         console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")"); }
       continue;
     }
+
+    // FB/IG auto-import survivor -> Imported via ingestImported below, never Saved.
+    // Dead code on the PWA (no local server feeds this "-auto" source here) but kept
+    // in lockstep with web/index.html and pwa/route-capture.js's shared contract.
+    if(decision.action === "import-auto"){ autoImported.push(autoImportItemFromCap(cap, now)); continue; }
 
     if(decision.action === "saved"){
       try{ if(!igHealMatch(cap)) addClip(cap); }catch(e){ console.error("[clip] addClip failed", e); }
@@ -5057,6 +5138,7 @@ async function drainCaptures(){
       imported.forEach(o=>{ if(o!==match && o.url && clipKey(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
   }
+  if(autoImported.length){ ingestImported(autoImported); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } }
   // queue was drained server-side; re-enqueue anything we deliberately deferred
   if(remaining.length){ try{ await Promise.all(remaining.map(function(c){ return fetch("/api/captures",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({capture:c})}); })); }catch(e){} }
   // keep the active card alive on a rolling window while you're working on it
@@ -5399,7 +5481,7 @@ setupPasteToCard();
 // can never do anything. window.IA_IDB is set only by pwa/idb.js, which
 // only pwa/index.html loads, so this is a reliable PWA-vs-desktop check.
 if (window.IA_IDB) {
-  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"].forEach(function(id){
+  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.style.display = "none";
   });
