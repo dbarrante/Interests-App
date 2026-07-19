@@ -2293,7 +2293,12 @@ function parseImportText(text, name){
 // never route through addClip/Saved (route-capture.js resolves this action
 // BEFORE any clip/card-matching branch precisely so this never happens).
 function autoImportItemFromCap(cap, now){
-  const src = /^fb-auto$/.test(cap.source||"") ? "facebook" : "instagram";
+  // Explicit two-way mapping (task review polish): only the two sources the
+  // core emits are recognized; anything else defaults to instagram but is a
+  // contract drift worth seeing in the console, not a silent assumption.
+  const s = cap.source || "";
+  if (s !== "fb-auto" && s !== "ig-auto") console.warn("auto-import: unexpected source", s);
+  const src = s === "fb-auto" ? "facebook" : "instagram";
   const it = { title: cap.title || domain(cap.url) || cap.url, url: cap.url, ts: cap.ts || now, src, desc: "Saved from "+(src==="facebook"?"Facebook":"Instagram") };
   if(cap.clipImage) it.img = cap.clipImage;
   return it;
@@ -5138,7 +5143,7 @@ async function drainCaptures(){
       imported.forEach(o=>{ if(o!==match && o.url && clipKey(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
     }
   }
-  if(autoImported.length){ ingestImported(autoImported); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } }
+  if(autoImported.length){ ingestImported(autoImported); updateCounts(); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } }   // updateCounts: the tab badge lagged after an auto-import-only drain (task review polish)
   // queue was drained server-side; re-enqueue anything we deliberately deferred
   if(remaining.length){ try{ await Promise.all(remaining.map(function(c){ return fetch("/api/captures",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({capture:c})}); })); }catch(e){} }
   // keep the active card alive on a rolling window while you're working on it
