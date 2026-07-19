@@ -22,10 +22,15 @@ function peerDirs(syncDir, selfDeviceId) {
     .filter(function (p) { try { return fs.statSync(p.dir).isDirectory(); } catch (e) { return false; } });
 }
 
-// Atomic write: write to a .tmp sidecar then rename into place.
+// Atomic write: write to a UNIQUE .tmp sidecar then rename into place.
 // On the same volume, rename is atomic — Dropbox never sees a torn file.
+// The temp name carries pid + a counter so a will-quit publish on the main
+// process and an in-flight worker publish (which bypasses the worker
+// single-flight) can't write the SAME temp path concurrently and produce a
+// torn temp that then gets renamed into place (2026-07-18 data-safety LOW).
+let _atomicSeq = 0;
 function _writeAtomic(file, text) {
-  const tmpFile = file + ".tmp";
+  const tmpFile = file + "." + process.pid + "." + (_atomicSeq++) + ".tmp";
   fs.writeFileSync(tmpFile, text);
   fs.renameSync(tmpFile, file);
 }

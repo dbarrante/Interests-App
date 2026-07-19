@@ -191,5 +191,66 @@ test("serializeLibrary returns cards, saved, fp, tombstones", () => {
   d.close();
 });
 
+// --- asOf staleness-preserve reconcile (2026-07-18 data-safety HIGH) ---------
+// A background merge adds a row the client hasn't seen; the client's next
+// full-array PUT (asOf < the merge time) must PRESERVE it AND report it so the
+// renderer can fold it back in — otherwise the *following* PUT (asOf advanced)
+// deletes it. This models the exact worker-merge-interleaves-with-persist race.
+test("replaceCards returns preserved rows kept via the asOf staleness branch", () => {
+  const d = db.openDb(tmpStore());
+  db.setKV(d, "_", "_");
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }]);   // client's known set
+  const clientAsOf = Date.now();
+  // background merge lands c_X AFTER the client loaded
+  const later = clientAsOf + 5000;
+  db.upsertCardSynced(d, { id: "c_X", url: "https://x.com" }, later);
+  // client persists its stale array (only c_1) with asOf < later
+  const r = db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }], { asOf: clientAsOf });
+  assert.ok(r && Array.isArray(r.preserved), "returns {preserved:[]}");
+  assert.deepStrictEqual(r.preserved.map(x => x.id), ["c_X"], "c_X preserved + reported");
+  assert.ok(db.allCards(d).some(c => c.id === "c_X"), "c_X still in the store");
+  d.close();
+});
+
+test("LAUNDER GUARD: after folding the preserved row back in, the next PUT does NOT delete it", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }]);
+  const clientAsOf = Date.now();
+  db.upsertCardSynced(d, { id: "c_X", url: "https://x.com" }, clientAsOf + 5000);
+  const r = db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }], { asOf: clientAsOf });
+  // renderer folds r.preserved back into its array (what the reconcile hook does)
+  const reconciled = [{ id: "c_1", url: "https://a.com" }].concat(r.preserved);
+  // next PUT with an ADVANCED asOf (post-merge) — the exact step that used to delete c_X
+  db.replaceCards(d, reconciled, { asOf: Date.now() });
+  assert.ok(db.allCards(d).some(c => c.id === "c_X"), "c_X survives the advanced-asOf PUT (was the data-loss)");
+  const lib = db.serializeLibrary(d);
+  assert.ok(!lib.tombstones.some(t => t.id === "c_X"), "no tombstone for c_X");
+  d.close();
+});
+
+test("COUNTER-SCENARIO: a genuine user delete of an edited row still tombstones (freeze would have broken this)", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }, { id: "c_Y", url: "https://y.com" }]);
+  const asOf1 = Date.now();
+  // user EDITS c_Y (content change bumps its updatedAt to ~now, > asOf1)
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }, { id: "c_Y", url: "https://y-EDITED.com" }], { asOf: asOf1 });
+  // user then DELETES c_Y — next full PUT omits it, asOf advanced to now
+  db.replaceCards(d, [{ id: "c_1", url: "https://a.com" }], { asOf: Date.now() });
+  assert.ok(!db.allCards(d).some(c => c.id === "c_Y"), "the real delete of the edited row went through");
+  const lib = db.serializeLibrary(d);
+  assert.ok(lib.tombstones.some(t => t.id === "c_Y" && t.kind === "card"), "c_Y tombstoned");
+  d.close();
+});
+
+test("replaceSaved mirrors: preserves + reports a concurrently-merged saved row", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceSaved(d, [{ id: "s_1", url: "https://a.com" }]);
+  const asOf = Date.now();
+  db.upsertSavedSynced(d, { id: "s_X", url: "https://x.com" }, asOf + 5000);
+  const r = db.replaceSaved(d, [{ id: "s_1", url: "https://a.com" }], { asOf });
+  assert.deepStrictEqual(r.preserved.map(x => x.id), ["s_X"]);
+  d.close();
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

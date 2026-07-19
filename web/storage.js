@@ -77,7 +77,18 @@
     // rows a background sync merge added after the client loaded (see core/db.js).
     var _asOfCards = 0, _asOfSaved = 0;
 
+    // Reconcile hooks: the renderer sets these so that when a PUT preserves rows
+    // via the server's asOf staleness branch (rows merged concurrently that the
+    // client's array didn't have), those rows are folded back into the live
+    // in-memory array BEFORE _asOf advances. Without this, the next full-array
+    // PUT carries a newer asOf and tombstones exactly those rows — the
+    // 2026-07-18 data-safety HIGH (and the same class as the 07-16 incident).
+    // Called synchronously in the PUT's .then, so any later persist sees the
+    // reconciled array. Default no-op keeps headless/test callers working.
+    var _reconcileCards = null, _reconcileSaved = null;
+
     var Store = {
+      setReconcileHooks: function (onCards, onSaved) { _reconcileCards = onCards; _reconcileSaved = onSaved; },
       // --- kv (replaces persistent ia_* localStorage) ---
       kvGet: function (key) {
         return jget(SE.kv(key)).then(function (j) {
@@ -94,7 +105,13 @@
       putCards: function (arr, opts) {
         var body = { cards: arr || [], asOf: _asOfCards };
         if (opts && opts.confirm) body.confirm = true;
-        return jsend("PUT", SE.cards(), body).then(function (j) { _asOfCards = Date.now(); return j; });
+        return jsend("PUT", SE.cards(), body).then(function (j) {
+          // Fold preserved (concurrently-merged) rows back into the live array
+          // BEFORE advancing the clock — order is load-bearing (see above).
+          if (j && j.preserved && j.preserved.length && _reconcileCards) { try { _reconcileCards(j.preserved); } catch (e) {} }
+          _asOfCards = Date.now();
+          return j;
+        });
       },
       patchCard: function (card) { return jsend("PATCH", SE.card(card.id), { card: card }).then(function () {}); },
       delCard: function (id) { return jsend("DELETE", SE.card(id)).then(function () {}); },
@@ -104,7 +121,11 @@
       putSaved: function (arr, opts) {
         var body = { saved: arr || [], asOf: _asOfSaved };
         if (opts && opts.confirm) body.confirm = true;
-        return jsend("PUT", SE.saved(), body).then(function (j) { _asOfSaved = Date.now(); return j; });
+        return jsend("PUT", SE.saved(), body).then(function (j) {
+          if (j && j.preserved && j.preserved.length && _reconcileSaved) { try { _reconcileSaved(j.preserved); } catch (e) {} }
+          _asOfSaved = Date.now();
+          return j;
+        });
       },
       patchSaved: function (item) { return jsend("PATCH", SE.savedItem(item.id), { item: item }).then(function () {}); },
       delSaved: function (id) { return jsend("DELETE", SE.savedItem(id)).then(function () {}); },

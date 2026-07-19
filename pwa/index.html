@@ -5280,6 +5280,18 @@ function undoDead(){
 }
 
 /* ============ init ============ */
+// Desktop parity: the asOf staleness-preserve reconcile is a Core-service
+// (replaceCards) mechanism. storage-pwa.js has no setReconcileHooks, so this
+// guard is a no-op on the PWA — kept for structural alignment with web/.
+function _reconcileById(arr, rows){
+  const have = new Set(arr.map(x=>x && x.id));
+  let n=0; for(const r of rows){ if(r && r.id && !have.has(r.id)){ arr.push(r); have.add(r.id); n++; } }
+  return n;
+}
+if (Store.setReconcileHooks) Store.setReconcileHooks(
+  rows => { if(_reconcileById(imported, rows)) updateCounts(); },
+  rows => { if(_reconcileById(saved, rows)) updateCounts(); }
+);
 async function bootData(){
   // pull all persistent state from the Core service before first render
   imported = await Store.getCards();

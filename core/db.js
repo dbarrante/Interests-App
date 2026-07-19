@@ -198,6 +198,12 @@ function replaceCards(db, arr, opts) {
   const now = Date.now();
   const incoming = new Set();
   const ins = db.prepare(_CARD_INSERT_SQL);
+  // Rows the client didn't send but we KEPT because they were merged after the
+  // client loaded (asOf staleness branch). Returned so the renderer can fold
+  // them back into its in-memory array BEFORE it advances its own asOf clock —
+  // otherwise the client's next full-array PUT carries a newer asOf and deletes
+  // exactly these rows (2026-07-18 data-safety review, HIGH). See web/storage.js.
+  const preserved = [];
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM cards").run();
@@ -217,6 +223,7 @@ function replaceCards(db, arr, opts) {
         // tombstone vs updatedAt), so the tombstone must go.
         _insertCardRow(ins, existing[id], existing[id].updatedAt);
         delTombstone(db, id, "card");
+        preserved.push(rowToCard(existing[id]));
         continue;
       }
       addTombstone(db, id, "card", now);
@@ -227,6 +234,7 @@ function replaceCards(db, arr, opts) {
     db.exec("ROLLBACK");
     throw e;
   }
+  return { preserved };
 }
 
 function addTombstone(db, id, kind, deletedAt) {
@@ -347,6 +355,7 @@ function replaceSaved(db, arr, opts) {
   const now = Date.now();
   const incoming = new Set();
   const ins = db.prepare(_SAVED_INSERT_SQL);
+  const preserved = [];   // see replaceCards — staleness-kept rows returned for renderer reconcile
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM saved").run();
@@ -362,6 +371,7 @@ function replaceSaved(db, arr, opts) {
       if (asOf != null && Number(existing[id].updatedAt) > asOf) {
         _insertSavedRow(ins, existing[id], existing[id].updatedAt);
         delTombstone(db, id, "saved");
+        preserved.push(rowToSaved(existing[id]));
         continue;
       }
       addTombstone(db, id, "saved", now);
@@ -372,6 +382,7 @@ function replaceSaved(db, arr, opts) {
     db.exec("ROLLBACK");
     throw e;
   }
+  return { preserved };
 }
 
 function deleteSaved(db, id, deletedAt) {

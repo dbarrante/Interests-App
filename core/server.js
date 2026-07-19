@@ -204,8 +204,11 @@ function createServer(ctx) {
       return res.status(409).json({ ok: false, error: "mass_delete_blocked", existing, incoming: cards.length });
     }
     ctx.syncDirty = true;
-    dbm.replaceCards(ctx.db, cards, { asOf });
-    res.json({ ok: true, count: cards.length });
+    const r = dbm.replaceCards(ctx.db, cards, { asOf });
+    // `preserved` = rows kept via the asOf staleness branch (merged concurrently,
+    // absent from this PUT). The client must fold these back into its in-memory
+    // array before its next persist or it will delete them (data-safety HIGH).
+    res.json({ ok: true, count: cards.length, preserved: (r && r.preserved) || [] });
   });
   app.patch("/api/cards/:id", (req, res) => {
     ctx.syncDirty = true;
@@ -232,8 +235,8 @@ function createServer(ctx) {
       return res.status(409).json({ ok: false, error: "mass_delete_blocked", existing, incoming: saved.length });
     }
     ctx.syncDirty = true;
-    dbm.replaceSaved(ctx.db, saved, { asOf });
-    res.json({ ok: true, count: saved.length });
+    const r = dbm.replaceSaved(ctx.db, saved, { asOf });
+    res.json({ ok: true, count: saved.length, preserved: (r && r.preserved) || [] });
   });
   app.patch("/api/saved/:id", (req, res) => {
     ctx.syncDirty = true;

@@ -5202,6 +5202,20 @@ function undoDead(){
 }
 
 /* ============ init ============ */
+// Fold rows the server preserved via its asOf staleness branch (concurrently
+// merged by a background sync, absent from the array we just PUT) back into the
+// live globals, so the NEXT persist includes them instead of deleting them
+// (2026-07-18 data-safety HIGH — same class as the 07-16 phantom-delete). By id,
+// newest-wins, no duplicates; the reconcile runs before Store advances its asOf.
+function _reconcileById(arr, rows){
+  const have = new Set(arr.map(x=>x && x.id));
+  let n=0; for(const r of rows){ if(r && r.id && !have.has(r.id)){ arr.push(r); have.add(r.id); n++; } }
+  return n;
+}
+if (Store.setReconcileHooks) Store.setReconcileHooks(
+  rows => { if(_reconcileById(imported, rows)) updateCounts(); },
+  rows => { if(_reconcileById(saved, rows)) updateCounts(); }
+);
 async function bootData(){
   // pull all persistent state from the Core service before first render
   imported = await Store.getCards();

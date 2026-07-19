@@ -117,10 +117,13 @@ t("processBatch: happy path adds survivors to the SAME ia_capture_queue, shaped 
   // auto-import routing branch (Task 4) keys on.
   assert.ok(!c.clip, "survivors must NOT carry clip:true");
   assert.strictEqual(c.source, "fb-auto");
-  assert.strictEqual(c.ts, 1000);
+  assert.strictEqual(c.ts, 1000);   // display recency still uses the client checkedAt
   const ledger = readJsonKV(db, "ia_autoimport_seen_fb");
-  assert.strictEqual(ledger.fb_1, 1000);
-  assert.strictEqual(ledger.fb_2, 1000);
+  // REVIEW FIX (data-safety LOW): the ledger is stamped with the SERVER clock,
+  // not the client-supplied checkedAt (a hostile future/zero value must not skew
+  // prune order). So the values are real epoch-ms, not the test's 1000.
+  assert.ok(ledger.fb_1 > 1e12 && ledger.fb_2 > 1e12, "ledger stamped with server epoch-ms, not client checkedAt");
+  assert.strictEqual(ledger.fb_1, ledger.fb_2, "one server timestamp for the whole batch");
   const last = readJsonKV(db, "ia_autoimport_last_fb");
   assert.deepStrictEqual(last, { at: last.at, found: 2, added: 2, duplicates: 0, status: "ok" });
 });
@@ -166,7 +169,7 @@ t("processBatch: a NEW platformKey whose normalized URL already exists as a card
   const r = autoimport.processBatch({ db }, { platform: "fb", status: "ok", checkedAt: 42, items: [item({ url: "https://facebook.com/existing", platformKey: "new_key_1" })] });
   assert.deepStrictEqual(r, { added: 0, duplicates: 1, status: "ok" });
   const ledger = readJsonKV(db, "ia_autoimport_seen_fb");
-  assert.strictEqual(ledger.new_key_1, 42, "the platformKey is still recorded even though it was a URL duplicate");
+  assert.ok(ledger.new_key_1 > 1e12, "the platformKey is still recorded (server-stamped) even though it was a URL duplicate");
 });
 
 t("processBatch: URL dedup also matches an existing SAVED item", () => {
@@ -262,7 +265,7 @@ t("processBatch: a '__proto__' platformKey is RECORDED in the ledger and blocks 
   assert.deepStrictEqual(r1, { added: 1, duplicates: 0, status: "ok" });
   const ledger = readJsonKV(db, "ia_autoimport_seen_fb");
   assert.ok(Object.prototype.hasOwnProperty.call(ledger, "__proto__"), "'__proto__' persisted as an OWN ledger key");
-  assert.strictEqual(ledger["__proto__"], 7);
+  assert.ok(ledger["__proto__"] > 1e12, "'__proto__' stamped with the server clock");
   const r2 = autoimport.processBatch(ctx, { platform: "fb", status: "ok", checkedAt: 8, items: [item({ url: "https://facebook.com/proto-post-2", platformKey: "__proto__" })] });
   assert.deepStrictEqual(r2, { added: 0, duplicates: 1, status: "ok" }, "second '__proto__' delivery is ledger-blocked");
 });

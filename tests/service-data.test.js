@@ -58,7 +58,7 @@ t("cards: PUT bulk -> {ok,count}; GET returns them; PATCH and DELETE work", asyn
     { id: "a", url: "ua", platform: "fb", cat: "Saved", ts: 2, img: "idb:a", title: "A" },
     { id: "b", url: "ub", platform: "pin", cat: "Feed", ts: 1, img: "", title: "B" },
   ] }) });
-  assert.deepStrictEqual(await r.json(), { ok: true, count: 2 });
+  assert.deepStrictEqual(await r.json(), { ok: true, count: 2, preserved: [] });
   r = await fetch(base + "/api/cards");
   const got = (await r.json()).cards.sort((x, y) => x.id.localeCompare(y.id));
   assert.strictEqual(got.length, 2);
@@ -77,7 +77,7 @@ t("saved: PUT/GET/PATCH/DELETE round-trip (item.image preserved)", async ({ base
   let r = await fetch(base + "/api/saved", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ saved: [
     { id: "s", url: "u", category: "Tips", clipped: 5, image: "idb:s", title: "T" },
   ] }) });
-  assert.deepStrictEqual(await r.json(), { ok: true, count: 1 });
+  assert.deepStrictEqual(await r.json(), { ok: true, count: 1, preserved: [] });
   r = await fetch(base + "/api/saved");
   assert.strictEqual((await r.json()).saved[0].image, "idb:s");
   r = await fetch(base + "/api/saved/s", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ item: { id: "s", url: "u", category: "Tips", clipped: 5, image: "idb:s", title: "T2" } }) });

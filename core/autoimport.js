@@ -151,7 +151,14 @@ function processBatch(ctx, batch) {
   if (batch.items !== undefined && !Array.isArray(batch.items)) return { added: 0, duplicates: 0, status: "invalid" };
 
   const incomingStatus = (typeof batch.status === "string" && batch.status) ? batch.status : "parse-failed";
-  const checkedAt = Number(batch.checkedAt) || Date.now();
+  // The ledger's eviction order (oldest firstSeen pruned first) must be stamped
+  // with the SERVER clock, not the client-supplied checkedAt — a future/zero
+  // checkedAt from a buggy or hostile (token-gated loopback) POST could skew the
+  // prune order and prematurely age out a deleted card's key, letting it
+  // re-import (2026-07-18 data-safety LOW). Client checkedAt is kept only as the
+  // survivor's `ts` (display recency), never as ledger truth.
+  const serverNow = Date.now();
+  const checkedAt = Number(batch.checkedAt) || serverNow;
   let rawItems = Array.isArray(batch.items) ? batch.items : [];
   // Oversized batch REJECTS outright (review adjudication): the scraper's own
   // CAP bounds a legitimate run to ~100 entries, so >200 is malformed or
@@ -181,7 +188,7 @@ function processBatch(ctx, batch) {
     // permanent: the key stays in the ledger long after the card is gone, so
     // it is never reconsidered on a later scrape (until the 5000-cap prune
     // eventually ages very old keys out).
-    if (!seenBefore) ledger[item.platformKey] = checkedAt;
+    if (!seenBefore) ledger[item.platformKey] = serverNow;
     if (seenBefore || urlExists) { duplicates++; continue; }
     added++;
     existingUrls.add(nu);   // guard against the same URL appearing twice within one batch
