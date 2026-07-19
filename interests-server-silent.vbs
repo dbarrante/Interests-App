@@ -1,11 +1,9 @@
 ' ============================================================
-'  Silent launcher for the Interests App local server.
-'  Runs python's http.server on port 3456, hidden (no window),
-'  serving this app folder. A copy of this file is placed in the
-'  Windows Startup folder so the server is available after login.
-'  To stop it, end the python process in Task Manager.
+'  RETIRED 2026-07-18. This launcher used to start a hidden
+'  python http.server on port 3456 (pre-Electron era) — and a
+'  copy in the Windows Startup folder kept resurrecting it,
+'  squatting the installed app's port at every login. If run
+'  now, it just opens the real app.
 ' ============================================================
 Set sh = CreateObject("WScript.Shell")
-sh.CurrentDirectory = "D:\Dropbox\Documents\Claude\Projects\Interests App"
-' window style 0 = hidden, False = don't wait. Try the py launcher, then python.
-sh.Run "cmd /c py -m http.server 3456 || python -m http.server 3456", 0, False
+sh.Run """C:\Program Files\Interests App\Interests App.exe""", 1, False
