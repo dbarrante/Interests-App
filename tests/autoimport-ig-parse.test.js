@@ -113,6 +113,48 @@ t("title is capped at 512 chars", () => {
   assert.strictEqual(r.items[0].title, long.slice(0, 512));
 });
 
+/* ---------- REVIEW FINDING 1: platformKey collision across URL shapes ---------- */
+t("REGRESSION: same shortcode via /p/ AND /reel/ collapses to ONE item (first wins)", () => {
+  // Mirror of the FB finding: dedup keyed on type:id but platformKey exposed the
+  // bare shortcode, so /p/<code>/ + /reel/<code>/ produced TWO items with the
+  // SAME platformKey. Dedup must be on the bare shortcode.
+  const html = '<ul class="saved-grid">' +
+    '<li><a href="https://www.instagram.com/p/SameCode1/" aria-label="First shape">a</a></li>' +
+    '<li><a href="https://www.instagram.com/reel/SameCode1/" aria-label="Second shape">b</a></li>' +
+    "</ul>";
+  const r = IG.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "equivalent shapes collapse");
+  assert.strictEqual(r.items[0].platformKey, "SameCode1");
+  assert.strictEqual(r.items[0].url, "https://www.instagram.com/p/SameCode1/", "first-encountered wins");
+});
+
+/* ---------- REVIEW FINDING 2: script/style bleed ---------- */
+t("REGRESSION: a post anchor literal inside a <script> hydration payload is NOT extracted", () => {
+  const html = '<html><body>' +
+    '<script>var payload = {"html":"<a href=\\"https://www.instagram.com/p/GhostAAA1/\\">Ghost</a>",' +
+    ' plain: \'<a href="https://www.instagram.com/reel/GhostBBB2/">Ghost2</a>\'};</script>' +
+    '<style>.x{content:\'<a href="https://www.instagram.com/p/GhostCCC3/">g</a>\'}</style>' +
+    '<ul class="saved-grid"><li><a href="https://www.instagram.com/p/RealDDD4/" aria-label="Real post">r</a></li></ul>' +
+    "</body></html>";
+  const r = IG.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "only the real markup anchor");
+  assert.strictEqual(r.items[0].platformKey, "RealDDD4");
+});
+t("REGRESSION: a page whose ONLY post anchors live in <script> is parse-failed, not ok", () => {
+  const html = '<html><body><script>var s = \'<a href="https://www.instagram.com/p/GhostX/">x</a>\';</script>' +
+    "<div>loaded page, no saved items</div></body></html>";
+  const r = IG.parseSavedHtml(html);
+  assert.strictEqual(r.status, "parse-failed");
+  assert.deepStrictEqual(r.items, []);
+});
+
+/* ---------- near-miss URL shapes ---------- */
+t("near-miss: /explore/p/<code>/ does not match", () => {
+  const html = '<ul class="saved-grid"><li><a href="https://www.instagram.com/explore/p/NopeCode1/" aria-label="explore">e</a></li></ul>';
+  const r = IG.parseSavedHtml(html);
+  assert.deepStrictEqual(r.items, []);
+});
+
 /* ---------- parseSavedDoc delegation ---------- */
 t("parseSavedDoc(doc) serializes documentElement.outerHTML and delegates to parseSavedHtml", () => {
   const stubDoc = { documentElement: { outerHTML: SAMPLE } };

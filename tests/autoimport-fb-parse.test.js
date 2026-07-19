@@ -130,6 +130,53 @@ t("title is capped at 512 chars", () => {
   assert.strictEqual(r.items[0].title, long.slice(0, 512));
 });
 
+/* ---------- REVIEW FINDING 1: platformKey collision across URL shapes ---------- */
+t("REGRESSION: same post id via two URL shapes collapses to ONE item (first wins)", () => {
+  // Reviewer-reproduced: dedup keyed on type:id but platformKey exposed bare id,
+  // so /posts/<id> + /permalink.php?story_fbid=<id> produced TWO items with the
+  // SAME platformKey. Dedup must be on the bare id.
+  const html = '<ul class="saved-list">' +
+    '<li><a href="https://www.facebook.com/somepage/posts/5551112222" aria-label="First shape">a</a></li>' +
+    '<li><a href="https://www.facebook.com/permalink.php?story_fbid=5551112222&amp;id=999" aria-label="Second shape">b</a></li>' +
+    "</ul>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "equivalent shapes collapse");
+  assert.strictEqual(r.items[0].platformKey, "5551112222");
+  assert.strictEqual(r.items[0].url, "https://www.facebook.com/somepage/posts/5551112222", "first-encountered wins");
+});
+
+/* ---------- REVIEW FINDING 2: script/style bleed ---------- */
+t("REGRESSION: a post anchor literal inside a <script> hydration payload is NOT extracted", () => {
+  const html = '<html><body>' +
+    '<script>var payload = {"html":"<a href=\\"https://www.facebook.com/ghost/posts/70707\\">Ghost</a>",' +
+    ' plain: \'<a href="https://www.facebook.com/ghost2/posts/80808">Ghost2</a>\'};</script>' +
+    '<style>.x{content:\'<a href="https://www.facebook.com/ghost3/posts/90909">g</a>\'}</style>' +
+    '<ul class="saved-list"><li><a href="https://www.facebook.com/real/posts/12121" aria-label="Real post">r</a></li></ul>' +
+    "</body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "only the real markup anchor");
+  assert.strictEqual(r.items[0].platformKey, "12121");
+});
+t("REGRESSION: a page whose ONLY post anchors live in <script> is parse-failed, not ok", () => {
+  const html = '<html><body><script>var s = \'<a href="https://www.facebook.com/g/posts/1">x</a>\';</script>' +
+    "<div>loaded page, no saved items</div></body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.status, "parse-failed");
+  assert.deepStrictEqual(r.items, []);
+});
+
+/* ---------- near-miss URL shapes ---------- */
+t("near-miss: /watch/ URL WITHOUT a v= param does not match", () => {
+  const html = '<ul class="saved-list"><li><a href="https://www.facebook.com/watch/" aria-label="Watch home">w</a></li></ul>';
+  const r = FB.parseSavedHtml(html);
+  assert.deepStrictEqual(r.items, []);
+});
+t("near-miss: a bare profile URL facebook.com/someuser does not match", () => {
+  const html = '<ul class="saved-list"><li><a href="https://www.facebook.com/someuser" aria-label="Some User">p</a></li></ul>';
+  const r = FB.parseSavedHtml(html);
+  assert.deepStrictEqual(r.items, []);
+});
+
 /* ---------- parseSavedDoc delegation ---------- */
 t("parseSavedDoc(doc) serializes documentElement.outerHTML and delegates to parseSavedHtml", () => {
   const stubDoc = { documentElement: { outerHTML: SAMPLE } };

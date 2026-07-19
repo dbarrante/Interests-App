@@ -48,6 +48,16 @@
   // heuristic beats two subtly-different ones drifting apart.
   var LOGIN_RE = /(?:\bname=["']login["'])|(?:\bid=["']loginform["'])|(?:\baction=["'][^"']*login[^"']*["'])|(?:\bclass=["'][^"']*loginform[^"']*["'])|(?:\/accounts\/login\/)/i;
 
+  // Review Finding 2 fix: inline <script> hydration payloads (and <style>
+  // blocks) can carry literal anchor markup as string data; a raw scan over
+  // the full page would extract those as real items. Strip both regions
+  // BEFORE any block/anchor walk. Single linear regex pass, lazy per-block.
+  function stripScriptStyle(html) {
+    return String(html)
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, "");
+  }
+
   function decodeEntities(s) {
     return String(s == null ? "" : s)
       .replace(/&amp;/g, "&")
@@ -136,7 +146,11 @@
       var href = decodeEntities(hrefRaw);
       var pat = matchPattern(href);
       if (!pat) continue;
-      var key = pat.type + ":" + pat.id;
+      // Review Finding 1 fix: dedup on the BARE id (first-encountered wins),
+      // not type:id — the same post reached via two URL shapes (e.g.
+      // /<page>/posts/<id> AND /permalink.php?story_fbid=<id>) must collapse
+      // to ONE item, since platformKey exposes only the bare id.
+      var key = pat.id;
       if (seen[key]) continue;
 
       var block = blockFor(blocks, m.index);
@@ -160,7 +174,10 @@
 
   function parseSavedHtml(html) {
     html = String(html == null ? "" : html);
-    var items = extractItems(html);
+    // Anchor/image extraction runs on script/style-stripped markup only;
+    // login-marker detection keeps the ORIGINAL html (a login form rendered
+    // by inline script markers must still be recognized).
+    var items = extractItems(stripScriptStyle(html));
     if (items.length > 0) return { status: "ok", items: items };
     if (LOGIN_RE.test(html)) return { status: "login-required", items: [] };
     return { status: "parse-failed", items: [] };
