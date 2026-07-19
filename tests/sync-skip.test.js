@@ -148,14 +148,18 @@ run("per-peer gating: one peer's missing image blocks ONLY that peer's watermark
   assert.strictEqual(r2.peersSkipped, 1, "clean peer A skipped (watermark advanced) while deferring peer C is re-read");
 });
 
-run("main.js: window is created BEFORE the launch merge (no more windowless launch stall)", () => {
+run("main.js: window created BEFORE the launch merge, which runs on the WORKER façade (no main-process block)", () => {
   const mainSrc = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   const winIdx = mainSrc.indexOf("createWindow(port)");
-  const launchMergeIdx = mainSrc.indexOf("sync.runSync(ctx", winIdx);
+  const launchMergeIdx = mainSrc.indexOf(".runSync(ctx", winIdx);
   assert.ok(winIdx >= 0, "createWindow(port) call present");
   assert.ok(launchMergeIdx > winIdx, "the launch runSync must come AFTER createWindow");
   const between = mainSrc.slice(winIdx, launchMergeIdx);
   assert.ok(/setTimeout\(/.test(between), "launch merge must be deferred off the startup path");
+  assert.ok(/asyncSync\.runSync/.test(mainSrc), "the launch merge must use the worker façade, not the blocking sync module (2026-07-18 'Not responding' fix)");
+  assert.ok(/createAsyncSync\(storeDir\)/.test(mainSrc), "façade constructed from the store dir");
+  assert.ok(/ctx\.syncRunner = asyncSync/.test(mainSrc), "manual /api/sync/now must get the worker runner too");
+  assert.ok(/sync: asyncSync/.test(mainSrc), "the periodic timers must get the worker façade");
   assert.ok(/ia_sync_changed_at/.test(mainSrc.slice(launchMergeIdx, launchMergeIdx + 800)),
     "a changed launch merge must signal the renderer (toast + rehydrate)");
 });

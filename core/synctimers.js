@@ -23,27 +23,40 @@ function startSyncTimers(deps) {
 
   // Periodic merge + publish (~3 min by default). On a change, signal the renderer
   // via a kv flag. Re-reads config every tick so enable/disable takes effect live.
+  //
+  // deps.sync may be SYNCHRONOUS (core/sync.js, tests) or ASYNC (the
+  // core/syncworker.js façade that runs cycles off the main process —
+  // 2026-07-18 "Not responding" fix). Promise.resolve() handles both; the
+  // busy guards stop a slow async cycle from overlapping the next tick.
+  let mergeBusy = false;
   const mergeTimer = setIntervalFn(function () {
     try {
       const sc = deps.config.getSyncConfig();
       if (!sc.enabled) return;
       const syncDir = sc.dir || deps.sync.defaultSyncDir();
       if (!syncDir) return;
-
-      const res = deps.sync.runSync(deps.ctx, {
+      if (mergeBusy) return;
+      mergeBusy = true;
+      Promise.resolve(deps.sync.runSync(deps.ctx, {
         syncDir,
         deviceId: sc.deviceId,
         deviceLabel: sc.deviceLabel,
         publish: true,
-      });
-      if (res && res.changed) {
-        try { deps.setKV(deps.ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {}
-      }
-    } catch (e) { deps.log("periodic sync error:", e && e.message); }
+      })).then(function (res) {
+        if (res && res.ok === false) { deps.log("periodic sync error:", res.error); return; }
+        if (res && res.changed) {
+          try { deps.setKV(deps.ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {}
+        }
+      }).catch(function (e) {
+        deps.log("periodic sync error:", e && e.message);
+      }).finally(function () { mergeBusy = false; });
+    } catch (e) { mergeBusy = false; deps.log("periodic sync error:", e && e.message); }
   }, mergeMs);
 
   // Debounced publish: every ~10s by default, if a write marked the store dirty,
-  // publish our snapshot. Also re-reads config every tick.
+  // publish our snapshot. Also re-reads config every tick. On an async failure
+  // the dirty flag is restored so the publish retries next tick.
+  let publishBusy = false;
   const publishTimer = setIntervalFn(function () {
     try {
       const sc = deps.config.getSyncConfig();
@@ -52,11 +65,16 @@ function startSyncTimers(deps) {
       if (!syncDir) return;
 
       if (!deps.ctx || !deps.ctx.syncDirty) return;
+      if (publishBusy) return;
+      publishBusy = true;
       deps.ctx.syncDirty = false;
-      try {
-        deps.sync.publishSnapshot(deps.ctx, syncDir, sc.deviceId, sc.deviceLabel);
-      } catch (e) { deps.log("debounced publish error:", e && e.message); }
-    } catch (e) { deps.log("debounced publish error:", e && e.message); }
+      Promise.resolve(deps.sync.publishSnapshot(deps.ctx, syncDir, sc.deviceId, sc.deviceLabel))
+        .then(function (r) {
+          if (r && r.ok === false) { deps.ctx.syncDirty = true; deps.log("debounced publish error:", r.error); }
+        })
+        .catch(function (e) { deps.ctx.syncDirty = true; deps.log("debounced publish error:", e && e.message); })
+        .finally(function () { publishBusy = false; });
+    } catch (e) { publishBusy = false; deps.log("debounced publish error:", e && e.message); }
   }, publishMs);
 
   return {

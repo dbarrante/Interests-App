@@ -557,13 +557,18 @@ function createServer(ctx) {
     res.json({ ok: true });
   });
 
-  app.post("/api/sync/now", (req, res) => {
+  app.post("/api/sync/now", async (req, res) => {
     const sc = config.getSyncConfig();
     let defaultDir = null; try { defaultDir = sync.defaultSyncDir(); } catch (e) {}
     const syncDir = sc.dir || defaultDir;
     if (!sc.enabled || !syncDir) return res.status(400).json({ ok: false, error: "sync not enabled / no Dropbox" });
     try {
-      const r = sync.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
+      // Prefer the worker-thread runner (ctx.syncRunner, set by main.js) so a
+      // manual sync can't freeze the main process either; tests and headless
+      // embedders without a runner keep the direct synchronous path.
+      const runner = (ctx.syncRunner && ctx.syncRunner.runSync) ? ctx.syncRunner : sync;
+      const r = await Promise.resolve(runner.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true }));
+      if (r && r.ok === false) { console.error("sync now failed:", r.error); return res.status(500).json({ ok: false, error: "sync failed" }); }
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
       res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }

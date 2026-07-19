@@ -4,6 +4,7 @@ const config = require("./core/config");
 const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
 const sync = require("./core/sync");
+const { createAsyncSync } = require("./core/syncworker");
 const undiciGuard = require("./core/undici-guard");
 const { setKV } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
@@ -49,10 +50,17 @@ if (!gotLock) {
       // and the sync timers reach.
       ctx = buildContext(storeDir);
 
+      // All periodic/launch/manual sync cycles run OFF the main process via a
+      // worker-thread façade — a synchronous merge on the main process froze
+      // every window into "Not responding" (live 2026-07-18). Same call
+      // shapes, async results; one cycle at a time.
+      const asyncSync = createAsyncSync(storeDir);
+      ctx.syncRunner = asyncSync;   // POST /api/sync/now uses this when present
+
       // Sync timers self-gate on live config (re-read every tick), so start them
       // unconditionally — enabling/disabling Dropbox sync in Settings takes effect
       // on the next tick with no app restart required.
-      timers = startSyncTimers({ ctx, config, sync, setKV, log: console.error });
+      timers = startSyncTimers({ ctx, config, sync: asyncSync, setKV, log: console.error });
 
       const { server, port } = await startServer(ctx, 3456);
       httpServer = server;
@@ -74,8 +82,11 @@ if (!gotLock) {
           const sc = config.getSyncConfig();
           if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
             const syncDir = sc.dir || sync.defaultSyncDir();
-            const res = sync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true });
-            if (res && res.changed) { try { setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+            asyncSync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true })
+              .then((res) => {
+                if (res && res.ok === false) { console.error("launch sync failed:", res.error); return; }
+                if (res && res.changed) { try { setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }
+              });
           }
         } catch (e) { console.error("launch sync failed:", e && e.message); }   // NEVER hard-fail launch
       }, 3000);

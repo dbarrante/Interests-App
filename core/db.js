@@ -73,6 +73,10 @@ function ensureColumns(db) {
 function openDb(storeDir) {
   const db = new DatabaseSync(path.join(storeDir, "interests.db"));
   db.exec("PRAGMA journal_mode=WAL");
+  // Sync now runs on a worker thread with its OWN connection to this file
+  // (core/syncworker.js) — WAL allows the concurrency, busy_timeout makes
+  // brief write-lock contention wait instead of throwing SQLITE_BUSY.
+  db.exec("PRAGMA busy_timeout=5000");
   for (const sql of MIGRATIONS) db.exec(sql);
   ensureColumns(db);                       // add updatedAt columns to existing DBs
   const ic = db.prepare("PRAGMA integrity_check").get(); // {integrity_check:'ok'} on a healthy DB
