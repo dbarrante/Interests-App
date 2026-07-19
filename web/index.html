@@ -421,6 +421,15 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 .imp-acts button{border:1px solid var(--line);background:#fafaf8;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:600;color:#4b463f;cursor:pointer}
 .imp-acts button:hover{border-color:var(--accent);color:var(--accent)}
 .imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
+.ai-row{display:flex;align-items:center;gap:10px;margin:7px 0}
+.ai-row .ai-name{min-width:78px;font-weight:600}
+.ai-bar{flex:0 0 120px;height:6px;border-radius:6px;background:var(--line);overflow:hidden;position:relative}
+.ai-bar .ai-fill{position:absolute;top:0;bottom:0;left:0;width:100%;border-radius:6px;background:var(--accent);transform:translateX(-100%)}
+.ai-bar.checking .ai-fill{width:40%;animation:aimove 1.1s ease-in-out infinite}
+.ai-bar.done .ai-fill{transform:none;width:100%;opacity:.5}
+.ai-bar.fail .ai-fill{transform:none;width:100%;background:#c2410c;opacity:.6}
+.ai-msg{color:var(--muted);font-size:13px}
+@keyframes aimove{0%{transform:translateX(-100%)}50%{transform:translateX(55%)}100%{transform:translateX(250%)}}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="ai.js"></script>
@@ -1673,28 +1682,55 @@ function renderSettings(){
 // regardless of the autoImportOn gate (that gate only applies to the daily
 // alarm). A generous delay before refreshing the status line gives the
 // extension time to poll, open the tab(s), scrape, and deliver.
+let _autoImportReqAt = 0;                 // when the user last tapped "Check now"
+const AUTO_IMPORT_WAIT_MS = 120000;       // show "Checking…" this long before "no response"
 async function autoImportCheckNow(){
+  _autoImportReqAt = Date.now();
+  try{ await Store.setAutoImportRequest(_autoImportReqAt); }catch(e){ _autoImportReqAt = 0; toast("Couldn't reach the app service"); return; }
   toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
-  try{ await Store.setAutoImportRequest(Date.now()); }catch(e){ toast("Couldn't reach the app service"); return; }
-  setTimeout(renderAutoImportStatus, 15000);
+  renderAutoImportStatus();               // the 2s poller (below) keeps it live from here
 }
-function _autoImportLine(label, st){
-  if(!st) return label+": not checked yet";
-  const when = new Date(st.at).toLocaleString();
-  if(st.status !== "ok"){
-    const why = st.status==="login-required" ? ("log in to "+label+" in your browser, then try again") : "couldn't read the page";
-    return label+": "+when+" — "+why;
-  }
-  return label+": "+when+" — "+st.added+" new"+(st.duplicates?", "+st.duplicates+" already seen":"");
+// True per-platform state. "checking" only while a manual request is still
+// outstanding AND this platform's last result predates that request (each
+// platform flips to its real result the instant its batch lands — fb can show
+// "done" while ig is still "checking", since the extension checks them in turn).
+function _autoImportState(platform, st){
+  const rec = st && st[platform];
+  const pending = _autoImportReqAt && (!rec || Number(rec.at) < _autoImportReqAt);
+  if(pending) return (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS ? {phase:"checking"} : {phase:"timeout"};
+  if(!rec) return {phase:"idle"};
+  return rec.status==="ok" ? {phase:"done", rec} : {phase:"fail", rec};
 }
-// Reads GET /api/auto-import/status, which surfaces the ia_autoimport_last_fb /
-// ia_autoimport_last_ig kv records written by core/autoimport.js's processBatch.
+function _autoImportRowHTML(label, platform, st){
+  const s = _autoImportState(platform, st);
+  let cls="", msg="";
+  if(s.phase==="checking"){ cls="checking"; msg="Checking…"; }
+  else if(s.phase==="timeout"){ cls="fail"; msg="No response — is Chrome open and logged in? Try “Check now” again."; }
+  else if(s.phase==="fail"){ cls="fail"; msg=(s.rec.status==="login-required" ? ("Log in to "+label+" in your browser, then retry") : "Couldn't read the page")+" — "+new Date(s.rec.at).toLocaleString(); }
+  else if(s.phase==="done"){ cls="done"; msg=s.rec.added+" new"+(s.rec.duplicates?", "+s.rec.duplicates+" already seen":"")+" — "+new Date(s.rec.at).toLocaleString(); }
+  else { msg="Not checked yet"; }
+  return "<div class=\"ai-row\"><span class=\"ai-name\">"+esc(label)+"</span>"+
+         "<span class=\"ai-bar "+cls+"\"><span class=\"ai-fill\"></span></span>"+
+         "<span class=\"ai-msg\">"+esc(msg)+"</span></div>";
+}
+// Reads GET /api/auto-import/status (the ia_autoimport_last_fb / ia_autoimport_last_ig
+// records written by core/autoimport.js's processBatch) and paints a bar per platform.
 async function renderAutoImportStatus(){
   const el = document.getElementById("autoImportStatus"); if(!el) return;
   let st = {fb:null, ig:null};
   try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
-  el.innerHTML = "<div>"+esc(_autoImportLine("Facebook", st.fb))+"</div><div>"+esc(_autoImportLine("Instagram", st.ig))+"</div>";
+  el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st);
 }
+// Live auto-refresh: while the auto-import section is actually on-screen OR a
+// manual check is still pending, re-poll the TRUE status every 2s so the bars
+// and result lines update without reopening Settings. Cheap — one GET, and only
+// when it can matter (desktop only; the PWA has no local service).
+function _autoImportVisible(){ const s=document.getElementById("secAutoImport"); return !!(s && s.offsetParent!==null); }
+setInterval(function(){
+  if(window.IA_IDB) return;               // desktop-only feature
+  const pending = _autoImportReqAt && (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS;
+  if(_autoImportVisible() || pending) renderAutoImportStatus();
+}, 2000);
 function saveSettings(notify){
   S.about = document.getElementById("aboutMe").value;
   S.interests = document.getElementById("interestList").value;
