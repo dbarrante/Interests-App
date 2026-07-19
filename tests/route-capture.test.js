@@ -85,6 +85,26 @@ t("ig-auto source -> import-auto", () => {
   const r = routeCapture({ url: "https://www.instagram.com/p/abc/", source: "ig-auto" }, base());
   assert.strictEqual(r.action, "import-auto");
 });
+t("pin-auto source -> import-auto (spec 2026-07-19)", () => {
+  const r = routeCapture({ url: "https://www.pinterest.com/pin/123456/", source: "pin-auto", title: "A pin" }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
+t("gs-auto source -> import-auto (spec 2026-07-19)", () => {
+  const r = routeCapture({ url: "https://example.com/article", source: "gs-auto" }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE: pin-auto with a matching OPEN active card still routes import-auto", () => {
+  const imported = [{ id: "p1", url: "https://www.pinterest.com/pin/123456/" }];
+  const r = routeCapture(
+    { url: "https://www.pinterest.com/pin/123456/", source: "pin-auto" },
+    base({ imported, lastOpened: { id: "p1", ts: 999000 } })
+  );
+  assert.strictEqual(r.action, "import-auto");
+});
+t("PRECEDENCE: gs-auto carrying clip-like fields still routes import-auto, not saved", () => {
+  const r = routeCapture({ url: "https://example.com/x", source: "gs-auto", clip: true, force: true }, base());
+  assert.strictEqual(r.action, "import-auto");
+});
 t("PRECEDENCE (binding, task-3 carry-forward): -auto capture with a matching OPEN active card still routes import-auto, never card-image", () => {
   const imported = [{ id: "a", url: "https://www.facebook.com/permalink/1" }];
   const r = routeCapture(

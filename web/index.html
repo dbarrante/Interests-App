@@ -635,8 +635,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       </div>
 
       <div class="sec" id="secAutoImport">
-        <h3>Facebook &amp; Instagram auto-import</h3>
-        <div class="hint" style="margin-bottom:10px">Once a day, the browser extension quietly checks your Facebook and Instagram Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on Facebook or Instagram.</div>
+        <h3>Platform auto-import</h3>
+        <div class="hint" style="margin-bottom:10px">On a schedule you pick, the browser extension quietly checks your Facebook, Instagram, Pinterest, and Google Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on the platform.</div>
         <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
           <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically
         </label>
@@ -646,6 +646,12 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           </label>
           <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
             <input type="checkbox" id="autoImportIgToggle" style="width:auto"> Instagram
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
+            <input type="checkbox" id="autoImportPinToggle" style="width:auto"> Pinterest
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
+            <input type="checkbox" id="autoImportGsToggle" style="width:auto"> Google saves
           </label>
         </div>
         <div style="margin-top:8px;font-size:14px">Check every
@@ -773,6 +779,8 @@ const DEFAULTS = {
   autoImportFb:true,    // per-platform checkboxes, only consulted once autoImportOn is true
   autoImportIg:true,
   autoImportEvery:24,   // hours between automatic checks (1-24); "Check now" unaffected
+  autoImportPin:true,   // Pinterest + Google-saves platform checkboxes (spec 2026-07-19)
+  autoImportGs:true,
   tagSidebar:false,
   catSidebar:false,
   reuseWindow:false,
@@ -1690,6 +1698,10 @@ function renderSettings(){
     document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
     document.getElementById("autoImportIgToggle").checked = S.autoImportIg!==false;
     document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
+    document.getElementById("autoImportPinToggle").checked = S.autoImportPin!==false;
+    document.getElementById("autoImportPinToggle").onchange = e=>{ S.autoImportPin=e.target.checked; save("settings",S); };
+    document.getElementById("autoImportGsToggle").checked = S.autoImportGs!==false;
+    document.getElementById("autoImportGsToggle").onchange = e=>{ S.autoImportGs=e.target.checked; save("settings",S); };
     document.getElementById("autoImportEvery").value = String(S.autoImportEvery||24);
     document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
     renderAutoImportStatus();
@@ -1737,7 +1749,7 @@ async function renderAutoImportStatus(){
   const el = document.getElementById("autoImportStatus"); if(!el) return;
   let st = {fb:null, ig:null};
   try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
-  el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st);
+  el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st) + _autoImportRowHTML("Pinterest","pin",st) + _autoImportRowHTML("Google","gs",st);
 }
 // Live auto-refresh: while the auto-import section is actually on-screen OR a
 // manual check is still pending, re-poll the TRUE status every 2s so the bars
@@ -2271,13 +2283,16 @@ function parseImportText(text, name){
 // never route through addClip/Saved (route-capture.js resolves this action
 // BEFORE any clip/card-matching branch precisely so this never happens).
 function autoImportItemFromCap(cap, now){
-  // Explicit two-way mapping (task review polish): only the two sources the
-  // core emits are recognized; anything else defaults to instagram but is a
-  // contract drift worth seeing in the console, not a silent assumption.
+  // Explicit source map (task review polish, widened for pin/gs 2026-07-19):
+  // only sources the core emits are recognized; anything else defaults to
+  // instagram but is a contract drift worth seeing in the console, not a
+  // silent assumption.
+  const SRC_MAP = { "fb-auto":["facebook","Facebook"], "ig-auto":["instagram","Instagram"], "pin-auto":["pinterest","Pinterest"], "gs-auto":["google","Google"] };
   const s = cap.source || "";
-  if (s !== "fb-auto" && s !== "ig-auto") console.warn("auto-import: unexpected source", s);
-  const src = s === "fb-auto" ? "facebook" : "instagram";
-  const it = { title: cap.title || domain(cap.url) || cap.url, url: cap.url, ts: cap.ts || now, src, desc: "Saved from "+(src==="facebook"?"Facebook":"Instagram") };
+  const entry = SRC_MAP[s];
+  if (!entry) console.warn("auto-import: unexpected source", s);
+  const src = (entry||SRC_MAP["ig-auto"])[0], label = (entry||SRC_MAP["ig-auto"])[1];
+  const it = { title: cap.title || domain(cap.url) || cap.url, url: cap.url, ts: cap.ts || now, src, desc: "Saved from "+label };
   if(cap.clipImage) it.img = cap.clipImage;
   return it;
 }

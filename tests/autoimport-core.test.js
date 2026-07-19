@@ -290,13 +290,48 @@ t("processBatch: ledger prunes to 5000 keys, oldest firstSeenMs dropped first", 
 
 t("getConfig: defaults off, both platforms on, daily interval, when ia_settings is absent", () => {
   const db = openDb(tmpStore());
-  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: false, intervalHours: 24, platforms: { fb: true, ig: true } });
+  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: false, intervalHours: 24, platforms: { fb: true, ig: true, pin: true, gs: true } });
 });
 
 t("getConfig: reads autoImportOn/autoImportFb/autoImportIg from the ia_settings JSON blob", () => {
   const db = openDb(tmpStore());
   setKV(db, "ia_settings", JSON.stringify({ autoImportOn: true, autoImportFb: false }));
-  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: true, intervalHours: 24, platforms: { fb: false, ig: true } });
+  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: true, intervalHours: 24, platforms: { fb: false, ig: true, pin: true, gs: true } });
+});
+
+// --- pin/gs platforms (spec 2026-07-19) ---------------------------------------
+t("processBatch accepts platform 'pin' with its own ledger + status record", () => {
+  const db = openDb(tmpStore());
+  const r = autoimport.processBatch({ db }, { platform: "pin", status: "ok", checkedAt: 1,
+    items: [item({ url: "https://www.pinterest.com/pin/12345/", platformKey: "12345" })] });
+  assert.strictEqual(r.added, 1);
+  const ledger = JSON.parse(getKV(db, "ia_autoimport_seen_pin"));
+  assert.ok(Object.prototype.hasOwnProperty.call(ledger, "12345"), "pin ledger key");
+  assert.strictEqual(JSON.parse(getKV(db, "ia_autoimport_last_pin")).added, 1);
+});
+t("processBatch accepts platform 'gs' with its own ledger + status record", () => {
+  const db = openDb(tmpStore());
+  const r = autoimport.processBatch({ db }, { platform: "gs", status: "ok", checkedAt: 1,
+    items: [item({ url: "https://example.com/some-article", platformKey: "example.com/some-article" })] });
+  assert.strictEqual(r.added, 1);
+  assert.ok(Object.prototype.hasOwnProperty.call(JSON.parse(getKV(db, "ia_autoimport_seen_gs")), "example.com/some-article"));
+});
+t("processBatch still rejects an unknown platform", () => {
+  const db = openDb(tmpStore());
+  const r = autoimport.processBatch({ db }, { platform: "xx", status: "ok", items: [] });
+  assert.strictEqual(r.status, "invalid");
+});
+t("getConfig platforms include pin/gs (default true, respect false)", () => {
+  const db = openDb(tmpStore());
+  setKV(db, "ia_settings", JSON.stringify({ autoImportPin: false }));
+  const cfg = autoimport.getConfig({ db });
+  assert.strictEqual(cfg.platforms.pin, false);
+  assert.strictEqual(cfg.platforms.gs, true);
+});
+t("getStatus covers all four platforms", () => {
+  const db = openDb(tmpStore());
+  const st = autoimport.getStatus({ db });
+  assert.deepStrictEqual(Object.keys(st).sort(), ["fb", "gs", "ig", "pin"]);
 });
 
 t("getConfig: intervalHours from autoImportEvery, clamped to [1,24] with 24 fallback", () => {
@@ -315,7 +350,7 @@ t("getConfig: intervalHours from autoImportEvery, clamped to [1,24] with 24 fall
 
 t("getStatus: null for a platform with no run yet; reflects the last processBatch record after one", () => {
   const db = openDb(tmpStore());
-  assert.deepStrictEqual(autoimport.getStatus({ db }), { fb: null, ig: null });
+  assert.deepStrictEqual(autoimport.getStatus({ db }), { fb: null, ig: null, pin: null, gs: null });
   autoimport.processBatch({ db }, { platform: "ig", status: "ok", checkedAt: 1, items: [item({ url: "https://instagram.com/p/1", platformKey: "s1" })] });
   const status = autoimport.getStatus({ db });
   assert.strictEqual(status.fb, null);

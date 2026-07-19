@@ -147,7 +147,7 @@ function processBatch(ctx, batch) {
   const db = ctx && ctx.db;
   if (!batch || typeof batch !== "object") return { added: 0, duplicates: 0, status: "invalid" };
   const platform = batch.platform;
-  if (platform !== "fb" && platform !== "ig") return { added: 0, duplicates: 0, status: "invalid" };
+  if (["fb", "ig", "pin", "gs"].indexOf(platform) < 0) return { added: 0, duplicates: 0, status: "invalid" };
   if (batch.items !== undefined && !Array.isArray(batch.items)) return { added: 0, duplicates: 0, status: "invalid" };
 
   const incomingStatus = (typeof batch.status === "string" && batch.status) ? batch.status : "parse-failed";
@@ -233,6 +233,8 @@ function getConfig(ctx) {
     platforms: {
       fb: settings.autoImportFb !== false,
       ig: settings.autoImportIg !== false,
+      pin: settings.autoImportPin !== false,
+      gs: settings.autoImportGs !== false,
     },
   };
 }
@@ -244,6 +246,8 @@ function getStatus(ctx) {
   return {
     fb: readJson(db, lastKvKey("fb"), null),
     ig: readJson(db, lastKvKey("ig"), null),
+    pin: readJson(db, lastKvKey("pin"), null),
+    gs: readJson(db, lastKvKey("gs"), null),
   };
 }
 

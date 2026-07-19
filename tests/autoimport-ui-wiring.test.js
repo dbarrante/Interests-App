@@ -67,6 +67,21 @@ ok("web/storage.js: SE.autoImportStatus() endpoint builder present", /autoImport
 ok("web/storage.js: Store.setAutoImportRequest POSTs SE.autoImportRequest()", /setAutoImportRequest:\s*function\s*\(req\)\s*\{\s*return\s*jsend\("POST",\s*SE\.autoImportRequest\(\)/.test(storage));
 ok("web/storage.js: Store.getAutoImportStatus GETs SE.autoImportStatus()", /getAutoImportStatus:\s*function\s*\(\)\s*\{\s*return\s*jget\(SE\.autoImportStatus\(\)\)/.test(storage));
 
+// --- Pinterest + Google-saves platforms (spec 2026-07-19) ----------------------
+[["web", web], ["pwa", pwa]].forEach(([label, src]) => {
+  ok(`${label}: pin/gs toggles present`, /id="autoImportPinToggle"/.test(src) && /id="autoImportGsToggle"/.test(src));
+  ok(`${label}: DEFAULTS ship autoImportPin/autoImportGs ON`, /autoImportPin:true/.test(src) && /autoImportGs:true/.test(src));
+  ok(`${label}: Pinterest toggle writes S.autoImportPin via save("settings",S)`,
+    /autoImportPinToggle"\)\.onchange\s*=\s*e=>\{[^}]*S\.autoImportPin\s*=\s*e\.target\.checked;[^}]*save\("settings",S\)/.test(src));
+  ok(`${label}: Google toggle writes S.autoImportGs via save("settings",S)`,
+    /autoImportGsToggle"\)\.onchange\s*=\s*e=>\{[^}]*S\.autoImportGs\s*=\s*e\.target\.checked;[^}]*save\("settings",S\)/.test(src));
+  ok(`${label}: status renders rows for all four platforms`,
+    /_autoImportRowHTML\("Facebook","fb"/.test(src) && /_autoImportRowHTML\("Instagram","ig"/.test(src) &&
+    /_autoImportRowHTML\("Pinterest","pin"/.test(src) && /_autoImportRowHTML\("Google","gs"/.test(src));
+  ok(`${label}: autoImportItemFromCap maps pin-auto->pinterest and gs-auto->google`,
+    /"pin-auto":\["pinterest","Pinterest"\]/.test(src) && /"gs-auto":\["google","Google"\]/.test(src));
+});
+
 // --- Check-interval dropdown (spec 2026-07-19) --------------------------------
 [["web", web], ["pwa", pwa]].forEach(([label, src]) => {
   ok(`${label}: DEFAULTS ships autoImportEvery:24 (1 day)`, /autoImportEvery:24/.test(src));
