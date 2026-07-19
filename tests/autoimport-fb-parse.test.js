@@ -257,6 +257,28 @@ t("LIVE: /groups/<g>/permalink/<id>/ shape merges with /groups/<g>/posts/<id>/ (
   assert.strictEqual(r.items[0].image, "https://scontent.example.com/grp.jpg");
 });
 
+/* ---------- LIVE 2026-07-19: notification-menu links are NOT saves ---------- */
+t("REGRESSION: notification-sourced links (notif_id/notif_t/ref=notif) never import", () => {
+  // The /saved/ page's DOM includes the notification bell's pre-rendered
+  // dropdown — post/reel links tagged with ?notif_id=…&notif_t=…. Found live:
+  // "Unread X commented on Y's photo" cards imported as if they were saves.
+  const html = '<div>' +
+    '<a href="https://www.facebook.com/reel/3150626661994754/?notif_id=1783815737&amp;notif_t=reels_update">Unread Kathy Link posted an update. 1d</a>' +
+    '<a href="https://www.facebook.com/photo/?fbid=555666777&amp;notif_t=comment_mention">Unread Tracy commented on a photo.</a>' +
+    '<a href="https://www.facebook.com/somepage/posts/888999000?ref=notif">Unread page update</a>' +
+    '<a href="https://www.facebook.com/reel/111222333/"><img src="https://scontent.example.com/real.jpg"></a>' +
+    "</div>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "only the real saved reel survives");
+  assert.strictEqual(r.items[0].platformKey, "111222333");
+});
+t("watch/?ref=saved&v= (a REAL saved-list shape) still imports — ref filter is notif-specific", () => {
+  const html = '<div><a href="https://www.facebook.com/watch/?ref=saved&amp;v=554433221"><img src="https://scontent.example.com/w.jpg"></a></div>';
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1);
+  assert.strictEqual(r.items[0].platformKey, "554433221");
+});
+
 /* ---------- parseSavedDoc delegation ---------- */
 t("parseSavedDoc(doc) serializes documentElement.outerHTML and delegates to parseSavedHtml", () => {
   const stubDoc = { documentElement: { outerHTML: SAMPLE } };

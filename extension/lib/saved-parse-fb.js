@@ -82,7 +82,15 @@
     var m = new RegExp("[?&]" + name + "=([^&#]+)").exec(url);
     return m ? m[1] : null;
   }
+  // Live-tuning 2026-07-19: the /saved/ page's DOM also contains the
+  // notification bell's pre-rendered dropdown — post/reel/photo links tagged
+  // with ?notif_id=…&notif_t=… (or ref=notif). Those are NOTIFICATIONS
+  // ("Unread X commented…"), not saves; they must never import. The saved
+  // list's own ref param (watch/?ref=saved&v=…) is unaffected.
+  var NOTIF_RE = /[?&](?:notif_id|notif_t)=|[?&]ref=notif\b/i;
+
   function matchPattern(url) {
+    if (NOTIF_RE.test(url)) return null;
     for (var i = 0; i < PATH_PATTERNS.length; i++) {
       var m = PATH_PATTERNS[i].re.exec(url);
       if (m) return { type: PATH_PATTERNS[i].type, id: m[1] };
