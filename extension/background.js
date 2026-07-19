@@ -763,6 +763,12 @@ async function runAutoImportCheck(manual) {
 // Bridge poll for the app's "Check now" button — mirrors pollCaptureRequest's
 // mailbox pattern: GET the request, POST null to claim/clear it, then run.
 async function pollAutoImportRequest() {
+  // Busy check FIRST — before the GET and before the claiming POST. A Check-now
+  // click landing while a scrape is already in flight must NOT be claimed (a
+  // claimed-then-dropped request is silently lost): left unclaimed in the
+  // app-side mailbox, the next 30s poll tick retries it naturally once the
+  // in-flight check finishes — manual requests ALWAYS run.
+  if (autoImportBusy) return;
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
   let req = null;

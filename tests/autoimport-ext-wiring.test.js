@@ -25,6 +25,19 @@ ok("the alarm listener dispatches to runAutoImportCheck(false) — alarm path", 
 ok("polls GET /api/auto-import/request (piggybacked on the existing poll loop)", /\/api\/auto-import\/request/.test(src));
 ok("the request poll is wired into iaPollAll (same cadence as capture-request)", /function iaPollAll\(\)[^\n]*pollAutoImportRequest\(\)\.catch/.test(src));
 ok("a claimed Check-now request always runs, bypassing the config gate (manual=true)", /runAutoImportCheck\(true\)/.test(src));
+// A Check-now click landing during an in-flight scrape must NOT be claimed
+// (claimed-then-dropped = silently lost). The busy check must come FIRST in
+// pollAutoImportRequest — before the GET and before the claiming POST — so an
+// unclaimed request stays in the app-side mailbox and the next 30s poll tick
+// retries it naturally.
+ok("pollAutoImportRequest bails on autoImportBusy BEFORE touching the request mailbox", (() => {
+  const m = /async function pollAutoImportRequest\(\)\s*{([\s\S]*?)\n}/.exec(src);
+  if (!m) return false;
+  const body = m[1];
+  const busyIdx = body.indexOf("if (autoImportBusy) return;");
+  const fetchIdx = body.indexOf("/api/auto-import/request");
+  return busyIdx !== -1 && fetchIdx !== -1 && busyIdx < fetchIdx;
+})());
 
 // --- Config gate: ALARM PATH ONLY (manual requests always run) -------------
 ok("reads GET /api/auto-import/config", /\/api\/auto-import\/config/.test(src));
