@@ -49,7 +49,7 @@ ok("runAutoImportCheck bails when a check is already in flight", /if\s*\(autoImp
 ok("the guard is set/cleared around the whole check (try/finally)", /autoImportBusy = true;[\s\S]{0,600}?finally\s*{\s*autoImportBusy = false;/.test(src));
 
 // --- Sequential per-platform loop -------------------------------------------
-ok("iterates platforms sequentially (fb then ig) with an awaited per-item call", /for\s*\(const platform of \["fb", "ig"\]\)\s*{[\s\S]{0,200}?await runAutoImportPlatform\(platform, port\);/.test(src));
+ok("iterates platforms sequentially (fb,ig,pin,gs) with an awaited per-item call", /for\s*\(const platform of \["fb", "ig", "pin", "gs"\]\)\s*{[\s\S]{0,200}?await runAutoImportPlatform\(platform, port\);/.test(src));
 ok("a platform can be disabled via its config checkbox", /platforms\[platform\] === false/.test(src));
 
 // --- Tab flow: inactive create -> wait complete -> executeScript -> close in finally
@@ -101,6 +101,15 @@ ok("IG scrape starts at instagram.com HOME, never at /saved/", /ig:\s*"https:\/\
 ok("IG saved page is built from the DISCOVERED username", /IG_SAVED_PAGE = \(username\) => "https:\/\/www\.instagram\.com\/" \+ username \+ "\/saved\/all-posts\/"/.test(src));
 ok("username comes from the nav avatar profile link", /img\[alt\$="profile picture"\]/.test(src));
 ok("no discovered username -> fail soft, import nothing", /if \(!username\) \{ log\("auto-import ig: viewer username NOT found[\s\S]{0,80}?return result; \}/.test(src));
+
+// --- Pinterest + Google-saves scrape wiring (spec 2026-07-19) ------------------
+ok("pin platform: lands on pinterest.com/me/pins/ (server-side own-profile redirect)", /pin:\s*"https:\/\/www\.pinterest\.com\/me\/pins\/"/.test(src));
+ok("gs platform: lands on the flat allsaves list, never the collections overview", /gs:\s*"https:\/\/www\.google\.com\/interests\/saved\/list\/allsaves"/.test(src));
+ok("pin scrape refuses to parse the HOME feed (landed-page guard — recommendations are not saves)", /auto-import pin: landed on the home feed/.test(src));
+ok("pin POST-parse guard: a mid-scrape SPA redirect to the home feed discards the parse (diag.href is captured atomically with the parse)",
+  /page became the home feed during the scrape/.test(src) && /new URL\(result\.diag\.href \|\| ""\)\.pathname/.test(src));
+ok("runAutoImportCheck iterates fb,ig,pin,gs sequentially", /for \(const platform of \["fb", "ig", "pin", "gs"\]\)/.test(src));
+ok("pin/gs parser libs + globals mapped", /saved-parse-pin\.js/.test(src) && /saved-parse-gs\.js/.test(src) && /IASavedParsePin/.test(src) && /IASavedParseGS/.test(src));
 
 // --- Configurable alarm interval (spec 2026-07-19) -----------------------------
 ok("ensureAutoImportAlarm re-creates the alarm only when the applied interval changed",

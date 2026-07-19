@@ -685,8 +685,19 @@ const AUTOIMPORT_URLS = {
   // username from the home nav avatar, then navigates there (see
   // autoImportScrapePlatform's ig two-step).
   ig: "https://www.instagram.com/",
+  // Pinterest: /me/ server-redirects to the viewer's own profile; the pins
+  // tab lists every pin they saved. A failed redirect lands on the HOME feed
+  // whose /pin/ anchors are RECOMMENDATIONS — the landed-page guard below
+  // refuses to parse that (the instagram.com/saved/=@saved lesson, spec
+  // 2026-07-19).
+  pin: "https://www.pinterest.com/me/pins/",
+  // Google saves: the flat all-items list. The bare google.com/save page is
+  // the COLLECTIONS OVERVIEW and renders zero item links (capture-proven).
+  gs: "https://www.google.com/interests/saved/list/allsaves",
 };
 const IG_SAVED_PAGE = (username) => "https://www.instagram.com/" + username + "/saved/all-posts/";
+const AUTOIMPORT_LIBS = { fb: "lib/saved-parse-fb.js", ig: "lib/saved-parse-ig.js", pin: "lib/saved-parse-pin.js", gs: "lib/saved-parse-gs.js" };
+const AUTOIMPORT_GLOBALS = { fb: "IASavedParseFB", ig: "IASavedParseIG", pin: "IASavedParsePin", gs: "IASavedParseGS" };
 // In-flight guard: the daily alarm and a manual "Check now" poll both funnel
 // through runAutoImportCheck — only one scrape may run at a time.
 let autoImportBusy = false;
@@ -714,8 +725,8 @@ async function autoImportPostBatch(port, body) {
 // timeout, crash) — never left open across a run.
 async function autoImportScrapePlatform(platform) {
   const url = AUTOIMPORT_URLS[platform];
-  const libFile = platform === "fb" ? "lib/saved-parse-fb.js" : "lib/saved-parse-ig.js";
-  const globalName = platform === "fb" ? "IASavedParseFB" : "IASavedParseIG";
+  const libFile = AUTOIMPORT_LIBS[platform];
+  const globalName = AUTOIMPORT_GLOBALS[platform];
   let tabId = null;
   let result = { status: "parse-failed", items: [] };
   try {
@@ -724,6 +735,23 @@ async function autoImportScrapePlatform(platform) {
     catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
     tabId = tab.id;
     await waitTabComplete(tabId, 30000);
+    // Pinterest landed-page guard: /me/pins/ should server-redirect to the
+    // viewer's own profile pins. If Pinterest instead dumped us on the HOME
+    // feed (logged-out variants do), its /pin/ anchors are RECOMMENDATIONS,
+    // not the user's saves — importing those is the @saved-profile incident
+    // all over again. Refuse and fail soft.
+    if (platform === "pin") {
+      let pathname = "/";
+      try {
+        const loc = await chrome.scripting.executeScript({ target: { tabId }, func: () => location.pathname });
+        pathname = (loc && loc[0] && loc[0].result) || "/";
+      } catch (e) { pathname = "/"; }
+      if (pathname === "/" || pathname === "") {
+        log("auto-import pin: landed on the home feed (own-profile redirect failed) — skipping, importing nothing");
+        return result;
+      }
+      log("auto-import pin: scraping " + pathname);
+    }
     // IG API-first (live-tuning round 2): the hidden-tab DOM only ever mounts
     // ~10 saved tiles, so a heavy saving day overflows the window. Instagram's
     // own web app reads the COMPLETE paginated saved feed from
@@ -855,6 +883,19 @@ async function autoImportScrapePlatform(platform) {
       if (result.diag) {
         log("auto-import " + platform + " diag: " + JSON.stringify(result.diag) +
           " -> status=" + result.status + " items=" + (result.items || []).length);
+        // Pin post-parse guard (data-safety review 2026-07-19, MEDIUM): the
+        // pre-parse pathname check can be raced by an SPA client-redirect to
+        // the home feed DURING the scroll/parse loop. diag.href is captured
+        // in the SAME injected pass as the parse — if the page ended up on
+        // the home feed, these /pin/ anchors are RECOMMENDATIONS: discard.
+        if (platform === "pin" && result.status === "ok") {
+          let parsedPath = "/";
+          try { parsedPath = new URL(result.diag.href || "").pathname; } catch (e) { parsedPath = "/"; }
+          if (parsedPath === "/" || parsedPath === "") {
+            log("auto-import pin: page became the home feed during the scrape — discarding parse, importing nothing");
+            result = { status: "parse-failed", items: [] };
+          }
+        }
         delete result.diag;   // local breadcrumb only — never delivered
       }
     } catch (e) {
@@ -923,7 +964,7 @@ async function runAutoImportCheck(manual) {
     const cfg = await autoImportGetConfig(port);
     if (!manual && !cfg.on) return;   // config gate applies ONLY to the alarm path
     const platforms = cfg.platforms || {};
-    for (const platform of ["fb", "ig"]) {
+    for (const platform of ["fb", "ig", "pin", "gs"]) {
       if (platforms[platform] === false) continue;   // per-platform checkbox off
       await runAutoImportPlatform(platform, port);
     }
