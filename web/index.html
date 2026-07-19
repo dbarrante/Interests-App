@@ -1978,7 +1978,7 @@ async function stumbleFetch(){
     spool = spool.concat(fresh);
     persistAll();
     return fresh.length;
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return 0; }
+  }catch(e){ console.error(e); toast(IA_AI.creditsMessage(e) || ("Hmm: "+e.message), 6000); return 0; }
   finally{ stLoading=false; renderStumble(); }
 }
 // Old persisted recommendations can die after validation. Never deal one after its
@@ -2819,7 +2819,7 @@ ${batch.map((b,i)=>(i+1)+". "+b.title).join("\n")}`;
     }
     const left = imported.filter(i=>!i.desc).length;
     toast(left? "Pausing here — click again to describe the remaining "+left : "All imported items described");
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
+  }catch(e){ console.error(e); toast(IA_AI.creditsMessage(e) || ("Hmm: "+e.message), 6000); }
   renderImportedKeepFocus();
 }
 
@@ -2977,7 +2977,7 @@ ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).jo
     }
     const left = imported.filter(i=>!i.tags).length + saved.filter(i=>!i.tags).length;
     toast(left ? done+" tagged — "+left+" remaining" : "All "+done+" items tagged and categorized");
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
+  }catch(e){ console.error(e); toast(IA_AI.creditsMessage(e) || ("Hmm: "+e.message), 6000); }
   if(curTab==="saved") renderSaved();
   renderImportedKeepFocus();
 }
@@ -4398,7 +4398,7 @@ Suggest 6-10 NEW interest categories (2-4 words each, title case) that would use
       .slice(0,12).map(x=>({name:x.trim(), sel:false}));
     renderCatSugs();
     if(!catSugs.length) toast("Nothing new suggested — your categories already cover it");
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
+  }catch(e){ console.error(e); toast(IA_AI.creditsMessage(e) || ("Hmm: "+e.message), 6000); }
   finally{ btn.disabled=false; btn.innerHTML="&#10024; Suggest categories"; }
 }
 function renderCatSugs(){
@@ -4440,7 +4440,7 @@ async function buildMyProfile(){
     document.getElementById("profileAbout").value = (S.about ? S.about.trim()+"\n\n" : "") + res.about;
     renderProfileChips();
     document.getElementById("profileReview").style.display = "";
-  }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); }
+  }catch(e){ console.error(e); toast(IA_AI.creditsMessage(e) || ("Hmm: "+e.message), 6000); }
   finally{ btn.disabled=false; btn.innerHTML="&#129504; Build my profile"; }
 }
 function renderProfileChips(){

@@ -155,10 +155,34 @@
     return JSON.parse(t.slice(a, b + 1));
   }
 
+  /* ============ out-of-credits classifier ============ */
+  // creditsMessage(err, opts) — when an AI call failed because the provider
+  // ACCOUNT is out of credits/quota (not a rate limit, bad key, or network
+  // blip), return a specific actionable message; otherwise null. Matches the
+  // uniform "<Provider> API error <status>: <body>" strings the callers throw.
+  // Markers: Anthropic 400 "credit balance is too low"; OpenAI 429
+  // "insufficient_quota"/"exceeded your current quota"; OpenRouter/any 402
+  // (Payment Required) or "insufficient credits"; Gemini RESOURCE_EXHAUSTED
+  // bodies that mention quota/billing (plain RESOURCE_EXHAUSTED alone can be
+  // a per-minute rate limit — that one should NOT claim the account is dry).
+  var CREDIT_RE = /credit balance is too low|insufficient_quota|exceeded your current quota|insufficient credits|API error 402\b|purchase more credits|billing hard limit/i;
+  var GEMINI_QUOTA_RE = /RESOURCE_EXHAUSTED[\s\S]*?(?:daily|billing|free.tier|plan)|(?:daily|billing|free.tier|plan)[\s\S]*?RESOURCE_EXHAUSTED/i;
+  function creditsMessage(err, opts) {
+    opts = opts || {};
+    var msg = String((err && err.message) || err || "");
+    if (!CREDIT_RE.test(msg) && !GEMINI_QUOTA_RE.test(msg)) return null;
+    var provider = opts.provider;
+    if (!provider) { try { provider = S().provider; } catch (e) { provider = ""; } }
+    var names = { anthropic: "Anthropic", openai: "OpenAI", gemini: "Google Gemini", groq: "Groq", local: "local/custom" };
+    var name = names[provider] || provider || "AI provider";
+    return "Your " + name + " account is out of credits — add funds, or switch provider/model in Settings.";
+  }
+
   var IA_AI = {
     configure: configure,
     callAI: callAI,
     hasAIKey: hasAIKey,
+    creditsMessage: creditsMessage,
     parseJsonArray: parseJsonArray,
     // exposed for completeness / potential direct use; dispatch normally via callAI
     callAnthropic: callAnthropic, callOpenAI: callOpenAI, callGemini: callGemini,
