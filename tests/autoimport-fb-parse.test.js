@@ -177,6 +177,86 @@ t("near-miss: a bare profile URL facebook.com/someuser does not match", () => {
   assert.deepStrictEqual(r.items, []);
 });
 
+/* ---------- LIVE TUNING 2026-07-19: real FB saved page is div-based, ----------
+   3 anchors per card (thumbnail-img anchor + content-excerpt anchor + byline
+   anchor), NO <li> wrappers. All fragments for one post must merge on key. */
+function liveCard(id, img, excerpt, byline, dur) {
+  // Mirrors the captured structure: anonymous divs, no aria-labels, the same
+  // post URL appearing as three separate anchors.
+  var u = "https://www.facebook.com/somepage/posts/" + id;
+  return '<div class="x1a2b3c"><div role="none">' +
+    '<a class="xq" href="' + u + '">' + (dur ? dur : "") +
+    (img ? '<img class="xl1" alt="image" src="' + img + '">' : "") + "</a>" +
+    '<a class="xq" href="' + u + '"><span>' + excerpt + "</span></a>" +
+    '<a class="xq" href="' + u + '"><span>' + byline + "</span></a>" +
+    "</div></div>";
+}
+t("LIVE: 3-anchor div card merges to ONE item with excerpt title + in-anchor image", () => {
+  const html = "<html><body>" +
+    liveCard("111222333", "https://scontent.example.com/live1.jpg",
+      "Most AI agent setups fail because of architecture", "Success Steps's post") +
+    "</body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.status, "ok");
+  assert.strictEqual(r.items.length, 1, "three anchors, one item");
+  const it = r.items[0];
+  assert.strictEqual(it.platformKey, "111222333");
+  assert.strictEqual(it.title, "Most AI agent setups fail because of architecture", "excerpt beats byline");
+  assert.strictEqual(it.image, "https://scontent.example.com/live1.jpg", "img inside a sibling anchor of the same key");
+});
+t("LIVE: video-duration inner text (00:52) is demoted — excerpt from sibling anchor wins", () => {
+  const html = "<html><body>" +
+    liveCard("444555666", "https://scontent.example.com/live2.jpg",
+      "Bare Board. Orange Robot. Real Personality.", "AIPI's post", "00:52") +
+    "</body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1);
+  assert.strictEqual(r.items[0].title, "Bare Board. Orange Robot. Real Personality.");
+});
+t("LIVE: duration is still used as a LAST-resort title when nothing else exists", () => {
+  const html = '<div><a href="https://www.facebook.com/reel/777888999">00:19</a></div>';
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1);
+  assert.strictEqual(r.items[0].title, "00:19");
+});
+t("LIVE: image-less card still yields item with excerpt title and empty image", () => {
+  const html = "<html><body>" +
+    liveCard("121212121", "", "A text-only saved post", "Someone's post") +
+    "</body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1);
+  assert.strictEqual(r.items[0].title, "A text-only saved post");
+  assert.strictEqual(r.items[0].image, "");
+});
+t("LIVE: merge does not leak fragments ACROSS different keys", () => {
+  const html = "<html><body>" +
+    liveCard("101010101", "https://scontent.example.com/a.jpg", "First post excerpt", "Page A's post") +
+    liveCard("202020202", "https://scontent.example.com/b.jpg", "Second post excerpt", "Page B's post") +
+    "</body></html>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 2);
+  assert.strictEqual(r.items[0].image, "https://scontent.example.com/a.jpg");
+  assert.strictEqual(r.items[1].image, "https://scontent.example.com/b.jpg");
+  assert.strictEqual(r.items[0].title, "First post excerpt");
+  assert.strictEqual(r.items[1].title, "Second post excerpt");
+});
+
+t("LIVE: /groups/<g>/permalink/<id>/ shape merges with /groups/<g>/posts/<id>/ (same card)", () => {
+  // Real captured layout: the thumbnail + excerpt anchors use /permalink/,
+  // only the byline anchor uses /posts/ — all three are ONE saved post.
+  const html = '<div>' +
+    '<a href="https://www.facebook.com/groups/471504135904363/permalink/962083820179723/">' +
+    '<img alt="image" src="https://scontent.example.com/grp.jpg"></a>' +
+    '<a href="https://www.facebook.com/groups/471504135904363/permalink/962083820179723/"><span>Your brain is not broken.</span></a>' +
+    '<a href="https://www.facebook.com/groups/471504135904363/posts/962083820179723/"><span>The Therapeutic Bookshelf\'s post</span></a>' +
+    "</div>";
+  const r = FB.parseSavedHtml(html);
+  assert.strictEqual(r.items.length, 1, "permalink + posts shapes collapse on the bare id");
+  assert.strictEqual(r.items[0].platformKey, "962083820179723");
+  assert.strictEqual(r.items[0].title, "Your brain is not broken.");
+  assert.strictEqual(r.items[0].image, "https://scontent.example.com/grp.jpg");
+});
+
 /* ---------- parseSavedDoc delegation ---------- */
 t("parseSavedDoc(doc) serializes documentElement.outerHTML and delegates to parseSavedHtml", () => {
   const stubDoc = { documentElement: { outerHTML: SAMPLE } };

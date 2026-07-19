@@ -35,7 +35,10 @@
   var PATH_PATTERNS = [
     { type: "posts", re: /^https?:\/\/(?:www\.)?facebook\.com\/[^\/?#]+\/posts\/([^\/?#&]+)/i },
     { type: "reel", re: /^https?:\/\/(?:www\.)?facebook\.com\/reel\/([^\/?#&]+)/i },
-    { type: "groupposts", re: /^https?:\/\/(?:www\.)?facebook\.com\/groups\/[^\/?#]+\/posts\/([^\/?#&]+)/i }
+    // Live-tuning 2026-07-19: within one saved card, group-post thumbnail +
+    // excerpt anchors use /groups/<g>/permalink/<id>/ while the byline anchor
+    // uses /groups/<g>/posts/<id>/ — same post, so both shapes share one type.
+    { type: "groupposts", re: /^https?:\/\/(?:www\.)?facebook\.com\/groups\/[^\/?#]+\/(?:posts|permalink)\/([^\/?#&]+)/i }
   ];
   var QUERY_PATTERNS = [
     { type: "watch", host: /^https?:\/\/(?:www\.)?facebook\.com\/watch\/?(?:[?#]|$)/i, param: "v" },
@@ -130,14 +133,27 @@
     return decodeEntities(bestSrc);
   }
 
+  // Live-tuning 2026-07-19 (real captured /saved/ page): FB renders each
+  // saved card as anonymous divs (no <li>) with the SAME post URL appearing
+  // as up to THREE anchors — a thumbnail anchor (contains the <img>, inner
+  // text empty or a video duration like "00:52"), a content-excerpt anchor
+  // (the best title), and a byline anchor ("Page Name's post"). Compiler-
+  // generated class names churn, so the only stable join key is the parsed
+  // post id: collect ALL anchors per key, then merge fragments.
+  var DURATION_RE = /^\s*\d{1,3}:\d{2}(?::\d{2})?\s*$/;
+
   function extractItems(html) {
-    var items = [];
-    var seen = Object.create(null);
+    // Pass 1: group every recognized anchor by bare post id, in DOM order.
+    // Review Finding 1 fix: grouping on the BARE id (first-encountered url
+    // wins), not type:id — the same post reached via two URL shapes (e.g.
+    // /<page>/posts/<id> AND /permalink.php?story_fbid=<id>) must collapse
+    // to ONE item, since platformKey exposes only the bare id.
+    var groups = [];
+    var byKey = Object.create(null);
     var blocks = findBlocks(html);
     var re = /<a\b[^>]*>[\s\S]*?<\/a>/gi;
     var m;
     while ((m = re.exec(html))) {
-      if (items.length >= CAP) break;
       var whole = m[0];
       var openTagMatch = /^<a\b[^>]*>/i.exec(whole);
       var openTag = openTagMatch ? openTagMatch[0] : "<a>";
@@ -146,28 +162,47 @@
       var href = decodeEntities(hrefRaw);
       var pat = matchPattern(href);
       if (!pat) continue;
-      // Review Finding 1 fix: dedup on the BARE id (first-encountered wins),
-      // not type:id — the same post reached via two URL shapes (e.g.
-      // /<page>/posts/<id> AND /permalink.php?story_fbid=<id>) must collapse
-      // to ONE item, since platformKey exposes only the bare id.
-      var key = pat.id;
-      if (seen[key]) continue;
-
-      var block = blockFor(blocks, m.index);
-      var localIdx = block ? (m.index - block.start) : 0;
-
-      var title = decodeEntities(extractAttr(openTag, "aria-label") || "").trim();
-      if (!title) {
-        var innerMatch = /^<a\b[^>]*>([\s\S]*)<\/a>$/i.exec(whole);
-        title = decodeEntities(stripTags(innerMatch ? innerMatch[1] : ""));
+      var g = byKey[pat.id];
+      if (!g) {
+        if (groups.length >= CAP) continue; // cap distinct items; later anchors of ALREADY-seen keys still merge
+        g = byKey[pat.id] = { key: pat.id, url: href, firstIdx: m.index, anchors: [] };
+        groups.push(g);
       }
+      var innerMatch = /^<a\b[^>]*>([\s\S]*)<\/a>$/i.exec(whole);
+      var inner = innerMatch ? innerMatch[1] : "";
+      var imgTag = /<img\b[^>]*>/i.exec(inner);
+      var imgSrc = imgTag ? extractAttr(imgTag[0], "src") : null;
+      g.anchors.push({
+        aria: decodeEntities(extractAttr(openTag, "aria-label") || "").trim(),
+        text: decodeEntities(stripTags(inner)),
+        img: imgSrc && /^https?:\/\//i.test(imgSrc) ? decodeEntities(imgSrc) : ""
+      });
+    }
+
+    // Pass 2: resolve each group. Title: first aria-label, else first
+    // non-duration inner text, else nearest preceding aria-label in the
+    // enclosing <li> block (fixture/legacy layout), else duration as a
+    // last resort. Image: first <img> INSIDE any of the key's anchors,
+    // else block-nearest <img> (fixture/legacy layout).
+    var items = [];
+    for (var i = 0; i < groups.length; i++) {
+      var g2 = groups[i], j;
+      var title = "";
+      for (j = 0; j < g2.anchors.length && !title; j++) title = g2.anchors[j].aria;
+      for (j = 0; j < g2.anchors.length && !title; j++) {
+        if (g2.anchors[j].text && !DURATION_RE.test(g2.anchors[j].text)) title = g2.anchors[j].text;
+      }
+      var block = blockFor(blocks, g2.firstIdx);
+      var localIdx = block ? (g2.firstIdx - block.start) : 0;
       if (!title) title = decodeEntities(nearestPrecedingAriaLabel(block, localIdx)).trim();
+      for (j = 0; j < g2.anchors.length && !title; j++) title = g2.anchors[j].text;
       title = title.slice(0, 512);
 
-      var image = nearestImage(block, localIdx);
+      var image = "";
+      for (j = 0; j < g2.anchors.length && !image; j++) image = g2.anchors[j].img;
+      if (!image) image = nearestImage(block, localIdx);
 
-      seen[key] = true;
-      items.push({ url: href, title: title, image: image, platformKey: pat.id });
+      items.push({ url: g2.url, title: title, image: image, platformKey: g2.key });
     }
     return items;
   }

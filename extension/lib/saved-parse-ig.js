@@ -28,10 +28,23 @@
 
   var CAP = 100;
 
+  // Live-tuning 2026-07-19 (real captured /<username>/saved/all-posts/ page):
+  // IG renders saved-grid tile hrefs RELATIVE ("/p/<code>/"), so the host
+  // part is optional. The pattern still anchors the path at ^ (after the
+  // optional host), so /explore/p/<code>/, profile paths, AND
+  // username-prefixed profile-grid links ("/<username>/p/<code>/" — e.g.
+  // "/saved/p/…" from the account literally named @saved) can never match:
+  // a profile grid is someone ELSE'S posts, not the viewer's saves. Matched
+  // urls are always delivered in CANONICAL form
+  // (https://www.instagram.com/<p|reel>/<code>/) — stable, shareable, and
+  // what later capture-enrichment expects.
   var PATH_PATTERNS = [
-    { type: "p", re: /^https?:\/\/(?:www\.)?instagram\.com\/p\/([A-Za-z0-9_-]+)/i },
-    { type: "reel", re: /^https?:\/\/(?:www\.)?instagram\.com\/reel\/([A-Za-z0-9_-]+)/i }
+    { type: "p", re: /^(?:https?:\/\/(?:www\.)?instagram\.com)?\/p\/([A-Za-z0-9_-]+)/i },
+    { type: "reel", re: /^(?:https?:\/\/(?:www\.)?instagram\.com)?\/reel\/([A-Za-z0-9_-]+)/i }
   ];
+  function canonicalUrl(pat) {
+    return "https://www.instagram.com/" + pat.type + "/" + pat.id + "/";
+  }
 
   // FB: name="login" / id="loginform" / action*="login". IG: class="loginForm" /
   // href*="/accounts/login/". Kept broad on purpose -- a shared, tested
@@ -110,14 +123,24 @@
     return decodeEntities(bestSrc);
   }
 
+  // Live-tuning 2026-07-19 (real captured /saved/all-posts/ page): each tile
+  // is ONE <a> wrapping the <img>; the caption lives in the img's alt
+  // attribute, and video tiles carry a junk "Clip" overlay as inner text —
+  // so the in-anchor alt outranks inner text. Anchors are still grouped by
+  // bare shortcode (mirrors saved-parse-fb.js) so a post reached via both
+  // /p/ and /reel/ shapes merges its fragments into ONE item.
   function extractItems(html) {
-    var items = [];
-    var seen = Object.create(null);
+    // Pass 1: group every recognized anchor by bare shortcode, in DOM order.
+    // Review Finding 1 fix: grouping on the BARE shortcode (first-encountered
+    // url wins), not type:id — the same post reached via /p/<code>/ AND
+    // /reel/<code>/ must collapse to ONE item, since platformKey exposes
+    // only the bare shortcode.
+    var groups = [];
+    var byKey = Object.create(null);
     var blocks = findBlocks(html);
     var re = /<a\b[^>]*>[\s\S]*?<\/a>/gi;
     var m;
     while ((m = re.exec(html))) {
-      if (items.length >= CAP) break;
       var whole = m[0];
       var openTagMatch = /^<a\b[^>]*>/i.exec(whole);
       var openTag = openTagMatch ? openTagMatch[0] : "<a>";
@@ -126,28 +149,46 @@
       var href = decodeEntities(hrefRaw);
       var pat = matchPattern(href);
       if (!pat) continue;
-      // Review Finding 1 fix: dedup on the BARE shortcode (first-encountered
-      // wins), not type:id — the same post reached via /p/<code>/ AND
-      // /reel/<code>/ must collapse to ONE item, since platformKey exposes
-      // only the bare shortcode.
-      var key = pat.id;
-      if (seen[key]) continue;
-
-      var block = blockFor(blocks, m.index);
-      var localIdx = block ? (m.index - block.start) : 0;
-
-      var title = decodeEntities(extractAttr(openTag, "aria-label") || "").trim();
-      if (!title) {
-        var innerMatch = /^<a\b[^>]*>([\s\S]*)<\/a>$/i.exec(whole);
-        title = decodeEntities(stripTags(innerMatch ? innerMatch[1] : ""));
+      var g = byKey[pat.id];
+      if (!g) {
+        if (groups.length >= CAP) continue; // cap distinct items; later anchors of ALREADY-seen keys still merge
+        g = byKey[pat.id] = { key: pat.id, url: canonicalUrl(pat), firstIdx: m.index, anchors: [] };
+        groups.push(g);
       }
+      var innerMatch = /^<a\b[^>]*>([\s\S]*)<\/a>$/i.exec(whole);
+      var inner = innerMatch ? innerMatch[1] : "";
+      var imgTag = /<img\b[^>]*>/i.exec(inner);
+      var imgSrc = imgTag ? extractAttr(imgTag[0], "src") : null;
+      g.anchors.push({
+        aria: decodeEntities(extractAttr(openTag, "aria-label") || "").trim(),
+        alt: imgTag ? decodeEntities(extractAttr(imgTag[0], "alt") || "").trim() : "",
+        text: decodeEntities(stripTags(inner)),
+        img: imgSrc && /^https?:\/\//i.test(imgSrc) ? decodeEntities(imgSrc) : ""
+      });
+    }
+
+    // Pass 2: resolve each group. Title: first aria-label, else first
+    // in-anchor img alt (the IG caption — beats the "Clip" overlay text),
+    // else first inner text, else nearest preceding aria-label in the
+    // enclosing <li> block (fixture/legacy layout). Image: first <img>
+    // INSIDE any of the key's anchors, else block-nearest <img>.
+    var items = [];
+    for (var i = 0; i < groups.length; i++) {
+      var g2 = groups[i], j;
+      var title = "";
+      for (j = 0; j < g2.anchors.length && !title; j++) title = g2.anchors[j].aria;
+      for (j = 0; j < g2.anchors.length && !title; j++) title = g2.anchors[j].alt;
+      for (j = 0; j < g2.anchors.length && !title; j++) title = g2.anchors[j].text;
+      var block = blockFor(blocks, g2.firstIdx);
+      var localIdx = block ? (g2.firstIdx - block.start) : 0;
       if (!title) title = decodeEntities(nearestPrecedingAriaLabel(block, localIdx)).trim();
       title = title.slice(0, 512);
 
-      var image = nearestImage(block, localIdx);
+      var image = "";
+      for (j = 0; j < g2.anchors.length && !image; j++) image = g2.anchors[j].img;
+      if (!image) image = nearestImage(block, localIdx);
 
-      seen[key] = true;
-      items.push({ url: href, title: title, image: image, platformKey: pat.id });
+      items.push({ url: g2.url, title: title, image: image, platformKey: g2.key });
     }
     return items;
   }
