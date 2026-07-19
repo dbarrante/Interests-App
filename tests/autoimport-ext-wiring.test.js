@@ -62,7 +62,17 @@ ok("injects the pure parser lib via executeScript files", /files:\s*\[libFile\]/
 // using the parser itself as the readiness probe, and stops early on any
 // non-parse-failed status (ok or login-required).
 ok("polls scroll->settle(1s)->parse up to 15 rounds (lazy hidden-tab grids)", /tries < 15/.test(src) && /window\.scrollTo\(0, document\.body\.scrollHeight\)/.test(src) && /setTimeout\(r, 1000\)/.test(src));
-ok("poll stops early on any non-parse-failed status", /if\s*\(res\.status !== "parse-failed"\)\s*break;/.test(src));
+// Live-tuning round 2: breaking on the FIRST ok parse froze FB at its
+// initially-mounted ~13 items — the loop now keeps scrolling while the count
+// grows and stops after 2 stable rounds (login wall stops immediately).
+ok("poll is GROWTH-based: stops after 2 stable ok rounds, not on first success", /if \(res\.status === "ok" && n === last\) \{ if \(\+\+stable >= 2\) break; \} else stable = 0;/.test(src));
+ok("login wall still stops the poll immediately", /if \(res\.status === "login-required"\) break;/.test(src));
+
+// --- IG API-first saved feed (complete, paginated) with DOM fallback ---------
+ok("IG tries the page-context saved-feed API first", /\/api\/v1\/feed\/saved\/posts\//.test(src) && /"x-ig-app-id"/.test(src));
+ok("API pagination is bounded (page cap) and item-capped", /pages < 6/.test(src) && /items\.length < CAP/.test(src));
+ok("API failure/empty falls back to the DOM scrape (never a dependency)", /falling back to DOM scrape/.test(src));
+ok("API items ship canonical /p/ urls keyed on the shortcode", /"https:\/\/www\.instagram\.com\/p\/" \+ m\.code \+ "\/"/.test(src));
 ok("scrape diagnostics stay SW-console-only (diag stripped before delivery)", /delete result\.diag;/.test(src));
 ok("calls parseSavedDoc(document) in-page", /api\.parseSavedDoc\(document\)/.test(src));
 ok("the tab is ALWAYS closed, in a finally block", /finally\s*{\s*if\s*\(tabId != null\)\s*{\s*try\s*{\s*await chrome\.tabs\.remove\(tabId\); }/.test(src));

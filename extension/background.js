@@ -724,6 +724,61 @@ async function autoImportScrapePlatform(platform) {
     catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
     tabId = tab.id;
     await waitTabComplete(tabId, 30000);
+    // IG API-first (live-tuning round 2): the hidden-tab DOM only ever mounts
+    // ~10 saved tiles, so a heavy saving day overflows the window. Instagram's
+    // own web app reads the COMPLETE paginated saved feed from
+    // /api/v1/feed/saved/posts/ — call it from the page's origin with the
+    // user's session (same read-only data the saved page itself shows, once a
+    // day). Any surprise (non-200, unexpected shape, zero items) falls back
+    // to the DOM scrape below — the API is an upgrade, never a dependency.
+    if (platform === "ig") {
+      try {
+        const apiRes = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async (CAP) => {
+            try {
+              const items = [];
+              let maxId = "", pages = 0;
+              while (items.length < CAP && pages < 6) {
+                const r = await fetch("/api/v1/feed/saved/posts/" + (maxId ? "?max_id=" + encodeURIComponent(maxId) : ""), {
+                  credentials: "include",
+                  headers: { "x-ig-app-id": "936619743392459" },
+                });
+                if (!r.ok) return { status: "api-failed", reason: "http " + r.status };
+                const j = await r.json();
+                if (!j || j.status !== "ok" || !Array.isArray(j.items)) return { status: "api-failed", reason: "shape" };
+                for (const w of j.items) {
+                  const m = w && w.media;
+                  if (!m || !m.code) continue;
+                  const iv = (m.image_versions2 && m.image_versions2.candidates) ||
+                    (m.carousel_media && m.carousel_media[0] && m.carousel_media[0].image_versions2 && m.carousel_media[0].image_versions2.candidates) || [];
+                  // pick the candidate nearest 640px — grid-card sized, cheap to convert
+                  let best = "", bestD = Infinity;
+                  for (const c of iv) { const d = Math.abs((c.width || 9999) - 640); if (c.url && d < bestD) { bestD = d; best = c.url; } }
+                  items.push({
+                    url: "https://www.instagram.com/p/" + m.code + "/",
+                    title: String((m.caption && m.caption.text) || "").slice(0, 512),
+                    image: best,
+                    platformKey: m.code,
+                  });
+                  if (items.length >= CAP) break;
+                }
+                if (!j.more_available || !j.next_max_id) break;
+                maxId = String(j.next_max_id); pages++;
+              }
+              return { status: "ok", items: items, pages: pages + 1 };
+            } catch (e) { return { status: "api-failed", reason: String(e && e.message || e).slice(0, 120) }; }
+          },
+          args: [100],
+        });
+        const apiOut = apiRes && apiRes[0] && apiRes[0].result;
+        if (apiOut && apiOut.status === "ok" && Array.isArray(apiOut.items) && apiOut.items.length) {
+          log("auto-import ig: saved-feed API returned " + apiOut.items.length + " items over " + apiOut.pages + " page(s)");
+          return { status: "ok", items: apiOut.items };
+        }
+        log("auto-import ig: saved-feed API unavailable (" + ((apiOut && (apiOut.reason || apiOut.status)) || "no result") + ") — falling back to DOM scrape");
+      } catch (e) { log("auto-import ig: API probe failed (" + (e && e.message) + ") — falling back to DOM scrape"); }
+    }
     // IG two-step: discover the viewer's username from the home page's nav
     // avatar (<img alt="…profile picture"> inside the profile link), then hop
     // the SAME tab to the real saved page. Fail SOFT if the avatar never
@@ -760,18 +815,23 @@ async function autoImportScrapePlatform(platform) {
           // mount tiles in a HIDDEN tab — a fixed 2-scroll wait parses an
           // empty shell. Poll instead: scroll, settle 1s, parse; the parser
           // itself is the readiness probe (no per-platform selectors here).
-          // Stop as soon as it reports anything other than parse-failed
-          // (ok OR login-required — neither improves with more waiting);
+          // GROWTH-based stop (live-tuning round 2): breaking on the FIRST
+          // successful parse froze FB at its initially-mounted ~13 items —
+          // keep scrolling while the item count still grows, stop once it
+          // has been stable for 2 consecutive rounds (or on a login wall);
           // give up after ~15 rounds. Hidden-tab timers are throttled to
           // >=1s ticks, which is exactly the cadence used.
           const api = self[name];
           let res = { status: "parse-failed", items: [] };
-          let tries = 0;
+          let tries = 0, last = -1, stable = 0;
           for (; tries < 15; tries++) {
             window.scrollTo(0, document.body.scrollHeight);
             await new Promise((r) => setTimeout(r, 1000));
             res = api ? api.parseSavedDoc(document) : { status: "parse-failed", items: [] };
-            if (res.status !== "parse-failed") break;
+            if (res.status === "login-required") break;
+            const n = res.items.length;
+            if (res.status === "ok" && n === last) { if (++stable >= 2) break; } else stable = 0;
+            last = n;
           }
           // Diagnostic breadcrumb (SW-console only, stripped before delivery):
           // what page did this hidden tab ACTUALLY land on, how much of it was
