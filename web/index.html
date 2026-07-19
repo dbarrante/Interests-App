@@ -212,6 +212,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .imp-body>.masonry{flex:1;min-width:0}
 .imp-body>.st-main{flex:1;min-width:0}   /* Stumble content beside its left category sidebar */
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
+.newpill{display:inline-block;background:var(--accent);color:#fff;font-size:10px;font-weight:800;line-height:1;padding:3px 6px;border-radius:6px;margin-right:6px;vertical-align:1px;letter-spacing:.6px}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
 .banner button{margin-left:auto}
@@ -922,11 +923,22 @@ function showTab(t, deferStumble){
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
   ["stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
+  window.scrollTo(0,0);   // land at the top of every tab — don't inherit the previous tab's scroll depth
   document.getElementById("catBar").style.display = t==="settings"?"none":"";
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
-  if(t==="imported") renderImported();
+  // "NEW" badge semantics: a card is NEW if it was imported after the LAST
+  // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
+  // The stamp advances on each visit, so badges self-clear once seen. A
+  // missing stamp (first run after this feature shipped) initializes
+  // silently — badging the whole historical library as NEW helps no one.
+  if(t==="imported"){
+    const prev = Number(localStorage.getItem("ia_impseen")||0);
+    _impPrevSeen = prev || Date.now();
+    try{ localStorage.setItem("ia_impseen", String(Date.now())); }catch(e){}
+    renderImported();
+  }
   if(t==="stumble"){ if(!stDeal.length && !deferStumble) stumbleNext(); else renderStumble(); }
 }
 // Open the app's own URL (the local Core service origin, e.g. http://127.0.0.1:3456/) in the
@@ -2397,6 +2409,7 @@ let impTag = "";           // hydrated from Store.kv in bootData()
 function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); renderImported(); }
 let impSrc = "";           // hydrated from Store.kv in bootData()
 let impSort = "newest";    // hydrated from Store.kv in bootData()
+let _impPrevSeen = Infinity;   // "NEW" badge cutoff — set on each Imported-tab visit (showTab); Infinity until first visit so nothing badges before the stamp is read
 let impUnreviewed = false; // hydrated from Store.kv in bootData()
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
@@ -3418,7 +3431,7 @@ function impCardHTML(it,idx){
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1;min-width:0">
-      <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
+      <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${(it.ts||0)>_impPrevSeen?'<span class="newpill">NEW</span>':""}${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
       <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.sdate)?" · &#128197; "+esc(fmtCardDate(it.sdate)):""}</div>
       ${tagRow(it.tags, idx)}

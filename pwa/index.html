@@ -239,6 +239,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .imp-body>.masonry{flex:1;min-width:0}
 .imp-body>.st-main{flex:1;min-width:0}   /* Stumble content beside its left category sidebar */
 .catpill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 15px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
+.newpill{display:inline-block;background:var(--accent);color:#fff;font-size:10px;font-weight:800;line-height:1;padding:3px 6px;border-radius:6px;margin-right:6px;vertical-align:1px;letter-spacing:.6px}
 .catpill.on{color:#fff;border-color:transparent}
 .banner{display:flex;align-items:center;gap:12px;background:#fdf6e3;border:1px solid #ead9a8;border-radius:11px;padding:10px 16px;font-size:13.5px;margin-bottom:16px}
 .banner button{margin-left:auto}
@@ -447,16 +448,16 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 .imp-acts{display:flex;gap:6px;margin-top:8px}
 .imp-acts button{border:1px solid var(--line);background:#fafaf8;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:600;color:#4b463f;cursor:pointer}
 .imp-acts button:hover{border-color:var(--accent);color:var(--accent)}
-.imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
-.ai-row{display:flex;align-items:center;gap:10px;margin:7px 0}
-.ai-row .ai-name{min-width:78px;font-weight:600}
-.ai-bar{flex:0 0 120px;height:6px;border-radius:6px;background:var(--line);overflow:hidden;position:relative}
-.ai-bar .ai-fill{position:absolute;top:0;bottom:0;left:0;width:100%;border-radius:6px;background:var(--accent);transform:translateX(-100%)}
-.ai-bar.checking .ai-fill{width:40%;animation:aimove 1.1s ease-in-out infinite}
-.ai-bar.done .ai-fill{transform:none;width:100%;opacity:.5}
-.ai-bar.fail .ai-fill{transform:none;width:100%;background:#c2410c;opacity:.6}
-.ai-msg{color:var(--muted);font-size:13px}
-@keyframes aimove{0%{transform:translateX(-100%)}50%{transform:translateX(55%)}100%{transform:translateX(250%)}}
+.imp-acts button.lk{background:var(--accent-soft);border-color:#f5d0b5}
+.ai-row{display:flex;align-items:center;gap:10px;margin:7px 0}
+.ai-row .ai-name{min-width:78px;font-weight:600}
+.ai-bar{flex:0 0 120px;height:6px;border-radius:6px;background:var(--line);overflow:hidden;position:relative}
+.ai-bar .ai-fill{position:absolute;top:0;bottom:0;left:0;width:100%;border-radius:6px;background:var(--accent);transform:translateX(-100%)}
+.ai-bar.checking .ai-fill{width:40%;animation:aimove 1.1s ease-in-out infinite}
+.ai-bar.done .ai-fill{transform:none;width:100%;opacity:.5}
+.ai-bar.fail .ai-fill{transform:none;width:100%;background:#c2410c;opacity:.6}
+.ai-msg{color:var(--muted);font-size:13px}
+@keyframes aimove{0%{transform:translateX(-100%)}50%{transform:translateX(55%)}100%{transform:translateX(250%)}}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <!-- PWA build: storage.js (fetch-to-localhost:3456) replaced with the IndexedDB +
@@ -961,11 +962,22 @@ function showTab(t, deferStumble){
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
   ["stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
+  window.scrollTo(0,0);   // land at the top of every tab — don't inherit the previous tab's scroll depth
   document.getElementById("catBar").style.display = t==="settings"?"none":"";
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
-  if(t==="imported") renderImported();
+  // "NEW" badge semantics: a card is NEW if it was imported after the LAST
+  // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
+  // The stamp advances on each visit, so badges self-clear once seen. A
+  // missing stamp (first run after this feature shipped) initializes
+  // silently — badging the whole historical library as NEW helps no one.
+  if(t==="imported"){
+    const prev = Number(localStorage.getItem("ia_impseen")||0);
+    _impPrevSeen = prev || Date.now();
+    try{ localStorage.setItem("ia_impseen", String(Date.now())); }catch(e){}
+    renderImported();
+  }
   if(t==="stumble"){ if(!stDeal.length && !deferStumble) stumbleNext(); else renderStumble(); }
 }
 // Open the app's own URL (the local Core service origin, e.g. http://127.0.0.1:3456/) in the
@@ -1758,54 +1770,54 @@ function renderSettings(){
 // regardless of the autoImportOn gate (that gate only applies to the daily
 // alarm). A generous delay before refreshing the status line gives the
 // extension time to poll, open the tab(s), scrape, and deliver.
-let _autoImportReqAt = 0;                 // when the user last tapped "Check now"
-const AUTO_IMPORT_WAIT_MS = 120000;       // show "Checking…" this long before "no response"
-async function autoImportCheckNow(){
-  _autoImportReqAt = Date.now();
-  try{ await Store.setAutoImportRequest(_autoImportReqAt); }catch(e){ _autoImportReqAt = 0; toast("Couldn't reach the app service"); return; }
-  toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
-  renderAutoImportStatus();               // the 2s poller (below) keeps it live from here
-}
-// True per-platform state. "checking" only while a manual request is still
-// outstanding AND this platform's last result predates that request (each
-// platform flips to its real result the instant its batch lands — fb can show
-// "done" while ig is still "checking", since the extension checks them in turn).
-function _autoImportState(platform, st){
-  const rec = st && st[platform];
-  const pending = _autoImportReqAt && (!rec || Number(rec.at) < _autoImportReqAt);
-  if(pending) return (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS ? {phase:"checking"} : {phase:"timeout"};
-  if(!rec) return {phase:"idle"};
-  return rec.status==="ok" ? {phase:"done", rec} : {phase:"fail", rec};
-}
-function _autoImportRowHTML(label, platform, st){
-  const s = _autoImportState(platform, st);
-  let cls="", msg="";
-  if(s.phase==="checking"){ cls="checking"; msg="Checking…"; }
-  else if(s.phase==="timeout"){ cls="fail"; msg="No response — is Chrome open and logged in? Try “Check now” again."; }
-  else if(s.phase==="fail"){ cls="fail"; msg=(s.rec.status==="login-required" ? ("Log in to "+label+" in your browser, then retry") : "Couldn't read the page")+" — "+new Date(s.rec.at).toLocaleString(); }
-  else if(s.phase==="done"){ cls="done"; msg=s.rec.added+" new"+(s.rec.duplicates?", "+s.rec.duplicates+" already seen":"")+" — "+new Date(s.rec.at).toLocaleString(); }
-  else { msg="Not checked yet"; }
-  return "<div class=\"ai-row\"><span class=\"ai-name\">"+esc(label)+"</span>"+
-         "<span class=\"ai-bar "+cls+"\"><span class=\"ai-fill\"></span></span>"+
-         "<span class=\"ai-msg\">"+esc(msg)+"</span></div>";
-}
-// Reads GET /api/auto-import/status (the ia_autoimport_last_fb / ia_autoimport_last_ig
-// written by core/autoimport.js's processBatch) and paints a bar per platform.
-async function renderAutoImportStatus(){
-  const el = document.getElementById("autoImportStatus"); if(!el) return;
-  let st = {fb:null, ig:null};
-  try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
-  el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st);
-}
-// Live auto-refresh: while the auto-import section is actually on-screen OR a
-// manual check is still pending, re-poll the TRUE status every 2s so the bars
-// and result lines update without reopening Settings. Cheap — one GET, and only
-// when it can matter (desktop only; the PWA has no local service).
-function _autoImportVisible(){ const s=document.getElementById("secAutoImport"); return !!(s && s.offsetParent!==null); }
-setInterval(function(){
-  if(window.IA_IDB) return;               // desktop-only feature
-  const pending = _autoImportReqAt && (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS;
-  if(_autoImportVisible() || pending) renderAutoImportStatus();
+let _autoImportReqAt = 0;                 // when the user last tapped "Check now"
+const AUTO_IMPORT_WAIT_MS = 120000;       // show "Checking…" this long before "no response"
+async function autoImportCheckNow(){
+  _autoImportReqAt = Date.now();
+  try{ await Store.setAutoImportRequest(_autoImportReqAt); }catch(e){ _autoImportReqAt = 0; toast("Couldn't reach the app service"); return; }
+  toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
+  renderAutoImportStatus();               // the 2s poller (below) keeps it live from here
+}
+// True per-platform state. "checking" only while a manual request is still
+// outstanding AND this platform's last result predates that request (each
+// platform flips to its real result the instant its batch lands — fb can show
+// "done" while ig is still "checking", since the extension checks them in turn).
+function _autoImportState(platform, st){
+  const rec = st && st[platform];
+  const pending = _autoImportReqAt && (!rec || Number(rec.at) < _autoImportReqAt);
+  if(pending) return (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS ? {phase:"checking"} : {phase:"timeout"};
+  if(!rec) return {phase:"idle"};
+  return rec.status==="ok" ? {phase:"done", rec} : {phase:"fail", rec};
+}
+function _autoImportRowHTML(label, platform, st){
+  const s = _autoImportState(platform, st);
+  let cls="", msg="";
+  if(s.phase==="checking"){ cls="checking"; msg="Checking…"; }
+  else if(s.phase==="timeout"){ cls="fail"; msg="No response — is Chrome open and logged in? Try “Check now” again."; }
+  else if(s.phase==="fail"){ cls="fail"; msg=(s.rec.status==="login-required" ? ("Log in to "+label+" in your browser, then retry") : "Couldn't read the page")+" — "+new Date(s.rec.at).toLocaleString(); }
+  else if(s.phase==="done"){ cls="done"; msg=s.rec.added+" new"+(s.rec.duplicates?", "+s.rec.duplicates+" already seen":"")+" — "+new Date(s.rec.at).toLocaleString(); }
+  else { msg="Not checked yet"; }
+  return "<div class=\"ai-row\"><span class=\"ai-name\">"+esc(label)+"</span>"+
+         "<span class=\"ai-bar "+cls+"\"><span class=\"ai-fill\"></span></span>"+
+         "<span class=\"ai-msg\">"+esc(msg)+"</span></div>";
+}
+// Reads GET /api/auto-import/status (the ia_autoimport_last_fb / ia_autoimport_last_ig
+// written by core/autoimport.js's processBatch) and paints a bar per platform.
+async function renderAutoImportStatus(){
+  const el = document.getElementById("autoImportStatus"); if(!el) return;
+  let st = {fb:null, ig:null};
+  try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
+  el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st);
+}
+// Live auto-refresh: while the auto-import section is actually on-screen OR a
+// manual check is still pending, re-poll the TRUE status every 2s so the bars
+// and result lines update without reopening Settings. Cheap — one GET, and only
+// when it can matter (desktop only; the PWA has no local service).
+function _autoImportVisible(){ const s=document.getElementById("secAutoImport"); return !!(s && s.offsetParent!==null); }
+setInterval(function(){
+  if(window.IA_IDB) return;               // desktop-only feature
+  const pending = _autoImportReqAt && (Date.now()-_autoImportReqAt) < AUTO_IMPORT_WAIT_MS;
+  if(_autoImportVisible() || pending) renderAutoImportStatus();
 }, 2000);function saveSettings(notify){
   S.about = document.getElementById("aboutMe").value;
   S.interests = document.getElementById("interestList").value;
@@ -2472,6 +2484,7 @@ let impTag = "";           // hydrated from Store.kv in bootData()
 function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); renderImported(); }
 let impSrc = "";           // hydrated from Store.kv in bootData()
 let impSort = "newest";    // hydrated from Store.kv in bootData()
+let _impPrevSeen = Infinity;   // "NEW" badge cutoff — set on each Imported-tab visit (showTab); Infinity until first visit so nothing badges before the stamp is read
 let impUnreviewed = false; // hydrated from Store.kv in bootData()
 let impFailed = false;   // when on, show only cards whose capture failed/didn't land (session-only)
 let impBatchIds = null;  // when set (Set of card ids), the imported view shows ONLY the current capture batch
@@ -3493,7 +3506,7 @@ function impCardHTML(it,idx){
     ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1;min-width:0">
-      <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${esc(it.title)}</div>
+      <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${(it.ts||0)>_impPrevSeen?'<span class="newpill">NEW</span>':""}${esc(it.title)}</div>
       ${it.desc?`<div class="imp-desc">${PICONS[platformOf(it)]}${esc(cleanDesc(it.desc))}</div>`:""}
       <div class="imp-d">${it.desc?"":PICONS[platformOf(it)]}${esc(dom||"no link — title only")}${it.liked?" · &#128077; liked":""}${(S.showDates&&it.sdate)?" · &#128197; "+esc(fmtCardDate(it.sdate)):""}</div>
       ${tagRow(it.tags, idx)}

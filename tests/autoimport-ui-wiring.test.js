@@ -67,5 +67,21 @@ ok("web/storage.js: SE.autoImportStatus() endpoint builder present", /autoImport
 ok("web/storage.js: Store.setAutoImportRequest POSTs SE.autoImportRequest()", /setAutoImportRequest:\s*function\s*\(req\)\s*\{\s*return\s*jsend\("POST",\s*SE\.autoImportRequest\(\)/.test(storage));
 ok("web/storage.js: Store.getAutoImportStatus GETs SE.autoImportStatus()", /getAutoImportStatus:\s*function\s*\(\)\s*\{\s*return\s*jget\(SE\.autoImportStatus\(\)\)/.test(storage));
 
+// --- "NEW" badge on freshly imported cards (2026-07-19) ----------------------
+// A card is NEW if imported after the previous Imported-tab visit: the stamp
+// (localStorage ia_impseen) advances on each visit, so badges self-clear once
+// seen; a missing stamp initializes silently (no badge storm on first run).
+[["web", web], ["pwa", pwa]].forEach(([label, src]) => {
+  ok(`${label}: impCardHTML renders a NEW pill for cards newer than the last-visit stamp`,
+    /\(it\.ts\|\|0\)>_impPrevSeen\?'<span class="newpill">NEW<\/span>':""/.test(src));
+  ok(`${label}: showTab advances the ia_impseen stamp on each Imported-tab visit`,
+    /if\(t==="imported"\)\{[\s\S]{0,400}?ia_impseen[\s\S]{0,200}?renderImported\(\);/.test(src));
+  ok(`${label}: first run (no stamp) initializes silently — prev falls back to Date.now()`,
+    /_impPrevSeen = prev \|\| Date\.now\(\);/.test(src));
+  ok(`${label}: _impPrevSeen starts at Infinity (nothing badges before the stamp is read)`,
+    /let _impPrevSeen = Infinity;/.test(src));
+  ok(`${label}: .newpill CSS class defined`, /\.newpill\{/.test(src));
+});
+
 console.log("autoimport-ui-wiring: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
