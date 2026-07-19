@@ -67,6 +67,16 @@ ok("web/storage.js: SE.autoImportStatus() endpoint builder present", /autoImport
 ok("web/storage.js: Store.setAutoImportRequest POSTs SE.autoImportRequest()", /setAutoImportRequest:\s*function\s*\(req\)\s*\{\s*return\s*jsend\("POST",\s*SE\.autoImportRequest\(\)/.test(storage));
 ok("web/storage.js: Store.getAutoImportStatus GETs SE.autoImportStatus()", /getAutoImportStatus:\s*function\s*\(\)\s*\{\s*return\s*jget\(SE\.autoImportStatus\(\)\)/.test(storage));
 
+// --- Check-interval dropdown (spec 2026-07-19) --------------------------------
+[["web", web], ["pwa", pwa]].forEach(([label, src]) => {
+  ok(`${label}: DEFAULTS ships autoImportEvery:24 (1 day)`, /autoImportEvery:24/.test(src));
+  ok(`${label}: interval <select id="autoImportEvery"> present with 1-day top option`,
+    /<select id="autoImportEvery"[^>]*>\s*<option value="24"[^>]*>Once a day<\/option>/.test(src));
+  ok(`${label}: options are 24/12/8/4/2/1`, ["24", "12", "8", "4", "2", "1"].every(v => new RegExp('<option value="' + v + '"').test(src)));
+  ok(`${label}: onchange writes S.autoImportEvery via save("settings",S)`,
+    /autoImportEvery"\)\.onchange\s*=\s*e=>\{[^}]*S\.autoImportEvery\s*=\s*Number\(e\.target\.value\)\|\|24;[^}]*save\("settings",S\)/.test(src));
+});
+
 // --- "NEW" badge on freshly imported cards (2026-07-19) ----------------------
 // A card is NEW if imported after the previous Imported-tab visit: the stamp
 // (localStorage ia_impseen) advances on each visit, so badges self-clear once

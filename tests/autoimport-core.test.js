@@ -288,15 +288,29 @@ t("processBatch: ledger prunes to 5000 keys, oldest firstSeenMs dropped first", 
 
 // --- getConfig / getStatus ---------------------------------------------------
 
-t("getConfig: defaults off, both platforms on, when ia_settings is absent", () => {
+t("getConfig: defaults off, both platforms on, daily interval, when ia_settings is absent", () => {
   const db = openDb(tmpStore());
-  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: false, platforms: { fb: true, ig: true } });
+  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: false, intervalHours: 24, platforms: { fb: true, ig: true } });
 });
 
 t("getConfig: reads autoImportOn/autoImportFb/autoImportIg from the ia_settings JSON blob", () => {
   const db = openDb(tmpStore());
   setKV(db, "ia_settings", JSON.stringify({ autoImportOn: true, autoImportFb: false }));
-  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: true, platforms: { fb: false, ig: true } });
+  assert.deepStrictEqual(autoimport.getConfig({ db }), { on: true, intervalHours: 24, platforms: { fb: false, ig: true } });
+});
+
+t("getConfig: intervalHours from autoImportEvery, clamped to [1,24] with 24 fallback", () => {
+  const db = openDb(tmpStore());
+  setKV(db, "ia_settings", JSON.stringify({ autoImportEvery: 4 }));
+  assert.strictEqual(autoimport.getConfig({ db }).intervalHours, 4);
+  setKV(db, "ia_settings", JSON.stringify({ autoImportEvery: 999 }));
+  assert.strictEqual(autoimport.getConfig({ db }).intervalHours, 24);
+  setKV(db, "ia_settings", JSON.stringify({ autoImportEvery: 0 }));
+  assert.strictEqual(autoimport.getConfig({ db }).intervalHours, 24);
+  setKV(db, "ia_settings", JSON.stringify({ autoImportEvery: "garbage" }));
+  assert.strictEqual(autoimport.getConfig({ db }).intervalHours, 24);
+  setKV(db, "ia_settings", JSON.stringify({ autoImportEvery: 2.6 }));
+  assert.strictEqual(autoimport.getConfig({ db }).intervalHours, 3, "rounded");
 });
 
 t("getStatus: null for a platform with no run yet; reflects the last processBatch record after one", () => {

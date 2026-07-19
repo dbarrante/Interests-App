@@ -47,13 +47,13 @@ function fbItem(over) {
   await run("config: defaults off / both platforms on when ia_settings is unset", async () => {
     const r = await jget(base, "/api/auto-import/config");
     assert.strictEqual(r.status, 200);
-    assert.deepStrictEqual(r.body, { on: false, platforms: { fb: true, ig: true } });
+    assert.deepStrictEqual(r.body, { on: false, intervalHours: 24, platforms: { fb: true, ig: true } });
   });
 
   await run("config: reflects ia_settings JSON once the renderer writes it via PUT /api/kv", async () => {
     await fetch(base + "/api/kv/ia_settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: JSON.stringify({ autoImportOn: true, autoImportIg: false }) }) });
     const r = await jget(base, "/api/auto-import/config");
-    assert.deepStrictEqual(r.body, { on: true, platforms: { fb: true, ig: false } });
+    assert.deepStrictEqual(r.body, { on: true, intervalHours: 24, platforms: { fb: true, ig: false } });
   });
 
   await run("request mailbox: POST sets it, GET reads it, POST {request:null} clears it (mirrors /api/capture-request)", async () => {

@@ -677,7 +677,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <h3>Facebook &amp; Instagram auto-import</h3>
         <div class="hint" style="margin-bottom:10px">Once a day, the browser extension quietly checks your Facebook and Instagram Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on Facebook or Instagram.</div>
         <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
-          <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically, once a day
+          <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically
         </label>
         <div style="margin-top:10px;display:flex;gap:18px;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
@@ -686,6 +686,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <label style="display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer">
             <input type="checkbox" id="autoImportIgToggle" style="width:auto"> Instagram
           </label>
+        </div>
+        <div style="margin-top:8px;font-size:14px">Check every
+          <select id="autoImportEvery" style="width:auto;margin-left:6px"><option value="24">Once a day</option><option value="12">12 hours</option><option value="8">8 hours</option><option value="4">4 hours</option><option value="2">2 hours</option><option value="1">1 hour</option></select>
         </div>
         <div style="margin-top:12px">
           <button class="btn btn-ghost" onclick="autoImportCheckNow()">&#8635; Check now</button>
@@ -808,6 +811,7 @@ const DEFAULTS = {
   autoImportOn:false,   // master switch for the FB/IG daily auto-import scheduler — OFF by default (extension alarm no-ops until this is true); desktop-only, section hidden here
   autoImportFb:true,    // per-platform checkboxes, only consulted once autoImportOn is true
   autoImportIg:true,
+  autoImportEvery:24,   // hours between automatic checks (1-24); "Check now" unaffected
   tagSidebar:false,
   catSidebar:false,
   reuseWindow:false,
@@ -1762,6 +1766,8 @@ function renderSettings(){
     document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
     document.getElementById("autoImportIgToggle").checked = S.autoImportIg!==false;
     document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
+    document.getElementById("autoImportEvery").value = String(S.autoImportEvery||24);
+    document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
     renderAutoImportStatus();
   }
 }

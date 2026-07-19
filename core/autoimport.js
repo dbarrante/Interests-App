@@ -215,12 +215,21 @@ function processBatch(ctx, batch) {
 // GET /api/auto-import/config — settings kv `ia_settings` is a JSON blob;
 // autoImportOn defaults false (auto-check ships OFF by default), each
 // platform toggle defaults true (on once the master switch is on).
+// Hours between automatic checks (Settings "Check every"). Anything outside
+// [1,24] — absent, garbage, zero — behaves exactly like the original fixed
+// daily schedule.
+function clampHours(v) {
+  const n = Number(v);
+  return (isFinite(n) && n >= 1 && n <= 24) ? Math.round(n) : 24;
+}
+
 function getConfig(ctx) {
   const db = ctx && ctx.db;
   let settings = {};
   try { settings = JSON.parse(dbm.getKV(db, "ia_settings") || "null") || {}; } catch (e) { settings = {}; }
   return {
     on: !!settings.autoImportOn,
+    intervalHours: clampHours(settings.autoImportEvery),
     platforms: {
       fb: settings.autoImportFb !== false,
       ig: settings.autoImportIg !== false,

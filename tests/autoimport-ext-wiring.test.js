@@ -102,6 +102,13 @@ ok("IG saved page is built from the DISCOVERED username", /IG_SAVED_PAGE = \(use
 ok("username comes from the nav avatar profile link", /img\[alt\$="profile picture"\]/.test(src));
 ok("no discovered username -> fail soft, import nothing", /if \(!username\) \{ log\("auto-import ig: viewer username NOT found[\s\S]{0,80}?return result; \}/.test(src));
 
+// --- Configurable alarm interval (spec 2026-07-19) -----------------------------
+ok("ensureAutoImportAlarm re-creates the alarm only when the applied interval changed",
+  /async function ensureAutoImportAlarm\(intervalHours\)/.test(src) &&
+  /ia_autoimport_interval/.test(src) && /periodInMinutes:\s*hours \* 60/.test(src));
+ok("interval clamped to [1,24] with 24 fallback", /Math\.min\(24, Math\.max\(1, Number\(intervalHours\) \|\| 24\)\)/.test(src));
+ok("poll tick keeps the alarm in sync from live config", /pollAutoImportRequest[\s\S]{0,900}?ensureAutoImportAlarm\(/.test(src));
+
 // --- Delivery: batch + statuses ----------------------------------------------
 ok("posts the batch to POST /api/auto-import", /autoImportPostBatch[\s\S]{0,200}\/api\/auto-import["'`]/.test(src) || /fetch\("http:\/\/127\.0\.0\.1" \+ port \+ "\/api\/auto-import"/.test(src));
 ok("a non-\"ok\" scrape (login-required/parse-failed) posts the status with NO items", /result\.status !== "ok"\)\s*{[\s\S]{0,220}?items:\s*\[\],\s*checkedAt\s*}\);\s*return;/.test(src));

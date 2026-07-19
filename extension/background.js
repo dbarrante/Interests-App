@@ -932,6 +932,24 @@ async function runAutoImportCheck(manual) {
   }
 }
 
+// Keep the auto-check alarm's period in sync with the app's configured
+// interval (Settings "Check every", spec 2026-07-19). Runs on the same 30s
+// poll tick that already resolved the port; re-creates the alarm ONLY when
+// the applied value actually changed (chrome.storage.local
+// ia_autoimport_interval), so a Settings change takes effect within ~30s
+// with no extension reload.
+async function ensureAutoImportAlarm(intervalHours) {
+  const hours = Math.min(24, Math.max(1, Number(intervalHours) || 24));
+  let applied = null;
+  try { applied = (await chrome.storage.local.get("ia_autoimport_interval")).ia_autoimport_interval; } catch (e) {}
+  if (applied === hours) return;
+  try {
+    chrome.alarms.create(AUTOIMPORT_ALARM, { periodInMinutes: hours * 60, delayInMinutes: Math.min(30, hours * 60) });
+    await chrome.storage.local.set({ ia_autoimport_interval: hours });
+    log("auto-import alarm interval set to " + hours + "h");
+  } catch (e) { log("auto-import alarm update failed: " + (e && e.message)); }
+}
+
 // Bridge poll for the app's "Check now" button — mirrors pollCaptureRequest's
 // mailbox pattern: GET the request, POST null to claim/clear it, then run.
 async function pollAutoImportRequest() {
@@ -943,6 +961,7 @@ async function pollAutoImportRequest() {
   if (autoImportBusy) return;
   let port; try { port = await findAppPort(); } catch (e) { return; }
   if (port == null) return;
+  try { const cfg = await autoImportGetConfig(port); await ensureAutoImportAlarm(cfg.intervalHours); } catch (e) {}
   let req = null;
   try {
     const r = await fetch("http://127.0.0.1:" + port + "/api/auto-import/request");
