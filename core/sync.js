@@ -24,13 +24,15 @@ function peerDirs(syncDir, selfDeviceId) {
 
 // Atomic write: write to a UNIQUE .tmp sidecar then rename into place.
 // On the same volume, rename is atomic — Dropbox never sees a torn file.
-// The temp name carries pid + a counter so a will-quit publish on the main
-// process and an in-flight worker publish (which bypasses the worker
-// single-flight) can't write the SAME temp path concurrently and produce a
-// torn temp that then gets renamed into place (2026-07-18 data-safety LOW).
+// The temp name carries pid + threadId + a counter so a will-quit publish on
+// the main thread and an in-flight worker publish (a worker_thread shares the
+// main process's pid, so threadId is what actually distinguishes them) can't
+// write the SAME temp path concurrently and produce a torn temp that then gets
+// renamed into place (2026-07-18 data-safety LOW + re-review residual).
+const _threadId = (function () { try { return require("worker_threads").threadId; } catch (e) { return 0; } })();
 let _atomicSeq = 0;
 function _writeAtomic(file, text) {
-  const tmpFile = file + "." + process.pid + "." + (_atomicSeq++) + ".tmp";
+  const tmpFile = file + "." + process.pid + "." + _threadId + "." + (_atomicSeq++) + ".tmp";
   fs.writeFileSync(tmpFile, text);
   fs.renameSync(tmpFile, file);
 }
