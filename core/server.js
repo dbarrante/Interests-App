@@ -386,15 +386,18 @@ function createServer(ctx) {
   // --- Platform auto-import (FB/IG saved-page daily scheduler; core/autoimport.js) ---
   // POST /api/auto-import — extension->core delivery (auth'd by the same
   // requireToken gate as everything else in this file; see app.use above).
-  // Capped at 1MB here on top of the global 64mb express.json() limit: an
-  // auto-import batch is a small JSON payload (<=200 items, each field-capped),
-  // so anything near 1MB is already abusive.
+  // A DEDICATED 1MB json parser (security review 2026-07-18, F2): the global
+  // express.json() above would parse up to 64MB into memory before any check,
+  // so a client could force a 64MB parse per request. A per-route 1MB parser
+  // rejects an oversized body DURING parse (a 200-item field-capped batch is a
+  // small payload, so anything near 1MB is already abusive). The post-parse
+  // stringify check is kept as belt-and-braces for the exact-boundary case.
   const AUTOIMPORT_BODY_CAP = 1024 * 1024;
-  app.post("/api/auto-import", (req, res) => {
-    const declaredLen = Number(req.headers["content-length"] || 0);
+  const autoImportJson = express.json({ limit: AUTOIMPORT_BODY_CAP });
+  app.post("/api/auto-import", autoImportJson, (req, res) => {
     let actualLen = 0;
     try { actualLen = Buffer.byteLength(JSON.stringify(req.body || {}), "utf8"); } catch (e) { actualLen = 0; }
-    if (declaredLen > AUTOIMPORT_BODY_CAP || actualLen > AUTOIMPORT_BODY_CAP) {
+    if (actualLen > AUTOIMPORT_BODY_CAP) {
       return res.status(413).json({ ok: false, error: "body too large" });
     }
     const result = autoimport.processBatch(ctx, req.body);
@@ -752,6 +755,13 @@ function createServer(ctx) {
   app.use((err, req, res, next) => {
     console.error("unhandled route error:", err);
     if (res.headersSent) return next(err);
+    // A body-parser payload-too-large (the per-route 1MB auto-import parser, or
+    // any future capped parser) is a client error, not a server fault — surface
+    // its own 413 rather than masking it as a 500. Everything else stays 500
+    // with no stack leak.
+    if (err && (err.type === "entity.too.large" || err.status === 413 || err.statusCode === 413)) {
+      return res.status(413).json({ ok: false, error: "body too large" });
+    }
     res.status(500).json({ ok: false, error: "internal" });
   });
 

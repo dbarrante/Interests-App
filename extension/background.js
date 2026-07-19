@@ -730,9 +730,18 @@ async function runAutoImportPlatform(platform, port) {
   }
   const items = [];
   for (const it of (result.items || [])) {
+    // SECURITY (security review 2026-07-18, F1): a saved-page listing is
+    // MULTI-AUTHOR — its <img src> can be any attacker-chosen URL. durableImage
+    // fetches with credentials:"include", so converting an arbitrary URL turns
+    // the daily scrape into a credentialed tracking beacon / loopback-SSRF
+    // probe from the user's IP. ONLY convert genuine signed-CDN images (which
+    // actually need the credentialed fetch before their signature expires);
+    // any other URL is passed through raw and unfetched — the app's own
+    // capture-enrichment backfills a durable image later if the card needs one.
+    const raw = it.image || "";
     items.push({
       url: it.url || "", title: it.title || "", platformKey: it.platformKey || "",
-      image: await durableImage(it.image || ""),
+      image: isExpiringCdnImage(raw) ? await durableImage(raw) : raw,
     });
   }
   await autoImportPostBatch(port, { platform, status: "ok", items, checkedAt });

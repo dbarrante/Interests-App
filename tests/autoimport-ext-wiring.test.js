@@ -60,8 +60,13 @@ ok("scrolls twice, ~1s apart, before parsing", (src.match(/setTimeout\(\(r\) => 
 ok("calls parseSavedDoc(document) in-page", /api\.parseSavedDoc\(document\)/.test(src));
 ok("the tab is ALWAYS closed, in a finally block", /finally\s*{\s*if\s*\(tabId != null\)\s*{\s*try\s*{\s*await chrome\.tabs\.remove\(tabId\); }/.test(src));
 
-// --- Image durability ---------------------------------------------------------
-ok("converts every scraped item's image via the existing durableImage()", /image:\s*await durableImage\(it\.image \|\| ""\)/.test(src));
+// --- Image durability + SSRF/beacon guard (security review 2026-07-18 F1) -----
+// Only genuine signed-CDN images are fetched with credentials; an arbitrary
+// attacker-chosen <img src> from a multi-author saved page is passed through
+// raw, never fetched — else the daily scrape becomes a credentialed tracking
+// beacon / loopback-SSRF probe from the user's IP.
+ok("only converts signed-CDN images via durableImage; other URLs pass through raw", /isExpiringCdnImage\(raw\)\s*\?\s*await durableImage\(raw\)\s*:\s*raw/.test(src));
+ok("does NOT unconditionally durableImage every scraped image (the vulnerable pattern is gone)", !/image:\s*await durableImage\(it\.image \|\| ""\)/.test(src));
 
 // --- Delivery: batch + statuses ----------------------------------------------
 ok("posts the batch to POST /api/auto-import", /autoImportPostBatch[\s\S]{0,200}\/api\/auto-import["'`]/.test(src) || /fetch\("http:\/\/127\.0\.0\.1" \+ port \+ "\/api\/auto-import"/.test(src));
