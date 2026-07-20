@@ -1,19 +1,25 @@
-// Validates every inline <script> block in web/index.html parses, and that
-// web/storage.js parses. Exit 1 on any error.
+// Validates every inline <script> block in web/ and pwa/index.html parses,
+// plus the browser scripts. Exit 1 on any error.
 const fs = require("fs");
 const path = require("path");
 
 let total = 0, errors = 0;
 const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
 
-const htmlPath = path.join(__dirname, "..", "web", "index.html");
-const html = fs.readFileSync(htmlPath, "utf8");
-let m, i = 0;
-while ((m = re.exec(html))) {
-  i++; total++;
-  try { new Function(m[1]); }
-  catch (x) { errors++; console.log("web/index.html BLOCK " + i + ": " + x.message); }
+function checkInline(htmlPath, label) {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  let m, i = 0;
+  re.lastIndex = 0;
+  while ((m = re.exec(html))) {
+    i++; total++;
+    try { new Function(m[1]); }
+    catch (x) { errors++; console.log(label + " BLOCK " + i + ": " + x.message); }
+  }
+  return i;
 }
+
+const webBlocks = checkInline(path.join(__dirname, "..", "web", "index.html"), "web/index.html");
+const pwaBlocks = checkInline(path.join(__dirname, "..", "pwa", "index.html"), "pwa/index.html");
 
 const storagePath = path.join(__dirname, "..", "web", "storage.js");
 total++;
@@ -37,5 +43,5 @@ for (const libFile of ["import-parsers.js", "capture-state.js"]) {
   catch (x) { errors++; console.log("web/lib/" + libFile + ": " + x.message); }
 }
 
-console.log(i + " inline script block(s) + storage.js = " + total + " unit(s), " + errors + " error(s)");
+console.log(webBlocks + " web + " + pwaBlocks + " pwa inline script block(s) + browser scripts = " + total + " unit(s), " + errors + " error(s)");
 process.exit(errors ? 1 : 0);

@@ -997,7 +997,7 @@ function showTab(t, deferStumble){
 // desktop window does. In Electron we route through the native shell (window.ia.openExternal);
 // if already running in a plain browser, just open a new tab.
 function openInBrowser(){
-  const url = location.origin + "/";
+  const url = window.IA_IDB ? location.href : location.origin + "/";
   if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
   else { window.open(url, "_blank", "noopener"); }
 }
@@ -2371,7 +2371,7 @@ function autoImportItemFromCap(cap, now){
   if(cap.clipImage) it.img = cap.clipImage;
   return it;
 }
-function resolveYT(ids){
+async function resolveYT(ids){
   ids=[...new Set(ids)].slice(0,60);
   const out=[];
   for(let i=0;i<ids.length;i+=10){
