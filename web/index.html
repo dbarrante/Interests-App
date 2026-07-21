@@ -637,6 +637,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <div class="sec" id="secAutoImport">
         <h3>Platform auto-import</h3>
         <div class="hint" style="margin-bottom:10px">On a schedule you pick, the browser extension quietly checks your Facebook, Instagram, Pinterest, and Google Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on the platform.</div>
+        <div id="autoImportPwaNote" class="hint" style="display:none;margin-bottom:10px;padding:9px 11px;border:1px solid var(--line);border-radius:9px">These settings are read-only on iPhone. Change them in the Windows app; Dropbox sync brings the current choices here. The Windows app and browser extension must be running to perform checks—your iPhone does not sign in to or scrape these platforms.</div>
         <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
           <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically
         </label>
@@ -658,7 +659,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <select id="autoImportEvery" style="width:auto;margin-left:6px"><option value="24">Once a day</option><option value="12">12 hours</option><option value="8">8 hours</option><option value="4">4 hours</option><option value="2">2 hours</option><option value="1">1 hour</option></select>
         </div>
         <div style="margin-top:12px">
-          <button class="btn btn-ghost" onclick="autoImportCheckNow()">&#8635; Check now</button>
+          <button class="btn btn-ghost" id="autoImportCheckBtn" onclick="autoImportCheckNow()">&#8635; Check now</button>
         </div>
         <div id="autoImportStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
       </div>
@@ -1689,21 +1690,28 @@ function renderSettings(){
   if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
   if(typeof renderBackupList === "function") renderBackupList();
   if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
-  // Desktop-only (secAutoImport is hidden on the PWA via window.IA_IDB below) — the
-  // PWA's Store has no auto-import methods, so this block must never run there.
-  if(!window.IA_IDB && document.getElementById("autoImportToggle")){
+  // These preferences live in ia_settings and sync between PWA and desktop.
+  // Only the desktop Core + browser extension perform the actual platform check.
+  if(document.getElementById("autoImportToggle")){
     document.getElementById("autoImportToggle").checked = !!S.autoImportOn;
-    document.getElementById("autoImportToggle").onchange = e=>{ S.autoImportOn=e.target.checked; save("settings",S); toast(S.autoImportOn?"Facebook/Instagram auto-import: checking once a day":"Auto-import off"); };
     document.getElementById("autoImportFbToggle").checked = S.autoImportFb!==false;
-    document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
     document.getElementById("autoImportIgToggle").checked = S.autoImportIg!==false;
-    document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
     document.getElementById("autoImportPinToggle").checked = S.autoImportPin!==false;
-    document.getElementById("autoImportPinToggle").onchange = e=>{ S.autoImportPin=e.target.checked; save("settings",S); };
     document.getElementById("autoImportGsToggle").checked = S.autoImportGs!==false;
-    document.getElementById("autoImportGsToggle").onchange = e=>{ S.autoImportGs=e.target.checked; save("settings",S); };
     document.getElementById("autoImportEvery").value = String(S.autoImportEvery||24);
-    document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
+    if(window.IA_IDB){
+      const note=document.getElementById("autoImportPwaNote"), btn=document.getElementById("autoImportCheckBtn");
+      if(note) note.style.display="block";
+      ["autoImportToggle","autoImportFbToggle","autoImportIgToggle","autoImportPinToggle","autoImportGsToggle","autoImportEvery"].forEach(id=>{ document.getElementById(id).disabled=true; });
+      if(btn){ btn.innerHTML="Runs on Windows"; btn.disabled=true; }
+    }else{
+      document.getElementById("autoImportToggle").onchange = e=>{ S.autoImportOn=e.target.checked; save("settings",S); toast(S.autoImportOn?"Facebook/Instagram auto-import: checking once a day":"Auto-import off"); };
+      document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportPinToggle").onchange = e=>{ S.autoImportPin=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportGsToggle").onchange = e=>{ S.autoImportGs=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
+    }
     renderAutoImportStatus();
   }
 }
@@ -1715,6 +1723,10 @@ function renderSettings(){
 let _autoImportReqAt = 0;                 // when the user last tapped "Check now"
 const AUTO_IMPORT_WAIT_MS = 120000;       // show "Checking…" this long before "no response"
 async function autoImportCheckNow(){
+  if(window.IA_IDB){
+    toast("Automatic platform checks run from the Windows app and browser extension.", 5000);
+    return;
+  }
   _autoImportReqAt = Date.now();
   try{ await Store.setAutoImportRequest(_autoImportReqAt); }catch(e){ _autoImportReqAt = 0; toast("Couldn't reach the app service"); return; }
   toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
@@ -1747,6 +1759,10 @@ function _autoImportRowHTML(label, platform, st){
 // records written by core/autoimport.js's processBatch) and paints a bar per platform.
 async function renderAutoImportStatus(){
   const el = document.getElementById("autoImportStatus"); if(!el) return;
+  if(window.IA_IDB){
+    el.innerHTML = "Current settings are shown above. Checks run from the Windows browser extension; new cards return here through Dropbox sync.";
+    return;
+  }
   let st = {fb:null, ig:null};
   try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
   el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st) + _autoImportRowHTML("Pinterest","pin",st) + _autoImportRowHTML("Google","gs",st);
@@ -5485,13 +5501,11 @@ async function pollSyncChanged(){
 setInterval(pollSyncChanged, 30000);
 setInterval(pollBatchProgress, 1500);
 setupPasteToCard();
-// Desktop-only Settings sections are fully functional on the real app but
-// silent no-ops on the PWA build (pwa/storage-pwa.js permanently stubs
-// their backing calls) — hide them there rather than show controls that
-// can never do anything. window.IA_IDB is set only by pwa/idb.js, which
-// only pwa/index.html loads, so this is a reliable PWA-vs-desktop check.
+// Hide only settings that truly require local desktop APIs. Platform auto-import
+// preferences remain visible because ia_settings syncs them to Windows, where
+// the Core service and browser extension perform the checks.
 if (window.IA_IDB) {
-  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"].forEach(function(id){
+  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.style.display = "none";
   });

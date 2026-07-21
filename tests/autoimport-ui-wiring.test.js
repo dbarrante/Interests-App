@@ -4,7 +4,7 @@
 // Endpoint/ledger behavior is covered by tests/autoimport-endpoint.test.js and
 // tests/autoimport-core.test.js; renderer capture-routing precedence is covered
 // by tests/route-capture.test.js. This file covers only the Settings section's
-// markup + JS wiring + the desktop-only PWA hide.
+// markup + JS wiring + the PWA read-only status behavior.
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
@@ -35,11 +35,11 @@ function ok(name, cond) { if (cond) { pass++; console.log("  ok  " + name); } el
 
   // "Check now" POSTs the request mailbox (mirrors /api/capture-request's pattern).
   ok(`${label}: autoImportCheckNow() POSTs the /api/auto-import/request mailbox`,
-    /async function autoImportCheckNow\(\)\{[\s\S]{0,300}?Store\.setAutoImportRequest\(/.test(src));
+    /async function autoImportCheckNow\(\)\{[\s\S]{0,1800}?Store\.setAutoImportRequest\(/.test(src));
 
   // Status line reads GET /api/auto-import/status, which surfaces the
   // ia_autoimport_last_fb / ia_autoimport_last_ig kv records core/autoimport.js writes.
-  const statusFnMatch = src.match(/async function renderAutoImportStatus\(\)\{[\s\S]{0,500}?\n\}/);
+  const statusFnMatch = src.match(/async function renderAutoImportStatus\(\)\{[\s\S]{0,1200}?\n\}/);
   ok(`${label}: renderAutoImportStatus() defined`, !!statusFnMatch);
   if (statusFnMatch) {
     const body = statusFnMatch[0];
@@ -49,16 +49,22 @@ function ok(name, cond) { if (cond) { pass++; console.log("  ok  " + name); } el
   ok(`${label}: status rendering is documented as surfacing ia_autoimport_last_* (core/autoimport.js kv contract)`,
     /ia_autoimport_last_fb/.test(src) && /ia_autoimport_last_ig/.test(src));
 
-  // renderSettings() must actually wire these controls, guarded off the PWA (whose Store has
-  // no auto-import methods) via the same window.IA_IDB check the hide-list below relies on.
-  ok(`${label}: renderSettings wiring block is gated by !window.IA_IDB`,
-    /if\(!window\.IA_IDB && document\.getElementById\("autoImportToggle"\)\)\{/.test(src));
+  // Both surfaces render the section. Desktop wires mutations; PWA shows the
+  // synced values read-only because only Windows has the Core + extension.
+  ok(`${label}: renderSettings initializes auto-import controls on every surface`,
+    /if\(document\.getElementById\("autoImportToggle"\)\)\{/.test(src));
 });
 
-// --- PWA-only: the section must be hidden via the existing desktop-only hide list ---
-ok("pwa: secAutoImport is added to the window.IA_IDB hide list", /\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"\s*\]\.forEach/.test(pwa));
-ok("web: secAutoImport is added to the SAME hide list (byte-identical hide-list line, binding parity)",
-  /\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"\s*\]\.forEach/.test(web));
+// --- PWA status: visible, explicit, and read-only ----------------------------
+[web, pwa].forEach((src, i) => {
+  ok(`${i ? "pwa" : "web"}: desktop-only hide list leaves secAutoImport visible`,
+    /\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"\s*\]\.forEach/.test(src) &&
+    !/\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"\s*\]\.forEach/.test(src));
+});
+ok("pwa: section explains that settings are read-only and checks run on Windows", /id="autoImportPwaNote"[\s\S]{0,500}?read-only[\s\S]{0,200}?Windows app[\s\S]{0,200}?browser extension/i.test(pwa));
+ok("pwa: renderSettings disables every auto-import control", /if\(window\.IA_IDB\)\{[\s\S]{0,900}?\["autoImportToggle","autoImportFbToggle","autoImportIgToggle","autoImportPinToggle","autoImportGsToggle","autoImportEvery"\][\s\S]{0,300}?\.disabled=true/.test(pwa));
+ok("pwa: Check-now action returns without calling Dropbox or a nonexistent local Core", /async function autoImportCheckNow\(\)\{[\s\S]{0,300}?if\(window\.IA_IDB\)\{[\s\S]{0,300}?return;[\s\S]{0,500}?Store\.setAutoImportRequest\(/.test(pwa) && !/async function autoImportCheckNow\(\)\{[\s\S]{0,700}?Store\.syncNow\(/.test(pwa));
+ok("pwa: renderAutoImportStatus shows remote-control status without calling the desktop endpoint", /async function renderAutoImportStatus\(\)\{[\s\S]{0,300}?if\(window\.IA_IDB\)[\s\S]{0,500}?return;/.test(pwa));
 
 // --- web/storage.js: the Store methods the renderer calls must actually exist ---
 const storage = fs.readFileSync(path.join(__dirname, "..", "web", "storage.js"), "utf8");
