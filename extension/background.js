@@ -1370,12 +1370,28 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
 // waits + polls on its own, so a slow tab still gets a fair shot)
 function waitTabComplete(tabId, timeoutMs) {
   return new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} resolve(); };
+    let done = false, keepAlive = null, deadline = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (keepAlive) clearInterval(keepAlive);
+      if (deadline) clearTimeout(deadline);
+      try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {}
+      resolve();
+    };
     function onUpd(tid, info) { if (tid === tabId && info.status === "complete") finish(); }
+    // Hidden Pinterest/Google pages can stay "loading" for the full timeout.
+    // A timer alone is not extension activity, so Chrome may suspend an MV3
+    // service worker after ~30s and abandon the already-claimed import run.
+    // Polling the tabs API keeps the worker alive and still finishes early.
+    async function probe() {
+      try { const t = await chrome.tabs.get(tabId); if (t && t.status === "complete") finish(); }
+      catch (e) { finish(); }
+    }
     try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
-    chrome.tabs.get(tabId).then((t) => { if (t && t.status === "complete") finish(); }).catch(() => {});
-    setTimeout(finish, timeoutMs || 30000);
+    keepAlive = setInterval(probe, 1000);
+    deadline = setTimeout(finish, timeoutMs || 30000);
+    probe();
   });
 }
 // Automated version of the manual "Refresh → Save to Interests" flow for a

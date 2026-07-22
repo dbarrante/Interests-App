@@ -55,6 +55,18 @@ ok("a platform can be disabled via its config checkbox", /platforms\[platform\] 
 // --- Tab flow: inactive create -> wait complete -> executeScript -> close in finally
 ok("opens the saved-items page in an INACTIVE tab", /chrome\.tabs\.create\(\{\s*url,\s*active:\s*false\s*\}\)/.test(src));
 ok("waits for the tab to finish loading before scraping", /await waitTabComplete\(tabId, 30000\)/.test(src));
+// A hidden Pinterest/Google page can remain in "loading" for the full 30s.
+// A lone setTimeout does not keep a Manifest V3 worker alive, so the claimed
+// run used to disappear after FB/IG without ever posting pin/gs status.
+ok("tab wait periodically calls the tabs API so slow pages cannot suspend the MV3 worker", (() => {
+  const m = /function waitTabComplete\(tabId, timeoutMs\)\s*{([\s\S]*?)\n}/.exec(src);
+  if (!m) return false;
+  return /async function probe\(\)/.test(m[1]) &&
+    /chrome\.tabs\.get\(tabId\)/.test(m[1]) &&
+    /setInterval\(probe,\s*1000\)/.test(m[1]) &&
+    /clearInterval\(keepAlive\)/.test(m[1]) &&
+    /keepAlive\s*=\s*setInterval\(probe,\s*1000\);\s*deadline\s*=\s*setTimeout\([\s\S]{0,80}?\);\s*probe\(\);/.test(m[1]);
+})());
 ok("injects the pure parser lib via executeScript files", /files:\s*\[libFile\]/.test(src) && /lib\/saved-parse-fb\.js/.test(src) && /lib\/saved-parse-ig\.js/.test(src));
 // Live-tuning 2026-07-19: a fixed 2-scroll wait parsed an EMPTY shell on
 // Instagram — its lazy grid takes several seconds to mount tiles in a hidden
