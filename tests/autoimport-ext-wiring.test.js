@@ -52,8 +52,10 @@ ok("the guard is set/cleared around the whole check (try/finally)", /autoImportB
 ok("iterates platforms sequentially (fb,ig,pin,gs) with an awaited per-item call", /for\s*\(const platform of \["fb", "ig", "pin", "gs"\]\)\s*{[\s\S]{0,200}?await runAutoImportPlatform\(platform, port\);/.test(src));
 ok("a platform can be disabled via its config checkbox", /platforms\[platform\] === false/.test(src));
 
-// --- Tab flow: inactive create -> wait complete -> executeScript -> close in finally
-ok("opens the saved-items page in an INACTIVE tab", /chrome\.tabs\.create\(\{\s*url,\s*active:\s*false\s*\}\)/.test(src));
+// --- Tab flow: Pinterest visible, others inactive -> wait -> parse -> close ----
+// Pinterest currently leaves its masonry grid empty in a hidden tab. Only its
+// temporary scrape tab may be activated; FB/IG/Google retain the quiet path.
+ok("opens only Pinterest visibly so its saved grid renders", /const visible = platform === "pin";[\s\S]{0,120}?chrome\.tabs\.create\(\{\s*url,\s*active:\s*visible\s*\}\)/.test(src));
 ok("waits for the tab to finish loading before scraping", /await waitTabComplete\(tabId, 30000\)/.test(src));
 // A hidden Pinterest/Google page can remain in "loading" for the full 30s.
 // A lone setTimeout does not keep a Manifest V3 worker alive, so the claimed

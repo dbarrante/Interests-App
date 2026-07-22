@@ -668,7 +668,7 @@ async function pollBatchState() {
 // Picks up saves made natively on Facebook/Instagram (any device) that never
 // went through the capture pipeline. A daily chrome.alarms alarm (+ a bridge
 // poll so the app's "Check now" button works immediately) opens each enabled
-// platform's saved-items page in ONE inactive tab at a time, injects the pure
+// platform's saved-items page in ONE temporary tab at a time, injects the pure
 // parser from extension/lib/saved-parse-{fb,ig}.js, scrolls it a couple
 // screens to lazy-load more entries, parses, closes the tab, then POSTs the
 // result (or a login-required/parse-failed status — never partial garbage) to
@@ -717,7 +717,7 @@ async function autoImportPostBatch(port, body) {
   } catch (e) {}
 }
 
-// Scrape ONE platform's saved-items page in a fresh, inactive tab: navigate,
+// Scrape ONE platform's saved-items page in a fresh temporary tab: navigate,
 // wait for load, inject the pure parser lib + an in-page collector that
 // scrolls ~2 screens (1s apart, to lazy-load more entries — the parser's own
 // CAP already bounds the result to ~100 items) before calling parseSavedDoc.
@@ -731,7 +731,11 @@ async function autoImportScrapePlatform(platform) {
   let result = { status: "parse-failed", items: [] };
   try {
     let tab;
-    try { tab = await chrome.tabs.create({ url, active: false }); }
+    // Pinterest's current masonry grid does not mount in a hidden tab. Give
+    // only Pinterest a visible temporary tab; closing it in finally returns
+    // Chrome to the user's previous tab. Other platforms remain inactive.
+    const visible = platform === "pin";
+    try { tab = await chrome.tabs.create({ url, active: visible }); }
     catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
     tabId = tab.id;
     await waitTabComplete(tabId, 30000);
