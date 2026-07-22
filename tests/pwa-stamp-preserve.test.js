@@ -38,8 +38,8 @@ t("guardedReplace preserves prior updatedAt on content-identical rows, stamps on
   assert.ok(/keep\.updatedAt = p\.updatedAt/.test(body), "identical content must keep the OLD stamp");
   assert.ok(/nowStamp\(Object\.assign\(\{\}, row\)\)/.test(body), "changed/new content still stamps fresh");
   const sigIdx = body.indexOf("contentSig(p)");
-  const clearIdx = body.indexOf("idb.clear(");
-  assert.ok(sigIdx >= 0 && clearIdx > sigIdx, "stamping decided before the clear+write");
+  const replaceIdx = body.indexOf("idb.replaceAll(");
+  assert.ok(sigIdx >= 0 && replaceIdx > sigIdx, "stamping decided before the atomic replacement");
 });
 
 // Functional check of the mapping logic with the real extracted functions.

@@ -90,6 +90,20 @@ const idb = {
       });
     });
   },
+  // Full-array replacement must be one transaction. A clear followed by a
+  // separate putMany can strand the store empty if the browser suspends or the
+  // second transaction fails between those two operations.
+  replaceAll(storeName, values) {
+    return tx(storeName, "readwrite").then((s) => {
+      s.clear();
+      values.forEach((v) => s.put(v));
+      return new Promise((resolve, reject) => {
+        s.transaction.oncomplete = () => resolve();
+        s.transaction.onerror = () => reject(s.transaction.error);
+        s.transaction.onabort = () => reject(s.transaction.error || new Error("IndexedDB replacement aborted"));
+      });
+    });
+  },
   delete(storeName, key) {
     return tx(storeName, "readwrite").then((s) => reqToPromise(s.delete(key)));
   },

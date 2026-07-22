@@ -95,7 +95,7 @@
         }
         return nowStamp(Object.assign({}, row));
       });
-      return idb.clear(storeName).then(() => idb.putMany(storeName, stamped));
+      return idb.replaceAll(storeName, stamped);
     });
   }
 
