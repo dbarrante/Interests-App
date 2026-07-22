@@ -1,11 +1,10 @@
 // Startup-only Chrome availability helper for platform auto-import.
-// Shell-free by design: tasklist is invoked with fixed arguments and Chrome
-// is launched only from known Google installation paths.
+// Shell-free by design: a fixed PowerShell binary checks for a visible Chrome
+// window, and Chrome launches only from known Google installation paths.
 const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const TASKLIST_EXE = "C:\\Windows\\System32\\tasklist.exe";
 const POWERSHELL_EXE = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
 function autoImportEnabled(settingsRaw) {
@@ -64,12 +63,53 @@ function isChromeRunning(opts) {
   const platform = opts.platform || process.platform;
   if (platform !== "win32") return Promise.resolve(false);
   const execFile = opts.execFile || childProcess.execFile;
+  // Chrome can leave background processes or minimized windows behind, and a
+  // process can own more than one top-level window. Enumerate every HWND owned
+  // by every Chrome PID; only a visible, titled, non-minimized window counts.
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "try {",
+    "$src=@'",
+    "using System;",
+    "using System.Collections.Generic;",
+    "using System.ComponentModel;",
+    "using System.Runtime.InteropServices;",
+    "public static class IAChromeWindows {",
+    "  private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);",
+    "  [DllImport(\"user32.dll\", SetLastError=true)] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);",
+    "  [DllImport(\"user32.dll\")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);",
+    "  [DllImport(\"user32.dll\")] private static extern bool IsWindowVisible(IntPtr hWnd);",
+    "  [DllImport(\"user32.dll\")] private static extern bool IsIconic(IntPtr hWnd);",
+    "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hWnd);",
+    "  public static bool HasUsableWindow(int[] processIds) {",
+    "    var wanted = new HashSet<uint>();",
+    "    if (processIds != null) foreach (int id in processIds) if (id > 0) wanted.Add((uint)id);",
+    "    bool found = false;",
+    "    bool completed = EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {",
+    "      uint pid; GetWindowThreadProcessId(hWnd, out pid);",
+    "      if (wanted.Contains(pid) && IsWindowVisible(hWnd) && !IsIconic(hWnd) && GetWindowTextLength(hWnd) > 0) { found = true; return false; }",
+    "      return true;",
+    "    }, IntPtr.Zero);",
+    "    if (!completed && !found) throw new Win32Exception(Marshal.GetLastWin32Error());",
+    "    return found;",
+    "  }",
+    "}",
+    "'@",
+    "Add-Type -TypeDefinition $src",
+    "$ids=@(Get-Process -Name chrome -ErrorAction SilentlyContinue | ForEach-Object {[int]$_.Id})",
+    "if([IAChromeWindows]::HasUsableWindow([int[]]$ids)){'OPEN'}else{'CLOSED'}",
+    "} catch { exit 1 }",
+  ].join("\n");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
   return new Promise((resolve) => {
     try {
-      execFile(TASKLIST_EXE, ["/FI", "IMAGENAME eq chrome.exe", "/NH", "/FO", "CSV"],
-        { windowsHide: true, timeout: 3000 }, (err, stdout) => {
+      execFile(POWERSHELL_EXE, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        { windowsHide: true, timeout: 5000 }, (err, stdout) => {
           if (err) { resolve(null); return; }
-          resolve(/"chrome\.exe"/i.test(String(stdout || "")));
+          const marker = String(stdout || "").trim();
+          if (marker === "OPEN") { resolve(true); return; }
+          if (marker === "CLOSED") { resolve(false); return; }
+          resolve(null);
         });
     } catch (_) { resolve(null); }
   });

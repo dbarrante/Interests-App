@@ -120,7 +120,47 @@ async function t(name, fn) {
     await assert.rejects(pending, /ENOENT/);
   });
 
-  await t("tasklist errors are unknown, not a false 'not running' result", async () => {
+  await t("background Chrome processes without a visible window count as closed", async () => {
+    let calledExe = "", calledArgs = [];
+    const r = await chrome.isChromeRunning({
+      platform: "win32",
+      execFile: (exe, args, _opts, cb) => {
+        calledExe = exe; calledArgs = args;
+        cb(null, "CLOSED\r\n");
+      },
+    });
+    assert.strictEqual(r, false);
+    assert.strictEqual(calledExe, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    assert.ok(calledArgs.includes("-EncodedCommand"));
+    const encoded = calledArgs[calledArgs.indexOf("-EncodedCommand") + 1];
+    const script = Buffer.from(encoded, "base64").toString("utf16le");
+    assert.match(script, /EnumWindows/);
+    assert.match(script, /GetWindowThreadProcessId/);
+    assert.match(script, /GetWindowTextLength/);
+    assert.match(script, /IsWindowVisible/);
+    assert.match(script, /IsIconic/);
+    assert.match(script, /ErrorActionPreference='Stop'/);
+  });
+
+  await t("a visible Chrome window counts as open", async () => {
+    const r = await chrome.isChromeRunning({
+      platform: "win32",
+      execFile: (_exe, _args, _opts, cb) => cb(null, "OPEN\r\n"),
+    });
+    assert.strictEqual(r, true);
+  });
+
+  await t("empty or diagnostic detector output is unknown and fails closed", async () => {
+    for (const stdout of ["", "diagnostic output", "OPEN extra"]) {
+      const r = await chrome.isChromeRunning({
+        platform: "win32",
+        execFile: (_exe, _args, _opts, cb) => cb(null, stdout),
+      });
+      assert.strictEqual(r, null);
+    }
+  });
+
+  await t("window-detection errors are unknown, not a false 'not open' result", async () => {
     const r = await chrome.isChromeRunning({
       platform: "win32",
       execFile: (_exe, _args, _opts, cb) => cb(new Error("blocked"), ""),
@@ -128,7 +168,7 @@ async function t(name, fn) {
     assert.strictEqual(r, null);
   });
 
-  await t("synchronous tasklist spawn failures are contained", async () => {
+  await t("synchronous window-detection spawn failures are contained", async () => {
     const r = await chrome.isChromeRunning({
       platform: "win32",
       execFile: () => { throw new Error("EPERM"); },
