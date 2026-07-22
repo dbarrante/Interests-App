@@ -281,6 +281,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #modal.open{display:flex}
 #healthModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
 #healthModal.open{display:flex}
+#healthModal.dupe-fullscreen{padding:0;align-items:stretch}
+#healthModal.dupe-fullscreen .dupe-box{width:100vw;max-width:none;height:100dvh;max-height:none;border-radius:0}
+#healthModal.dupe-fullscreen .dupe-large-grid{grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr))}
+#healthModal.dupe-fullscreen .dupe-card-photo{aspect-ratio:16/10}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 #healthBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
 #healthBody .dupe-row .meta .t{cursor:pointer}
@@ -301,6 +305,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-row.keep{background:rgba(34,139,69,.12);border-radius:8px}
 .dupe-badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--line)}
 .dupe-modebar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:4px 4px 12px}
+.dupe-review-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .dupe-modecopy{font-size:12px;color:var(--muted);line-height:1.4}
 .dupe-modecopy b{display:block;color:var(--ink);font-size:13px}
 .dupe-modes{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:999px}
@@ -320,7 +325,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-card-desc .t{font-size:13px;font-weight:700;line-height:1.35}
 .dupe-card-desc .d{font-size:12px;line-height:1.45;color:var(--muted);margin-top:6px;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .dupe-card-desc .s{font-size:11px;color:var(--muted);margin-top:8px}
-.dupe-card-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;border-top:1px solid var(--line);font-size:12px}
+.dupe-card-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;border-top:1px solid var(--line);font-size:12px;flex-wrap:wrap}
 .dupe-safety{font-size:12px;color:var(--muted);line-height:1.45;padding:12px 4px 2px}
 .dupe-safety b{color:var(--ink)}
 @media(max-width:700px){.dupe-large-grid{grid-template-columns:1fr}.dupe-card-photo{aspect-ratio:16/10}.dupe-box{width:min(620px,96vw)}}
@@ -4700,14 +4705,17 @@ function openHealth(tab){
   _healthTab = tab || "dupes";
   _healthScanned = {};
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {};
+  _dupeFullScreen = false;
+  document.getElementById("healthModal").classList.remove("dupe-fullscreen");
   document.getElementById("healthModal").classList.add("open");
   renderHealth();
 }
 function closeHealth(){
-  document.getElementById("healthModal").classList.remove("open");
+  _dupeFullScreen = false;
+  document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {};
 }
-function healthSwitch(tab){ if(tab===_healthTab) return; _healthTab = tab; renderHealth(); }
+function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
 document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
 // Unified keydown handler for all overlay surfaces (was three separate keydown
@@ -4787,6 +4795,13 @@ function renderHealth(){
 let _dupeReviewMode = "single";
 let _dupeReviewIndex = 0;
 let _dupeSpared = new Set();
+let _dupeFullScreen = false;
+function dupeSetFullscreen(on){
+  _dupeFullScreen = on==null ? !_dupeFullScreen : !!on;
+  document.getElementById("healthModal").classList.toggle("dupe-fullscreen",_dupeFullScreen);
+  const button=document.getElementById("dupeFullscreenBtn");
+  if(button){ button.textContent=_dupeFullScreen?"Exit full screen":"Full screen"; button.setAttribute("aria-pressed",String(_dupeFullScreen)); }
+}
 function dupeToggleRemoval(key,checked){
   if(checked) _dupeSpared.delete(key); else _dupeSpared.add(key);
 }
@@ -4802,10 +4817,11 @@ function dupeReviewMove(delta){
 function dupeModeBarHTML(){
   return `<div class="dupe-modebar">
     <div class="dupe-modecopy"><b>Review layout</b>Focus on one duplicate set or scan all groups.</div>
-    <div class="dupe-modes" role="group" aria-label="Duplicate review layout">
-      <button class="${_dupeReviewMode==="all"?"on":""}" aria-pressed="${_dupeReviewMode==="all"}" onclick="dupeSetReviewMode('all')">All groups</button>
-      <button class="${_dupeReviewMode==="single"?"on":""}" aria-pressed="${_dupeReviewMode==="single"}" onclick="dupeSetReviewMode('single')">One at a time</button>
-    </div></div>`;
+    <div class="dupe-review-controls"><button class="btn btn-ghost" id="dupeFullscreenBtn" aria-pressed="${_dupeFullScreen}" onclick="dupeSetFullscreen()">${_dupeFullScreen?"Exit full screen":"Full screen"}</button>
+      <div class="dupe-modes" role="group" aria-label="Duplicate review layout">
+        <button class="${_dupeReviewMode==="all"?"on":""}" aria-pressed="${_dupeReviewMode==="all"}" onclick="dupeSetReviewMode('all')">All groups</button>
+        <button class="${_dupeReviewMode==="single"?"on":""}" aria-pressed="${_dupeReviewMode==="single"}" onclick="dupeSetReviewMode('single')">One at a time</button>
+      </div></div></div>`;
 }
 function dupeCompactGroupHTML(g,gi){
   return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
@@ -4822,7 +4838,7 @@ function dupeLargeCardHTML(mem,gi,keep){
     <div class="dupe-card-desc"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
       <div class="d">${esc(desc)}</div>
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
-    <div class="dupe-card-actions">${keep
+    <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
       ? `<span>Best copy</span>`
       : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
@@ -4975,6 +4991,7 @@ function dupeRowHTML(mem, gi, keep){
     ${dupeThumb(mem)}
     <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
+    ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
       : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
@@ -4985,6 +5002,18 @@ function dupeRowHTML(mem, gi, keep){
 function dupeSetKeep(gi, id){
   if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
   renderHealthDupes(document.getElementById("healthList"));
+}
+function dupeOpenButtonHTML(mem){
+  const it=mem.card||{};
+  return `<button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" onclick="dupeOpenOriginal(this)" ${it.url?"":"disabled"} title="Open this card's original page in the browser">Open original</button>`;
+}
+function dupeOpenOriginal(button){
+  const scope=button&&button.getAttribute("data-dupe-scope");
+  const id=button&&button.getAttribute("data-dupe-id");
+  const collection=scope==="saved"?saved:scope==="imported"?imported:[];
+  const item=collection.find(card=>card&&String(card.id)===String(id));
+  if(!item||!/^https?:\/\//i.test(item.url||"")){ toast("This duplicate has no web page to open.",4000); return; }
+  openLink(item.url);
 }
 function dupeSnapshotSignature(cards,saves){
   let hash=2166136261;

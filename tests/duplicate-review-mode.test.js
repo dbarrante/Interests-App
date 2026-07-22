@@ -23,6 +23,14 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(source, /class="dupe-card-desc"/, name + " places description content beneath the image");
   assert.match(source, /function dupeReviewMove\(delta\)/, name + " provides non-destructive previous and skip navigation");
   assert.match(source, /function dupeToggleRemoval\(key,checked\)/, name + " preserves spared checkbox choices across re-renders");
+  assert.match(source, /function dupeSetFullscreen\(on\)/, name + " exposes a viewport-filling duplicate review mode");
+  assert.match(source, /classList\.toggle\("dupe-fullscreen",_dupeFullScreen\)/,
+    name + "fullscreen mode is implemented as modal layout state without invoking browser fullscreen permissions");
+  assert.match(source, /function dupeOpenOriginal\(button\)/, name + "opens a duplicate by collection and id");
+  assert.match(source, /data-dupe-scope=/, name + "duplicate open controls carry collection identity");
+  assert.match(source, /data-dupe-id=/, name + "duplicate open controls carry card identity");
+  assert.match(source, />Open original<\//, name + "labels the per-duplicate confirmation action clearly");
+  assert.match(source, /onclick="dupeOpenOriginal\(this\)"/, name + "wires every duplicate open action through safe lookup");
 
   const block = featureSlice(source);
   assert.match(block, /groupsToProcess\s*=\s*_dupeReviewMode==="single"\s*\?\s*\[_dupeGroups\[_dupeReviewIndex\]\]\.filter\(Boolean\)\s*:\s*_dupeGroups/,
@@ -55,8 +63,14 @@ const webFeature = featureSlice(web);
 const pwaFeature = featureSlice(pwa);
 assert.strictEqual(pwaFeature, webFeature, "duplicate-review behavior must stay mirrored between web and PWA");
 
+for (const [name, source] of [["web", web], ["pwa", pwa]]) {
+  assert.match(source, /#healthModal\.dupe-fullscreen\{[^}]*padding:0/, name + " fullscreen removes modal gutters");
+  assert.match(source, /#healthModal\.dupe-fullscreen \.dupe-box\{[^}]*width:100vw[^}]*height:100dvh/,
+    name + " fullscreen fills the available viewport");
+}
+
 const sw = fs.readFileSync(path.join(root, "pwa", "sw.js"), "utf8");
-assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v41"/, "PWA cache must be bumped for the cached index edit");
+assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v42"/, "PWA cache must be bumped for the cached index edit");
 
 const pwaIdb = fs.readFileSync(path.join(root, "pwa", "idb.js"), "utf8");
 const pwaStore = fs.readFileSync(path.join(root, "pwa", "storage-pwa.js"), "utf8");
