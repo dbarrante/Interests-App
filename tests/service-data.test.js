@@ -90,6 +90,33 @@ t("saved: PUT/GET/PATCH/DELETE round-trip (item.image preserved)", async ({ base
   assert.strictEqual((await r.json()).saved.length, 0);
 });
 
+t("not-duplicate decision is additive, atomic, and preserves current card fields", async ({ base }) => {
+  await fetch(base + "/api/cards", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ cards: [
+    { id: "a", url: "https://example.test/a", platform: "fb", cat: "Saved", ts: 2, img: "", title: "Current title", notes: "keep me" },
+  ] }) });
+  await fetch(base + "/api/saved", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ saved: [
+    { id: "s", url: "https://example.test/a", category: "Tips", clipped: 5, image: "", title: "Saved title" },
+  ] }) });
+  const key = JSON.stringify([["imported","a","https://example.test/a","current title"],["saved","s","https://example.test/a","saved title"]]);
+  const body = { entries: [{ scope:"imported", id:"a", key }, { scope:"saved", id:"s", key }] };
+  let r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
+  assert.deepStrictEqual(await r.json(), { ok:true, changed:2 });
+  const cards = (await (await fetch(base + "/api/cards")).json()).cards;
+  const saved = (await (await fetch(base + "/api/saved")).json()).saved;
+  assert.strictEqual(cards[0].title, "Current title");
+  assert.strictEqual(cards[0].notes, "keep me");
+  assert.deepStrictEqual(cards[0].dupeNotDuplicateGroups, [key]);
+  assert.deepStrictEqual(saved[0].dupeNotDuplicateGroups, [key]);
+  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
+  assert.deepStrictEqual(await r.json(), { ok:true, changed:0 }, "retries are idempotent");
+  const badKey = JSON.stringify([["imported","different-id","u","t"],["saved","s","u","t"]]);
+  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"imported",id:"a",key:badKey}] }) });
+  assert.strictEqual(r.status, 400, "a decision key must name the row it marks");
+  const staleKey = JSON.stringify([["imported","a","https://example.test/a","stale title"],["saved","s","https://example.test/a","saved title"]]);
+  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"imported",id:"a",key:staleKey},{scope:"saved",id:"s",key:staleKey}] }) });
+  assert.strictEqual(r.status, 409, "a stale decision cannot mark rows whose duplicate-relevant content changed");
+});
+
 t("img: PUT data URL writes the file; GET returns the jpeg bytes; DELETE removes; GET missing -> 404", async ({ base }) => {
   let r = await fetch(base + "/api/img/abc");
   assert.strictEqual(r.status, 404);
@@ -102,6 +129,10 @@ t("img: PUT data URL writes the file; GET returns the jpeg bytes; DELETE removes
   assert.strictEqual(r.headers.get("content-type"), "image/jpeg");
   const bytes = Buffer.from(await r.arrayBuffer());
   assert.deepStrictEqual(bytes, Buffer.from(PIX_B64, "base64"));
+  r = await fetch(base + "/api/img/keeper/copy", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({sourceId:"abc"}) });
+  assert.deepStrictEqual(await r.json(), { ok:true });
+  r = await fetch(base + "/api/img/keeper");
+  assert.deepStrictEqual(Buffer.from(await r.arrayBuffer()), bytes, "copy endpoint preserves source bytes under the keeper id");
   r = await fetch(base + "/api/img/abc", { method: "DELETE" });
   assert.deepStrictEqual(await r.json(), { ok: true });
   r = await fetch(base + "/api/img/abc");

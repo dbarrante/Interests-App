@@ -53,6 +53,14 @@ t("delImg removes the file (idempotent on missing)", () => {
   images.delImg(dir, "abc"); // no throw
 });
 
+t("copyImg preserves source bytes under the keeper id and verifies the copy", () => {
+  const dir = tmpStore();
+  images.putImg(dir, "source", PIX_DATAURL);
+  assert.strictEqual(images.copyImg(dir, "source", "keeper"), true);
+  assert.deepStrictEqual(images.getImg(dir, "keeper"), images.getImg(dir, "source"));
+  assert.strictEqual(images.copyImg(dir, "missing", "other"), false);
+});
+
 t("putImg throws EMPTY_IMAGE on an empty decoded payload instead of writing a corrupt 0-byte file", () => {
   const dir = tmpStore();
   assert.throws(() => images.putImg(dir, "abc", "data:image/jpeg;base64,"), (e) => e.code === "EMPTY_IMAGE");

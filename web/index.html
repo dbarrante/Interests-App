@@ -4789,7 +4789,7 @@ function renderHealthDupes(list){
       <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
       <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey)).join("")}</div>
-      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. A safety snapshot is created before any change. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
+      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
       <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="dupeReviewMove(1)" ${_dupeReviewIndex===_dupeGroups.length-1?"disabled":""}>Skip for now</button>
@@ -5026,7 +5026,10 @@ function mergeDupeMetadata(target,source){
     if(typeof sv==="number"&&typeof tv==="number"&&earliest.has(field)){ target[field]=Math.min(tv,sv); return; }
     if(typeof sv==="number"&&typeof tv==="number"&&latest.has(field)){ target[field]=Math.max(tv,sv); return; }
     if(joinText.has(field)&&typeof sv==="string"&&typeof tv==="string"&&tv!==sv){ target[field]=tv+"\n\n"+sv; return; }
-    if(sv&&tv&&typeof sv==="object"&&typeof tv==="object"){ target[field]=Object.assign({},sv,tv); return; }
+    if(sv&&tv&&typeof sv==="object"&&typeof tv==="object"){
+      if(JSON.stringify(sv)!==JSON.stringify(tv)){ const vals=conflicts[field]||[tv]; if(!vals.some(v=>JSON.stringify(v)===JSON.stringify(sv))) vals.push(sv); conflicts[field]=vals; }
+      target[field]=Object.assign({},sv,tv); return;
+    }
     if(tv!==sv){ const vals=conflicts[field]||[tv]; if(!vals.some(v=>JSON.stringify(v)===JSON.stringify(sv))) vals.push(sv); conflicts[field]=vals; }
   });
   if(Object.keys(conflicts).length) target.dupeConflicts=conflicts;
@@ -5049,13 +5052,42 @@ async function applyDupeRemoval(){
   const priorIndex=_dupeReviewIndex;
   const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  if(!checked.size){
+    const changes=[];
+    groupsToProcess.forEach(g=>{
+      const key=dupeGroupKey(g.members);
+      g.members.forEach(mem=>changes.push({scope:mem.scope,id:mem.card.id,key}));
+    });
+    showBusyOverlay("Saving your keep choices…");
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    try{
+      const batches=new Map(); changes.forEach(change=>{ if(!batches.has(change.key)) batches.set(change.key,[]); batches.get(change.key).push(change); });
+      for(const batch of batches.values()) await Store.markNotDuplicates(batch);
+      changes.forEach(change=>{
+        const collection=change.scope==="saved"?saved:imported;
+        const item=collection.find(card=>card&&String(card.id)===String(change.id)); if(!item) return;
+        const prior=Array.isArray(item.dupeNotDuplicateGroups)?item.dupeNotDuplicateGroups:[];
+        if(prior.indexOf(change.key)<0) item.dupeNotDuplicateGroups=prior.slice(-49).concat([change.key]);
+      });
+      _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
+      _healthScanned.dupes=false; renderHealth();
+      toast("Kept the cards and marked them as not duplicates.",5000);
+    }catch(e){
+      try{ imported=await Store.getCards(); saved=await Store.getSaved(); updateCounts(); }catch(_){}
+      _healthScanned.dupes=false; renderHealth();
+      toast("The keep choices could not be saved. No cards were removed — please try again.",7000);
+    }finally{ hideBusyOverlay(); }
+    return;
+  }
+  showBusyOverlay("Creating a verified safety snapshot…");
+  await new Promise(resolve=>requestAnimationFrame(resolve));
   const safety=await createDupeSafetySnapshot();
-  if(!safety){ toast("Duplicate cleanup stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
+  if(!safety){ hideBusyOverlay(); toast("Duplicate cleanup stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
   let nextImported=imported.map(c=>c&&Object.assign({},c));
   let nextSaved=saved.map(c=>c&&Object.assign({},c));
   const nextImportedById=new Map(nextImported.filter(Boolean).map(c=>[c.id,c]));
   const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
-  const rmImported=new Set(),rmSaved=new Set(),orphanImages=[];
+  const rmImported=new Set(),rmSaved=new Set(),orphanImages=[],imageCopies=[];
   let removed=0,notDuplicateGroups=0;
   for(const g of groupsToProcess){
     const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
@@ -5068,7 +5100,7 @@ async function applyDupeRemoval(){
       const srcHasImg=src&&(srcIsIdb||!isBadImg(resolveImg(src)));
       let keptSrcImg=false;
       if(!keepHasImg&&srcHasImg){
-        if(srcIsIdb){ if(keep.scope==="saved") k.image=src; else k.img=src; keptSrcImg=true; }
+        if(srcIsIdb){ const sourceId=String(src).slice(4),targetId=String(k.id); setItemImg(k,keep.scope,"idb:"+targetId); imageCopies.push({sourceId,targetId}); }
         else setItemImg(k,keep.scope,resolveImg(src));
       }
       mergeDupeMetadata(k,mem.card);
@@ -5081,16 +5113,20 @@ async function applyDupeRemoval(){
   nextImported=nextImported.filter(c=>c&&!rmImported.has(c.id));
   nextSaved=nextSaved.filter(c=>c&&!rmSaved.has(c.id));
   try{
+    updateBusyOverlay("Saving your duplicate cleanup…");
+    for(const copy of imageCopies){ await Store.imgCopy(copy.sourceId,copy.targetId); if(!await Store.imgHas(copy.targetId)) throw new Error("copied image could not be verified"); }
     const cardsResult=await Store.putCards(nextImported,{confirm:true});
     if(cardsResult&&cardsResult.preserved) _reconcileById(nextImported,cardsResult.preserved);
     const savedResult=await Store.putSaved(nextSaved,{confirm:true});
     if(savedResult&&savedResult.preserved) _reconcileById(nextSaved,savedResult.preserved);
   }catch(e){
     const recovered=await rollbackDupePersistence(safety);
+    hideBusyOverlay();
     toast(recovered?"Duplicate cleanup stopped safely; the previous library was restored.":"Duplicate cleanup failed. Use the verified safety backup to restore before continuing.",9000);
     return;
   }
   imported=nextImported; saved=nextSaved; updateCounts();
+  updateBusyOverlay("Finishing image cleanup…");
   const liveImageRefs=dupeImageRefs(nextImported,nextSaved),deletedImageIds=new Set();
   for(const ref of orphanImages){
     if(liveImageRefs.has(ref.imageId)) continue;
@@ -5106,6 +5142,7 @@ async function applyDupeRemoval(){
   }
   if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+  hideBusyOverlay();
   const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
   toast(removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.",6000);
 }

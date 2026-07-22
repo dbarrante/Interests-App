@@ -78,6 +78,15 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
     name + "can persist a not-duplicate decision when every remove box is unchecked");
   assert.ok(block.indexOf("markDupeGroupNotDuplicate(") < block.indexOf("await Store.putCards(nextImported,{confirm:true})"),
     name + "marks retained groups before the guarded collection writes");
+  assert.ok(block.indexOf("if(!checked.size)") < block.indexOf("await createDupeSafetySnapshot()"),
+    name + "routes keep-all decisions around the destructive backup and full-library rewrite path");
+  assert.match(block, /for\(const batch of batches\.values\(\)\) await Store\.markNotDuplicates\(batch\)/,
+    name + "persists each complete keep-all group with the narrow additive operation");
+  assert.match(block, /g\.members\.forEach\(mem=>changes\.push\(/,
+    name + "submits every member so a partially marked group remains retryable");
+  assert.match(block, /showBusyOverlay\("Saving your keep choices/, name + "shows visible progress instead of appearing frozen");
+  assert.match(block, /_healthScanned\.dupes=false;[\s\S]*?renderHealth\(\)/,
+    name + "forces a fresh duplicate scan after the decision persists");
 }
 
 const webFeature = featureSlice(web);
@@ -91,7 +100,7 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
 }
 
 const sw = fs.readFileSync(path.join(root, "pwa", "sw.js"), "utf8");
-assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v43"/, "PWA cache must be bumped for the cached index edit");
+assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v44"/, "PWA cache must be bumped for the cached index edit");
 
 const pwaIdb = fs.readFileSync(path.join(root, "pwa", "idb.js"), "utf8");
 const pwaStore = fs.readFileSync(path.join(root, "pwa", "storage-pwa.js"), "utf8");
@@ -100,10 +109,17 @@ assert.match(pwaStore, /return idb\.replaceAll\(storeName, stamped\)/,
   "PWA guarded replacement must not clear and repopulate in separate transactions");
 assert.doesNotMatch(pwaStore, /idb\.clear\(storeName\)\.then\(\(\) => idb\.putMany/,
   "PWA must not risk an empty collection between clear and repopulate");
+assert.match(pwaStore, /markNotDuplicates\(entries\)/, "PWA exposes the same narrow additive decision operation");
+assert.match(pwaStore, /return idb\.markNotDuplicates\(/,
+  "PWA delegates keep choices to one read-modify-write transaction");
+assert.match(pwaIdb, /markNotDuplicates\(entries\)[\s\S]*?db\.transaction\(\["cards", "saved"\], "readwrite"\)/,
+  "PWA reads and writes card and saved markers inside one transaction");
+assert.match(pwaIdb, /transaction\.onabort = \(\) => reject/,
+  "PWA multi-row writes reject transaction aborts");
 
 const { mergeDupeMetadata, dupeSnapshotSignature, dupeGroupKey, dupeGroupDismissed, markDupeGroupNotDuplicate, dupeMemberKey } = loadFns(["mergeDupeMetadata", "dupeSnapshotSignature", "dupeGroupKey", "dupeGroupDismissed", "markDupeGroupNotDuplicate", "dupeMemberKey"]);
-const keeper = { id:"keep", image:"idb:keep", desc:"Primary description", tags:["one"], liked:false, captured:200, blocked:10, category:"Work" };
-const source = { id:"remove", image:"idb:remove", desc:"Unique source description", notes:"Personal note", tags:["one","two"], liked:true, captured:100, blocked:20, category:"Ideas", dupeNotDuplicateGroups:["old-unrelated-group"] };
+const keeper = { id:"keep", image:"idb:keep", desc:"Primary description", tags:["one"], liked:false, captured:200, blocked:10, category:"Work", meta:{owner:"keeper"} };
+const source = { id:"remove", image:"idb:remove", desc:"Unique source description", notes:"Personal note", tags:["one","two"], liked:true, captured:100, blocked:20, category:"Ideas", meta:{owner:"source",sourceOnly:true}, dupeNotDuplicateGroups:["old-unrelated-group"] };
 mergeDupeMetadata(keeper, source);
 assert.strictEqual(keeper.id, "keep", "keeper identity is never replaced");
 assert.strictEqual(keeper.image, "idb:keep", "image ownership is handled separately");
@@ -114,6 +130,8 @@ assert.strictEqual(keeper.liked, true, "positive user intent survives");
 assert.strictEqual(keeper.captured, 100, "earliest capture time survives");
 assert.strictEqual(keeper.blocked, 20, "latest block time survives");
 assert.deepStrictEqual(keeper.dupeConflicts.category, ["Work","Ideas"], "conflicting scalar metadata remains recoverable on the keeper");
+assert.deepStrictEqual(keeper.dupeConflicts.meta, [{owner:"keeper"},{owner:"source",sourceOnly:true}], "conflicting nested metadata remains recoverable on the keeper");
+assert.strictEqual(keeper.meta.sourceOnly, true, "source-only nested metadata survives");
 assert.strictEqual(keeper.dupeNotDuplicateGroups, undefined, "a deleted card cannot transfer unrelated not-duplicate decisions to its keeper");
 
 const sigA = dupeSnapshotSignature([{id:"a",title:"one"}], [{id:"s",title:"saved"}]);

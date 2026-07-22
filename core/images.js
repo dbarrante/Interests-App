@@ -70,6 +70,20 @@ function delImg(storeDir, id) {
   if (fs.existsSync(p)) fs.unlinkSync(p);
 }
 
+function copyImg(storeDir, sourceId, targetId) {
+  const source = getImg(storeDir, sourceId);
+  if (!source) return false;
+  const target = imgPath(storeDir, targetId);
+  fs.mkdirSync(imagesDir(storeDir), { recursive: true });
+  fs.writeFileSync(target, source);
+  const check = getImg(storeDir, targetId);
+  if (!check || !check.equals(source)) {
+    try { fs.unlinkSync(target); } catch (e) {}
+    throw new Error("image copy verification failed");
+  }
+  return true;
+}
+
 function listImageIds(storeDir) {
   const dir = imagesDir(storeDir);
   if (!fs.existsSync(dir)) return [];
@@ -133,4 +147,4 @@ function imageManifest(storeDir) {
   return out;
 }
 
-module.exports = { imagesDir, imgPath, safeImgId, putImg, getImg, hasImg, delImg, imageCount, listImageIds, sniffImageType, imageManifest };
+module.exports = { imagesDir, imgPath, safeImgId, putImg, getImg, hasImg, delImg, copyImg, imageCount, listImageIds, sniffImageType, imageManifest };
