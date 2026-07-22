@@ -63,9 +63,10 @@ function isChromeRunning(opts) {
   const platform = opts.platform || process.platform;
   if (platform !== "win32") return Promise.resolve(false);
   const execFile = opts.execFile || childProcess.execFile;
-  // Chrome can leave background processes or minimized windows behind, and a
-  // process can own more than one top-level window. Enumerate every HWND owned
-  // by every Chrome PID; only a visible, titled, non-minimized window counts.
+  // Chrome can leave background processes behind, and a process can own more
+  // than one top-level window. Enumerate every HWND owned by every Chrome PID;
+  // a visible, titled window counts even when minimized (the monitor must not
+  // create a new window every minute merely because the user minimized one).
   const script = [
     "$ErrorActionPreference='Stop'",
     "try {",
@@ -79,7 +80,6 @@ function isChromeRunning(opts) {
     "  [DllImport(\"user32.dll\", SetLastError=true)] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);",
     "  [DllImport(\"user32.dll\")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);",
     "  [DllImport(\"user32.dll\")] private static extern bool IsWindowVisible(IntPtr hWnd);",
-    "  [DllImport(\"user32.dll\")] private static extern bool IsIconic(IntPtr hWnd);",
     "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hWnd);",
     "  public static bool HasUsableWindow(int[] processIds) {",
     "    var wanted = new HashSet<uint>();",
@@ -87,7 +87,7 @@ function isChromeRunning(opts) {
     "    bool found = false;",
     "    bool completed = EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {",
     "      uint pid; GetWindowThreadProcessId(hWnd, out pid);",
-    "      if (wanted.Contains(pid) && IsWindowVisible(hWnd) && !IsIconic(hWnd) && GetWindowTextLength(hWnd) > 0) { found = true; return false; }",
+    "      if (wanted.Contains(pid) && IsWindowVisible(hWnd) && GetWindowTextLength(hWnd) > 0) { found = true; return false; }",
     "      return true;",
     "    }, IntPtr.Zero);",
     "    if (!completed && !found) throw new Win32Exception(Marshal.GetLastWin32Error());",
@@ -120,9 +120,10 @@ function launchChrome(executable, opts) {
   const spawn = opts.spawn || childProcess.spawn;
   return new Promise((resolve, reject) => {
     let child;
-    // A bare chrome.exe can honor Chrome's background-app mode without showing
-    // any UI. Explicitly request a visible new-tab window.
-    try { child = spawn(executable, ["--new-window", "chrome://newtab/"], { detached: true, stdio: "ignore" }); }
+    // A bare chrome.exe or chrome://newtab/ can be absorbed by Chrome's
+    // background-app mode without showing UI. A normal HTTPS navigation with
+    // --new-window reliably requests a user-facing browser window.
+    try { child = spawn(executable, ["--new-window", "https://www.google.com/"], { detached: true, stdio: "ignore" }); }
     catch (e) { reject(e); return; }
     if (!child || typeof child.once !== "function") { reject(new Error("Chrome process did not start")); return; }
     child.once("error", reject);
@@ -141,8 +142,18 @@ async function ensureChromeForAutoImport(opts) {
   if (running) return { action: "already-running" };
   if (running !== false) return { action: "check-failed" };
 
+  if (typeof opts.shouldLaunch === "function") {
+    try { if (!opts.shouldLaunch()) return { action: "cancelled" }; }
+    catch (_) { return { action: "cancelled" }; }
+  }
+
   const executable = await (opts.findExecutable || findChromeExecutable)();
   if (!executable) return { action: "not-found" };
+
+  if (typeof opts.shouldLaunch === "function") {
+    try { if (!opts.shouldLaunch()) return { action: "cancelled" }; }
+    catch (_) { return { action: "cancelled" }; }
+  }
 
   try { await (opts.launch || launchChrome)(executable); }
   catch (e) { return { action: "launch-failed", error: String(e && e.message || e) }; }

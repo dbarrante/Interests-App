@@ -9,6 +9,7 @@ const undiciGuard = require("./core/undici-guard");
 const { setKV, getKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
 const { ensureChromeForAutoImport } = require("./core/chrome-launch");
+const { createChromeAvailabilityMonitor } = require("./core/chrome-monitor");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
 // from a cancelled/aborted response body during a link sweep) that would otherwise crash
@@ -25,6 +26,7 @@ let mainWindow = null;
 let httpServer = null;
 let ctx = null;                 // hoisted so will-quit / timers can reach it
 let timers = null;              // { stop() } from core/synctimers — hoisted for will-quit
+let chromeAvailabilityMonitor = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -104,20 +106,16 @@ if (!gotLock) {
 
       createWindow(port);
 
-      // Platform auto-import runs in the Chrome extension. If the user opted
-      // into automatic checks, make Chrome available once at app startup—but
-      // never behave like a watchdog that reopens it after an intentional
-      // close. Fire after createWindow so browser detection cannot delay UI.
-      setTimeout(() => {
-        let settingsRaw = null;
-        try { settingsRaw = getKV(ctx.db, "ia_settings"); } catch (e) {}
-        ensureChromeForAutoImport({ settingsRaw }).then((result) => {
-          if (result && result.action === "launched") console.log("auto-import: launched Chrome");
-          else if (result && result.action === "not-found") console.warn("auto-import: Chrome is enabled but was not found");
-          else if (result && result.action === "check-failed") console.warn("auto-import: could not determine whether Chrome is running");
-          else if (result && result.action === "launch-failed") console.warn("auto-import: Chrome launch failed:", result.error);
-        }).catch((e) => console.warn("auto-import: Chrome availability check failed:", e && e.message));
-      }, 0);
+      // Platform auto-import runs in the Chrome extension. While automatic
+      // checks are enabled, keep a visible Chrome window available. The first
+      // check runs after createWindow so detection cannot delay the UI; the
+      // minute timer covers Chrome being closed after Interests App starts.
+      chromeAvailabilityMonitor = createChromeAvailabilityMonitor({
+        readSettings: () => getKV(ctx.db, "ia_settings"),
+        ensureChrome: ensureChromeForAutoImport,
+        log: (e) => console.warn("auto-import: Chrome availability check failed:", e && e.message),
+      });
+      chromeAvailabilityMonitor.start();
 
       // Launch merge AFTER the window exists. It used to run synchronously
       // BEFORE the server/window: with a big peer delta the app showed no
@@ -175,6 +173,7 @@ if (!gotLock) {
       }
     } catch (e) { /* best-effort */ }
     if (timers) { try { timers.stop(); } catch (e) {} }
+    if (chromeAvailabilityMonitor) { try { chromeAvailabilityMonitor.stop(); } catch (e) {} }
     if (httpServer) {
       try { httpServer.close(); } catch (_) { /* ignore */ }
     }

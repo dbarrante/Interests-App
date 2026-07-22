@@ -57,6 +57,19 @@ async function t(name, fn) {
     assert.strictEqual(launched, 0);
   });
 
+  await t("launch cancellation is honored after detection but before spawn", async () => {
+    let launched = 0;
+    const r = await chrome.ensureChromeForAutoImport({
+      settingsRaw: JSON.stringify({ autoImportOn: true }),
+      isRunning: async () => false,
+      findExecutable: async () => "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      shouldLaunch: () => false,
+      launch: async () => { launched++; },
+    });
+    assert.deepStrictEqual(r, { action: "cancelled" });
+    assert.strictEqual(launched, 0);
+  });
+
   await t("Chrome absent: launches the resolved executable exactly once", async () => {
     const calls = [];
     const r = await chrome.ensureChromeForAutoImport({
@@ -120,7 +133,7 @@ async function t(name, fn) {
     await assert.rejects(pending, /ENOENT/);
   });
 
-  await t("Chrome launch explicitly requests a visible new-tab window", async () => {
+  await t("Chrome launch explicitly requests a visible HTTPS window", async () => {
     const call = {};
     const child = {
       handlers: {},
@@ -132,7 +145,7 @@ async function t(name, fn) {
     });
     child.handlers.spawn();
     await pending;
-    assert.deepStrictEqual(call.args, ["--new-window", "chrome://newtab/"]);
+    assert.deepStrictEqual(call.args, ["--new-window", "https://www.google.com/"]);
     assert.strictEqual(call.opts.detached, true);
     assert.strictEqual(call.unref, true);
   });
@@ -155,7 +168,7 @@ async function t(name, fn) {
     assert.match(script, /GetWindowThreadProcessId/);
     assert.match(script, /GetWindowTextLength/);
     assert.match(script, /IsWindowVisible/);
-    assert.match(script, /IsIconic/);
+    assert.doesNotMatch(script, /IsIconic/);
     assert.match(script, /ErrorActionPreference='Stop'/);
   });
 
@@ -196,10 +209,13 @@ async function t(name, fn) {
   await t("main process wires the helper after the window is created", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
     const windowAt = main.indexOf("createWindow(port)");
-    const ensureAt = main.indexOf("ensureChromeForAutoImport({");
+    const scheduleAt = main.indexOf("chromeAvailabilityMonitor = createChromeAvailabilityMonitor({");
     assert.ok(/require\("\.\/core\/chrome-launch"\)/.test(main));
     assert.ok(/getKV\(ctx\.db,\s*"ia_settings"\)/.test(main));
-    assert.ok(windowAt >= 0 && ensureAt > windowAt, "Chrome check must not delay the app window");
+    assert.ok(windowAt >= 0 && scheduleAt > windowAt, "Chrome check must not delay the app window");
+    assert.ok(/createChromeAvailabilityMonitor/.test(main), "main must use the tested monitor lifecycle");
+    assert.ok(/chromeAvailabilityMonitor\.start\(\)/.test(main), "Chrome monitor must start after the window");
+    assert.ok(/chromeAvailabilityMonitor\.stop\(\)/.test(main), "Chrome monitor must stop during shutdown");
   });
 
   console.log("chrome-launch: " + passed + " passed, " + failed + " failed");
