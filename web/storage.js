@@ -155,7 +155,7 @@
       setBatchProgress: function (p) { return jsend("POST", SE.batchProgress(), { progress: p }).then(function () {}); },
 
       // --- backup / restore / store location / import ---
-      backupNow: function () { return jsend("POST", SE.backup()); },
+      backupNow: function (opts) { return jsend("POST", SE.backup(), opts || {}); },
       listBackups: function () { return jget(SE.backups()).then(function (j) { return (j && j.backups) || []; }); },
       restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
       storeLocation: function () { return jget(SE.storeLocation()); },

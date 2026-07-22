@@ -4934,7 +4934,7 @@ async function createDupeSafetySnapshot(){
       for(const id of imageIds){ if(!await Store.imgHas(id)) return null; }
       return {kind:"pwa",key,sig};
     }
-    const result=await Store.backupNow();
+    const result=await Store.backupNow({safety:true});
     return result&&result.ok!==false&&result.verified===true?{kind:"desktop",name:result.name||""}:null;
   }catch(e){ console.warn("duplicate cleanup safety snapshot failed",e); return null; }
 }

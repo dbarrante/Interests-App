@@ -28,6 +28,7 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(block, /groupsToProcess\s*=\s*_dupeReviewMode==="single"\s*\?\s*\[_dupeGroups\[_dupeReviewIndex\]\]\.filter\(Boolean\)\s*:\s*_dupeGroups/,
     name + " scopes focused removal to the visible group only");
   assert.match(block, /async function createDupeSafetySnapshot\(\)/, name + " has an awaited, verifiable duplicate-cleanup snapshot");
+  assert.match(block, /Store\.backupNow\(\{safety:true\}\)/, name + "requests a unique non-rotating desktop cleanup snapshot");
   assert.match(block, /function dupeSnapshotSignature\(/, name + " verifies journal content, not counts alone");
   assert.match(block, /async function restoreDupeSafetySnapshot\(/, name + " provides an actual PWA recovery path");
   assert.match(block, /function mergeDupeMetadata\(/, name + " defines the keeper metadata merge policy");
@@ -55,7 +56,7 @@ const pwaFeature = featureSlice(pwa);
 assert.strictEqual(pwaFeature, webFeature, "duplicate-review behavior must stay mirrored between web and PWA");
 
 const sw = fs.readFileSync(path.join(root, "pwa", "sw.js"), "utf8");
-assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v40"/, "PWA cache must be bumped for the cached index edit");
+assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v41"/, "PWA cache must be bumped for the cached index edit");
 
 const pwaIdb = fs.readFileSync(path.join(root, "pwa", "idb.js"), "utf8");
 const pwaStore = fs.readFileSync(path.join(root, "pwa", "storage-pwa.js"), "utf8");

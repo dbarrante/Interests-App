@@ -486,9 +486,10 @@ function createServer(ctx) {
   // ---- backup / restore / health ----
   app.post("/api/backup", (req, res) => {
     try {
-      const out = backup.runBackup(ctx.db, ctx.storeDir);
+      const safety = !!(req.body && req.body.safety);
+      const out = backup.runBackup(ctx.db, ctx.storeDir, { safety });
       const verified = backup.verifyBackup(out.name, out.counts);
-      if (verified) backup.rotate(3);            // only rotate older backups once this one verifies
+      if (verified && !safety) backup.rotate(3); // cleanup snapshots are unique and never auto-rotated
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);
