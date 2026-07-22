@@ -6,8 +6,9 @@ const { startServer } = require("./core/server");
 const sync = require("./core/sync");
 const { createAsyncSync } = require("./core/syncworker");
 const undiciGuard = require("./core/undici-guard");
-const { setKV, counts } = require("./core/db");
+const { setKV, getKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
+const { ensureChromeForAutoImport } = require("./core/chrome-launch");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
 // from a cancelled/aborted response body during a link sweep) that would otherwise crash
@@ -102,6 +103,21 @@ if (!gotLock) {
       config.saveConfig(Object.assign({}, config.loadConfig(), { port }));
 
       createWindow(port);
+
+      // Platform auto-import runs in the Chrome extension. If the user opted
+      // into automatic checks, make Chrome available once at app startup—but
+      // never behave like a watchdog that reopens it after an intentional
+      // close. Fire after createWindow so browser detection cannot delay UI.
+      setTimeout(() => {
+        let settingsRaw = null;
+        try { settingsRaw = getKV(ctx.db, "ia_settings"); } catch (e) {}
+        ensureChromeForAutoImport({ settingsRaw }).then((result) => {
+          if (result && result.action === "launched") console.log("auto-import: launched Chrome");
+          else if (result && result.action === "not-found") console.warn("auto-import: Chrome is enabled but was not found");
+          else if (result && result.action === "check-failed") console.warn("auto-import: could not determine whether Chrome is running");
+          else if (result && result.action === "launch-failed") console.warn("auto-import: Chrome launch failed:", result.error);
+        }).catch((e) => console.warn("auto-import: Chrome availability check failed:", e && e.message));
+      }, 0);
 
       // Launch merge AFTER the window exists. It used to run synchronously
       // BEFORE the server/window: with a big peer delta the app showed no
