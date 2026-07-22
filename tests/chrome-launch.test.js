@@ -120,6 +120,23 @@ async function t(name, fn) {
     await assert.rejects(pending, /ENOENT/);
   });
 
+  await t("Chrome launch explicitly requests a visible new-tab window", async () => {
+    const call = {};
+    const child = {
+      handlers: {},
+      once(name, fn) { this.handlers[name] = fn; },
+      unref() { call.unref = true; },
+    };
+    const pending = chrome.launchChrome("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", {
+      spawn: (exe, args, opts) => { call.exe = exe; call.args = args; call.opts = opts; return child; },
+    });
+    child.handlers.spawn();
+    await pending;
+    assert.deepStrictEqual(call.args, ["--new-window", "chrome://newtab/"]);
+    assert.strictEqual(call.opts.detached, true);
+    assert.strictEqual(call.unref, true);
+  });
+
   await t("background Chrome processes without a visible window count as closed", async () => {
     let calledExe = "", calledArgs = [];
     const r = await chrome.isChromeRunning({

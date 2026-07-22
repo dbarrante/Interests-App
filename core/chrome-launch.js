@@ -120,7 +120,9 @@ function launchChrome(executable, opts) {
   const spawn = opts.spawn || childProcess.spawn;
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawn(executable, [], { detached: true, stdio: "ignore" }); }
+    // A bare chrome.exe can honor Chrome's background-app mode without showing
+    // any UI. Explicitly request a visible new-tab window.
+    try { child = spawn(executable, ["--new-window", "chrome://newtab/"], { detached: true, stdio: "ignore" }); }
     catch (e) { reject(e); return; }
     if (!child || typeof child.once !== "function") { reject(new Error("Chrome process did not start")); return; }
     child.once("error", reject);
