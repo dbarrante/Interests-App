@@ -298,6 +298,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
 .dupe-group{border:1px solid var(--line);border-radius:11px;padding:10px;margin:12px 0}
 .dupe-row{display:flex;align-items:center;gap:12px;padding:6px 4px}
+.dupe-row-photo{display:flex;flex-shrink:0;cursor:pointer}
 .dupe-row img,.dupe-row .ph{width:64px;height:48px;object-fit:cover;border-radius:7px;background:#e8e4de;flex-shrink:0}
 .dupe-row .meta{flex:1;min-width:0}
 .dupe-row .meta .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -317,7 +318,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-large-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 .dupe-review-card{border:1px solid var(--line);border-radius:11px;overflow:hidden;display:flex;flex-direction:column;min-width:0;background:var(--card)}
 .dupe-review-card.keep{border:2px solid #228b45;background:rgba(34,139,69,.06)}
-.dupe-card-photo{position:relative;width:100%;aspect-ratio:4/3;background:#e8e4de;overflow:hidden}
+.dupe-card-photo{position:relative;width:100%;aspect-ratio:4/3;background:#e8e4de;overflow:hidden;cursor:pointer}
 .dupe-card-photo img,.dupe-card-photo .ph{width:100%;height:100%;object-fit:cover;border-radius:0;background:#e8e4de;display:block}
 .dupe-card-photo .ph:after{content:"No image";display:flex;align-items:center;justify-content:center;height:100%;font-size:12px;color:var(--muted)}
 .dupe-card-keep{position:absolute;top:8px;left:8px;background:#228b45;color:#fff;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.2)}
@@ -942,9 +943,10 @@ function setCardImage(it, src){
     Store.imgPut(it.id, src);                                   // write the file
     const fp = imgFp(src); _fpMap[it.id]=fp; Store.fpSet(it.id, fp);   // placeholder fp (no bytes kept)
   } else {
-    const wasIdb = (it.img && (""+it.img).indexOf("idb:")===0);
+    const oldId = it.img && (""+it.img).indexOf("idb:")===0 ? (""+it.img).slice(4) : "";
     it.img=src||"";
-    if(wasIdb){ Store.imgDel(it.id); if(_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); } }
+    if(oldId===String(it.id)){ Store.imgDel(oldId); }
+    if(oldId&&_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); }
   }
 }
 // resolve a card's stored image to something usable in an <img src>
@@ -2774,7 +2776,7 @@ function attachCardImages(){
     const setSrc = (im, id) => { Store.ensureImage(id).then(()=>{ im.src = Store.imgUrl(id); }); };
     const load = im=>{
       if(im.getAttribute("src")) return;
-      const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
+      const idbId = im.getAttribute("data-imgid");        // Exact persisted idb: pointer (not necessarily the card id after a safe merge)
       if(idbId){ im.loading="lazy"; setSrc(im, idbId); return; }
       const sid = im.getAttribute("data-imgsrc");          // Discovery/Saved card: resolve the item's image
       if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; setSrc(im, String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
@@ -3562,7 +3564,7 @@ function impCardHTML(it,idx){
   // <img data-imgid> for attachCardImages to fill from the service URL; a thumb-first
   // ternary would otherwise fall back to favicon/IM and leave nothing to fill.
   const icon = isIdbImg
-    ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+    ? `<img class="th" data-imgid="${esc(String(it.img).slice(4))}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
     : (thumb
       ? `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
       : (dom
@@ -3807,7 +3809,7 @@ function readerImgHTML(it){
   const yt = /^YouTube/i.test(it.title) || /youtu/.test(dom);
   const thumb = impThumb(it);
   const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;
-  if(isIdbImg) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
+  if(isIdbImg) return `<img data-imgid="${esc(String(it.img).slice(4))}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
   if(thumb) return `<img src="${esc(thumb)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
   return `<div class="ic">${yt?"YT":"IM"}</div>`;
 }
@@ -4824,8 +4826,8 @@ function dupeModeBarHTML(){
       </div></div></div>`;
 }
 function dupeCompactGroupHTML(g,gi){
-  return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
-    .map(m=>dupeRowHTML(m,gi,m.card.id===g.keepId)).join("")}</div>`;
+  return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
+    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey)).join("")}</div>`;
 }
 function dupeLargeCardHTML(mem,gi,keep){
   const it=mem.card;
@@ -4834,14 +4836,14 @@ function dupeLargeCardHTML(mem,gi,keep){
   const tag=mem.scope==="saved"?"Saved":"Imported";
   const desc=it.desc||it.benefit||"No description saved.";
   return `<div class="dupe-review-card${keep?" keep":""}">
-    <div class="dupe-card-photo">${dupeThumb(mem)}${keep?`<span class="dupe-card-keep">&#10003; Keep</span>`:""}</div>
+    <div class="dupe-card-photo" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" ondblclick="dupeOpenOriginal(this)" title="Double-click to open original">${dupeThumb(mem)}${keep?`<span class="dupe-card-keep">&#10003; Keep</span>`:""}</div>
     <div class="dupe-card-desc"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
       <div class="d">${esc(desc)}</div>
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
     <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
       ? `<span>Best copy</span>`
       : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
-         <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
+         <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
     </div></div>`;
 }
 function renderHealthDupes(list){
@@ -4853,20 +4855,20 @@ function renderHealthDupes(list){
   if(_dupeReviewMode==="all"){
     list.innerHTML=`${dupeModeBarHTML()}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
       ${_dupeGroups.map(dupeCompactGroupHTML).join("")}
-      <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
+      <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices</button></div>`;
   } else {
     const g=_dupeGroups[_dupeReviewIndex];
-    const sorted=g.members.slice().sort((a,b)=>(a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1));
-    const title=(g.members.find(m=>m.card.id===g.keepId)||g.members[0]).card.title||"Duplicate set";
+    const sorted=g.members.slice().sort((a,b)=>(dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1));
+    const title=(g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0]).card.title||"Duplicate set";
     list.innerHTML=`${dupeModeBarHTML()}
       <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
-      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,m.card.id===g.keepId)).join("")}</div>
-      <div class="dupe-safety"><b>Only this group will change.</b> A safety snapshot is created before removal, then review moves to the next group. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
+      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey)).join("")}</div>
+      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. A safety snapshot is created before any change. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
       <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="dupeReviewMove(1)" ${_dupeReviewIndex===_dupeGroups.length-1?"disabled":""}>Skip for now</button>
-          <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected &amp; next &#8594;</button></div></div>`;
+          <button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices &amp; next &#8594;</button></div></div>`;
   }
   attachCardImages();
 }
@@ -4968,16 +4970,37 @@ function scanDuplicates(){
   members.forEach((m,i)=>{ const r=find(i); (groups[r]=groups[r]||[]).push(m); });
   const out = [];
   Object.values(groups).forEach(mem=>{
-    if (mem.length < 2) return;
-    out.push({ members: mem, keepId: dupePrimary(mem).card.id });
+    if (mem.length < 2 || dupeGroupDismissed(mem)) return;
+    out.push({ members: mem, keepKey: dupeMemberKey(dupePrimary(mem)) });
   });
   return out;
 }
+function dupeGroupKey(members){
+  return JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+}
+function dupeGroupDismissed(members){
+  const key=JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  return (members||[]).length>1&&members.every(m=>Array.isArray(m.card&&m.card.dupeNotDuplicateGroups)&&m.card.dupeNotDuplicateGroups.indexOf(key)>=0);
+}
+function markDupeGroupNotDuplicate(members,importedById,savedById){
+  if((members||[]).length<2) return false;
+  const key=JSON.stringify(members.map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  let changed=false;
+  members.forEach(m=>{
+    const card=(m.scope==="saved"?savedById:importedById).get(m.card.id);
+    if(!card) return;
+    const prior=Array.isArray(card.dupeNotDuplicateGroups)?card.dupeNotDuplicateGroups:[];
+    if(prior.indexOf(key)>=0) return;
+    card.dupeNotDuplicateGroups=prior.concat([key]); changed=true;
+  });
+  return changed;
+}
+function dupeMemberKey(mem){ return String(mem&&mem.scope||"")+":"+String(mem&&mem.card&&mem.card.id||""); }
 let _dupeGroups = [];
 function dupeThumb(mem){
   const it = mem.card;
   const v = itemImg(it, mem.scope);
-  if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
+  if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(String(v).slice(4))}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
   const src = resolveImg(v);
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;
   return `<div class="ph"></div>`;
@@ -4988,19 +5011,19 @@ function dupeRowHTML(mem, gi, keep){
   const date = it.sdate ? new Date(it.sdate).toLocaleDateString() : "";
   const tag = mem.scope==="saved" ? "Saved" : "Imported";
   return `<div class="dupe-row${keep?" keep":""}">
-    ${dupeThumb(mem)}
+    <div class="dupe-row-photo" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" ondblclick="dupeOpenOriginal(this)" title="Double-click to open original">${dupeThumb(mem)}</div>
     <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
     ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
       : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
-         <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
+         <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
   </div>`;
 }
 // "Keep this" in the Duplicates tab: change which card stays, re-render the tab in place.
-function dupeSetKeep(gi, id){
-  if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
+function dupeSetKeep(gi, key){
+  if (_dupeGroups[gi]) _dupeGroups[gi].keepKey = key;
   renderHealthDupes(document.getElementById("healthList"));
 }
 function dupeOpenButtonHTML(mem){
@@ -5029,7 +5052,7 @@ async function createDupeSafetySnapshot(){
       const refs=new Set();
       groups.forEach(g=>g.members.forEach(m=>{ const v=itemImg(m.card,m.scope); if(v&&String(v).indexOf("idb:")===0) refs.add(String(v).slice(4)); }));
       const imageIds=[];
-      for(const id of refs){ if(await Store.imgHas(id)) imageIds.push(id); }
+      for(const id of refs){ if(!await Store.ensureImage(id)||!await Store.imgHas(id)) return null; imageIds.push(id); }
       const sig=dupeSnapshotSignature(imported,saved);
       const snapshot={at:Date.now(),sig,imageIds,imported,saved};
       await Store.kvSet(key,snapshot);
@@ -5060,7 +5083,7 @@ async function restoreDupeSafetySnapshot(silent){
   }catch(e){ if(!silent) toast("Recovery failed: "+(e&&e.message||e),8000); return false; }
 }
 function mergeDupeMetadata(target,source){
-  const skip=new Set(["id","img","image","updatedAt"]);
+  const skip=new Set(["id","img","image","updatedAt","dupeNotDuplicateGroups"]);
   const joinText=new Set(["desc","benefit","note","notes"]);
   const earliest=new Set(["ts","sdate","captured","clipped","createdAt"]);
   const latest=new Set(["lastUpdate","blocked"]);
@@ -5098,9 +5121,8 @@ async function rollbackDupePersistence(safety){
 }
 async function applyDupeRemoval(){
   const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
-  if(!checked.size){ toast("Nothing selected to remove"); return; }
   const priorIndex=_dupeReviewIndex;
-  const processedKeepId=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepId:"";
+  const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
   const safety=await createDupeSafetySnapshot();
   if(!safety){ toast("Duplicate cleanup stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
@@ -5109,9 +5131,9 @@ async function applyDupeRemoval(){
   const nextImportedById=new Map(nextImported.filter(Boolean).map(c=>[c.id,c]));
   const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
   const rmImported=new Set(),rmSaved=new Set(),orphanImages=[];
-  let removed=0;
+  let removed=0,notDuplicateGroups=0;
   for(const g of groupsToProcess){
-    const keep=g.members.find(m=>m.card.id===g.keepId)||g.members[0];
+    const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
     const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
     for(const mem of g.members){
       if(mem===keep||!checked.has(mem.scope+":"+mem.card.id)) continue;
@@ -5128,6 +5150,8 @@ async function applyDupeRemoval(){
       if(srcIsIdb&&!keptSrcImg&&!window.IA_IDB) orphanImages.push({imageId:String(src).slice(4),cardId:mem.card.id});
       (mem.scope==="saved"?rmSaved:rmImported).add(mem.card.id); removed++;
     }
+    const retained=g.members.filter(mem=>mem===keep||!checked.has(mem.scope+":"+mem.card.id));
+    if(markDupeGroupNotDuplicate(retained,nextImportedById,nextSavedById)) notDuplicateGroups++;
   }
   nextImported=nextImported.filter(c=>c&&!rmImported.has(c.id));
   nextSaved=nextSaved.filter(c=>c&&!rmSaved.has(c.id));
@@ -5151,13 +5175,14 @@ async function applyDupeRemoval(){
   rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
   _dupeGroups=scanDuplicates();
   if(_dupeReviewMode==="single"){
-    const stillAt=processedKeepId?_dupeGroups.findIndex(g=>g.members.some(m=>m.card.id===processedKeepId)):-1;
+    const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
     _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);
     if(_dupeReviewIndex<0) _dupeReviewIndex=0;
   }
   if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
-  toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy",5000);
+  const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
+  toast(removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.",6000);
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
@@ -5452,7 +5477,7 @@ async function drainCaptures(){
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
   if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
-  else { const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=src||""; if(wasIdb) Store.imgDel(item.id); }
+  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); }
 }
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
 // than in IndexedDB. Saved clips are a small, deliberate set, and inline data
