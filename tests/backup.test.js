@@ -248,6 +248,34 @@ t("cleanup safety snapshots rotate to the newest 2 once a call exceeds the keep 
   });
 });
 
+t("drainBackupBacklog converges past the per-call cleanup cap in one call", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const first = backup.runBackup(db, store, { safety: true });
+    const root = backup.dropboxBackupDir();
+    // Simulate a large pre-existing backlog (more than MAX_CLEANUP_PER_CALL=3
+    // beyond keep=2) by duplicating the one verified snapshot under distinct
+    // safety-pattern names/timestamps — a single runBackup() call's own capped
+    // rotation could not clear this in one pass.
+    const meta = JSON.parse(fs.readFileSync(path.join(root, first.name, "meta.json"), "utf8"));
+    for (let i = 0; i < 9; i++) {
+      const name = "interests-backup-before-cleanup-" + (1700000000000 + i) + "-" + "abcdef012345";
+      const folder = path.join(root, name);
+      fs.cpSync(path.join(root, first.name), folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify(meta));
+    }
+    const before = fs.readdirSync(root).filter(function (n) { return /^interests-backup-before-cleanup-/.test(n); });
+    assert.ok(before.length > 5, "backlog exceeds one call's cleanup cap");
+    const result = backup.drainBackupBacklog();
+    const after = fs.readdirSync(root).filter(function (n) { return /^interests-backup-before-cleanup-/.test(n); });
+    assert.strictEqual(after.length, 2, "converges to keep=2 in a single drainBackupBacklog() call");
+    assert.ok(result.cleaned >= before.length - 2, "reports how much it actually cleaned");
+    db.close();
+  });
+});
+
 t("a stale hidden .previous-* sidecar is swept once its replacement verifies", () => {
   withBackupDir(function () {
     const store = newStore();

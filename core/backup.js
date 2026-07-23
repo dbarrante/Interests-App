@@ -228,7 +228,7 @@ const STALE_STAGING_MS = 60 * 60 * 1000; // a live publish finishes in seconds
 const MAX_CLEANUP_PER_CALL = 3;
 function sweepOrphanedArtifacts(backupRoot) {
   let names = [];
-  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
   const now = Date.now();
   let cleaned = 0;
   for (const n of names) {
@@ -254,6 +254,7 @@ function sweepOrphanedArtifacts(backupRoot) {
       }
     }
   }
+  return cleaned;
 }
 
 // Cleanup/restore safety snapshots use unique, non-daily names (see runBackup)
@@ -264,15 +265,15 @@ function sweepOrphanedArtifacts(backupRoot) {
 // call for the same reason as sweepOrphanedArtifacts above.
 function rotateNamedSnapshots(backupRoot, re, keep) {
   let names = [];
-  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
   const candidates = names
     .map(function (n) { const m = re.exec(n); return m ? { name: n, ts: +m[1] || 0 } : null; })
     .filter(Boolean)
     .sort(function (a, b) { return b.ts - a.ts; });
-  if (candidates.length <= keep) return;
+  if (candidates.length <= keep) return 0;
   const newestFolder = path.join(backupRoot, candidates[0].name);
   const newestMeta = readMeta(newestFolder);
-  if (!newestMeta || !verifyBackupFolder(newestFolder, newestMeta._counts)) return; // newest unverified → rotate nothing
+  if (!newestMeta || !verifyBackupFolder(newestFolder, newestMeta._counts)) return 0; // newest unverified → rotate nothing
   let cleaned = 0;
   for (let i = keep; i < candidates.length && cleaned < MAX_CLEANUP_PER_CALL; i++) {
     const folder = path.join(backupRoot, candidates[i].name);
@@ -280,6 +281,7 @@ function rotateNamedSnapshots(backupRoot, re, keep) {
     if (!meta || !verifyBackupFolder(folder, meta._counts)) continue; // don't delete an unverified one
     try { fs.rmSync(folder, { recursive: true, force: true }); cleaned++; } catch (e) {}
   }
+  return cleaned;
 }
 
 // restore()'s before-restore snapshot is a bare db+images copy with no
@@ -289,7 +291,7 @@ function rotateNamedSnapshots(backupRoot, re, keep) {
 // treats this snapshot as best-effort, not a long-term recovery point.
 function rotateUnverifiedSnapshots(backupRoot, re, keep) {
   let names = [];
-  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
   const candidates = names
     .filter(function (n) { return re.test(n); })
     .map(function (n) {
@@ -298,9 +300,31 @@ function rotateUnverifiedSnapshots(backupRoot, re, keep) {
       return { name: n, mtime: mtime };
     })
     .sort(function (a, b) { return b.mtime - a.mtime; });
+  let cleaned = 0;
   for (let i = keep; i < candidates.length; i++) {
-    try { fs.rmSync(path.join(backupRoot, candidates[i].name), { recursive: true, force: true }); } catch (e) {}
+    try { fs.rmSync(path.join(backupRoot, candidates[i].name), { recursive: true, force: true }); cleaned++; } catch (e) {}
   }
+  return cleaned;
+}
+
+// One-time (or on-demand) drain of the backlog rotate()/sweepOrphanedArtifacts
+// leave behind between normal calls — each normal call caps its own cleanup at
+// MAX_CLEANUP_PER_CALL so a large backlog doesn't relocate the per-call
+// slowdown onto whichever backup happens to run first. This loops the same
+// verified-before-delete passes until a full round makes no progress (or
+// maxRounds is hit), for maintenance/manual "clean up now" use.
+function drainBackupBacklog(maxRounds) {
+  maxRounds = maxRounds == null ? 200 : maxRounds;
+  const backupRoot = dropboxBackupDir();
+  let totalCleaned = 0, rounds = 0;
+  for (; rounds < maxRounds; rounds++) {
+    const cleaned = sweepOrphanedArtifacts(backupRoot)
+      + rotateNamedSnapshots(backupRoot, SAFETY_BACKUP_NAME, 2)
+      + rotateUnverifiedSnapshots(backupRoot, RESTORE_BACKUP_NAME, 2);
+    if (!cleaned) break;
+    totalCleaned += cleaned;
+  }
+  return { cleaned: totalCleaned, rounds: rounds };
 }
 
 // A hard process/power stop can occur between the two publication renames.
@@ -598,4 +622,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore };
+module.exports = { detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog };
