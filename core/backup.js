@@ -123,6 +123,44 @@ function imageManifest(folder) {
   });
 }
 
+// Copy every live image into destDir, hashing each file from the SAME read used for
+// the copy (one open/read per file) instead of copying-then-separately-re-reading it
+// for a manifest. A 6,000-image/600MB+ library re-read 3-4x over (copy, manifest,
+// stage-verify, post-publish-verify) is what made every duplicate-cleanup safety
+// snapshot take tens of seconds to minutes — see 2026-07-22 perf incident.
+function copyImagesAndBuildManifest(srcDir, destDir, ids) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const manifest = ids.map(function (id) {
+    const name = id + ".jpg";
+    const bytes = fs.readFileSync(path.join(srcDir, name));
+    fs.writeFileSync(path.join(destDir, name), bytes);
+    return { name: name, size: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+  });
+  manifest.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  return manifest;
+}
+
+// Verify a database file's integrity and row counts WITHOUT touching images — used
+// right after this process wrote the images itself (their hashes are already known
+// from copyImagesAndBuildManifest, so re-reading and re-hashing every file again
+// would be pure waste). Full image-content verification (verifyBackupFolder) is
+// reserved for folders this process did NOT just write: a candidate recovered after
+// a crash, or a backup read cold for restore/rotation.
+function verifyDbOnly(dbPath, expectedCounts) {
+  let database;
+  try {
+    database = new DatabaseSync(dbPath, { readOnly: true });
+    const integrity = database.prepare("PRAGMA integrity_check").get();
+    if (!integrity || integrity.integrity_check !== "ok") return false;
+    const dc = counts(database);
+    return (dc.cards | 0) === (expectedCounts.imported | 0) && (dc.saved | 0) === (expectedCounts.saved | 0);
+  } catch (e) {
+    return false;
+  } finally {
+    if (database) { try { database.close(); } catch (e) {} }
+  }
+}
+
 function verifyBackupFolder(folder, expectedCounts) {
   if (!expectedCounts) return false;
   let meta;
@@ -228,35 +266,42 @@ function runBackup(db, storeDir, opts) {
   let displaced = false;
   try {
     // Build a fresh exact mirror. Never trust an older shard merely because its
-    // id and byte length happen to match the live file.
-    fs.mkdirSync(stageImages, { recursive: true });
+    // id and byte length happen to match the live file. Each image is read and
+    // hashed exactly once here (copyImagesAndBuildManifest) — the manifest this
+    // produces IS the verification, so nothing below re-reads image content.
     copyFileSync(path.join(storeDir, "interests.db"), path.join(stageRoot, "interests.db"));
-
-    // Exact image copy from the live store.
     const srcImages = imagesDir(storeDir);
-    for (const id of listImageIds(storeDir)) {
-      copyFileSync(path.join(srcImages, id + ".jpg"), path.join(stageImages, id + ".jpg"));
-    }
+    const liveIds = listImageIds(storeDir);
+    const manifest = copyImagesAndBuildManifest(srcImages, stageImages, liveIds);
 
   // Portable snapshot BEFORE meta.json — meta.json's presence is the backup's
   // completion marker (see readMeta/verifyBackup below), so everything else
   // must be written first.
     fs.writeFileSync(path.join(stageRoot, "snapshot.json"), JSON.stringify(buildPortableSnapshot(db)));
 
-    // meta.json LAST. _images carries a per-file sha256 manifest so verification
-    // (verifyBackupFolder) catches silent content corruption, not just a count match.
-    fs.writeFileSync(path.join(stageRoot, "meta.json"), JSON.stringify({ _counts: cnt, _images: imageManifest(stageImages), ts: Date.now() }));
-    if (!verifyBackupFolder(stageRoot, cnt)) throw new Error("staged backup verification failed");
+    // meta.json LAST. _images carries a per-file sha256 manifest so a COLD read of
+    // this folder later (restore/rotate/crash-recovery) can catch silent content
+    // corruption, not just a count match.
+    fs.writeFileSync(path.join(stageRoot, "meta.json"), JSON.stringify({ _counts: cnt, _images: manifest, ts: Date.now() }));
+    if (manifest.length !== cnt.images || !verifyDbOnly(path.join(stageRoot, "interests.db"), cnt)) {
+      throw new Error("staged backup verification failed");
+    }
 
     // Publish by same-parent renames. Keep the displaced backup until the
-    // canonical replacement has itself passed verification.
+    // canonical replacement has itself passed verification. A rename doesn't
+    // touch file bytes, so re-checking image content here (verifyBackup's full
+    // re-hash) would just re-verify what copyImagesAndBuildManifest already
+    // proved above — confirm the db+meta.json landed intact instead.
     if (fs.existsSync(destRoot)) {
       fs.renameSync(destRoot, previousRoot);
       displaced = true;
     }
     try {
       fs.renameSync(stageRoot, destRoot);
-      if (!verifyBackup(name, cnt)) throw new Error("published backup verification failed");
+      const publishedMeta = readMeta(destRoot);
+      if (!publishedMeta || !backupCountsMatch(publishedMeta._counts, cnt) || !verifyDbOnly(path.join(destRoot, "interests.db"), cnt)) {
+        throw new Error("published backup verification failed");
+      }
     } catch (publishError) {
       if (displaced) {
         try { fs.renameSync(destRoot, stageRoot); } catch (e) {}
