@@ -381,7 +381,7 @@ function createServer(ctx) {
       const sourceId = req.body && req.body.sourceId;
       images.safeImgId(req.params.id);
       images.safeImgId(sourceId);
-      if (!images.copyImg(ctx.getStorePath(), sourceId, req.params.id)) return res.status(404).json({ ok: false, error: "source_not_found" });
+      if (!images.copyImg(ctx.storeDir, sourceId, req.params.id)) return res.status(404).json({ ok: false, error: "source_not_found" });
       res.json({ ok: true });
     } catch (e) {
       if (e && e.code === "INVALID_IMG_ID") return res.status(400).json({ ok: false, error: "invalid_id" });

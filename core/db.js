@@ -337,10 +337,7 @@ function addNotDuplicateMarker(db, scope, id, key) {
   const table = scope === "saved" ? "saved" : "cards";
   const row = db.prepare("SELECT data FROM " + table + " WHERE id=?").get(id);
   if (!row) return null;
-  let data;
-  try { data = row.data ? JSON.parse(row.data) : {}; }
-  catch (e) { throw new Error("CORRUPT_ROW_DATA"); }
-  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("CORRUPT_ROW_DATA");
+  const data = _safeParseData(row.data);
   const prior = Array.isArray(data.dupeNotDuplicateGroups)
     ? data.dupeNotDuplicateGroups.filter(v => typeof v === "string") : [];
   if (prior.indexOf(key) >= 0) return false;

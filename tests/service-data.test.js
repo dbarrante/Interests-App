@@ -117,6 +117,25 @@ t("not-duplicate decision is additive, atomic, and preserves current card fields
   assert.strictEqual(r.status, 409, "a stale decision cannot mark rows whose duplicate-relevant content changed");
 });
 
+t("not-duplicate decision degrades gracefully on a corrupt row instead of failing the whole batch", async ({ base, database }) => {
+  await fetch(base + "/api/cards", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ cards: [
+    { id: "a", url: "https://example.test/a", platform: "fb", cat: "Saved", ts: 2, img: "", title: "T" },
+    { id: "b", url: "https://example.test/b", platform: "fb", cat: "Saved", ts: 2, img: "", title: "T2" },
+  ] }) });
+  database.prepare("UPDATE cards SET data=? WHERE id=?").run("{not json", "a");
+  // Corrupting `data` also collapses the title (stored inside that JSON blob) to "" —
+  // rowToCard already degrades gracefully, so that's what a fresh read reports.
+  const key = JSON.stringify([["imported","a","https://example.test/a",""],["imported","b","https://example.test/b","t2"]]);
+  const body = { entries: [{ scope:"imported", id:"a", key }, { scope:"imported", id:"b", key }] };
+  const r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
+  assert.deepStrictEqual(await r.json(), { ok:true, changed:2 },
+    "a corrupt data column on one row degrades to {} instead of failing the whole batch");
+  const cards = (await (await fetch(base + "/api/cards")).json()).cards;
+  const byId = Object.fromEntries(cards.map(c => [c.id, c]));
+  assert.deepStrictEqual(byId.a.dupeNotDuplicateGroups, [key], "the corrupt row still gets its marker, with prior JSON extras dropped");
+  assert.deepStrictEqual(byId.b.dupeNotDuplicateGroups, [key], "an unrelated row bundled in the same batch is unaffected");
+});
+
 t("img: PUT data URL writes the file; GET returns the jpeg bytes; DELETE removes; GET missing -> 404", async ({ base }) => {
   let r = await fetch(base + "/api/img/abc");
   assert.strictEqual(r.status, 404);
