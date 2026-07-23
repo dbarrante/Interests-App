@@ -885,6 +885,7 @@ Expected: the 2 new checks FAIL (2 occurrences each: web + pwa).
 
 `applyCaptureResult` (line 4041):
 ```js
+  const dom=domain(c.url)||"";
   if(r.title && (!c.title || c.title===dom)) c.title=r.title;
 ```
 →
@@ -892,7 +893,7 @@ Expected: the 2 new checks FAIL (2 occurrences each: web + pwa).
   if(r.title && isGenericTitle(c.title, c.url)) c.title=r.title;
 ```
 
-(The `dom` local variable on the line above — `const dom=domain(c.url)||"";` — becomes unused by this line specifically, but stays: `applyCaptureResult`'s next line, `if(r.description && !c.desc) c.desc=r.description;`, doesn't use it either, but nothing else in the function needs it removed; leave the `const dom=...` line as-is to keep the diff minimal — it's harmless dead-after-this-change but removing it is out of scope for this task.)
+(`isGenericTitle` takes `c.url` directly, so the `const dom=domain(c.url)||"";` local — only ever used by the old condition — is now dead. Delete that line along with the condition it fed; confirm no other line in `applyCaptureResult` references `dom` before deleting, per this task's own Global-Constraints-level expectation of no dead code.)
 
 `drainCaptures` (line 5542):
 ```js
@@ -905,7 +906,7 @@ Expected: the 2 new checks FAIL (2 occurrences each: web + pwa).
 
 - [ ] **Step 4: Make the identical edits in `pwa/index.html`**
 
-Same 2 replacements at `pwa/index.html`'s `applyCaptureResult` and `drainCaptures`.
+Same 2 replacements at `pwa/index.html`'s `applyCaptureResult` (including deleting its now-dead `const dom=domain(c.url)||"";` line) and `drainCaptures`.
 
 - [ ] **Step 5: Run the syntax gate and wiring test**
 
