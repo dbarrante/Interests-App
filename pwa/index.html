@@ -3028,7 +3028,6 @@ async function fetchMicrolink(url){
     return {img:(d.data.image&&d.data.image.url)||null, title:d.data.title||null, desc:d.data.description||null};
   }catch(e){ return null; }
 }
-function genericTitle(t){ return t.length<25 || /^\d+\s*(photo|video)s?\b/i.test(t); }
 async function enrichPins(){
   const pins = imported.filter(i=>platformOf(i)==="pinterest" && i.url && !i.img && !i.pt);
   if(!pins.length) return 0;
@@ -3036,7 +3035,7 @@ async function enrichPins(){
   const apply=(p,m)=>{
     if(!m) return;
     if(m.img){ p.img=m.img; got++; }
-    if(m.title && genericTitle(p.title)) p.title=m.title.slice(0,250);
+    if(m.title && isGenericTitle(p.title, p.url)) p.title=m.title.slice(0,250);
     if(m.desc && !p.desc) p.desc=m.desc.slice(0,220);
   };
   const withId = pins.map(p=>({p, id:(p.url.match(/\/pin\/(\d+)/)||[])[1]})).filter(x=>x.id);
@@ -4045,7 +4044,7 @@ async function enrichOnOpen(it, idx){
         const res = await Store.captureMeta([{id:it.id, url:it.url}]);
         const m = res && res[0];
         if(m){
-          if(m.title && m.title.length>10 && genericTitle(it.title)){ it.title=m.title.slice(0,250); changed=true; }
+          if(m.title && m.title.length>10 && isGenericTitle(it.title, it.url)){ it.title=m.title.slice(0,250); changed=true; }
           if(m.description && m.description.length>15 && (!it.desc || it.desc.startsWith("Saved from") || it.desc.startsWith("From your"))){ it.desc=m.description.slice(0,220); changed=true; }
           if(m.hasImage && isBadImg(it.img)){ setCardImage(it, "idb:"+it.id); changed=true; }
           else if(m.imageUrl && isBadImg(it.img)){ setCardImage(it, m.imageUrl); changed=true; }   // og:image URL fallback
@@ -5734,7 +5733,7 @@ async function addClip(cap){
     item = { id:newId(), url:cap.url, source:domain(cap.url), tags:[], category:guessCat(cap.title||cap.url||""), benefit:"Clipped from the web.", clipped:Date.now() };
     saved.unshift(item);
   }
-  if(cap.title && (isNew || genericTitle(item.title||""))) item.title = cap.title.slice(0,250);
+  if(cap.title && (isNew || isGenericTitle(item.title||"", item.url))) item.title = cap.title.slice(0,250);
   if(!item.title) item.title = domain(cap.url)||cap.url;
   // image priority: an explicit clipImage (e.g. the original Facebook post photo)
   // wins, then the screenshot you saw, then the page's OG image.
