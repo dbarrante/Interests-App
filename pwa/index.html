@@ -4946,7 +4946,7 @@ document.getElementById("readerBody").addEventListener("touchend", e=>{
 function _healthCounts(){
   const nolink = imported.filter(i=>!i.url).length;
   const failed = imported.filter(needsRetry).length;
-  const titles = imported.filter(i=>isGenericTitle(i.title,i.url)).length + saved.filter(i=>isGenericTitle(i.title,i.url)).length;
+  const titles = imported.filter(i=>i&&isGenericTitle(i.title,i.url)).length + saved.filter(i=>i&&isGenericTitle(i.title,i.url)).length;
   return { nolink, failed, titles: titles };
 }
 function healthTabStripHTML(){
