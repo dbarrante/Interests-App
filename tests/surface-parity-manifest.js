@@ -10,6 +10,7 @@ module.exports = {
     ["web/lib/urlkey.js", "pwa/lib/urlkey.js"],
     ["web/route-capture.js", "pwa/route-capture.js"],
     ["web/profile-analyze.js", "pwa/profile-analyze.js"],
+    ["web/title-ai.js", "pwa/title-ai.js"],
   ],
   indexContracts: [
     "setCardImageDurably",
