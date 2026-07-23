@@ -225,6 +225,49 @@ t("cleanup safety snapshots remain distinct when timestamps collide", () => {
   });
 });
 
+t("cleanup safety snapshots rotate to the newest 2 once a call exceeds the keep window", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const names = [];
+    const originalNow = Date.now;
+    let ts = 1700000000000;
+    try {
+      for (let i = 0; i < 4; i++) {
+        Date.now = function () { return ts; };
+        names.push(backup.runBackup(db, store, { safety: true }).name);
+        ts += 1000;
+      }
+    } finally { Date.now = originalNow; }
+    const root = backup.dropboxBackupDir();
+    const present = names.filter(function (n) { return fs.existsSync(path.join(root, n)); });
+    assert.strictEqual(present.length, 2, "only the newest `keep` (2) safety snapshots survive");
+    assert.deepStrictEqual(present.sort(), [names[2], names[3]].sort(), "the two newest are the ones kept, not an arbitrary pair");
+    db.close();
+  });
+});
+
+t("a stale hidden .previous-* sidecar is swept once its replacement verifies", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const first = backup.runBackup(db, store); // dated backup, e.g. interests-backup-2026-...
+    const root = backup.dropboxBackupDir();
+    // Simulate a previously-failed cleanup: rename the (now-superseded, but here
+    // there's nothing superseding it yet) folder's sidecar shape directly.
+    const orphan = path.join(root, "." + first.name + ".previous-orphaned-token");
+    fs.cpSync(path.join(root, first.name), orphan, { recursive: true });
+    assert.ok(fs.existsSync(orphan), "orphan sidecar created for the test");
+    // A later call (any runBackup) opportunistically sweeps stale sidecars whose
+    // canonical replacement already verifies.
+    backup.runBackup(db, store, { safety: true });
+    assert.strictEqual(fs.existsSync(orphan), false, "the orphaned sidecar was cleaned up");
+    db.close();
+  });
+});
+
 t("verifyBackup rejects metadata counts not present in the copied database", () => {
   withBackupDir(function () {
     const store = newStore();

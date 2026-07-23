@@ -104,6 +104,7 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 // A dated daily backup, or an undated pre-cleanup safety snapshot (never rotated).
 const DATED_BACKUP_NAME = /^interests-backup-(\d{4}-\d{2}-\d{2})$/;
 const SAFETY_BACKUP_NAME = /^interests-backup-before-cleanup-(\d+)-([a-f0-9]{12})$/;
+const RESTORE_BACKUP_NAME = /^interests-backup-before-restore-\d+$/;
 function isValidBackupName(name) {
   return DATED_BACKUP_NAME.test(String(name || "")) || SAFETY_BACKUP_NAME.test(String(name || ""));
 }
@@ -209,6 +210,99 @@ function buildPortableSnapshot(db) {
   };
 }
 
+// Hidden per-publish sidecars — ".<name>.previous-<token>" (the copy displaced
+// until its replacement verifies) and ".<name>.staging-<token>" (a not-yet-
+// published build) — are meant to be deleted automatically right after publish.
+// But Dropbox actively syncing the folder can hold a file open at that exact
+// moment (EBUSY), silently failing the one-shot cleanup and leaving a
+// near-full image-library copy behind forever (2026-07-23: 68 orphans, 27GB,
+// found accumulating in the real backups folder). Retried on every later call.
+const HIDDEN_PREVIOUS_RE = /^\.(.+)\.previous-[^.]+$/;
+const HIDDEN_STAGING_RE = /^\.(.+)\.staging-[^.]+$/;
+const STALE_STAGING_MS = 60 * 60 * 1000; // a live publish finishes in seconds
+// Verifying a candidate before deleting it means re-hashing its whole image set —
+// exactly the per-call cost the 2026-07-22 perf fix eliminated from the normal
+// path. Cap how much of a large backlog gets verified+cleaned per call so
+// catching up after this fix ships doesn't just relocate the slowdown; a
+// backlog drains over a handful of calls instead of one giant one.
+const MAX_CLEANUP_PER_CALL = 3;
+function sweepOrphanedArtifacts(backupRoot) {
+  let names = [];
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  const now = Date.now();
+  let cleaned = 0;
+  for (const n of names) {
+    if (cleaned >= MAX_CLEANUP_PER_CALL) break;
+    const prevMatch = HIDDEN_PREVIOUS_RE.exec(n);
+    const stageMatch = !prevMatch && HIDDEN_STAGING_RE.exec(n);
+    if (!prevMatch && !stageMatch) continue;
+    const full = path.join(backupRoot, n);
+    if (prevMatch) {
+      // Safe once its replacement (the canonical name) exists and verifies —
+      // that's proof the publish this copy was displaced FOR already
+      // succeeded, so this is a confirmed-stale duplicate, not a fallback.
+      const canonical = path.join(backupRoot, prevMatch[1]);
+      const meta = readMeta(canonical);
+      if (meta && verifyBackupFolder(canonical, meta._counts)) {
+        try { fs.rmSync(full, { recursive: true, force: true }); cleaned++; } catch (e) {}
+      }
+    } else {
+      let mtime = 0;
+      try { mtime = fs.statSync(full).mtimeMs; } catch (e) { continue; }
+      if (now - mtime > STALE_STAGING_MS) {
+        try { fs.rmSync(full, { recursive: true, force: true }); cleaned++; } catch (e) {}
+      }
+    }
+  }
+}
+
+// Cleanup/restore safety snapshots use unique, non-daily names (see runBackup)
+// specifically so a rotation pass never mistakes one for a stale dated backup —
+// but that also means nothing else ever cleans them up, and each is a near-full
+// image-library mirror. Keep only the newest `keep` VERIFIED ones (same
+// never-delete-a-good-one-for-an-unverified-one rule as rotate()), capped per
+// call for the same reason as sweepOrphanedArtifacts above.
+function rotateNamedSnapshots(backupRoot, re, keep) {
+  let names = [];
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  const candidates = names
+    .map(function (n) { const m = re.exec(n); return m ? { name: n, ts: +m[1] || 0 } : null; })
+    .filter(Boolean)
+    .sort(function (a, b) { return b.ts - a.ts; });
+  if (candidates.length <= keep) return;
+  const newestFolder = path.join(backupRoot, candidates[0].name);
+  const newestMeta = readMeta(newestFolder);
+  if (!newestMeta || !verifyBackupFolder(newestFolder, newestMeta._counts)) return; // newest unverified → rotate nothing
+  let cleaned = 0;
+  for (let i = keep; i < candidates.length && cleaned < MAX_CLEANUP_PER_CALL; i++) {
+    const folder = path.join(backupRoot, candidates[i].name);
+    const meta = readMeta(folder);
+    if (!meta || !verifyBackupFolder(folder, meta._counts)) continue; // don't delete an unverified one
+    try { fs.rmSync(folder, { recursive: true, force: true }); cleaned++; } catch (e) {}
+  }
+}
+
+// restore()'s before-restore snapshot is a bare db+images copy with no
+// meta.json (it's written by a different, simpler path — see restore() below),
+// so it can't be verified the way rotateNamedSnapshots verifies before-cleanup
+// snapshots. Fall back to newest-`keep`-by-mtime; restore() itself already
+// treats this snapshot as best-effort, not a long-term recovery point.
+function rotateUnverifiedSnapshots(backupRoot, re, keep) {
+  let names = [];
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return; }
+  const candidates = names
+    .filter(function (n) { return re.test(n); })
+    .map(function (n) {
+      let mtime = 0;
+      try { mtime = fs.statSync(path.join(backupRoot, n)).mtimeMs; } catch (e) {}
+      return { name: n, mtime: mtime };
+    })
+    .sort(function (a, b) { return b.mtime - a.mtime; });
+  for (let i = keep; i < candidates.length; i++) {
+    try { fs.rmSync(path.join(backupRoot, candidates[i].name), { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
 // A hard process/power stop can occur between the two publication renames.
 // If the canonical name is absent, recover the newest verified displaced copy
 // before beginning another backup. Hidden candidates are never auto-deleted.
@@ -257,6 +351,13 @@ function runBackup(db, storeDir, opts) {
   const stageImages = path.join(stageRoot, "images");
   fs.mkdirSync(backupRoot, { recursive: true });
   recoverInterruptedPublish(backupRoot, name);
+  // Opportunistic cleanup, retried on every call (cheap when there's nothing to
+  // do) so a transient Dropbox-lock failure eventually self-heals instead of
+  // accumulating forever — see sweepOrphanedArtifacts below. Rotating cleanup/
+  // restore snapshots happens AFTER this call's own snapshot publishes (below),
+  // not here — rotating before would always leave keep+1 around (the pruned
+  // set plus the one this call is about to add).
+  sweepOrphanedArtifacts(backupRoot);
 
   // Flush WAL pages into interests.db so a backup taken while the live db is open
   // captures the most recent committed writes (the on-disk file lags the -wal sidecar).
@@ -324,6 +425,11 @@ function runBackup(db, storeDir, opts) {
   // future boot can notice a collapsed/swapped store that can't vouch for
   // itself (2026-07-17 incident hardening; see config.evaluateStoreSafety).
   try { recordLastCounts({ cards: cnt.imported, saved: cnt.saved }); } catch (e) {}
+  // Rotate cleanup safety snapshots AFTER this call's own snapshot is live, so
+  // the count this converges to is exactly `keep`, not keep+1. (Restore
+  // snapshots are rotated from within restore() itself — a separate path that
+  // never calls runBackup — see rotateUnverifiedSnapshots there.)
+  if (opts.safety) rotateNamedSnapshots(backupRoot, SAFETY_BACKUP_NAME, 2);
   return { name, counts: cnt };
 }
 
@@ -448,6 +554,9 @@ function restore(name, ctx) {
   // not trip the collapsed-counts dialog on next launch (false-positive
   // hardening; see config.evaluateStoreSafety).
   try { const rc = counts(ctx.db); recordLastCounts({ cards: rc.cards | 0, saved: rc.saved | 0 }); } catch (e) {}
+  // Keep only the newest 2 before-restore snapshots — each is a near-full
+  // image-library mirror and nothing else ever cleans these up.
+  try { rotateUnverifiedSnapshots(dropboxBackupDir(), RESTORE_BACKUP_NAME, 2); } catch (e) {}
   return { ok: true };
 }
 
