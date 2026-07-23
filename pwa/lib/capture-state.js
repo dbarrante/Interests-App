@@ -44,9 +44,6 @@
   function isGenericTitle(title, url) {
     var t = String(title == null ? "" : title).trim();
     if (!t) return true;
-    if (t.length < 25) return true;
-    if (/^\d+\s*(photo|video)s?\b/i.test(t)) return true;
-    if (/^https?:\/\//i.test(t)) return true;
     var tl = t.toLowerCase();
     var dom = "";
     try { dom = new URL(String(url || "")).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { dom = ""; }
@@ -55,6 +52,9 @@
     if (GENERIC_TITLE_NOUN_RE.test(tl)) return true;
     if (GENERIC_TITLE_PLATFORM_POST_RE.test(tl)) return true;
     if (GENERIC_TITLE_POST_BY_RE.test(tl)) return true;
+    if (t.length < 25) return true;
+    if (/^\d+\s*(photo|video)s?\b/i.test(t)) return true;
+    if (/^https?:\/\//i.test(t)) return true;
     return false;
   }
 

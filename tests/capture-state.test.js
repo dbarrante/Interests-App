@@ -55,8 +55,8 @@ t("isGenericTitle: under 25 chars -> generic", () => {
   assert.ok(CS.isGenericTitle("Short title here", "https://example.com/a")); // 17 chars
 });
 t("isGenericTitle: 'N photos/videos' -> generic", () => {
-  assert.ok(CS.isGenericTitle("12 photos from the trip", "https://example.com/a"));
-  assert.ok(CS.isGenericTitle("3 videos you might like", "https://example.com/a"));
+  assert.ok(CS.isGenericTitle("12 photos from an amazing summer trip", "https://example.com/a"));
+  assert.ok(CS.isGenericTitle("3 videos about amazing cooking and life", "https://example.com/a"));
 });
 t("isGenericTitle: bare URL as title -> generic", () => {
   assert.ok(CS.isGenericTitle("https://www.instagram.com/p/Cabc123XYZ/", "https://www.instagram.com/p/Cabc123XYZ/"));
