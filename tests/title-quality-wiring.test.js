@@ -54,6 +54,37 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": drainCaptures uses isGenericTitle instead of the 'Saved/From your' prefix gate", () => {
     assert.match(src, /if\(cap\.title && \(force \|\| isGenericTitle\(match\.title, ?match\.url\)\)\)\{ match\.title=cap\.title; changed=true; \}/);
   });
+  t(label + ": HEALTH_TABS includes the Title issues tab", () => {
+    assert.match(src, /\{\s*id:"titles",\s*label:"Title issues"\s*\}/);
+  });
+  t(label + ": _healthCounts reports a titles count from both imported and saved", () => {
+    const m = /function _healthCounts\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "_healthCounts not found");
+    assert.match(m[1], /isGenericTitle\(i\.title,\s*i\.url\)/);
+    assert.match(m[1], /saved\.filter/);
+    assert.match(m[1], /titles:/);
+  });
+  t(label + ": renderHealth dispatches the titles tab", () => {
+    assert.match(src, /if\(tab==="titles"\) return renderHealthTitles\(list\);/);
+  });
+  t(label + ": renderHealthTitles lists flagged imported AND saved cards", () => {
+    const m = /function flaggedTitleCards\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "flaggedTitleCards not found");
+    assert.match(m[1], /imported\.forEach/);
+    assert.match(m[1], /saved\.forEach/);
+  });
+  t(label + ": suggestTitlesForFlagged generates sequentially and tracks accepted titles to avoid within the batch", () => {
+    const m = /async function suggestTitlesForFlagged\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "suggestTitlesForFlagged not found");
+    assert.match(m[1], /generateUniqueTitle\(m\.card, ?acceptedThisBatch\)/);
+  });
+  t(label + ": applyTitleSuggestions persists via persistCards/Store.putSaved (not {confirm:true} — an edit, not a removal)", () => {
+    const m = /function applyTitleSuggestions\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "applyTitleSuggestions not found");
+    assert.match(m[1], /persistCards\(\);/);
+    assert.match(m[1], /Store\.putSaved\(saved\);/);
+    assert.doesNotMatch(m[1], /\{confirm:\s*true\}/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

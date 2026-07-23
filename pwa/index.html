@@ -4877,6 +4877,7 @@ const HEALTH_TABS = [
   { id:"dead",   label:"Dead & unsafe" },
   { id:"failed", label:"Failed captures" },
   { id:"nolink", label:"No link" },
+  { id:"titles", label:"Title issues" },
 ];
 let _healthTab = "dupes";
 let _healthScanned = {};   // {tabId:true} once its lazy scan has run this open
@@ -4892,9 +4893,9 @@ function openHealth(tab){
 function closeHealth(){
   _dupeFullScreen = false;
   document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
-  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {};
+  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {}; _titleSuggestions = {};
 }
-function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _healthTab = tab; renderHealth(); }
+function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _titleSuggestions = {}; _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
 document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
 // Unified keydown handler for all overlay surfaces (was three separate keydown
@@ -4945,11 +4946,12 @@ document.getElementById("readerBody").addEventListener("touchend", e=>{
 function _healthCounts(){
   const nolink = imported.filter(i=>!i.url).length;
   const failed = imported.filter(needsRetry).length;
-  return { nolink, failed };
+  const titles = imported.filter(i=>isGenericTitle(i.title,i.url)).length + saved.filter(i=>isGenericTitle(i.title,i.url)).length;
+  return { nolink, failed, titles: titles };
 }
 function healthTabStripHTML(){
   const c = _healthCounts();
-  const badge = { failed:c.failed, nolink:c.nolink };
+  const badge = { failed:c.failed, nolink:c.nolink, titles:c.titles };
   return `<div class="health-tabs">${HEALTH_TABS.map(t=>{
     const n = badge[t.id];
     return `<button class="${t.id===_healthTab?"on":""}" onclick="healthSwitch('${t.id}')">${esc(t.label)}${n?` (${n})`:""}</button>`;
@@ -4969,6 +4971,7 @@ function renderHealth(){
   if(tab==="dead")   return renderHealthDead(list);
   if(tab==="failed") return renderHealthFailed(list);
   if(tab==="nolink") return renderHealthNoLink(list);
+  if(tab==="titles") return renderHealthTitles(list);
 }
 // ---- Duplicates tab ----
 let _dupeReviewMode = "single";
@@ -5125,6 +5128,89 @@ function renderHealthNoLink(list){
     <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px">
       <button class="btn btn-primary" onclick="groomNoLink()">Remove selected</button></div>`;
   attachCardImages();
+}
+// ---- Title issues tab ----
+// Every card (imported OR saved) whose title is missing/generic/platform-only.
+function flaggedTitleCards(){
+  const out=[];
+  imported.forEach(c=>{ if(c && isGenericTitle(c.title,c.url)) out.push({scope:"imported", card:c}); });
+  saved.forEach(c=>{ if(c && isGenericTitle(c.title,c.url)) out.push({scope:"saved", card:c}); });
+  return out;
+}
+// {scope:id -> suggested title string} for cards awaiting review after
+// "Suggest titles". Cleared on Apply, Cancel, or leaving the tab.
+let _titleSuggestions = {};
+function renderHealthTitles(list){
+  const flagged = flaggedTitleCards();
+  if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; _titleSuggestions={}; return; }
+  const hasSuggestions = Object.keys(_titleSuggestions).length>0;
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 10px">${flagged.length} card${flagged.length>1?"s have":" has"} a missing, generic, or platform-only title.${hasSuggestions?" Review the suggested titles below, uncheck any you don't want, then Apply.":" Check the ones to fix, then Suggest titles."}</div>
+    ${flagged.map(m=>{
+      const it=m.card, dom=domain(it.url)||"";
+      const key=m.scope+":"+it.id;
+      const suggestion=_titleSuggestions[key];
+      return `<div class="dupe-row" data-title-key="${esc(key)}">${dupeThumb(m)}
+        <div class="meta"><div class="t">${esc(it.title||"(untitled)")}</div>
+          <div class="s">${esc(dom||"no link")} · <span class="dupe-badge">${m.scope==="saved"?"Saved":"Imported"}</span></div>
+          ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%">` : ""}
+        </div>
+        ${suggestion==null
+          ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel checked style="width:auto"> include</label>`
+          : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-apply checked style="width:auto"> apply</label>`}
+      </div>`;
+    }).join("")}
+    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px;gap:8px">
+      ${hasSuggestions
+        ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="_titleSuggestions={};renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
+        : `<button class="btn btn-primary" onclick="suggestTitlesForFlagged()">Suggest titles</button>`}
+    </div>`;
+  attachCardImages();
+}
+async function suggestTitlesForFlagged(){
+  const rows = document.querySelectorAll('#healthBody .dupe-row[data-title-key]');
+  const checkedRows = Array.prototype.filter.call(rows, row=>{ const cb=row.querySelector('input[data-title-sel]'); return cb && cb.checked; });
+  if(!checkedRows.length){ toast("Select at least one card"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
+  const ids = new Set(checkedRows.map(row=>row.getAttribute("data-title-key")));
+  const flagged = flaggedTitleCards().filter(m=>ids.has(m.scope+":"+m.card.id));
+  showBusyOverlay("Suggesting titles… 0/"+flagged.length);
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  const acceptedThisBatch=[];
+  let done=0;
+  for(const m of flagged){
+    updateBusyOverlay("Suggesting titles… "+done+"/"+flagged.length);
+    try{
+      const suggestion = await generateUniqueTitle(m.card, acceptedThisBatch);
+      if(suggestion){ _titleSuggestions[m.scope+":"+m.card.id]=suggestion; acceptedThisBatch.push(suggestion); }
+    }catch(e){ console.warn("title suggestion failed", e); }
+    done++;
+  }
+  hideBusyOverlay();
+  if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
+  toast(acceptedThisBatch.length ? "Suggested "+acceptedThisBatch.length+" title"+(acceptedThisBatch.length===1?"":"s")+" — review below" : "Couldn't suggest any titles (check your AI key/credits)", 6000);
+}
+function applyTitleSuggestions(){
+  const rows = document.querySelectorAll('#healthBody .dupe-row[data-title-key]');
+  const byImported={}, bySaved={};
+  imported.forEach(c=>{ if(c) byImported[c.id]=c; });
+  saved.forEach(c=>{ if(c) bySaved[c.id]=c; });
+  let applied=0;
+  rows.forEach(row=>{
+    const input=row.querySelector('input.title-suggest-input');
+    const checkbox=row.querySelector('input[data-title-apply]');
+    if(!input || !checkbox || !checkbox.checked) return;
+    const key=row.getAttribute("data-title-key");
+    const i=key.indexOf(":"); const scope=key.slice(0,i), id=key.slice(i+1);
+    const val=input.value.trim(); if(!val) return;
+    const card=scope==="saved"?bySaved[id]:byImported[id];
+    if(!card) return;
+    card.title=val.slice(0,250);
+    applied++;
+  });
+  _titleSuggestions={};
+  if(applied){ persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s")); }
+  if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
 }
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
