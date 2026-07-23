@@ -164,7 +164,8 @@ t("IG match-and-heal: igHealMatch defined, heals by shortcode, called before add
   assert.ok(hb.indexOf("isBadImg") >= 0 && hb.indexOf("cdninstagram") >= 0, "heals bad-image OR static-logo cards");
   const di = html.indexOf("async function drainCaptures(");
   const db = html.slice(di, di + 9000);
-  assert.ok(db.replace(/\s/g, "").indexOf("if(!igHealMatch(cap))addClip(cap)") >= 0, "drainCaptures tries igHealMatch before addClip");
+  const compact = db.replace(/\s/g, "");
+  assert.ok(compact.indexOf("igHealMatch(cap)") >= 0 && compact.indexOf("addClip(cap)") > compact.indexOf("igHealMatch(cap)"), "drainCaptures tries igHealMatch before addClip");
 });
 
 t("dedupClipUrl: bare homepages dedup, bare social feeds don't, path URLs dedup", () => {

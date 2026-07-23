@@ -2,6 +2,23 @@ const FB_CAP_VERSION = "4.48";   // stamped into deliveries so the APP console s
 const DEFAULT_DELAY_MS = 3000;
 const MAX_QUEUE = 20;
 
+// When desktop pairing protection is enabled, attach the user-configured token
+// to every local Core request. External page/provider requests are untouched.
+const nativeFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = function (input, init) {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  if (!/^http:\/\/127\.0\.0\.1:\d+\/api\//i.test(url)) return nativeFetch(input, init);
+  return chrome.storage.local.get("ia_pairing_token").then(function (stored) {
+    const token = stored && stored.ia_pairing_token;
+    if (!token) return nativeFetch(input, init);
+    const opts = Object.assign({}, init || {});
+    const headers = new Headers(opts.headers || (input && input.headers) || {});
+    headers.set("Authorization", "Bearer " + token);
+    opts.headers = headers;
+    return nativeFetch(input, opts);
+  });
+};
+
 // B12: true while THIS SW instance is actively dispatching a claimed single-capture
 // request (poller or restore re-dispatch). Guards restorePendingRequest so an alarm
 // wake never double-dispatches a claim the live run still owns.
@@ -668,7 +685,7 @@ async function pollBatchState() {
 // Picks up saves made natively on Facebook/Instagram (any device) that never
 // went through the capture pipeline. A daily chrome.alarms alarm (+ a bridge
 // poll so the app's "Check now" button works immediately) opens each enabled
-// platform's saved-items page in ONE inactive tab at a time, injects the pure
+// platform's saved-items page in ONE temporary tab at a time, injects the pure
 // parser from extension/lib/saved-parse-{fb,ig}.js, scrolls it a couple
 // screens to lazy-load more entries, parses, closes the tab, then POSTs the
 // result (or a login-required/parse-failed status — never partial garbage) to
@@ -717,7 +734,7 @@ async function autoImportPostBatch(port, body) {
   } catch (e) {}
 }
 
-// Scrape ONE platform's saved-items page in a fresh, inactive tab: navigate,
+// Scrape ONE platform's saved-items page in a fresh temporary tab: navigate,
 // wait for load, inject the pure parser lib + an in-page collector that
 // scrolls ~2 screens (1s apart, to lazy-load more entries — the parser's own
 // CAP already bounds the result to ~100 items) before calling parseSavedDoc.
@@ -731,7 +748,11 @@ async function autoImportScrapePlatform(platform) {
   let result = { status: "parse-failed", items: [] };
   try {
     let tab;
-    try { tab = await chrome.tabs.create({ url, active: false }); }
+    // Pinterest's current masonry grid does not mount in a hidden tab. Give
+    // only Pinterest a visible temporary tab; closing it in finally returns
+    // Chrome to the user's previous tab. Other platforms remain inactive.
+    const visible = platform === "pin";
+    try { tab = await chrome.tabs.create({ url, active: visible }); }
     catch (e) { log("auto-import: failed to open " + platform + " tab: " + e.message); return result; }
     tabId = tab.id;
     await waitTabComplete(tabId, 30000);
@@ -1370,12 +1391,28 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
 // waits + polls on its own, so a slow tab still gets a fair shot)
 function waitTabComplete(tabId, timeoutMs) {
   return new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} resolve(); };
+    let done = false, keepAlive = null, deadline = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (keepAlive) clearInterval(keepAlive);
+      if (deadline) clearTimeout(deadline);
+      try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {}
+      resolve();
+    };
     function onUpd(tid, info) { if (tid === tabId && info.status === "complete") finish(); }
+    // Hidden Pinterest/Google pages can stay "loading" for the full timeout.
+    // A timer alone is not extension activity, so Chrome may suspend an MV3
+    // service worker after ~30s and abandon the already-claimed import run.
+    // Polling the tabs API keeps the worker alive and still finishes early.
+    async function probe() {
+      try { const t = await chrome.tabs.get(tabId); if (t && t.status === "complete") finish(); }
+      catch (e) { finish(); }
+    }
     try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
-    chrome.tabs.get(tabId).then((t) => { if (t && t.status === "complete") finish(); }).catch(() => {});
-    setTimeout(finish, timeoutMs || 30000);
+    probe();
+    keepAlive = setInterval(probe, 1000);
+    deadline = setTimeout(finish, timeoutMs || 30000);
   });
 }
 // Automated version of the manual "Refresh → Save to Interests" flow for a

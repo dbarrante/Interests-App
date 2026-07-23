@@ -1,0 +1,364 @@
+{
+  "overflow": [
+    {
+      "view": "stumble",
+      "vp": "mobile",
+      "theme": "light",
+      "scrollW": 375,
+      "clientW": 375,
+      "overflow": false
+    },
+    {
+      "view": "stumble",
+      "vp": "tablet",
+      "theme": "light",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "stumble",
+      "vp": "desktop",
+      "theme": "light",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "saved",
+      "vp": "mobile",
+      "theme": "light",
+      "scrollW": 381,
+      "clientW": 375,
+      "overflow": true
+    },
+    {
+      "view": "saved",
+      "vp": "tablet",
+      "theme": "light",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "saved",
+      "vp": "desktop",
+      "theme": "light",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "imported",
+      "vp": "mobile",
+      "theme": "light",
+      "scrollW": 381,
+      "clientW": 375,
+      "overflow": true
+    },
+    {
+      "view": "imported",
+      "vp": "tablet",
+      "theme": "light",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "imported",
+      "vp": "desktop",
+      "theme": "light",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "mobile",
+      "theme": "light",
+      "scrollW": 375,
+      "clientW": 375,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "tablet",
+      "theme": "light",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "desktop",
+      "theme": "light",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "stumble",
+      "vp": "mobile",
+      "theme": "dark",
+      "scrollW": 375,
+      "clientW": 375,
+      "overflow": false
+    },
+    {
+      "view": "stumble",
+      "vp": "tablet",
+      "theme": "dark",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "stumble",
+      "vp": "desktop",
+      "theme": "dark",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "saved",
+      "vp": "mobile",
+      "theme": "dark",
+      "scrollW": 381,
+      "clientW": 375,
+      "overflow": true
+    },
+    {
+      "view": "saved",
+      "vp": "tablet",
+      "theme": "dark",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "saved",
+      "vp": "desktop",
+      "theme": "dark",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "imported",
+      "vp": "mobile",
+      "theme": "dark",
+      "scrollW": 381,
+      "clientW": 375,
+      "overflow": true
+    },
+    {
+      "view": "imported",
+      "vp": "tablet",
+      "theme": "dark",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "imported",
+      "vp": "desktop",
+      "theme": "dark",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "mobile",
+      "theme": "dark",
+      "scrollW": 375,
+      "clientW": 375,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "tablet",
+      "theme": "dark",
+      "scrollW": 768,
+      "clientW": 768,
+      "overflow": false
+    },
+    {
+      "view": "settings",
+      "vp": "desktop",
+      "theme": "dark",
+      "scrollW": 1440,
+      "clientW": 1440,
+      "overflow": false
+    }
+  ],
+  "contrast": [
+    {
+      "theme": "light",
+      "samples": [
+        {
+          "sel": ".hint",
+          "ratio": 5.37,
+          "size": "12px",
+          "weight": "400",
+          "text": "Switches the whole app to a da"
+        },
+        {
+          "sel": ".sub",
+          "ratio": 5.37,
+          "size": "13px",
+          "weight": "400",
+          "text": "Everything is stored on this c"
+        },
+        {
+          "sel": ".tab",
+          "ratio": 4.92,
+          "size": "14px",
+          "weight": "600",
+          "text": "Stumble"
+        },
+        {
+          "sel": ".btn.btn-primary",
+          "ratio": 5.18,
+          "size": "14px",
+          "weight": "700",
+          "text": "Save"
+        },
+        {
+          "sel": ".btn",
+          "ratio": 18.43,
+          "size": "14px",
+          "weight": "700",
+          "text": "?"
+        },
+        {
+          "sel": "h2",
+          "ratio": 16.81,
+          "size": "19px",
+          "weight": "700",
+          "text": "Settings"
+        },
+        {
+          "sel": "h3",
+          "ratio": 5.18,
+          "size": "14px",
+          "weight": "700",
+          "text": "APPEARANCE"
+        },
+        {
+          "sel": "label",
+          "ratio": 16.81,
+          "size": "14px",
+          "weight": "600",
+          "text": "Dark mode"
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "samples": [
+        {
+          "sel": ".hint",
+          "ratio": 5.94,
+          "size": "12px",
+          "weight": "400",
+          "text": "Switches the whole app to a da"
+        },
+        {
+          "sel": ".sub",
+          "ratio": 5.94,
+          "size": "13px",
+          "weight": "400",
+          "text": "Everything is stored on this c"
+        },
+        {
+          "sel": ".tab",
+          "ratio": 6.58,
+          "size": "14px",
+          "weight": "600",
+          "text": "Stumble"
+        },
+        {
+          "sel": ".btn.btn-primary",
+          "ratio": 5.18,
+          "size": "14px",
+          "weight": "700",
+          "text": "Save"
+        },
+        {
+          "sel": ".btn",
+          "ratio": 18.43,
+          "size": "14px",
+          "weight": "700",
+          "text": "?"
+        },
+        {
+          "sel": "h2",
+          "ratio": 13.1,
+          "size": "19px",
+          "weight": "700",
+          "text": "Settings"
+        },
+        {
+          "sel": "h3",
+          "ratio": 5.22,
+          "size": "14px",
+          "weight": "700",
+          "text": "APPEARANCE"
+        },
+        {
+          "sel": "label",
+          "ratio": 13.1,
+          "size": "14px",
+          "weight": "600",
+          "text": "Dark mode"
+        }
+      ]
+    }
+  ],
+  "states": [
+    {
+      "theme": "light",
+      "focus_primary": {
+        "outlineStyle": "none",
+        "outlineWidth": "3px",
+        "boxShadow": false
+      }
+    },
+    {
+      "theme": "dark",
+      "focus_primary": {
+        "outlineStyle": "none",
+        "outlineWidth": "3px",
+        "boxShadow": false
+      }
+    }
+  ],
+  "degradation": {
+    "no_key_stumble": {
+      "crashed": false,
+      "message": "Add your Google AI Studio API key in Settings first",
+      "onSettings": "settings"
+    },
+    "api_down_reload": {
+      "whiteScreen": false,
+      "navPresent": true,
+      "errorBanner": true,
+      "sample": "Interests\nStumble\nSaved\nImported\nSettings\n?\n\ud83c\udf10 Open in browser\nCouldn\u2019t reach the Interests app service \u2014 your library didn\u2019t load.\nRetry\nDis"
+    }
+  },
+  "memory": {
+    "resetLearning": true,
+    "buildProfile": true,
+    "aboutEditable": true,
+    "interestsEditable": true,
+    "categoryWeights": 4,
+    "mentionsLearningHistory": true,
+    "individualMemoryList": true,
+    "learnedItems": 4
+  },
+  "pageerrors": [
+    "Failed to fetch"
+  ]
+}

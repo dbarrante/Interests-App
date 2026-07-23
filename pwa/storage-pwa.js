@@ -88,36 +88,44 @@
       // Mirrors core/db.js upsertCard's sig-compare stamping.
       const prior = {};
       existing.forEach((r) => { if (r && r.id != null) prior[r.id] = r; });
+      let changed = existing.length !== incoming.length;
       const stamped = incoming.map((row) => {
         const p = prior[row.id];
         if (p && p.updatedAt != null && contentSig(p) === contentSig(row)) {
           const keep = Object.assign({}, row); keep.updatedAt = p.updatedAt; return keep;
         }
+        changed = true;
         return nowStamp(Object.assign({}, row));
       });
-      return idb.clear(storeName).then(() => idb.putMany(storeName, stamped));
+      return idb.clear(storeName).then(() => idb.putMany(storeName, stamped)).then(() => changed ? bumpMutationRevision() : undefined);
     });
+  }
+
+  function bumpMutationRevision() {
+    return idb.kvGet("_pwa_mutation_revision").then((n) => idb.kvSet("_pwa_mutation_revision", (Number(n) || 0) + 1));
   }
 
   const Store = {
     // --- kv ---
     kvGet(key) { return idb.kvGet(key); },
-    kvSet(key, val) { return idb.kvSet(key, val); },
+    kvSet(key, val) {
+      return idb.kvSet(key, val).then(() => (key === "ia_settings" || key === "ia_settings_updatedAt") ? bumpMutationRevision() : undefined);
+    },
 
     // --- cards ---
     getCards() { return idb.getAll("cards"); },
     putCards(arr, opts) { return guardedReplace("cards", arr, opts).then(() => ({ ok: true })); },
-    patchCard(card) { return idb.put("cards", nowStamp(Object.assign({}, card))).then(() => {}); },
+    patchCard(card) { return idb.put("cards", nowStamp(Object.assign({}, card))).then(() => bumpMutationRevision()); },
     // A delete must also leave a tombstone (mirrors core/db.js's deleteCard) —
     // otherwise the next sync cycle sees "local doesn't have it, peer does" and
     // resurrects it as an upsert instead of propagating the delete.
-    delCard(id) { return idb.delete("cards", id).then(() => idb.addTombstone("card", id)).then(() => {}); },
+    delCard(id) { return idb.delete("cards", id).then(() => idb.addTombstone("card", id)).then(() => bumpMutationRevision()); },
 
     // --- saved ---
     getSaved() { return idb.getAll("saved"); },
     putSaved(arr, opts) { return guardedReplace("saved", arr, opts).then(() => ({ ok: true })); },
-    patchSaved(item) { return idb.put("saved", nowStamp(Object.assign({}, item))).then(() => {}); },
-    delSaved(id) { return idb.delete("saved", id).then(() => idb.addTombstone("saved", id)).then(() => {}); },
+    patchSaved(item) { return idb.put("saved", nowStamp(Object.assign({}, item))).then(() => bumpMutationRevision()); },
+    delSaved(id) { return idb.delete("saved", id).then(() => idb.addTombstone("saved", id)).then(() => bumpMutationRevision()); },
 
     // --- images: /idb-img/<id> is served by sw.js's fetch handler ---
     imgUrl(id) { return "idb-img/" + encodeURIComponent(id); },
@@ -144,6 +152,7 @@
 
     // --- capture bridge: N/A on iPad (no Chrome extension) ---
     drainCaptures: () => Promise.resolve([]),
+    ackCaptures: () => Promise.resolve(),
     setCaptureRequest: () => Promise.resolve(),
     getBatchState: () => Promise.resolve(null),
     setBatchState: () => Promise.resolve(),
@@ -154,6 +163,10 @@
     backupNow: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Dropbox sync is the backup." }),
     listBackups: () => Promise.resolve([]),
     restore: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — resync from Dropbox instead." }),
+    recoveryStatus: () => window.IASync.recoveryStatus(),
+    recoverLastMerge: () => window.IASync.recoverLastMerge(),
+    getPairingToken: () => Promise.resolve({ ok: false, reason: "Pairing is desktop-only." }),
+    setPairingRequired: () => Promise.resolve({ ok: false, reason: "Pairing is desktop-only." }),
     storeLocation: () => Promise.resolve({ ok: true, path: "(browser IndexedDB)" }),
     moveStore: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad." }),
     health: () => Promise.resolve({ ok: true }),

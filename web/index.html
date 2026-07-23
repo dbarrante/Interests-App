@@ -632,6 +632,12 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <option value="3">Refresh if older than 3 months</option>
         </select>
         <div class="hint">Already-captured cards are normally skipped. Pick an age here to re-capture (and refresh the image &amp; description of) a card the next time you open it, once its last capture is older than the threshold.</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+          <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="pairingRequired" style="width:auto"> Require a pairing token for this extension</label>
+          <div class="hint">Optional protection for the extension bridge. Generate a token here, then paste it into the extension's options page before enabling this requirement.</div>
+          <div style="display:flex;gap:8px;margin-top:6px"><input type="password" id="pairingToken" readonly style="flex:1"><button class="btn btn-ghost" onclick="showPairingToken()">Generate / show token</button></div>
+          <span class="hint" id="pairingStatus"></span>
+        </div>
       </div>
 
       <div class="sec" id="secAutoImport">
@@ -682,6 +688,11 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <label style="margin-top:16px;display:block">Restore</label>
         <button class="btn btn-primary" onclick="restoreLatest()">&#8617; Restore latest backup</button>
         <div id="backupList"></div>
+        <div class="hint" id="secPwaRecovery" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <b>PWA pre-sync recovery</b>
+          <div id="pwaRecoveryStatus" style="margin:6px 0"></div>
+          <button class="btn btn-ghost" onclick="recoverPwaMerge()">Recover previous local state</button>
+        </div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Import legacy backup…</label>
           <div class="hint" style="margin:4px 0 8px">Bring in a single-file .json backup exported by an older version. Replaces everything currently in the app — a verified safety backup of your current data is taken first.</div>
@@ -878,6 +889,28 @@ function setCardImage(it, src){
     if(wasIdb){ Store.imgDel(it.id); if(_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); } }
   }
 }
+// Capture/import paths must await the file and fingerprint writes before the
+// card row is persisted or the capture is ACKed. The older helper remains
+// intentionally fire-and-forget for UI-only enrichment paths.
+async function setCardImageDurably(it, src){
+  const oldImg=it.img, oldFp=_fpMap[it.id];
+  try{
+    if(src && src.indexOf("data:")===0){
+      const fp=imgFp(src);
+      await Store.imgPut(it.id, src);
+      await Store.fpSet(it.id, fp);
+      it.img="idb:"+it.id; _fpMap[it.id]=fp;
+    } else {
+      const wasIdb=(it.img && (""+it.img).indexOf("idb:")===0);
+      if(wasIdb){ await Store.imgDel(it.id); if(_fpMap[it.id]) await Store.fpDel(it.id); delete _fpMap[it.id]; }
+      it.img=src||"";
+    }
+  }catch(e){
+    it.img=oldImg;
+    if(oldFp) _fpMap[it.id]=oldFp; else delete _fpMap[it.id];
+    throw e;
+  }
+}
 // resolve a card's stored image to something usable in an <img src>
 function resolveImg(v){ if(!v) return ""; return (""+v).indexOf("idb:")===0 ? Store.imgUrl((""+v).slice(4)) : v; }
 // Renderer-only accessor boundary for the two persisted image field names (imported
@@ -958,7 +991,7 @@ function showTab(t, deferStumble){
 // desktop window does. In Electron we route through the native shell (window.ia.openExternal);
 // if already running in a plain browser, just open a new tab.
 function openInBrowser(){
-  const url = location.origin + "/";
+  const url = window.IA_IDB ? location.href : location.origin + "/";
   if(window.ia && window.ia.openExternal){ window.ia.openExternal(url); }
   else { window.open(url, "_blank", "noopener"); }
 }
@@ -1288,6 +1321,17 @@ async function doBackup(manual){
     return res;
   }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }
 }
+// Destructive operations must not continue on an unavailable or unverified
+// safety backup. The caller owns the user-facing cleanup (for example hiding
+// the restore overlay); returning null is the hard stop.
+async function verifiedSafetyBackup(action){
+  try{
+    const res = await Store.backupNow();
+    if(res && res.ok!==false && res.verified===true) return res;
+  }catch(e){ console.warn(action+" safety backup failed", e); }
+  toast(action+" stopped: a verified safety backup could not be created. No data was changed.", 9000);
+  return null;
+}
 async function maybeAutoBackup(){
   if(!_booted) return;   // gate: don't back up before bootData() has loaded the real library (review A2)
   const days = +S.autoBackup; if(!days) return;
@@ -1336,6 +1380,49 @@ async function renderDurabilityStatus(health){
     (h.storePath ? ("<div>Data location: <b>" + esc(h.storePath) + "</b></div>") : "") +
     "<div>Last verified backup: <b>" + last + "</b></div>";
 }
+async function renderPairingStatus(){
+  const sec = document.getElementById("secBrowserExt"); if(!sec || window.IA_IDB) return;
+  try{
+    const cfg = await Store.getPairingToken();
+    const toggle = document.getElementById("pairingRequired");
+    const input = document.getElementById("pairingToken");
+    if(toggle) toggle.checked = !!(cfg && cfg.required);
+    if(input && cfg && cfg.token) input.value = cfg.token;
+  }catch(e){}
+}
+async function showPairingToken(){
+  if(window.IA_IDB) return;
+  try{
+    const cfg = await Store.getPairingToken();
+    const input = document.getElementById("pairingToken"); if(input) { input.type="text"; input.value = cfg.token; }
+    const toggle = document.getElementById("pairingRequired");
+    if(toggle) toggle.onchange = async function(){
+      const r = await Store.setPairingRequired(toggle.checked);
+      const s = document.getElementById("pairingStatus"); if(s) s.textContent = r && r.required ? "Pairing required — paste the token into extension options." : "Pairing requirement disabled.";
+    };
+    const s = document.getElementById("pairingStatus"); if(s) s.textContent = "Copy this token into the extension options page.";
+  }catch(e){ toast("Pairing token unavailable: " + (e && e.message || e), 6000); }
+}
+async function renderPwaRecoveryStatus(){
+  const sec = document.getElementById("secPwaRecovery");
+  if(!sec) return;
+  if(!window.IA_IDB){ sec.style.display="none"; return; }
+  try{
+    const st = await Store.recoveryStatus();
+    const el = document.getElementById("pwaRecoveryStatus");
+    if(el) el.textContent = st && st.available ? ("Journal ready from " + new Date(st.createdAt).toLocaleString() + " (" + st.counts.cards + " cards, " + st.counts.images + " images).") : "No pre-sync journal is available yet.";
+  }catch(e){}
+}
+async function recoverPwaMerge(){
+  if(!window.IA_IDB) return;
+  if(!confirm("Recover the PWA's last pre-sync local state? This replaces the current PWA data with the journaled state.")) return;
+  try{
+    const r = await Store.recoverLastMerge();
+    if(!r || r.ok!==true) throw new Error((r && r.reason) || "Recovery journal is unavailable");
+    toast("PWA local state recovered. Reloading…");
+    setTimeout(()=>location.reload(), 250);
+  }catch(e){ toast("PWA recovery failed: " + (e && e.message || e), 7000); }
+}
 // Ctrl+Shift+B = back up now
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==="B"||e.key==="b")){ e.preventDefault(); backupNow(); } });
 // Restore core, shared by the file picker and the folder restore. Validates,
@@ -1350,8 +1437,9 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   const cnt = counts ? (" (" + counts.imported + " imported, " + counts.saved + " saved)") : "";
   if(!confirm("Restore this backup" + when + cnt + (label ? ("\n[" + label + "]") : "") + "?\n\nThis REPLACES everything currently in the app. A safety copy of your current data is saved first.")) return false;
   showBusyOverlay("Saving a safety copy of your current data first…");
-  // safety copy of current state — the Core service writes a verified backup first
-  try{ await Store.backupNow(); }catch(e){}
+  // safety copy of current state — fail closed if the Core cannot verify it
+  const safety = await verifiedSafetyBackup("Restore");
+  if(!safety){ hideBusyOverlay(); return false; }
   // Write cards/saved/kv through the Core store. The legacy path used to write
   // localStorage (which the app stopped reading after the Core migration), so a
   // file restore silently restored nothing but images. planLegacyRestore routes
@@ -1378,7 +1466,13 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
   updateBusyOverlay("Restoring images…");
   let imgCount = 0;
   try{ imgCount = await putAllImages(function(done, total){ updateBusyOverlay("Restoring images: " + done + (total ? (" / " + total) : "") + "…"); }); }
-  catch(e){ console.warn("image restore failed", e); }
+  catch(e){
+    hideBusyOverlay();
+    let recovered = false;
+    try{ const rollback = safety.name && await Store.restore(safety.name); recovered = !!(rollback && rollback.ok === true); }catch(rollbackError){ console.warn("restore rollback failed", rollbackError); }
+    toast(recovered ? "Restore stopped safely — your previous data was restored." : "Restore image verification failed. No further changes were made; use the verified safety backup to recover.", 10000);
+    return false;
+  }
   updateBusyOverlay("Done — reloading…");
   const skipped = (plan.skipped && plan.skipped.length) || 0;
   const skipNote = skipped ? (" · skipped " + skipped + " machine-only item" + (skipped===1?"":"s")) : "";
@@ -1390,7 +1484,7 @@ async function doRestoreCore(keys, exported, counts, label, putAllImages){
 async function applyRestore(data, label){
   return doRestoreCore(data && data.keys, data && data._exported, data && data._counts, label, async function(report){
     const images = (data && data.images) || {}; const ids = Object.keys(images); let c = 0;
-    for(const id of ids){ try{ await Store.imgPut(id, images[id]); c++; if(report && c % 200 === 0) report(c, ids.length); }catch(e){} }
+    for(const id of ids){ await Store.imgPut(id, images[id]); c++; if(report && c % 200 === 0) report(c, ids.length); }
     if(report) report(c, ids.length);
     return c;
   });
@@ -1411,7 +1505,8 @@ async function restoreFromList(name){
   if(!name) return;
   if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return;
   try{
-    await Store.restore(name);
+    const result = await Store.restore(name);
+    if(!result || result.ok !== true) throw new Error((result && result.reason) || "restore was not verified");
     toast("Restored from "+name+" — reloading");
     setTimeout(()=>location.reload(), 600);
   }catch(e){ toast("Restore failed: "+(e&&e.message||e)); }
@@ -1687,6 +1782,8 @@ function renderSettings(){
   if(typeof renderSyncStatus === "function") renderSyncStatus();
   renderImportStatus();
   if(typeof renderDurabilityStatus === "function") renderDurabilityStatus();
+  if(typeof renderPairingStatus === "function") renderPairingStatus();
+  if(typeof renderPwaRecoveryStatus === "function") renderPwaRecoveryStatus();
   if(typeof renderBackupList === "function") renderBackupList();
   if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
   // Desktop-only (secAutoImport is hidden on the PWA via window.IA_IDB below) — the
@@ -2342,21 +2439,31 @@ async function handleImport(ev){
     toast("Looking up "+Math.min(ids.length,60)+" YouTube video titles…");
     try{ found=found.concat(await resolveYT(ids)); }catch(e){ console.warn(e); }
   }
-  ingestImported(found);
+  await ingestImported(found);
   ev.target.value="";
 }
 // Dedup `found` items into `imported` cards (shared by file-import + bookmark-import).
 // Enriches existing (image/desc/url/sdate), appends new, never deletes. Returns {added,updated}.
-function ingestImported(found){
+async function ingestImported(found){
   // Pure decision (which items are new vs enrich an existing card) lives in
   // web/lib/import-parsers.js (dedupeImported). Here we apply its plan: the
   // impure half — mutating `imported`, persisting via Store, toasting.
   const plan = dedupeImported(found, imported, {newId});
-  plan.enrich.forEach(e=>{ Object.assign(imported[e.idx], e.patch); });   // img/desc/url/sdate backfill
-  plan.append.forEach(c=>{ imported.push(c); });                          // ids already stamped by the core
+  const imageWrites=[];
+  const fileBackCardImage = it => {
+    const src = it && it.img;
+    if(typeof src === "string" && src.indexOf("data:")===0){
+      it.img="idb:"+it.id;
+      imageWrites.push({id:it.id, src});
+      _fpMap[it.id]=imgFp(src);
+    }
+  };
+  plan.enrich.forEach(e=>{ Object.assign(imported[e.idx], e.patch); fileBackCardImage(imported[e.idx]); });   // img/desc/url/sdate backfill
+  plan.append.forEach(c=>{ fileBackCardImage(c); imported.push(c); });                          // ids already stamped by the core
+  for(const w of imageWrites){ await Store.imgPut(w.id, w.src); await Store.fpSet(w.id, _fpMap[w.id]); }
   const added=plan.added, updated=plan.updated;
   imported = imported.slice(-10000);
-  Store.putCards(imported); renderImportStatus();
+  await Store.putCards(imported); renderImportStatus();
   const parts=[];
   if(added) parts.push(added+" new items imported");
   if(updated) parts.push(updated+" existing items enriched");
@@ -2385,7 +2492,7 @@ async function _bmPick(idx){
   document.getElementById("modalBody").innerHTML = `<h2>${esc(s.name)} — pick folders</h2><div style="max-height:340px;overflow:auto;margin:8px 0">${rows}</div>
     <button class="btn btn-primary" onclick="_bmImport()">Import selected folders</button>`;
 }
-function _bmImport(){
+async function _bmImport(){
   const picked = new Set([...document.querySelectorAll("._bmf:checked")].map(c=>c.value));
   // Run each bookmark through clean() (exactly like file imports) so ts->sdate,
   // ts=now, and title-slicing are consistent; then tag the source.
@@ -2394,7 +2501,7 @@ function _bmImport(){
   );
   document.getElementById("modal").classList.remove("open");
   if(!found.length){ toast("No folders selected"); return; }
-  ingestImported(found);
+  await ingestImported(found);
   const el=document.getElementById("bmStatus"); if(el) el.textContent = "Imported "+found.length+" bookmark(s).";
 }
 function renderImportStatus(){
@@ -2411,7 +2518,7 @@ function renderImportStatus(){
 // guard rejects a >=20-item library dropping below half unless confirm is passed).
 async function clearImportedAll(){
   if(!confirm("Remove ALL " + imported.length + " imported items? A backup is taken first.")) return;
-  try{ await Store.backupNow(); }catch(e){}
+  if(!await verifiedSafetyBackup("Clear imported items")) return;
   for(const it of imported){ const im = it.img||""; if(im.indexOf("idb:")===0){ try{ Store.imgDel(im.slice(4)); }catch(e){} } }
   imported = [];
   try{ await Store.putCards([], {confirm:true}); }catch(e){ toast("Clear failed: "+(e&&e.message||e)); return; }
@@ -5023,10 +5130,11 @@ const CAP_TTL_MS = 5*60*1000; // drop unmatched captures after 5 min
 async function drainCaptures(){
   if(!_booted) return;   // gate: don't drain into a nearly-empty library before bootData() loads real data (review A2)
   let queue;
-  try{ queue = await Store.drainCaptures(); }catch(e){ return; }   // GET /api/captures returns AND clears the queue
+  try{ queue = await Store.drainCaptures(); }catch(e){ return; }   // GET /api/captures claims a leased batch; ACK follows durable writes
   if(!Array.isArray(queue)||!queue.length) return;
   let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0;
-  const remaining=[];
+  const pendingAck=[];
+  const queueAck = cap => { if(cap && cap._captureId) pendingAck.push({id:cap._captureId, lease:cap._captureLease}); };
   const autoImported=[];   // FB/IG auto-import survivors this run (see ingestImported call below)
   const now=Date.now();
   // The "active card": the card the user most recently opened (set by impOpen).
@@ -5038,7 +5146,7 @@ async function drainCaptures(){
   try{ lastOpened = await Store.kvGet("ia_last_opened"); }catch(e){}
   console.log("[drainCaptures] processing "+queue.length+" capture(s)");
   for(const cap of queue){
-    if(!cap.url){ continue; }
+    if(!cap.url){ queueAck(cap); continue; }
     const decision = routeCapture(cap, { imported, lastOpened, now, normalizeUrl:normUrl, domain, recapTarget:_recapTarget });
     console.log("[route] " + cap.url + " -> " + decision.action + " (" + decision.reason + ")");
 
@@ -5050,14 +5158,18 @@ async function drainCaptures(){
       if(di<0 && cap.removeActive){ let lo=null; try{ lo=await Store.kvGet("ia_last_opened"); }catch(e){} if(lo&&lo.id) di=imported.findIndex(it=>it.id===lo.id); }
       if(di>=0){ const removed=imported.splice(di,1)[0]; _deadUndo=removed; removedDead++; changed=true;
         console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")"); }
+      queueAck(cap);
       continue;
     }
 
     // FB/IG auto-import survivor (core/autoimport.js) -> Imported via ingestImported below, never Saved.
-    if(decision.action === "import-auto"){ autoImported.push(autoImportItemFromCap(cap, now)); continue; }
+    if(decision.action === "import-auto"){ autoImported.push(autoImportItemFromCap(cap, now)); queueAck(cap); continue; }
 
     if(decision.action === "saved"){
-      try{ if(!igHealMatch(cap)) addClip(cap); }catch(e){ console.error("[clip] addClip failed", e); }
+      try{
+        if(await igHealMatch(cap)){ queueAck(cap); }
+        else { await addClip(cap); await Store.putSaved(saved); queueAck(cap); }
+      }catch(e){ console.error("[clip] addClip failed", e); }
       continue;
     }
 
@@ -5065,7 +5177,7 @@ async function drainCaptures(){
       unmatched++;
       console.warn("[drainCaptures] no card matches "+cap.url+" (id="+(cap.id||"none")+", normalized: "+normUrl(cap.url)+")");
       // keep briefly in case the item shows up, then drop
-      if(!cap.ts || now-cap.ts < CAP_TTL_MS) remaining.push(cap);
+      if(cap.ts && now-cap.ts >= CAP_TTL_MS) queueAck(cap);
       continue;
     }
 
@@ -5079,18 +5191,20 @@ async function drainCaptures(){
     matched++;
     if(cap.blocked){
       // active-card subpage being blocked says nothing about the card itself — ignore
-      if(viaActive){ console.log("[drainCaptures] active-card subpage was blocked — ignoring"); continue; }
+      if(viaActive){ console.log("[drainCaptures] active-card subpage was blocked — ignoring"); queueAck(cap); continue; }
       // the card's own page is a block/challenge screen — clear its junk image
       console.log("[drainCaptures] blocked page for "+cap.url+" — clearing bad image");
       const cur=match.img||"";
-      if(isBadImg(cur) || cur.indexOf("data:")===0 || cur.indexOf("idb:")===0){ setCardImage(match,""); changed=true; }
+      if(isBadImg(cur) || cur.indexOf("data:")===0){ await setCardImageDurably(match,""); changed=true; }
       match.captured=now; match.blocked=now; match.lastUpdate=now; match.lastResult="blocked"; persisted=true;
+      queueAck(cap);
       continue;
     }
     if(cap.attempt && !cap.ok){
       // page loaded but no usable image — record the failed attempt (no image change)
       console.log("[drainCaptures] failed attempt for "+cap.url);
       match.lastUpdate=now; match.lastResult="fail"; persisted=true;
+      queueAck(cap);
       continue;
     }
     const force = !!cap.force;                 // manual capture forces overwrite
@@ -5103,6 +5217,7 @@ async function drainCaptures(){
     if(best && (best+"").indexOf("data:")===0 && _phFps.has(imgFp(best))){
       console.log("[drainCaptures] rejected known placeholder image for "+cap.url);
       match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
+      queueAck(cap);
       continue;
     }
     // Same rejection, different detector: a known error-page screenshot (e.g. Instagram's
@@ -5111,13 +5226,14 @@ async function drainCaptures(){
     if(best && (best+"").indexOf("data:")===0 && await isKnownJunkScreenshot(best)){
       console.log("[drainCaptures] rejected known junk screenshot (e.g. IG video-unavailable error page) for "+cap.url);
       match.captured=now; match.lastUpdate=now; match.lastResult="fail"; persisted=true; changed=true;
+      queueAck(cap);
       continue;
     }
     console.log("[drainCaptures] matched "+cap.url+" viaActive="+viaActive+" force="+force+" hasShot="+!!cap.screenshot+" hasOg="+!!cap.ogImage);
     // force overwrites — EXCEPT when the match was only via the active-card window (viaActive):
     // a forced capture whose card was deleted mid-run could fall to the open card and clobber its
     // good image, so for viaActive only fill a bad/empty image (never overwrite a good one).
-    if(best && ((force && !viaActive) || viaRecap || cap.recap || isBadImg(match.img))){ setCardImage(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
+    if(best && ((force && !viaActive) || viaRecap || cap.recap || isBadImg(match.img))){ await setCardImageDurably(match, best); changed=true; if(/facebook\.com|fb\.watch/i.test(match.url||"")) _fbSessCaptured++; }
     if(cap.capsrc && /facebook\.com|fb\.watch/i.test(match.url||"")) console.log("[fb-cap] "+((match.title||"").slice(0,34))+" → src="+cap.capsrc+" (ext v"+(cap.extv||"OLD/stale")+")");
     // a subpage capture only sets the image — don't overwrite the card's
     // title/description with the unrelated subpage's metadata
@@ -5132,16 +5248,26 @@ async function drainCaptures(){
     // fill any DUPLICATE cards sharing this URL so they aren't re-fetched later
     if(best && match.url){
       const nu=clipKey(match.url);   // FB-aware: only fill TRUE duplicates (same post id), never distinct /watch?v= posts sharing a path
-      imported.forEach(o=>{ if(o!==match && o.url && clipKey(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ setCardImage(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } });
+      for(const o of imported){ if(o!==match && o.url && clipKey(o.url)===nu && (isBadImg(o.img||"") || cap.recap) && !o.blocked){ await setCardImageDurably(o,best); if(cap.desc && !o.desc) o.desc=cap.desc; o.captured=now; o.lastUpdate=now; o.lastResult="ok"; changed=true; } }
     }
+    queueAck(cap);
   }
-  if(autoImported.length){ ingestImported(autoImported); updateCounts(); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } }   // updateCounts: the tab badge lagged after an auto-import-only drain (task review polish)
-  // queue was drained server-side; re-enqueue anything we deliberately deferred
-  if(remaining.length){ try{ await Promise.all(remaining.map(function(c){ return fetch("/api/captures",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({capture:c})}); })); }catch(e){} }
+  if(autoImported.length){
+    try{ await ingestImported(autoImported); }
+    catch(e){ console.error("[auto-import] durable card write failed", e); return; }
+    updateCounts(); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+  }   // updateCounts: the tab badge lagged after an auto-import-only drain (task review polish)
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ await Store.kvSet("ia_last_opened", {id:lastOpened.id, ts:Date.now()}); }catch(e){} }
   if(unmatched && !matched && !removedDead){ toast(unmatched+" capture(s) received but no matching card — open the card first, then capture"); }
-  if(changed || persisted){ await Store.putCards(imported); updateCounts(); }
+  if(changed || persisted){
+    try{ await Store.putCards(imported); updateCounts(); }
+    catch(e){ console.error("[drainCaptures] durable card write failed", e); return; }
+  }
+  if(pendingAck.length){
+    try{ await Store.ackCaptures(pendingAck); }
+    catch(e){ console.warn("[drainCaptures] capture ACK failed; lease retry will preserve the capture", e); }
+  }
   if(changed){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
     if(removedDead){
@@ -5158,23 +5284,33 @@ function setSavedImage(item, src){
   if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
   else { const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=src||""; if(wasIdb) Store.imgDel(item.id); }
 }
+async function setSavedImageDurably(item, src){
+  const oldImg=item.image;
+  try{
+    if(src && src.indexOf("data:")===0){ await Store.imgPut(item.id, src); item.image="idb:"+item.id; }
+    else {
+      const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0);
+      if(wasIdb) await Store.imgDel(item.id);
+      item.image=src||"";
+    }
+  }catch(e){ item.image=oldImg; throw e; }
+}
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
 // than in IndexedDB. Saved clips are a small, deliberate set, and inline data
 // survives reloads even if the browser evicts IndexedDB under storage pressure
 // (which is what made clip pictures vanish on refresh). Shows full-res now,
 // then swaps in the small version once downscaled.
-function setClipImageInline(item, dataUrl){
+async function setClipImageInline(item, dataUrl){
   // Electron app: images live as FILES (no IndexedDB eviction), and the saved-row DB
   // layer does not file-back a bare inline data: image — storing the clip image inline
   // is what made Pinterest/Instagram clip thumbnails get dropped on save. So persist
   // the clip image as a FILE via setSavedImage. Shows full-res immediately, then swaps
   // in the downscaled file once ready. (Name kept for history; it now file-backs.)
   item.image = dataUrl;   // immediate full-res render in memory
-  downscaleDataUrl(dataUrl, function(small){
-    try{ setSavedImage(item, small || dataUrl); }catch(e){ item.image = small || dataUrl; }   // data: -> 'idb:'+id + Store.imgPut(file)
-    Store.putSaved(saved);
-    if(curTab==="saved") renderSaved();
-  });
+  let small = dataUrl;
+  try{ small = await new Promise(resolve=>downscaleDataUrl(dataUrl, resolve)); }catch(e){}
+  await setSavedImageDurably(item, small || dataUrl);   // data: -> 'idb:'+id + Store.imgPut(file)
+  if(curTab==="saved") renderSaved();
 }
 // clipKey moved to web/lib/urlkey.js (dedupe key for a clip; FB/YouTube id folded in).
 // Extract an Instagram post shortcode from a /p|reel|reels|tv/<code> permalink (else ""). Lets a
@@ -5187,7 +5323,7 @@ function igShortcode(url){
 // the v4.39-era static logo — heal them with the captured photo instead of creating a duplicate Saved
 // card. Returns true if it healed at least one. Non-IG / no-image / no-match -> false (caller falls
 // back to addClip). Deliberate user re-capture; never touches a genuinely good image.
-function igHealMatch(cap){
+async function igHealMatch(cap){
   const sc = igShortcode(cap && cap.url); if(!sc) return false;
   const img = (cap && (cap.clipImage || cap.screenshot || cap.ogImage || cap.contentImage)) || "";
   if(!img) return false;
@@ -5195,8 +5331,8 @@ function igHealMatch(cap){
   const matches = imported.filter(c=> c && igShortcode(c.url)===sc && broken((typeof c.img==="string"?c.img:"")||""));
   if(!matches.length) return false;
   const now=Date.now();
-  matches.forEach(c=>{ setCardImage(c, img); c.captured=now; c.lastUpdate=now; c.lastResult="ok"; c.capReason=""; });
-  Store.putCards(imported); updateCounts();
+  for(const c of matches){ await setCardImageDurably(c, img); c.captured=now; c.lastUpdate=now; c.lastResult="ok"; c.capReason=""; }
+  await Store.putCards(imported); updateCounts();
   if(curTab==="imported") renderImportedKeepFocus();
   return true;
 }
@@ -5209,7 +5345,7 @@ function dedupClipUrl(nu){
   return !/^(?:facebook\.com|fb\.watch|instagram\.com|threads\.net|twitter\.com|x\.com|tiktok\.com|reddit\.com)$/i.test(nu);
 }
 // "Clip this page": create (or update) a Saved card from an extension clip.
-function addClip(cap){
+async function addClip(cap){
   const nu=normUrl(cap.url||"");
   // Dedup a re-captured page against existing Saved cards. Path URLs and bare homepages dedup; bare
   // social-feed domains (e.g. "facebook.com") do NOT — distinct no-permalink feed posts must stay
@@ -5227,10 +5363,10 @@ function addClip(cap){
   // image priority: an explicit clipImage (e.g. the original Facebook post photo)
   // wins, then the screenshot you saw, then the page's OG image.
   if(cap.clipImage){
-    if((cap.clipImage+"").indexOf("data:")===0){ setClipImageInline(item, cap.clipImage); }
-    else if(/^https?:/.test(cap.clipImage)){ const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=cap.clipImage; if(wasIdb) Store.imgDel(item.id); }
+    if((cap.clipImage+"").indexOf("data:")===0){ await setClipImageInline(item, cap.clipImage); }
+    else if(/^https?:/.test(cap.clipImage)){ await setSavedImageDurably(item, cap.clipImage); }
   }
-  else if(cap.screenshot){ setClipImageInline(item, cap.screenshot); }
+  else if(cap.screenshot){ await setClipImageInline(item, cap.screenshot); }
   else if((cap.ogImage||cap.contentImage) && !item.image){ const u=cap.ogImage||cap.contentImage; if(/^https?:/.test(u)) item.image=u; }
   // Don't create a permanent image-less dead card for an auth-walled host (FB/IG):
   // the proxy fallbacks can't render it and there's no Saved-tab re-capture path.

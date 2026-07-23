@@ -17,8 +17,8 @@
 // thum.io/mshots, etc.) always go straight to network, untouched.
 
 const DB_NAME = "interests-app-pwa";
-const DB_VERSION = 2; // must always track pwa/idb.js's DB_VERSION
-const SHELL_CACHE = "interests-pwa-shell-v36"; // bump on ANY edit to an already-cached
+const DB_VERSION = 3; // must always track pwa/idb.js's DB_VERSION
+const SHELL_CACHE = "interests-pwa-shell-v38"; // bump on ANY edit to an already-cached
 // file (index.html, any .js file, the manifest) — cache-first means existing
 // installs keep serving the old content indefinitely otherwise. Adding a brand-new
 // file needs no bump; it's simply cached the first time it's fetched.
@@ -26,6 +26,10 @@ const SHELL_CACHE = "interests-pwa-shell-v36"; // bump on ANY edit to an already
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("recovery")) db.createObjectStore("recovery", { keyPath: "key" });
+    };
     // Service workers outlive every tab — without this, a stale open connection
     // here silently blocks any page's version upgrade forever, with no error
     // visible anywhere a normal page reload would surface it. See pwa/idb.js's

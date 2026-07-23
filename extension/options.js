@@ -4,6 +4,8 @@
 var PORTS = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
 var list = document.getElementById("list");
 var status = document.getElementById("status");
+var pairingToken = document.getElementById("pairingToken");
+var pairingStatus = document.getElementById("pairingStatus");
 
 async function findPort() {
   for (var i = 0; i < PORTS.length; i++) {
@@ -40,6 +42,15 @@ document.getElementById("saveBtn").addEventListener("click", async function () {
   var keys = [].slice.call(list.querySelectorAll("input[type=checkbox]")).filter(function (cb) { return cb.checked; }).map(function (cb) { return cb.value; });
   try { await chrome.storage.local.set({ ia_bstumble_interests: keys }); status.className = "status"; status.textContent = "Saved " + keys.length + " interest(s)."; }
   catch (e) { status.className = "status err"; status.textContent = "Could not save."; }
+});
+
+chrome.storage.local.get("ia_pairing_token").then(function (s) { pairingToken.value = s.ia_pairing_token || ""; }).catch(function () {});
+document.getElementById("pairingSaveBtn").addEventListener("click", async function () {
+  try {
+    await chrome.storage.local.set({ ia_pairing_token: pairingToken.value.trim() });
+    pairingStatus.className = "status";
+    pairingStatus.textContent = pairingToken.value.trim() ? "Pairing token saved." : "Pairing token cleared.";
+  } catch (e) { pairingStatus.className = "status err"; pairingStatus.textContent = "Could not save pairing token."; }
 });
 
 // "Save to Interests" right-click menu toggle. Default ON (checked when the key is

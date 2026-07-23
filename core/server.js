@@ -3,6 +3,7 @@
 // createServer(ctx) is a pure factory (no listen) so it can be mounted on an
 // ephemeral port in tests. startServer(ctx, port) binds with [3456..3465] fallback.
 const path = require("path");
+const fs = require("fs");
 const http = require("http");
 const express = require("express");
 const dbm = require("./db");
@@ -20,12 +21,16 @@ const safebrowse = require("./safebrowse");
 const capturemeta = require("./capturemeta");
 const news = require("./news");
 const autoimport = require("./autoimport");
+const captureQueue = require("./capture-queue");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
 
 const PORT_MIN = 3456;
 const PORT_MAX = 3465;
+const GLOBAL_JSON_BODY_CAP = 16 * 1024 * 1024;
+const CAPTURE_BODY_CAP = 8 * 1024 * 1024;
+const AUTOIMPORT_BODY_CAP = 1024 * 1024;
 
 // Origins allowed to reach the local API. The app UI runs on the loopback
 // address (http://127.0.0.1:<port> / http://localhost:<port>) and the Chrome
@@ -34,11 +39,24 @@ const PORT_MAX = 3465;
 // allowed. A malicious web page the user visits would send its own (https://…)
 // Origin, which is rejected — this is the CSRF / drive-by-API guard.
 const ORIGIN_OK = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i;
+const EXTENSION_ORIGIN = /^chrome-extension:\/\/([a-p]{32})$/i;
 function originAllowed(origin) {
   if (!origin) return true;                       // no Origin (navigation / same-origin) → allow
-  if (origin === "null") return true;             // file:// / sandboxed → treat as no web origin
-  if (origin.indexOf("chrome-extension://") === 0) return true;  // the capture extension
+  if (origin === "null") return false;            // file:// / sandboxed pages are not trusted callers
+  if (EXTENSION_ORIGIN.test(origin)) return true; // unpacked extension IDs are installation-specific
   return ORIGIN_OK.test(origin);
+}
+
+function jsonBodyVerify(req, res, buffer) {
+  let cap = GLOBAL_JSON_BODY_CAP;
+  if (req.path === "/api/captures" || req.path === "/api/captures/ack") cap = CAPTURE_BODY_CAP;
+  else if (req.path === "/api/auto-import") cap = AUTOIMPORT_BODY_CAP;
+  if (buffer.length > cap) {
+    const error = new Error("request body too large");
+    error.status = 413;
+    error.type = "entity.too.large";
+    throw error;
+  }
 }
 
 // Host-header allowlist — closes the DNS-rebinding hole (review 2026-07-02 §3):
@@ -134,10 +152,14 @@ function createServer(ctx) {
   // expose the server off-loopback. A test asserts the bind stays loopback.
   function requireToken(ctx) {
     return function (req, res, next) {
-      let lanEnabled = false;
-      try { lanEnabled = !!config.loadConfig().lanEnabled; } catch (e) { lanEnabled = false; }
-      if (!lanEnabled) return next();
+      let cfg = {};
+      try { cfg = config.loadConfig() || {}; } catch (e) {}
+      const lanEnabled = !!cfg.lanEnabled;
+      const extensionAuth = !!cfg.extensionPairingRequired && EXTENSION_ORIGIN.test(req.headers.origin || "");
+      if (!lanEnabled && !extensionAuth) return next();
+      if (extensionAuth && req.path === "/api/ping") return next();
       if (req.path === "/api/pair-status") return next();   // capability probe is exempt
+      if (req.path === "/api/pairing-token" || req.path === "/api/pairing-config") return next();
       const auth = req.headers.authorization || "";
       const token = getPairingToken();
       // Constant-time compare (reviewer minor): a plain === short-circuits at the
@@ -169,7 +191,27 @@ function createServer(ctx) {
     next();
   });
 
-  app.use(express.json({ limit: "64mb" }));
+  // The verifier applies tighter caps to the high-volume capture mailboxes
+  // before JSON is accepted by a route. The larger general cap preserves the
+  // existing bulk-card contract without allowing an unbounded parser.
+  app.use(express.json({ limit: GLOBAL_JSON_BODY_CAP, verify: jsonBodyVerify }));
+
+  // Pairing is configured from the trusted loopback UI. Never disclose the
+  // token to an extension origin or a non-loopback web page; the extension
+  // receives it by an explicit copy/paste into its options page.
+  app.get("/api/pairing-token", (req, res) => {
+    const origin = req.headers.origin || "";
+    if (origin && !ORIGIN_OK.test(origin)) return res.status(403).json({ ok: false, error: "loopback origin required" });
+    const cfg = config.loadConfig() || {};
+    res.json({ ok: true, token: config.ensurePairingToken(), required: !!cfg.extensionPairingRequired });
+  });
+  app.post("/api/pairing-config", (req, res) => {
+    const origin = req.headers.origin || "";
+    if (origin && !ORIGIN_OK.test(origin)) return res.status(403).json({ ok: false, error: "loopback origin required" });
+    config.setPairingRequired(!!(req.body && req.body.required));
+    const cfg = config.loadConfig() || {};
+    res.json({ ok: true, required: !!cfg.extensionPairingRequired });
+  });
 
   // NOTE: do NOT destructure ctx.db/ctx.storeDir into locals here — backup.restore()
   // and backup.moveStore() close and rebind ctx.db (and repoint ctx.storeDir) at
@@ -333,31 +375,60 @@ function createServer(ctx) {
   });
 
   // --- Capture queue (persisted in kv key ia_capture_queue) ---
-  // The app drains exactly like the old localStorage `ia_captures`: GET returns
-  // the queued captures AND clears them, so each capture is delivered once.
-  function readCaptureQueue() {
-    const raw = dbm.getKV(ctx.db, "ia_capture_queue");
-    if (!raw) return [];
-    try { const q = JSON.parse(raw); return Array.isArray(q) ? q : []; }
-    catch (e) { return []; }
-  }
-
+  // GET claims a leased batch; it does not delete anything. The renderer ACKs
+  // only after the resulting card write succeeds. An interrupted drain is
+  // therefore retried after the lease expires instead of being lost.
   app.post("/api/captures", (req, res) => {
-    ctx.syncDirty = true;
     const capture = req.body && req.body.capture;
     if (!capture || typeof capture !== "object") {
       return res.status(400).json({ ok: false, error: "missing capture" });
     }
-    const q = readCaptureQueue();
-    q.push(capture);
-    dbm.setKV(ctx.db, "ia_capture_queue", JSON.stringify(q));
-    res.json({ ok: true });
+    if (!captureQueue.validCapture(capture)) {
+      return res.status(400).json({ ok: false, error: "invalid capture" });
+    }
+    try {
+      captureQueue.enqueue(ctx.db, capture);
+      ctx.syncDirty = true;
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("capture enqueue failed:", e);
+      if (e && (e.code === "CAPTURE_INVALID" || e.code === "CAPTURE_QUEUE_LIMIT")) {
+        return res.status(413).json({ ok: false, error: "capture queue limit" });
+      }
+      res.status(500).json({ ok: false, error: "capture enqueue failed" });
+    }
   });
 
   app.get("/api/captures", (req, res) => {
-    const q = readCaptureQueue();
-    if (q.length) dbm.setKV(ctx.db, "ia_capture_queue", JSON.stringify([]));
-    res.json({ captures: q });
+    try {
+      const captures = captureQueue.claim(ctx.db);
+      if (captures.length) ctx.syncDirty = true;
+      res.json({ captures });
+    } catch (e) {
+      console.error("capture claim failed:", e);
+      res.status(500).json({ captures: [], error: "capture claim failed" });
+    }
+  });
+
+  app.post("/api/captures/ack", (req, res) => {
+    if (!req.body || !Array.isArray(req.body.acks)) {
+      return res.status(400).json({ ok: false, error: "acks array required" });
+    }
+    const acks = req.body.acks;
+    if (acks.length > 500 || acks.some(function (ack) {
+      return !ack || typeof ack.id !== "string" || ack.id.length > 128
+        || typeof ack.lease !== "string" || ack.lease.length > 128;
+    })) {
+      return res.status(400).json({ ok: false, error: "invalid acknowledgements" });
+    }
+    try {
+      const acked = captureQueue.ack(ctx.db, acks);
+      if (acked) ctx.syncDirty = true;
+      res.json({ ok: true, acked });
+    } catch (e) {
+      console.error("capture ack failed:", e);
+      res.status(500).json({ ok: false, error: "capture ack failed" });
+    }
   });
 
   // --- Single capture request / batch driver state / batch progress ---
@@ -389,15 +460,8 @@ function createServer(ctx) {
   // --- Platform auto-import (FB/IG saved-page daily scheduler; core/autoimport.js) ---
   // POST /api/auto-import — extension->core delivery (auth'd by the same
   // requireToken gate as everything else in this file; see app.use above).
-  // A DEDICATED 1MB json parser (security review 2026-07-18, F2): the global
-  // express.json() above would parse up to 64MB into memory before any check,
-  // so a client could force a 64MB parse per request. A per-route 1MB parser
-  // rejects an oversized body DURING parse (a 200-item field-capped batch is a
-  // small payload, so anything near 1MB is already abusive). The post-parse
-  // stringify check is kept as belt-and-braces for the exact-boundary case.
-  const AUTOIMPORT_BODY_CAP = 1024 * 1024;
-  const autoImportJson = express.json({ limit: AUTOIMPORT_BODY_CAP });
-  app.post("/api/auto-import", autoImportJson, (req, res) => {
+  // jsonBodyVerify applies the 1MB cap before this handler runs.
+  app.post("/api/auto-import", (req, res) => {
     let actualLen = 0;
     try { actualLen = Buffer.byteLength(JSON.stringify(req.body || {}), "utf8"); } catch (e) { actualLen = 0; }
     if (actualLen > AUTOIMPORT_BODY_CAP) {
@@ -474,11 +538,26 @@ function createServer(ctx) {
       return res.status(400).json({ error: "absolute srcDir required" });
     }
     srcDir = path.resolve(srcDir);
+    // Reject an obviously invalid source before creating a safety snapshot;
+    // the live store is untouched and callers keep the existing 400 contract.
+    if (!fs.existsSync(path.join(srcDir, "data.json"))) {
+      return res.status(400).json({ error: "import failed" });
+    }
     try {
-      const out = importLegacyBackup(srcDir, { db: ctx.db, storeDir: ctx.storeDir });
+      // Legacy import replaces the live library. It is allowed to proceed only
+      // after a fresh backup has been written and independently verified.
+      let safety;
+      try { safety = backup.runBackup(ctx.db, ctx.storeDir); }
+      catch (e) { e.code = "SAFETY_BACKUP_FAILED"; throw e; }
+      if (!safety || !backup.verifyBackup(safety.name, safety.counts)) {
+        return res.status(409).json({ error: "safety backup not verified" });
+      }
+      const out = importLegacyBackup(srcDir, ctx);
+      ctx.syncDirty = true;
       res.json(out);
     } catch (e) {
       console.error("import failed:", e);
+      if (e && e.code === "SAFETY_BACKUP_FAILED") return res.status(409).json({ error: "safety backup failed" });
       res.status(400).json({ error: "import failed" });
     }
   });

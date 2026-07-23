@@ -2,6 +2,7 @@
 const assert = require("assert");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 
 // ISOLATE the config in a temp APPDATA *before* requiring core/backup (which
@@ -104,6 +105,16 @@ t("changedImageIds: nothing changed → []", () => {
   writeJpg(dest, "a", 10);
   assert.deepStrictEqual(backup.changedImageIds(store, dest), []);
 });
+t("changedImageIds: same-size content changes are selected", () => {
+  const store = mkTmp("ia-store-");
+  const imgs = path.join(store, "images");
+  writeJpg(imgs, "a", 10);
+  const destRoot = mkTmp("ia-dest-");
+  const dest = path.join(destRoot, "images");
+  writeJpg(dest, "a", 10);
+  fs.writeFileSync(path.join(dest, "a.jpg"), Buffer.alloc(10, 9));
+  assert.deepStrictEqual(backup.changedImageIds(store, dest), ["a"]);
+});
 
 /* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
 const { openDb, upsertCard, upsertSaved, counts, setKV } = require("../core/db.js");
@@ -175,6 +186,24 @@ t("runBackup writes a portable snapshot.json with unstripped settings", () => {
   });
 });
 
+t("runBackup refreshes a same-day backup without retaining deleted images", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const database = openDb(store);
+    upsertCard(database, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const first = backup.runBackup(database, store);
+
+    fs.unlinkSync(path.join(store, "images", "c1.jpg"));
+    const second = backup.runBackup(database, store);
+    const folder = path.join(backup.dropboxBackupDir(), second.name);
+    assert.strictEqual(second.name, first.name, "same-day backup is refreshed in place semantically");
+    assert.strictEqual(backup.verifyBackup(second.name, second.counts), true, "refreshed backup verifies");
+    assert.strictEqual(fs.readdirSync(path.join(folder, "images")).filter(function (n) { return n.endsWith(".jpg"); }).length, 0, "deleted image is removed");
+    database.close();
+  });
+});
+
 t("listBackups lists dated folders newest-first with counts", () => {
   withBackupDir(function (bdir) {
     // hand-create two dated folders with meta.json
@@ -198,8 +227,12 @@ function mkBackupFolder(bdir, date, opts) {
   const folder = path.join(bdir, "interests-backup-" + date);
   fs.mkdirSync(path.join(folder, "images"), { recursive: true });
   for (let i = 0; i < (opts.imgFiles || 0); i++) fs.writeFileSync(path.join(folder, "images", "img" + i + ".jpg"), Buffer.alloc(4, 1));
-  if (opts.db !== false) fs.writeFileSync(path.join(folder, "interests.db"), "x");
-  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: 1, saved: 0, images: opts.metaImages != null ? opts.metaImages : (opts.imgFiles || 0) }, ts: 1 }));
+  if (opts.db !== false) { const d = openDb(folder); upsertCard(d, { id: "fixture-" + date, url: "https://fixture/" + date }); d.close(); }
+  const manifest = fs.readdirSync(path.join(folder, "images")).filter(n => n.endsWith(".jpg")).sort().map(n => {
+    const file = path.join(folder, "images", n);
+    return { name: n, size: fs.statSync(file).size, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };
+  });
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: 1, saved: 0, images: opts.metaImages != null ? opts.metaImages : (opts.imgFiles || 0) }, _images: manifest, ts: 1 }));
   return folder;
 }
 

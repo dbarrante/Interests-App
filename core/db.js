@@ -43,6 +43,7 @@ const MIGRATIONS = [
 ];
 
 const SCHEMA_VERSION = 2;   // bump whenever the schema below changes
+const MUTATION_REVISION_KEY = "ia_mutation_revision";
 
 // Stable, key-order-independent stringify so content comparison doesn't churn
 // updatedAt when the renderer round-trips a card and re-serializes `data`.
@@ -90,8 +91,16 @@ function getKV(db, key) {
   const row = db.prepare("SELECT value FROM kv WHERE key=?").get(key);
   return row ? row.value : null;
 }
+function bumpMutationRevision(db) {
+  const current = Number(getKV(db, MUTATION_REVISION_KEY) || 0);
+  const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+  db.prepare("INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(MUTATION_REVISION_KEY, String(next));
+  return next;
+}
 function setKV(db, key, value) {
+  const old = getKV(db, key);
   db.prepare("INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
+  if ((key === "ia_settings" || key === "ia_settings_updatedAt") && old !== String(value)) bumpMutationRevision(db);
 }
 function delKV(db, key) {
   db.prepare("DELETE FROM kv WHERE key=?").run(key);
@@ -173,11 +182,13 @@ function upsertCard(db, card) {
   const ex = db.prepare("SELECT url,platform,cat,ts,img_file,img_url,data,updatedAt FROM cards WHERE id=?").get(r.id);
   const updatedAt = (ex && cardSig(ex) === cardSig(r)) ? ex.updatedAt : Date.now();
   _insertCardRow(db.prepare(_CARD_INSERT_SQL), r, updatedAt);
+  if (!ex || cardSig(ex) !== cardSig(r)) bumpMutationRevision(db);
 }
 // Merge write: set updatedAt explicitly to the winning peer's value.
 function upsertCardSynced(db, card, updatedAt) {
   const ua = isFinite(updatedAt) ? Math.trunc(Number(updatedAt)) : Date.now();
   _insertCardRow(db.prepare(_CARD_INSERT_SQL), cardToRow(card), ua);
+  bumpMutationRevision(db);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
@@ -204,7 +215,9 @@ function replaceCards(db, arr, opts) {
   // otherwise the client's next full-array PUT carries a newer asOf and deletes
   // exactly these rows (2026-07-18 data-safety review, HIGH). See web/storage.js.
   const preserved = [];
-  db.exec("BEGIN");
+  let changed = false;
+  const ownTransaction = !(opts && opts._inTransaction);
+  if (ownTransaction) db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM cards").run();
     for (const c of (arr || [])) {
@@ -212,6 +225,7 @@ function replaceCards(db, arr, opts) {
       incoming.add(r.id);
       const ex = existing[r.id];
       const updatedAt = (ex && cardSig(ex) === cardSig(r)) ? ex.updatedAt : now;
+      if (!ex || cardSig(ex) !== cardSig(r)) changed = true;
       _insertCardRow(ins, r, updatedAt);
     }
     for (const id of Object.keys(existing)) {
@@ -226,24 +240,31 @@ function replaceCards(db, arr, opts) {
         preserved.push(rowToCard(existing[id]));
         continue;
       }
+      changed = true;
       addTombstone(db, id, "card", now);
     }
-    for (const id of incoming) delTombstone(db, id, "card");
-    db.exec("COMMIT");
+    for (const id of incoming) {
+      if (db.prepare("SELECT 1 FROM tombstones WHERE id=? AND kind=?").get(id, "card")) changed = true;
+      delTombstone(db, id, "card");
+    }
+    if (ownTransaction) db.exec("COMMIT");
   } catch (e) {
-    db.exec("ROLLBACK");
+    if (ownTransaction) db.exec("ROLLBACK");
     throw e;
   }
+  if (changed) bumpMutationRevision(db);
   return { preserved };
 }
 
 function addTombstone(db, id, kind, deletedAt) {
   const ts = (deletedAt != null && isFinite(deletedAt)) ? Math.trunc(Number(deletedAt)) : Date.now();
+  const prior = db.prepare("SELECT deletedAt FROM tombstones WHERE id=? AND kind=?").get(id, kind);
   // Keep the NEWEST deletedAt for an (id,kind).
   db.prepare(
     "INSERT INTO tombstones(id,kind,deletedAt) VALUES(?,?,?) " +
     "ON CONFLICT(id,kind) DO UPDATE SET deletedAt=MAX(tombstones.deletedAt, excluded.deletedAt)"
   ).run(id, kind, ts);
+  if (!prior || Number(prior.deletedAt) < ts) bumpMutationRevision(db);
 }
 function allTombstones(db) {
   return db.prepare("SELECT id,kind,deletedAt FROM tombstones").all()
@@ -271,6 +292,7 @@ function pruneTombstones(db, olderThanMs) {
 function deleteCard(db, id, deletedAt) {
   db.prepare("DELETE FROM cards WHERE id=?").run(id);
   addTombstone(db, id, "card", deletedAt);
+  bumpMutationRevision(db);
 }
 
 // Saved column fields live in their own columns; everything else goes in `data` JSON.
@@ -336,11 +358,13 @@ function upsertSaved(db, item) {
   const ex = db.prepare("SELECT url,category,clipped,img_file,img_url,data,updatedAt FROM saved WHERE id=?").get(r.id);
   const updatedAt = (ex && savedSig(ex) === savedSig(r)) ? ex.updatedAt : Date.now();
   _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), r, updatedAt);
+  if (!ex || savedSig(ex) !== savedSig(r)) bumpMutationRevision(db);
 }
 // Merge write: set updatedAt explicitly to the winning peer's value.
 function upsertSavedSynced(db, item, updatedAt) {
   const ua = isFinite(updatedAt) ? Math.trunc(Number(updatedAt)) : Date.now();
   _insertSavedRow(db.prepare(_SAVED_INSERT_SQL), savedToRow(item), ua);
+  bumpMutationRevision(db);
 }
 
 // node:sqlite has no db.transaction() helper; wrap the bulk write in BEGIN/COMMIT/ROLLBACK.
@@ -356,7 +380,9 @@ function replaceSaved(db, arr, opts) {
   const incoming = new Set();
   const ins = db.prepare(_SAVED_INSERT_SQL);
   const preserved = [];   // see replaceCards — staleness-kept rows returned for renderer reconcile
-  db.exec("BEGIN");
+  let changed = false;
+  const ownTransaction = !(opts && opts._inTransaction);
+  if (ownTransaction) db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM saved").run();
     for (const it of (arr || [])) {
@@ -364,6 +390,7 @@ function replaceSaved(db, arr, opts) {
       incoming.add(r.id);
       const ex = existing[r.id];
       const updatedAt = (ex && savedSig(ex) === savedSig(r)) ? ex.updatedAt : now;
+      if (!ex || savedSig(ex) !== savedSig(r)) changed = true;
       _insertSavedRow(ins, r, updatedAt);
     }
     for (const id of Object.keys(existing)) {
@@ -374,20 +401,26 @@ function replaceSaved(db, arr, opts) {
         preserved.push(rowToSaved(existing[id]));
         continue;
       }
+      changed = true;
       addTombstone(db, id, "saved", now);
     }
-    for (const id of incoming) delTombstone(db, id, "saved");
-    db.exec("COMMIT");
+    for (const id of incoming) {
+      if (db.prepare("SELECT 1 FROM tombstones WHERE id=? AND kind=?").get(id, "saved")) changed = true;
+      delTombstone(db, id, "saved");
+    }
+    if (ownTransaction) db.exec("COMMIT");
   } catch (e) {
-    db.exec("ROLLBACK");
+    if (ownTransaction) db.exec("ROLLBACK");
     throw e;
   }
+  if (changed) bumpMutationRevision(db);
   return { preserved };
 }
 
 function deleteSaved(db, id, deletedAt) {
   db.prepare("DELETE FROM saved WHERE id=?").run(id);
   addTombstone(db, id, "saved", deletedAt);
+  bumpMutationRevision(db);
 }
 
 function getFp(db, id) {
@@ -488,6 +521,7 @@ function signatureAggregates(db) {
     cards: Number(c.n) || 0, saved: Number(s.n) || 0, tombstones: Number(t.n) || 0,
     maxCardUpdatedAt: Number(c.m) || 0, maxSavedUpdatedAt: Number(s.m) || 0, maxTombDeletedAt: Number(t.m) || 0,
     settingsUpdatedAt: Number(getKV(db, "ia_settings_updatedAt") || 0) || 0,
+    mutationRevision: Number(getKV(db, MUTATION_REVISION_KEY) || 0) || 0,
   };
 }
 function serializeLibrary(db) {
@@ -495,7 +529,7 @@ function serializeLibrary(db) {
 }
 
 module.exports = {
-  openDb, SCHEMA_VERSION, getKV, setKV, delKV, counts,
+  openDb, SCHEMA_VERSION, getKV, setKV, delKV, counts, bumpMutationRevision,
   rowToCard, cardToRow, cardSig, allCards, replaceCards, upsertCard, upsertCardSynced, deleteCard,
   rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   getFp, setFp, delFp, allFp,

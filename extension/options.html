@@ -25,6 +25,13 @@ button{margin-top:8px;background:#0d9488;color:#fff;border:none;border-radius:8p
 <label><input type="checkbox" id="ctxSave"> Show &ldquo;Save to Interests&rdquo; in the right-click menu</label>
 <div class="status" id="ctxStatus"></div>
 
+<hr style="border:none;border-top:1px solid #333;margin:22px 0">
+<h2>App pairing</h2>
+<p class="sub">Optional: paste the pairing token from Interests Settings if you enabled token protection for the extension bridge.</p>
+<input type="password" id="pairingToken" placeholder="Paste pairing token" style="width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #555;background:#2b2926;color:#fff">
+<button id="pairingSaveBtn">Save pairing token</button>
+<div class="status" id="pairingStatus"></div>
+
 <script src="options.js"></script>
 </body>
 </html>

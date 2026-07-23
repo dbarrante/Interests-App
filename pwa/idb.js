@@ -6,8 +6,8 @@
 // SQLite doesn't have (desktop keeps images as loose files instead).
 
 const DB_NAME = "interests-app-pwa";
-const DB_VERSION = 2;
-const STORES = ["cards", "saved", "kv", "fp", "tombstones", "images"];
+const DB_VERSION = 3;
+const STORES = ["cards", "saved", "kv", "fp", "tombstones", "images", "recovery"];
 
 let _dbPromise = null;
 
@@ -35,6 +35,7 @@ function openDb() {
         db.deleteObjectStore("tombstones");
       }
       if (!db.objectStoreNames.contains("tombstones")) db.createObjectStore("tombstones", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("recovery")) db.createObjectStore("recovery", { keyPath: "key" });
     };
     // A version bump (like v1->v2 here) hangs indefinitely — no error, no
     // resolve — if another tab still holds an open connection at the old
@@ -104,6 +105,29 @@ const idb = {
   },
   clear(storeName) {
     return tx(storeName, "readwrite").then((s) => reqToPromise(s.clear()));
+  },
+  // Replace several stores in one IndexedDB transaction. The PWA recovery
+  // journal uses this for rollback so cards/settings/images cannot be restored
+  // piecemeal across separate transactions.
+  replaceStores(snapshot) {
+    const names = ["cards", "saved", "kv", "fp", "tombstones", "images"];
+    return openDb().then((db) => new Promise((resolve, reject) => {
+      const transaction = db.transaction(names, "readwrite");
+      try {
+        names.forEach((name) => {
+          const store = transaction.objectStore(name);
+          store.clear();
+          (snapshot[name] || []).forEach((value) => store.put(value));
+        });
+      } catch (e) {
+        try { transaction.abort(); } catch (_) {}
+        reject(e);
+        return;
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("IndexedDB recovery transaction failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("IndexedDB recovery transaction aborted"));
+    }));
   },
 
   // kv convenience wrappers, factored out here (rather than left as Store-only

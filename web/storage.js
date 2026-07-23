@@ -16,6 +16,7 @@
     fp: function () { return "/api/fp"; },
     fpItem: function (id) { return "/api/fp/" + encodeURIComponent(id); },
     captures: function () { return "/api/captures"; },
+    captureAck: function () { return "/api/captures/ack"; },
     captureRequest: function () { return "/api/capture-request"; },
     batchState: function () { return "/api/batch-state"; },
     batchProgress: function () { return "/api/batch-progress"; },
@@ -46,6 +47,8 @@
     ,news: function (interests) { return "/api/news?interests=" + encodeURIComponent((interests || []).join(",")); }
     ,autoImportRequest: function () { return "/api/auto-import/request"; }
     ,autoImportStatus: function () { return "/api/auto-import/status"; }
+    ,pairingToken: function () { return "/api/pairing-token"; }
+    ,pairingConfig: function () { return "/api/pairing-config"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -149,6 +152,7 @@
 
       // --- capture bridge ---
       drainCaptures: function () { return jget(SE.captures()).then(function (j) { return (j && j.captures) || []; }); },
+      ackCaptures: function (acks) { return jsend("POST", SE.captureAck(), { acks: acks || [] }).then(function () {}); },
       setCaptureRequest: function (req) { return jsend("POST", SE.captureRequest(), { request: req }).then(function () {}); },
       getBatchState: function () { return jget(SE.batchState()).then(function (j) { return (j && j.state) || null; }); },
       setBatchState: function (s) { return jsend("POST", SE.batchState(), { state: s }).then(function () {}); },
@@ -158,6 +162,10 @@
       backupNow: function () { return jsend("POST", SE.backup()); },
       listBackups: function () { return jget(SE.backups()).then(function (j) { return (j && j.backups) || []; }); },
       restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
+      recoveryStatus: function () { return Promise.resolve({ available: false, reason: "PWA-only recovery journal" }); },
+      recoverLastMerge: function () { return Promise.resolve({ ok: false, reason: "PWA-only recovery journal" }); },
+      getPairingToken: function () { return jget(SE.pairingToken()); },
+      setPairingRequired: function (required) { return jsend("POST", SE.pairingConfig(), { required: !!required }); },
       storeLocation: function () { return jget(SE.storeLocation()); },
       moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
       health: function () { return jget(SE.health()); },

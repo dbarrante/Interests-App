@@ -1,0 +1,18 @@
+[mcp_servers.context7]
+command = "cmd"
+args = [
+    "/c",
+    "npx",
+    "-y",
+    "@upstash/context7-mcp",
+]
+
+[mcp_servers.sqlite]
+command = "cmd"
+args = [
+    "/c",
+    "npx",
+    "-y",
+    "mcp-server-sqlite-npx",
+    "data/interests.db",
+]

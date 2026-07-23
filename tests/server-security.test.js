@@ -127,8 +127,8 @@ async function post(base, route, body, headers) {
       const r = await fetch(base + "/api/ping", { headers: { Origin: base } });
       assert.strictEqual(r.status, 200);
     });
-    await t("GET /api/ping with a chrome-extension Origin -> 200", async () => {
-      const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://abcdefghijklmnop" } });
+    await t("GET /api/ping with a valid-shaped chrome-extension Origin -> 200", async () => {
+      const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
       assert.strictEqual(r.status, 200);
     });
     await t("GET /api/ping with a malicious https Origin -> 403", async () => {
@@ -153,8 +153,8 @@ async function post(base, route, body, headers) {
       const r = await rawGet(secPort, null, "/api/ping");
       assert.strictEqual(r.status, 200);
     });
-    await t("extension-style fetch (127.0.0.1 authority + chrome-extension Origin) -> 200", async () => {
-      const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://abcdefghijklmnop" } });
+    await t("extension-style fetch (127.0.0.1 authority + valid-shaped extension Origin) -> 200", async () => {
+      const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
       assert.strictEqual(r.status, 200);
     });
     // REJECT matrix: a DNS-rebound attacker host (the core threat), with or without

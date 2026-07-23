@@ -21,6 +21,8 @@ undiciGuard.installCrashGuard({
 });
 
 let mainWindow = null;
+let syncRunner = null;
+let shutdownStarted = false;
 let httpServer = null;
 let ctx = null;                 // hoisted so will-quit / timers can reach it
 let timers = null;              // { stop() } from core/synctimers — hoisted for will-quit
@@ -88,6 +90,7 @@ if (!gotLock) {
       // every window into "Not responding" (live 2026-07-18). Same call
       // shapes, async results; one cycle at a time.
       const asyncSync = createAsyncSync(storeDir);
+      syncRunner = asyncSync;
       ctx.syncRunner = asyncSync;   // POST /api/sync/now uses this when present
 
       // Sync timers self-gate on live config (re-read every tick), so start them
@@ -146,11 +149,32 @@ if (!gotLock) {
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("will-quit", () => {
+  app.on("will-quit", (event) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    let sc = null, syncDir = null;
+    try { sc = config.getSyncConfig(); syncDir = sc.dir || sync.defaultSyncDir(); } catch (e) {}
+    if (ctx && ctx.syncDirty && sc && sc.enabled && syncDir && syncRunner) {
+      if (timers) { try { timers.stop(); } catch (e) {} }
+      if (httpServer) { try { httpServer.close(); } catch (e) {} }
+      event.preventDefault();
+      const timeout = new Promise((resolve) => setTimeout(() => resolve({ ok: false, timedOut: true }), 8000));
+      Promise.race([
+        Promise.resolve(syncRunner.publishSnapshot(ctx, syncDir, sc.deviceId, sc.deviceLabel)),
+        timeout,
+      ]).then((result) => {
+        if (!result || result.ok === false) ctx.syncDirty = true;
+        if (result && result.timedOut) console.error("shutdown sync flush timed out; local changes remain dirty for next launch");
+      }).catch((e) => {
+        ctx.syncDirty = true;
+        console.error("shutdown sync flush failed:", e && e.message);
+      }).finally(() => app.quit());
+      return;
+    }
     // Final best-effort publish if a write left the store dirty. Keep it
     // synchronous — Electron does not await will-quit handlers.
     try {
-      if (ctx && ctx.syncDirty) {
+      if (ctx && ctx.syncDirty && sc && sc.enabled && syncDir && !syncRunner) {
         const sc = config.getSyncConfig();
         if (sc.enabled) {
           const syncDir = sc.dir || sync.defaultSyncDir();

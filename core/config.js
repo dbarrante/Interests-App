@@ -155,6 +155,13 @@ function getPairingToken() {
   return typeof cfg.pairingToken === "string" && cfg.pairingToken ? cfg.pairingToken : null;
 }
 
+function setPairingRequired(required) {
+  const cfg = loadConfig();
+  cfg.extensionPairingRequired = !!required;
+  if (required && !cfg.pairingToken) cfg.pairingToken = require("crypto").randomBytes(32).toString("hex");
+  saveConfig(cfg);
+}
+
 // --- Store-safety guards (2026-07-17 incident hardening) --------------------
 // Killed test runs once left config.json's storePath/backupDir pointing at
 // throwaway %TEMP% fixture dirs; the next app restart silently booted on a
@@ -253,6 +260,7 @@ module.exports = {
   setSyncConfig,
   ensurePairingToken,
   getPairingToken,
+  setPairingRequired,
   getSafeBrowsingKey,
   setSafeBrowsingKey,
   isTempPath,

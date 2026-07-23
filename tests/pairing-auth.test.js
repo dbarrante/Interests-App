@@ -81,6 +81,31 @@ function listen(app) {
       } finally { await new Promise((res) => srv.close(res)); }
     }
 
+    // --- Extension pairing protection (opt-in) ---
+    config.saveConfig(Object.assign({}, config.loadConfig(), { lanEnabled: false, extensionPairingRequired: true }));
+    {
+      const app = createServer(ctx);
+      const { srv, base } = await listen(app);
+      try {
+        await t("extension pairing: ping remains discoverable without token", async () => {
+          const r = await fetch(base + "/api/ping", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
+          assert.strictEqual(r.status, 200);
+        });
+        await t("extension pairing: API rejects a missing token", async () => {
+          const r = await fetch(base + "/api/cards", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
+          assert.strictEqual(r.status, 401);
+        });
+        await t("extension pairing: API accepts the configured token", async () => {
+          const r = await fetch(base + "/api/cards", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Authorization: "Bearer " + token } });
+          assert.strictEqual(r.status, 200);
+        });
+        await t("pairing token is never disclosed to an extension origin", async () => {
+          const r = await fetch(base + "/api/pairing-token", { headers: { Origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } });
+          assert.strictEqual(r.status, 403);
+        });
+      } finally { await new Promise((res) => srv.close(res)); }
+    }
+
     // --- Enforced (lanEnabled on) ---
     config.saveConfig(Object.assign({}, config.loadConfig(), { lanEnabled: true }));
     {

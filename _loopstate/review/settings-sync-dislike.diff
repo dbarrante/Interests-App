@@ -1,0 +1,209 @@
+diff --git a/core/db.js b/core/db.js
+index 23e05d4..6d7ac06 100644
+--- a/core/db.js
++++ b/core/db.js
+@@ -431,8 +431,31 @@ function tombstonesSince(db, since) {
+     .map(r => ({ id: r.id, kind: r.kind, deletedAt: Number(r.deletedAt) }));
+ }
+ 
++// Settings for cross-device sync: the ia_settings blob MINUS secrets (provider API
++// keys + Open PageRank key never leave the machine), plus its last-modified stamp for
++// last-writer-wins merge. Absent settings → {data:null, updatedAt:0} (nothing to sync).
++function settingsForSync(db) {
++  let s;
++  try { s = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { s = null; }
++  if (!s || typeof s !== "object") return { data: null, updatedAt: 0 };
++  const clean = Object.assign({}, s);
++  delete clean.keys;    // provider API keys — never sync
++  delete clean.oprKey;  // Open PageRank key — never sync
++  return { data: clean, updatedAt: Number(getKV(db, "ia_settings_updatedAt") || 0) || 0 };
++}
++// Apply an incoming (winning) synced settings blob: overlay its non-secret fields onto
++// the LOCAL settings, PRESERVING this device's own keys/oprKey, then bump the stamp.
++function applySyncedSettings(db, incoming, updatedAt) {
++  if (!incoming || typeof incoming !== "object") return;
++  let local;
++  try { local = JSON.parse(getKV(db, "ia_settings") || "null"); } catch (e) { local = null; }
++  local = (local && typeof local === "object") ? local : {};
++  const merged = Object.assign({}, incoming, { keys: local.keys, oprKey: local.oprKey });
++  setKV(db, "ia_settings", JSON.stringify(merged));
++  setKV(db, "ia_settings_updatedAt", String(Number(updatedAt) || Date.now()));
++}
+ function serializeLibrary(db) {
+-  return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db) };
++  return { cards: allCards(db), saved: allSaved(db), fp: allFp(db), tombstones: allTombstones(db), settings: settingsForSync(db) };
+ }
+ 
+ module.exports = {
+@@ -442,5 +465,5 @@ module.exports = {
+   getFp, setFp, delFp, allFp,
+   addTombstone, allTombstones, delTombstone, pruneTombstones,
+   cardsSince, savedSince, tombstonesSince,
+-  serializeLibrary,
++  serializeLibrary, settingsForSync, applySyncedSettings,
+ };
+diff --git a/core/merge.js b/core/merge.js
+index df33a9c..5a4cd2f 100644
+--- a/core/merge.js
++++ b/core/merge.js
+@@ -72,6 +72,17 @@
+     var out = { upserts: [], deletes: [], tombstones: [], imageCopies: [], conflicts: 0 };
+     mergeKind("card", local.cards || {}, peers, local.tombstones || {}, out);
+     mergeKind("saved", local.saved || {}, peers, local.tombstones || {}, out);
++    // Settings: last-writer-wins by updatedAt. Emit out.settings ONLY when a peer's
++    // settings are strictly newer than local — so a settings-only change from another
++    // device propagates while equal/older peers never clobber local. (Secrets were
++    // already stripped at publish time; applyMerge re-preserves local keys anyway.)
++    var localUA = Number(local.settings && local.settings.updatedAt) || 0;
++    var best = null, bestUA = localUA;
++    peers.forEach(function (p) {
++      var ps = p && p.settings;
++      if (ps && ps.data && (Number(ps.updatedAt) || 0) > bestUA) { bestUA = Number(ps.updatedAt) || 0; best = ps; }
++    });
++    if (best) out.settings = { data: best.data, updatedAt: bestUA };
+     return out;
+   }
+ 
+diff --git a/core/sync.js b/core/sync.js
+index eba1299..767a402 100644
+--- a/core/sync.js
++++ b/core/sync.js
+@@ -107,6 +107,7 @@ function readSnapshot(folder) {
+     saved: snap.saved || [],
+     fp: snap.fp || {},
+     tombstones: snap.tombstones || [],
++    settings: snap.settings || null,   // {data, updatedAt} — additive; older snapshots lack it (null)
+     imageIds: imageIds,
+   };
+ }
+@@ -159,7 +160,7 @@ function buildLocal(ctx) {
+   lib.cards.forEach(function (c) { cards[c.id] = c; });
+   lib.saved.forEach(function (s) { saved[s.id] = s; });
+   lib.tombstones.forEach(function (t) { tombs[t.kind + ":" + t.id] = t.deletedAt; });
+-  return { cards: cards, saved: saved, tombstones: tombs };
++  return { cards: cards, saved: saved, tombstones: tombs, settings: lib.settings || null };
+ }
+ 
+ function applyMerge(ctx, plan) {
+@@ -210,8 +211,14 @@ function applyMerge(ctx, plan) {
+     try { images.delImg(ctx.storeDir, d.id); } catch (e) {}
+   }
+   for (const t of plan.tombstones) db.addTombstone(ctx.db, t.id, t.kind, t.deletedAt);
+-  const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0;
+-  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length };
++  // Settings LWW: overlay the winning peer's non-secret settings, keeping local keys.
++  let settingsApplied = false;
++  if (plan.settings && plan.settings.data) {
++    try { db.applySyncedSettings(ctx.db, plan.settings.data, plan.settings.updatedAt); settingsApplied = true; }
++    catch (e) { console.error("sync: applying synced settings failed:", e && e.message); }
++  }
++  const changed = (upsertsApplied + plan.deletes.length + imageCopiesDone) > 0 || settingsApplied;
++  return { changed: changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied };
+ }
+ 
+ // One full cycle. backupFn defaults to backup.runBackup; injectable for tests.
+@@ -225,7 +232,7 @@ function runSync(ctx, opts) {
+   const skewSkipped = rp.skewSkipped;
+   if (peers.length) {
+     const plan = mergeSnapshots(buildLocal(ctx), peers);
+-    if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0) {
++    if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
+       let backedUp = true;
+       try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
+       if (backedUp) {
+diff --git a/web/index.html b/web/index.html
+index 006e856..779b826 100644
+--- a/web/index.html
++++ b/web/index.html
+@@ -657,6 +657,9 @@ S.hiddenBase = S.hiddenBase||[];
+ rebuildCats();
+ 
+ let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
++// disliked = normalized URLs the user thumbed-down; a PERMANENT "never stumble this again"
++// blocklist, hard-filtered in dropAlreadySaved (not just the soft/windowed prompt avoid list).
++let disliked=[];
+ const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
+ 
+ // Persistent app state now lives in the Core service kv store (key "ia_<k>").
+@@ -664,11 +667,11 @@ const ST_VALIDATION_VERSION=2, ST_LIVE_TTL=30*60*1000;
+ // cached value populated at boot. save() fires-and-forgets the PUT (the in-memory
+ // array is the source of truth during a session; the service persists it).
+ function load(k,d){ return Store.kvGet("ia_"+k).then(function(v){ return (v==null)?d:v; }); }
+-function save(k,v){ Store.kvSet("ia_"+k, v); return true; }
++function save(k,v){ Store.kvSet("ia_"+k, v); if(k==="settings") Store.kvSet("ia_settings_updatedAt", Date.now()); return true; }
+ function newId(){ return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
+ function setTheme(t){ try{ localStorage.setItem("ia_theme", t); }catch(e){} document.documentElement.classList.toggle("dark", t==="dark"); }
+ function ensureIds(){ let n=0; imported.forEach(it=>{ if(!it.id){ it.id=newId(); n++; } }); if(n) Store.putCards(imported); return n; }
+-function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
++function persistAll(){ Store.putSaved(saved); save("hidden",hidden); save("clicks",clicks); save("shown",shown); save("likes",likes); save("disliked",disliked); save("spool",spool); save("stdeal",stDeal); updateCounts(); }
+ // Boot gate: true only after bootData() has finished loading persistent state.
+ // Guards the capture-drain interval + autobackup so a queued capture can't trigger
+ // a full-array save of a nearly-empty library before the real data is loaded (review A2).
+@@ -1379,8 +1382,10 @@ IA_AI.configure(() => S);
+ function titleKey(t){ return (t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
+ function dropAlreadySaved(items){
+   const haveU = new Set(saved.map(s=>feedKey(s.url)));
++  const nope = new Set((disliked||[]).map(u=>feedKey(u)));   // hard "never show again" blocklist
+   const haveT = saved.map(s=>titleKey(s.title)).filter(t=>t.length>10);
+   return items.filter(i=>{
++    if(nope.has(feedKey(i.url))) return false;   // thumbed-down → never deal again
+     if(haveU.has(feedKey(i.url))) return false;
+     const t = titleKey(i.title);
+     return !haveT.some(h=>h===t || (t.length>12 && h.includes(t)) || (h.length>12 && t.includes(h)));
+@@ -1589,6 +1594,7 @@ function stumbleVote(idx, up){
+   (up?likes:hidden).push({title:it.title, category:it.category, ts:Date.now()});
+   if(likes.length>60) likes=likes.slice(-60);
+   if(hidden.length>60) hidden=hidden.slice(-60);
++  if(!up && it.url){ disliked.push(feedKey(it.url)); if(disliked.length>3000) disliked=disliked.slice(-3000); }   // never stumble this URL again
+   persistAll();   // save the user's feedback before any asynchronous refill
+   toast(up?"Noted — more like this":"Noted — less like that");
+   if(stSize===1) stumbleNext(); else stumbleReplace(idx);
+@@ -3600,10 +3606,25 @@ function renderLearned(){
+     });
+     html += `</div>`;
+   });
++  // "Never show again" — the thumbs-down blocklist (URL strings). Shown so a mis-clicked
++  // 👎 can be undone (un-block), and stumbling that page will resume.
++  const dis = (disliked||[]).slice(-12).reverse();
++  if(dis.length){
++    any = true;
++    html += `<div style="margin-bottom:14px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">&#128683; Never show again <span style="color:var(--muted);font-weight:400">(${disliked.length})</span></div>`;
++    dis.forEach(u=>{
++      const realIdx = disliked.indexOf(u);
++      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
++        <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px">${esc(u)}</div>
++        <button class="act" style="flex:0 0 auto;padding:3px 9px" title="Un-block — allow this page again" onclick="removeLearned('disliked',${realIdx})">&#10005;</button>
++      </div>`;
++    });
++    html += `</div>`;
++  }
+   el.innerHTML = any ? html : `<div class="hint">Nothing learned yet — vote &#128077;/&#128078; on a few stumbles and they'll show up here.</div>`;
+ }
+ function removeLearned(kind, idx){
+-  const arr = kind==="likes" ? likes : kind==="hidden" ? hidden : kind==="clicks" ? clicks : null;
++  const arr = kind==="likes" ? likes : kind==="hidden" ? hidden : kind==="clicks" ? clicks : kind==="disliked" ? disliked : null;
+   if(!arr || idx<0 || idx>=arr.length) return;
+   arr.splice(idx,1);
+   persistAll();
+@@ -4445,6 +4466,7 @@ async function bootData(){
+   clicks = (await load("clicks", [])) || [];
+   shown  = (await load("shown",  [])) || [];
+   likes  = (await load("likes",  [])) || [];
++  disliked = (await load("disliked", [])) || [];
+   spool  = (await load("spool",  [])) || [];
+   stDeal = (await load("stdeal", [])) || [];
+   if(!Array.isArray(stDeal)) stDeal = [];
+@@ -4569,11 +4591,12 @@ async function drainBrowserFeedback(){
+         // (DAT-1 / SEC-2 prompt-injection surface).
+         const entry = { title: String(v.title || v.url).slice(0,200), category: String(v.category || "").slice(0,80), ts: Date.now() };
+         if(v.vote > 0) likes.push(entry);
+-        else if(v.vote < 0) hidden.push(entry);
++        else if(v.vote < 0){ hidden.push(entry); disliked.push(feedKey(v.url)); }   // 👎 → permanent never-show-again
+         shown.push(String(v.url));   // never re-serve a page the user already rated
+       });
+       if(likes.length>60) likes=likes.slice(-60);
+       if(hidden.length>60) hidden=hidden.slice(-60);
++      if(disliked.length>3000) disliked=disliked.slice(-3000);
+       if(shown.length>200) shown=shown.slice(-200);
+       persistAll();
+     }

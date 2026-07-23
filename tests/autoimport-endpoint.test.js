@@ -100,7 +100,10 @@ function fbItem(over) {
     assert.strictEqual(c.source, "fb-auto");
     assert.strictEqual(c.ts, 12345);
 
-    // GET /api/captures clears the mailbox — drained exactly once.
+    // GET claims the mailbox; ACK makes delivery complete.
+    const ack = { acks: [{ id: c._captureId, lease: c._captureLease }] };
+    const acked = await jpost(base, "/api/captures/ack", ack);
+    assert.deepStrictEqual(acked.body, { ok: true, acked: 1 });
     const caps2 = await jget(base, "/api/captures");
     assert.strictEqual(caps2.body.captures.length, 0);
 

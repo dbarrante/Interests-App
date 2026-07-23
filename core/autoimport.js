@@ -22,6 +22,7 @@
 // auto-import routing branch (Task 4) keys on `source` instead.
 "use strict";
 const dbm = require("./db");
+const captureQueue = require("./capture-queue");
 
 // --- Per-field caps -----------------------------------------------------
 // Structural identity fields (url, platformKey) are REJECTED outright when
@@ -93,17 +94,8 @@ function readLedger(db, platform) {
 }
 function writeJson(db, key, value) { dbm.setKV(db, key, JSON.stringify(value)); }
 
-// Same read shape as core/server.js's readCaptureQueue — kept independent
-// (rather than imported) since server.js's version is a route-local closure,
-// but the kv key and "array or []" contract are matched exactly so the two
-// producers (manual capture, auto-import) can never disagree about the shape.
-function readCaptureQueue(db) {
-  const raw = dbm.getKV(db, "ia_capture_queue");
-  if (!raw) return [];
-  try { const q = JSON.parse(raw); return Array.isArray(q) ? q : []; }
-  catch (e) { return []; }
-}
-
+// The manual and auto-import producers share capture-queue.js so their durable
+// envelope, validation, transaction, and corruption behavior cannot drift.
 // Prune the ledger to LEDGER_CAP entries, oldest firstSeenMs first, in place.
 function pruneLedger(ledger) {
   const keys = Object.keys(ledger);
@@ -171,45 +163,55 @@ function processBatch(ctx, batch) {
   if (incomingStatus !== "ok") rawItems = [];
   const found = rawItems.length;
 
-  const ledger = readLedger(db, platform);
-  const existingUrls = existingUrlSet(db);
-  const queue = readCaptureQueue(db);
-  const survivors = [];
-  let added = 0, duplicates = 0;
+  // Ledger, queue, and status are one durable ingestion unit. If the process
+  // stops after any one write, SQLite rolls the whole batch back, so a survivor
+  // cannot be permanently ledgered before it reaches the retryable mailbox.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const ledger = readLedger(db, platform);
+    const existingUrls = existingUrlSet(db);
+    const queue = captureQueue.read(db);
+    const survivors = [];
+    let added = 0, duplicates = 0;
 
-  for (const raw of rawItems) {
-    const item = validItem(raw);
-    if (!item) continue;   // structurally invalid — silently dropped
-    const nu = normalizeUrl(item.url);
-    const seenBefore = Object.prototype.hasOwnProperty.call(ledger, item.platformKey);
-    const urlExists = existingUrls.has(nu);
-    // Ledger-add every NEW platformKey seen this run, whether or not it turns
-    // out to be a duplicate by URL — this is what makes "deleted in the app"
-    // permanent: the key stays in the ledger long after the card is gone, so
-    // it is never reconsidered on a later scrape (until the 5000-cap prune
-    // eventually ages very old keys out).
-    if (!seenBefore) ledger[item.platformKey] = serverNow;
-    if (seenBefore || urlExists) { duplicates++; continue; }
-    added++;
-    existingUrls.add(nu);   // guard against the same URL appearing twice within one batch
-    survivors.push({
-      url: item.url,
-      title: item.title,
-      clipImage: item.image || "",
-      // NO clip:true — see the module header: `source` is the discriminator;
-      // forcing route-capture's Saved path would be a spec violation.
-      source: platform + "-auto",
-      ts: checkedAt,
-    });
+    for (const raw of rawItems) {
+      const item = validItem(raw);
+      if (!item) continue;   // structurally invalid — silently dropped
+      const nu = normalizeUrl(item.url);
+      const seenBefore = Object.prototype.hasOwnProperty.call(ledger, item.platformKey);
+      const urlExists = existingUrls.has(nu);
+      // Ledger-add every NEW platformKey seen this run, whether or not it turns
+      // out to be a duplicate by URL — this is what makes "deleted in the app"
+      // permanent: the key stays in the ledger long after the card is gone, so
+      // it is never reconsidered on a later scrape (until the 5000-cap prune
+      // eventually ages very old keys out).
+      if (!seenBefore) ledger[item.platformKey] = serverNow;
+      if (seenBefore || urlExists) { duplicates++; continue; }
+      added++;
+      existingUrls.add(nu);   // guard against the same URL appearing twice within one batch
+      survivors.push({
+        url: item.url,
+        title: item.title,
+        clipImage: item.image || "",
+        // NO clip:true — `source` is the discriminator; forcing
+        // route-capture's Saved path would be a spec violation.
+        source: platform + "-auto",
+        ts: checkedAt,
+      });
+    }
+
+    pruneLedger(ledger);
+    writeJson(db, ledgerKvKey(platform), ledger);
+    if (survivors.length) captureQueue.write(db, captureQueue.appendTo(queue, survivors));
+
+    const status = incomingStatus;
+    writeJson(db, lastKvKey(platform), { at: Date.now(), found, added, duplicates, status });
+    db.exec("COMMIT");
+    return { added, duplicates, status };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch (_) {}
+    throw e;
   }
-
-  pruneLedger(ledger);
-  writeJson(db, ledgerKvKey(platform), ledger);
-  if (survivors.length) writeJson(db, "ia_capture_queue", queue.concat(survivors));
-
-  const status = incomingStatus;
-  writeJson(db, lastKvKey(platform), { at: Date.now(), found, added, duplicates, status });
-  return { added, duplicates, status };
 }
 
 // GET /api/auto-import/config — settings kv `ia_settings` is a JSON blob;

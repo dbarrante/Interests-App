@@ -1,0 +1,642 @@
+diff --git a/core/server.js b/core/server.js
+index f485799..a8219d2 100644
+--- a/core/server.js
++++ b/core/server.js
+@@ -380,6 +380,51 @@ function createServer(ctx) {
+   jsonKvEndpoints(app, "/api/batch-state", "ia_batch_state", "state");
+   jsonKvEndpoints(app, "/api/batch-progress", "ia_batch_progress", "progress");
+ 
++  // --- Browser Stumble (StumbleUpon-style discovery in the browser) ---------
++  // Loopback mailboxes bridging the extension and the renderer. The extension
++  // never writes app data directly: it POSTs a request / drains results /
++  // POSTs feedback here, and the renderer (the only place the AI runs and app
++  // state is written) drains them on a timer. No outbound network here.
++  function readJsonArr(key) { const v = readJsonKV(key); return Array.isArray(v) ? v : []; }
++
++  // Categories for the extension's interest picker (renderer publishes CATS at boot).
++  app.get("/api/categories", (req, res) => {
++    res.json({ categories: readJsonArr("ia_bstumble_cats") });
++  });
++
++  // Request mailbox: extension asks for pages in {interests, nonce}; renderer drains.
++  jsonKvEndpoints(app, "/api/bstumble/request", "ia_bstumble_request", "request");
++
++  // Results queue: renderer appends verified pages; extension GET returns + clears.
++  app.post("/api/bstumble/results", (req, res) => {
++    const items = req.body && req.body.items;
++    if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: "items array required" });
++    let q = readJsonArr("ia_bstumble_results").concat(items);
++    if (q.length > 20) q = q.slice(-20);
++    dbm.setKV(ctx.db, "ia_bstumble_results", JSON.stringify(q));
++    res.json({ ok: true, count: q.length });
++  });
++  app.get("/api/bstumble/results", (req, res) => {
++    const q = readJsonArr("ia_bstumble_results");
++    if (q.length) dbm.setKV(ctx.db, "ia_bstumble_results", JSON.stringify([]));
++    res.json({ results: q });
++  });
++
++  // Feedback queue: extension appends 👍/👎 votes; renderer GET returns + clears.
++  app.post("/api/bstumble/feedback", (req, res) => {
++    const vote = req.body && req.body.vote;
++    if (!vote || typeof vote !== "object") return res.status(400).json({ ok: false, error: "missing vote" });
++    let q = readJsonArr("ia_bstumble_feedback").concat([vote]);
++    if (q.length > 50) q = q.slice(-50);
++    dbm.setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify(q));
++    res.json({ ok: true, count: q.length });
++  });
++  app.get("/api/bstumble/feedback", (req, res) => {
++    const q = readJsonArr("ia_bstumble_feedback");
++    if (q.length) dbm.setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify([]));
++    res.json({ feedback: q });
++  });
++
+   // One-time legacy backup import. READ-ONLY on srcDir.
+   app.post("/api/import", (req, res) => {
+     let srcDir = req.body && req.body.srcDir;
+diff --git a/extension/background.js b/extension/background.js
+index f138a2d..20759da 100644
+--- a/extension/background.js
++++ b/extension/background.js
+@@ -69,6 +69,95 @@ async function findAppPort() {
+   return null;
+ }
+ 
++// ===== Browser Stumble (StumbleUpon-style) ==================================
++// Left-click the icon → open one fresh, app-validated page in a single reused
++// tab, with an on-page overlay. Pages come only from the app's validated
++// pipeline (via the /api/bstumble/* mailboxes); the extension never validates.
++const BSTUMBLE_BUFFER_KEY = "ia_bstumble_buffer";   // session-local queue of pages to open
++const BSTUMBLE_TAB_KEY = "ia_bstumble_tabid";       // the reused tab's id
++const BSTUMBLE_CURRENT_KEY = "ia_bstumble_current"; // the item now showing {url,title,category} — carries category into votes
++
++async function bstumbleGetSelectedInterests() {
++  try { const s = await chrome.storage.local.get("ia_bstumble_interests"); return Array.isArray(s.ia_bstumble_interests) ? s.ia_bstumble_interests : []; }
++  catch (e) { return []; }
++}
++async function bstumbleReadBuffer() {
++  try { const s = await chrome.storage.session.get(BSTUMBLE_BUFFER_KEY); return Array.isArray(s[BSTUMBLE_BUFFER_KEY]) ? s[BSTUMBLE_BUFFER_KEY] : []; }
++  catch (e) { return []; }
++}
++async function bstumbleWriteBuffer(buf) { try { await chrome.storage.session.set({ [BSTUMBLE_BUFFER_KEY]: buf }); } catch (e) {} }
++
++// Ask the app to top up the results queue for the chosen interests (fire-and-forget).
++async function bstumbleRequestRefill(port) {
++  const interests = await bstumbleGetSelectedInterests();
++  const nonce = "n" + Date.now() + "_" + Math.round(performance.now());
++  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: { interests, nonce } }) }); } catch (e) {}
++}
++// Pull whatever the app has delivered into our local buffer.
++async function bstumbleDrainResults(port) {
++  try {
++    const r = await fetch("http://127.0.0.1:" + port + "/api/bstumble/results");
++    if (r && r.ok) { const j = await r.json(); if (Array.isArray(j.results) && j.results.length) { const buf = (await bstumbleReadBuffer()).concat(j.results); await bstumbleWriteBuffer(buf); } }
++  } catch (e) {}
++}
++// Open the page in the reused stumble tab (create if it's gone), then inject the overlay.
++async function bstumbleOpen(url) {
++  let bstumbleTabId = null;   // the reused stumble tab's id (persisted in BSTUMBLE_TAB_KEY)
++  try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); bstumbleTabId = s[BSTUMBLE_TAB_KEY]; } catch (e) {}
++  let tab = null;
++  if (bstumbleTabId != null) { try { tab = await chrome.tabs.get(bstumbleTabId); } catch (e) { tab = null; } }
++  if (tab) { try { await chrome.tabs.update(bstumbleTabId, { url, active: true }); await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) { tab = null; } }
++  if (!tab) { try { tab = await chrome.tabs.create({ url, active: true }); bstumbleTabId = tab.id; await chrome.storage.session.set({ [BSTUMBLE_TAB_KEY]: bstumbleTabId }); } catch (e) { return; } }
++  bstumbleInjectOverlayWhenReady(bstumbleTabId);
++}
++function bstumbleInjectOverlayWhenReady(tabId) {
++  const inject = () => chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] }).catch(() => {});
++  function onUpd(tid, info) {
++    if (tid !== tabId || info.status !== "complete") return;
++    try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {}
++    inject();
++  }
++  try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
++  // Fallback: the "complete" event can fire before the listener attaches (fast
++  // loads / reused tab), which would leave the page with no bar. overlay.js is
++  // idempotent — it removes any existing bar first — so a redundant inject just
++  // redraws the same bar. This guarantees the bar appears within ~1.5s.
++  setTimeout(inject, 1500);
++  setTimeout(() => { try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (e) {} }, 30000);
++}
++// The core action: open the next page, keeping the buffer topped up.
++async function bstumbleGo() {
++  const port = await findAppPort();
++  if (port == null) { notify("bstumble-" + Date.now(), "Stumble", "Open the Interests app to Stumble."); return; }
++  let buf = await bstumbleReadBuffer();
++  if (!buf.length) { await bstumbleDrainResults(port); buf = await bstumbleReadBuffer(); }
++  await bstumbleRequestRefill(port);   // top up for next time
++  if (!buf.length) { notify("bstumble-" + Date.now(), "Stumble", "Finding you something… click again in a moment."); return; }
++  const next = buf.shift();
++  await bstumbleWriteBuffer(buf);
++  // Remember the item now showing so a vote can carry its category (the AI only
++  // knows the category from the stumble result — the tab itself can't tell us).
++  try { await chrome.storage.session.set({ [BSTUMBLE_CURRENT_KEY]: next || null }); } catch (e) {}
++  if (next && next.url) await bstumbleOpen(next.url);
++  if (buf.length < 2) await bstumbleRequestRefill(port);   // keep at least a couple ready
++}
++chrome.action.onClicked.addListener(() => { bstumbleGo().catch(() => {}); });
++
++// Record a 👍/👎 vote from the overlay (app drains /api/bstumble/feedback and learns).
++async function bstumbleSendVote(vote) {
++  const port = await findAppPort();
++  if (port == null) return;
++  let url = "", title = "";
++  try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const t = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (t) { url = t.url || ""; title = t.title || ""; } } catch (e) {}
++  if (!url) return;
++  // Carry the stumbled page's category (only known from the stumble result) so the
++  // app's learning is category-weighted, not title-only. Use it only when the stored
++  // current item is the page actually showing (guards against a manual navigation).
++  let category = "";
++  try { const c = (await chrome.storage.session.get(BSTUMBLE_CURRENT_KEY))[BSTUMBLE_CURRENT_KEY]; if (c && c.url === url) { category = c.category || ""; if (c.title) title = title || c.title; } } catch (e) {}
++  try { await fetch("http://127.0.0.1:" + port + "/api/bstumble/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vote: { url, title, category, vote } }) }); } catch (e) {}
++}
++
+ // Push every queued capture (taken while the app was closed) once it's reachable.
+ async function flushQueue() {
+   const port = await findAppPort();
+@@ -384,20 +473,37 @@ async function clipCurrentPage(tab, opts = {}) {
+   return { ok: true, delivered };
+ }
+ 
+-// Right-click → "Save to Interests" on any page/link/image/selection.
+-function ensureContextMenu() {
++// "Save to Interests" / "Remove from Interests" appear BOTH on the extension
++// toolbar-icon menu (contexts: "action" — right-click the icon → saves the
++// current page, the home the removed popup's "Clip this page" used to have) AND
++// on the web page's own right-click menu (page/link/image/selection). The
++// "Save to Interests" item is toggleable from the extension Options page
++// (chrome.storage.local ia_ctx_save, default ON when unset); "Remove from
++// Interests" is always present.
++async function ensureContextMenu() {
++  let saveEnabled = true;
++  try { const s = await chrome.storage.local.get("ia_ctx_save"); if (s.ia_ctx_save === false) saveEnabled = false; } catch (e) {}
+   try {
+     chrome.contextMenus.removeAll(() => {
+       void chrome.runtime.lastError;
++      if (saveEnabled) {
++        chrome.contextMenus.create({
++          id: "saveToInterests",
++          title: "Save to Interests",
++          contexts: ["action", "page", "selection", "link", "image"],
++        }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
++      }
+       chrome.contextMenus.create({
+-        id: "saveToInterests",
+-        title: "Save to Interests",
+-        contexts: ["page", "selection", "link", "image"],
+-      }, () => { void chrome.runtime.lastError; });   // swallow "duplicate id" when the SW re-creates it
++        id: "removeFromInterests",
++        title: "Remove from Interests",
++        contexts: ["action", "page", "link"],
++      }, () => { void chrome.runtime.lastError; });
+     });
+   } catch (e) { log("contextMenu setup failed: " + e.message); }
+ }
+ ensureContextMenu();   // also run when the service worker spins up
++// Rebuild the menu the instant the Options toggle changes (no reload needed).
++try { chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes.ia_ctx_save) ensureContextMenu(); }); } catch (e) {}
+ 
+ // === SW-driven single-capture poller (the ONLY capture driver) ==============
+ // The capture driver runs entirely in the always-on background service worker:
+@@ -535,6 +641,16 @@ chrome.runtime.onStartup.addListener(onExtensionInit);
+ 
+ log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
+ chrome.contextMenus.onClicked.addListener((info, tab) => {
++  if (info.menuItemId === "removeFromInterests") {
++    (async () => {
++      try {
++        const url = info.linkUrl || info.pageUrl || (tab && tab.url) || "";
++        await deliverToApp({ url, id: "", dead: true, removeActive: true, error: "removed by user", ts: Date.now() });
++        await setStatus("Removed card from Interests", true);
++      } catch (e) {}
++    })();
++    return;
++  }
+   if (info.menuItemId !== "saveToInterests") return;
+   let host = "";
+   try { host = new URL(tab && tab.url).hostname; } catch (e) {}
+@@ -1068,4 +1184,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+     })();
+     return true;
+   }
++
++  // 👎 (not-for-me) dismisses and advances; 👍 (like) records and STAYS so the user can read/Save it.
++  if (msg.action === "bstumbleVote") { bstumbleSendVote(msg.vote).then(() => { if (msg.vote < 0) bstumbleGo(); }).catch(() => {}); return false; }
++  if (msg.action === "bstumbleNext") { bstumbleGo().catch(() => {}); return false; }
++  if (msg.action === "bstumbleSave") {
++    (async () => {
++      try { const s = await chrome.storage.session.get(BSTUMBLE_TAB_KEY); const tab = s[BSTUMBLE_TAB_KEY] != null ? await chrome.tabs.get(s[BSTUMBLE_TAB_KEY]) : null; if (tab) await clipCurrentPage(tab); } catch (e) {}
++    })();
++    return false;
++  }
+ });
+diff --git a/extension/manifest.json b/extension/manifest.json
+index aae118f..3a37eb1 100644
+--- a/extension/manifest.json
++++ b/extension/manifest.json
+@@ -1,8 +1,9 @@
+ {
+   "manifest_version": 3,
+   "name": "Interests Capture",
+-  "version": "4.48",
++  "version": "4.53",
+   "description": "Captures screenshots and metadata for the Interests App",
++  "options_page": "options.html",
+   "permissions": ["scripting", "tabs", "storage", "unlimitedStorage", "notifications", "webNavigation", "contextMenus", "alarms"],
+   "host_permissions": ["<all_urls>"],
+   "background": {
+@@ -31,8 +32,7 @@
+     "128": "icon128.png"
+   },
+   "action": {
+-    "default_title": "Interests Capture",
+-    "default_popup": "popup.html",
++    "default_title": "Stumble",
+     "default_icon": {
+       "16": "icon16.png",
+       "32": "icon32.png",
+diff --git a/extension/options.html b/extension/options.html
+new file mode 100644
+index 0000000..c3be981
+--- /dev/null
++++ b/extension/options.html
+@@ -0,0 +1,30 @@
++<!DOCTYPE html>
++<html>
++<head>
++<meta charset="utf-8">
++<style>
++body{font-family:system-ui,sans-serif;max-width:420px;margin:24px auto;padding:0 16px;background:#1f1d1a;color:#f6f5f3}
++h2{font-size:17px;margin:0 0 4px}
++p.sub{color:#9a958d;font-size:12px;margin:0 0 16px}
++label{display:flex;align-items:center;gap:8px;padding:7px 0;font-size:14px;cursor:pointer}
++.status{font-size:12px;color:#4ade80;min-height:16px;margin-top:12px}
++.err{color:#f87171}
++button{margin-top:8px;background:#0d9488;color:#fff;border:none;border-radius:8px;padding:9px 14px;font:600 13px/1 system-ui;cursor:pointer}
++</style>
++</head>
++<body>
++<h2>Stumble interests</h2>
++<p class="sub">Pick the topics you want to stumble. Leave all unchecked to stumble everything. These sync from your Interests app's categories.</p>
++<div id="list">Loading…</div>
++<button id="saveBtn">Save interests</button>
++<div class="status" id="status"></div>
++
++<hr style="border:none;border-top:1px solid #333;margin:22px 0">
++<h2>Right-click menu</h2>
++<p class="sub">Choose what appears when you right-click a web page.</p>
++<label><input type="checkbox" id="ctxSave"> Show &ldquo;Save to Interests&rdquo; in the right-click menu</label>
++<div class="status" id="ctxStatus"></div>
++
++<script src="options.js"></script>
++</body>
++</html>
+diff --git a/extension/options.js b/extension/options.js
+new file mode 100644
+index 0000000..62d7259
+--- /dev/null
++++ b/extension/options.js
+@@ -0,0 +1,61 @@
++// extension/options.js — interests picker. Reads categories from the running
++// Interests app (loopback port scan, same range as background.js) and saves the
++// selected category keys to chrome.storage.local for the stumble loop to send.
++var PORTS = [3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465];
++var list = document.getElementById("list");
++var status = document.getElementById("status");
++
++async function findPort() {
++  for (var i = 0; i < PORTS.length; i++) {
++    try {
++      var ctl = new AbortController(); var tm = setTimeout(function () { ctl.abort(); }, 500);
++      var r = await fetch("http://127.0.0.1:" + PORTS[i] + "/api/ping", { signal: ctl.signal });
++      clearTimeout(tm);
++      if (r && r.ok) { var j = await r.json(); if (j && j.app === "interests") return PORTS[i]; }
++    } catch (e) {}
++  }
++  return null;
++}
++
++async function load() {
++  var port = await findPort();
++  if (port == null) { list.innerHTML = '<span class="err">Open the Interests app, then reopen this page.</span>'; return; }
++  var cats = [];
++  try { var r = await fetch("http://127.0.0.1:" + port + "/api/categories"); var j = await r.json(); cats = j.categories || []; } catch (e) {}
++  var sel = [];
++  try { var s = await chrome.storage.local.get("ia_bstumble_interests"); sel = s.ia_bstumble_interests || []; } catch (e) {}
++  if (!cats.length) { list.innerHTML = '<span class="err">No categories found yet.</span>'; return; }
++  list.innerHTML = "";
++  cats.forEach(function (c) {
++    var lab = document.createElement("label");
++    var cb = document.createElement("input");
++    cb.type = "checkbox"; cb.value = c.key; cb.checked = sel.indexOf(c.key) >= 0;
++    lab.appendChild(cb);
++    lab.appendChild(document.createTextNode(c.name));
++    list.appendChild(lab);
++  });
++}
++
++document.getElementById("saveBtn").addEventListener("click", async function () {
++  var keys = [].slice.call(list.querySelectorAll("input[type=checkbox]")).filter(function (cb) { return cb.checked; }).map(function (cb) { return cb.value; });
++  try { await chrome.storage.local.set({ ia_bstumble_interests: keys }); status.className = "status"; status.textContent = "Saved " + keys.length + " interest(s)."; }
++  catch (e) { status.className = "status err"; status.textContent = "Could not save."; }
++});
++
++// "Save to Interests" right-click menu toggle. Default ON (checked when the key is
++// unset). Saves immediately on change; the background service worker watches this key
++// (chrome.storage.onChanged) and rebuilds the context menu right away.
++var ctxSave = document.getElementById("ctxSave");
++var ctxStatus = document.getElementById("ctxStatus");
++async function loadCtxToggle() {
++  var on = true;
++  try { var s = await chrome.storage.local.get("ia_ctx_save"); if (s.ia_ctx_save === false) on = false; } catch (e) {}
++  ctxSave.checked = on;
++}
++ctxSave.addEventListener("change", async function () {
++  try { await chrome.storage.local.set({ ia_ctx_save: ctxSave.checked }); ctxStatus.className = "status"; ctxStatus.textContent = ctxSave.checked ? "“Save to Interests” is on." : "“Save to Interests” is off."; }
++  catch (e) { ctxStatus.className = "status err"; ctxStatus.textContent = "Could not save."; }
++});
++
++load();
++loadCtxToggle();
+diff --git a/extension/overlay.js b/extension/overlay.js
+new file mode 100644
+index 0000000..143b08d
+--- /dev/null
++++ b/extension/overlay.js
+@@ -0,0 +1,45 @@
++// extension/overlay.js — the StumbleUpon-style bar injected onto each stumbled
++// page by the service worker (chrome.scripting.executeScript). Idempotent: a
++// re-injection on the reused tab replaces the old bar. Buttons message the SW,
++// which records the vote/save and advances the same tab.
++(function () {
++  if (window.__iaBstumbleInjected) { try { document.getElementById("ia-bstumble-bar").remove(); } catch (e) {} }
++  window.__iaBstumbleInjected = true;
++
++  var send = function (msg) { try { chrome.runtime.sendMessage(msg); } catch (e) {} };
++  var flash = function (label) { status.textContent = label; };
++
++  var bar = document.createElement("div");
++  bar.id = "ia-bstumble-bar";
++  bar.style.cssText = [
++    "position:fixed", "left:50%", "top:12px", "transform:translateX(-50%)",
++    "z-index:2147483647", "display:flex", "gap:8px", "align-items:center",
++    "background:rgba(26,24,21,.97)", "color:#f6f5f3", "padding:8px 12px",
++    "border-radius:12px", "box-shadow:0 6px 24px rgba(0,0,0,.45)",
++    "border:1px solid rgba(255,255,255,.12)",
++    "font:600 13px/1 system-ui,sans-serif", "pointer-events:auto"
++  ].join(";");
++
++  function mkBtn(label, title, bg, onClick) {
++    var b = document.createElement("button");
++    b.textContent = label; b.title = title;
++    b.style.cssText = "border:none;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;background:" + bg + ";color:#fff";
++    b.addEventListener("click", onClick);
++    return b;
++  }
++
++  var status = document.createElement("span");
++  status.style.cssText = "min-width:70px;text-align:center;color:#cbe8dc";
++  status.textContent = "Stumble";
++
++  bar.appendChild(mkBtn("👍", "Like — more like this (stays here so you can Save)", "#0d9488", function () { send({ action: "bstumbleVote", vote: 1 }); flash("Liked ✓"); }));
++  bar.appendChild(mkBtn("👎", "Not for me — fewer like this", "#7c2d2d", function () { send({ action: "bstumbleVote", vote: -1 }); flash("Skipped →"); }));
++  bar.appendChild(mkBtn("★ Save", "Save to Interests", "#b45309", function () { send({ action: "bstumbleSave" }); flash("Saved ✓"); }));
++  bar.appendChild(mkBtn("Stumble ⟳", "Next page", "#334155", function () { send({ action: "bstumbleNext" }); flash("Finding…"); }));
++  var x = mkBtn("✕", "Hide this bar", "transparent", function () { bar.remove(); });
++  x.style.color = "#9a958d";
++  bar.appendChild(status);
++  bar.appendChild(x);
++
++  (document.body || document.documentElement).appendChild(bar);
++})();
+diff --git a/web/index.html b/web/index.html
+index a6ef3f5..f2bc8de 100644
+--- a/web/index.html
++++ b/web/index.html
+@@ -359,7 +359,6 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
+     </nav>
+     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
+     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
+-    <button class="btn btn-primary" id="refreshBtn" onclick="stumbleRefill()">&#10227; New ideas</button>
+   </div>
+ </header>
+ 
+@@ -408,7 +407,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
+ 
+       <div class="sec">
+         <h3>Interest categories</h3>
+-        <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off. Custom categories can be removed with &#10005;.</div>
++        <div class="hint" style="margin-bottom:12px">These are the categories Stumble draws from. Higher = more of your stumbles devoted to it. Set to 0 to turn a category off, or remove any category with &#10005; (keep at least one).</div>
+         <div id="sliders"></div>
+         <div class="row2" style="margin-top:14px;align-items:center">
+           <div><input type="text" id="newCatName" placeholder="Add your own category, e.g. 3D Printing Projects" onkeydown="if(event.key==='Enter')addCategory()"></div>
+@@ -582,8 +581,10 @@ const CAT_PALETTE = ["#0d9488","#b45309","#be185d","#4d7c0f","#6d28d9","#0369a1"
+ const GRADS = {personal:"#0e7490,#155e75", work:"#7c3aed,#5b21b6", career:"#c2410c,#9a3412", life:"#15803d,#166534"};
+ let CATS = [];
+ function rebuildCats(){
+-  CATS = BASE_CATS.concat((S.extraCats||[]).map(c=>({key:c.key, name:c.name, chip:c.color, custom:true})));
++  const hiddenBase = S.hiddenBase||[];
++  CATS = BASE_CATS.filter(c=>hiddenBase.indexOf(c.key)<0).concat((S.extraCats||[]).map(c=>({key:c.key, name:c.name, chip:c.color, custom:true})));
+   CATS.forEach(c=>{ if(S.weights[c.key]==null) S.weights[c.key]=5; });
++  try{ if(typeof Store!=="undefined" && Store.kvSet) Store.kvSet("ia_bstumble_cats", CATS.map(c=>({key:c.key, name:c.name}))); }catch(e){}
+ }
+ function catGrad(cat){ return GRADS[cat.key] || (cat.chip+","+cat.chip); }
+ const PROVIDERS = {
+@@ -626,6 +627,7 @@ S.keys = Object.assign({}, DEFAULTS.keys, S.keys||{});
+ S.models = Object.assign({}, DEFAULTS.models, S.models||{});
+ S.weights = Object.assign({}, DEFAULTS.weights, S.weights||{});
+ S.extraCats = S.extraCats||[];
++S.hiddenBase = S.hiddenBase||[];
+ rebuildCats();
+ 
+ let saved=[], hidden=[], clicks=[], shown=[], likes=[], imported=[], spool=[], stDeal=[], stSize=1;
+@@ -757,7 +759,7 @@ async function openHelp(){
+     <div class="hint" style="margin-bottom:10px">Version <b>${esc(ver)}</b>${cnt?` &middot; ${cnt.cards} cards, ${cnt.saved} saved, ${cnt.images} images`:""}${store?`<br>Data folder: <b>${esc(store)}</b>`:""}</div>
+     <h3 style="margin:12px 0 6px">Quick tour</h3>
+     <ul style="margin:0 0 10px 18px;line-height:1.7">
+-      <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. <b>&#10227; New ideas</b> refills the spool.</li>
++      <li><b>Stumble</b> — your discovery surface. Deal <b>1, 2, or 4</b> AI-suggested pages at a time, matched to your profile; every suggestion is link- and content-checked so dead pages are filtered out. Save or pass on each, and vote to teach it your taste. The <b>&#127922; Stumble</b> button deals a fresh set.</li>
+       <li><b>Saved</b> — things you saved here or clipped from the browser extension.</li>
+       <li><b>Imported</b> — your library from Facebook / Pinterest / YouTube / bookmarks imports. <b>&#128247; Get pictures &amp; info</b> fills missing images and descriptions; <b>&#129656; Library health</b> finds duplicates, dead links, and failed captures.</li>
+       <li><b>Settings</b> — AI provider &amp; key, your profile, imports, backup &amp; restore, Dropbox sync.</li>
+@@ -1203,7 +1205,7 @@ function renderSettings(){
+       <div class="nm">${c.custom?`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c.chip};margin-right:6px"></span>`:""}${esc(c.name)}</div>
+       <input type="range" min="0" max="10" value="${S.weights[c.key]}" oninput="S.weights['${c.key}']=+this.value;this.nextElementSibling.textContent=this.value">
+       <div class="val">${S.weights[c.key]}</div>
+-      ${c.custom?`<button class="act" style="flex:0 0 auto;padding:4px 10px" title="Remove category" onclick="removeCategory('${c.key}')">&#10005;</button>`:`<span style="width:38px"></span>`}
++      <button class="act" style="flex:0 0 auto;padding:4px 10px" title="Remove category" onclick="removeCategory('${c.key}')">&#10005;</button>
+     </div>`).join("");
+ 
+   document.getElementById("aboutMe").value = S.about;
+@@ -1274,10 +1276,11 @@ async function saveSafeBrowsingKey(){
+ }
+ 
+ /* ============ prompt ============ */
+-function buildPrompt(mode){
++function buildPrompt(mode, interestKeys){
+   const stumble = mode==="stumble";
+   const count = stumble ? Math.max(4,Math.min(6,stSize+2)) : S.itemCount + 3;
+-  const active = CATS.filter(c=>S.weights[c.key]>0);
++  let active = CATS.filter(c=>S.weights[c.key]>0);
++  if(interestKeys && interestKeys.length){ const set=new Set(interestKeys); const picked=active.filter(c=>set.has(c.key)); if(picked.length) active=picked; }
+   const catLines = active.map(c=>`- "${c.name}" (importance ${S.weights[c.key]}/10)`).join("\n");
+   const recentSaves = saved.slice(0,stumble?8:20).map(s=>`- [${s.category}] ${s.title}`).join("\n") || "(none yet)";
+   const liked = likes.slice(stumble?-8:-20).map(l=>`- [${l.category}] ${l.title}`).join("\n") || "(none yet)";
+@@ -1414,7 +1417,7 @@ let stLoading = false;
+ async function stumbleFetch(){
+   if(stLoading) return 0;
+   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return 0; }
+-  stLoading = true; renderStumble(); syncRefillBtn();
++  stLoading = true; renderStumble();
+   try{
+     const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble"),{webSearch:true})))));
+     items.forEach(i=>{ i.id="st_"+i.id; shown.push(i.url); });
+@@ -1426,7 +1429,7 @@ async function stumbleFetch(){
+     persistAll();
+     return fresh.length;
+   }catch(e){ console.error(e); toast("Hmm: "+e.message, 6000); return 0; }
+-  finally{ stLoading=false; syncRefillBtn(); }
++  finally{ stLoading=false; renderStumble(); }
+ }
+ // Old persisted recommendations can die after validation. Never deal one after its
+ // 30-minute live-check window; a refill will re-check the URL and its page content.
+@@ -1479,19 +1482,6 @@ async function stumbleReplace(idx){
+   if(!it) toast("Couldn't find another live idea right now — try again in a moment.", 6000);
+   if(attempts < 2 && usableSpool().length < stSize && !stLoading) stumbleFetch();
+ }
+-// Header "⟳ New ideas" button: replenish the spool and re-deal.
+-async function stumbleRefill(){
+-  saveSettings(false);
+-  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); showTab("settings"); return; }
+-  if(curTab!=="stumble") showTab("stumble", true);
+-  await stumbleNext(true);
+-}
+-function syncRefillBtn(){
+-  const btn = document.getElementById("refreshBtn");
+-  if(!btn) return;
+-  btn.disabled = stLoading;
+-  btn.innerHTML = stLoading ? '<span class="spin"></span> Thinking…' : "&#10227; New ideas";
+-}
+ async function setStSize(n){
+   if([1,2,4].indexOf(n)<0) return;
+   if(n===stSize) return;
+@@ -3525,8 +3515,14 @@ function addCategory(name){
+ }
+ function removeCategory(key){
+   const c=CATS.find(x=>x.key===key);
+-  if(!c || !c.custom) return;
+-  S.extraCats = S.extraCats.filter(x=>x.key!==key);
++  if(!c) return;
++  // catByName falls back to CATS[0], and buildPrompt needs at least one category — keep one.
++  if(CATS.length<=1){ toast("Keep at least one category"); return; }
++  if(c.custom){
++    S.extraCats = S.extraCats.filter(x=>x.key!==key);   // custom: drop it entirely
++  }else{
++    S.hiddenBase = (S.hiddenBase||[]).concat([key]);     // base: remember it's hidden (reversible in settings)
++  }
+   delete S.weights[key];
+   if(filterCat===key){ filterCat=""; save("fcat",""); }
+   save("settings", S); rebuildCats();
+@@ -4386,6 +4382,11 @@ async function bootData(){
+   try{ const ph = await Store.kvGet("ia_ph_fps"); _phFps = new Set(Array.isArray(ph)?ph:[]); }catch(e){ _phFps = new Set(); }
+   try{ _fbTested = !!(await Store.kvGet("ia_fbtested")); _fbRenderTested = !!(await Store.kvGet("ia_fbrender_tested")); }catch(e){}
+   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
++  // The module-load rebuildCats() ran with empty default settings (base categories only).
++  // Now that the real settings (with custom categories) are loaded, rebuild CATS and
++  // republish ia_bstumble_cats so the extension's interest picker sees the full list on
++  // every boot — not only after the next category edit.
++  rebuildCats();
+ 
+   // one-time data hygiene (was a synchronous IIFE)
+   // Feed module removed in v1.11.0 — clear its stored kv (cheap tombstone; no schema change).
+@@ -4429,7 +4430,6 @@ async function bootData(){
+   let bootTab = await load("tab","stumble");
+   if(bootTab==="feed") bootTab = "stumble";   // Feed removed in v1.11.0 — a persisted "feed" maps home
+   showTab(bootTab);
+-  syncRefillBtn();
+ 
+   try{ _fpMap = await Store.fpAll(); }catch(e){ console.warn("fp load failed", e); _fpMap = {}; }
+   try{ if(curTab==="imported") renderImported(); }catch(e){ console.warn("imported render failed", e); }
+@@ -4440,6 +4440,52 @@ async function bootData(){
+ bootData();
+ setInterval(function(){ maybeAutoBackup(); }, 6*3600*1000);   // keep a long-open session backing up across day boundaries
+ setInterval(drainCaptures, 3000);
++/* ===== Browser Stumble: drain the extension's mailboxes ===== */
++// One AI fetch per pending request; votes feed the same likes/hidden signals
++// buildPrompt already reads, so the next stumble weights them. Renderer-owned
++// writes only (persistAll is asOf-safe); the extension never writes app data.
++async function stumbleForInterests(interestKeys){
++  if(!IA_AI.hasAIKey()) return [];
++  try{
++    const items = await rankFilter(await validateItems(dropAlreadySaved(parseItems(await callAI(buildPrompt("stumble", interestKeys),{webSearch:true})))));
++    items.forEach(i=>{ i.id="bs_"+i.id; shown.push(i.url); });
++    if(shown.length>200) shown=shown.slice(-200);
++    persistAll();
++    return items.map(i=>({ url:i.url, title:i.title, category:i.category, image:i.image, liveCheckedAt:i.liveCheckedAt }));
++  }catch(e){ console.warn("browser stumble failed:", e && e.message); return []; }
++}
++let _bstumbleBusy = false;
++async function pollBrowserStumble(){
++  if(!_booted || _bstumbleBusy) return;
++  _bstumbleBusy = true;
++  try{
++    // 1) feedback → learning signals
++    let fb = [];
++    try{ fb = (await Store.drainBrowserStumbleFeedback()) || []; }catch(e){}
++    if(fb.length){
++      fb.forEach(v=>{
++        if(!v || !v.url) return;
++        const entry = { title: v.title || v.url, category: v.category || "", ts: Date.now() };
++        if(v.vote > 0) likes.push(entry);
++        else if(v.vote < 0) hidden.push(entry);
++        shown.push(v.url);   // never re-serve a page the user already rated
++      });
++      if(likes.length>60) likes=likes.slice(-60);
++      if(hidden.length>60) hidden=hidden.slice(-60);
++      if(shown.length>200) shown=shown.slice(-200);
++      persistAll();
++    }
++    // 2) request → interest-scoped discovery → results
++    let req = null;
++    try{ req = await Store.getBrowserStumbleRequest(); }catch(e){}
++    if(req && req.nonce){
++      await Store.clearBrowserStumbleRequest();
++      const items = await stumbleForInterests(Array.isArray(req.interests) ? req.interests : []);
++      if(items.length){ try{ await Store.deliverBrowserStumbleResults(items); }catch(e){} }
++    }
++  } finally { _bstumbleBusy = false; }
++}
++setInterval(pollBrowserStumble, 3000);
+ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ drainCaptures(); } });   // returning from the browser: ingest + refresh now
+ // Renderer-global safety net for the many fire-and-forget Store.putCards/putSaved call sites (review B5).
+ // After Task 4, a legit bulk shrink (e.g. a large Groom sweep) can reject with `PUT /api/cards -> 409`;
+diff --git a/web/storage.js b/web/storage.js
+index 76a2d90..c774d0a 100644
+--- a/web/storage.js
++++ b/web/storage.js
+@@ -39,6 +39,10 @@
+     bookmarkSources: function () { return "/api/bookmark-sources"; },
+     bookmarks: function (browser, profile) { return "/api/bookmarks?browser=" + encodeURIComponent(browser) + "&profile=" + encodeURIComponent(profile); },
+     captureMeta: function () { return "/api/capture-meta"; }
++    ,categories: function () { return "/api/categories"; }
++    ,bstumbleRequest: function () { return "/api/bstumble/request"; }
++    ,bstumbleResults: function () { return "/api/bstumble/results"; }
++    ,bstumbleFeedback: function () { return "/api/bstumble/feedback"; }
+   };
+ 
+   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
+@@ -148,7 +152,13 @@
+       getSafeBrowsingKey: function () { return jget(SE.safeBrowsingKey()).then(function (j) { return !!(j && j.hasKey); }); },
+       setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); },
+       verifySafeBrowsing: function () { return jget(SE.safebrowsingVerify()).then(function (j) { return (j && j.state) || "error"; }); },
+-      captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); }
++      captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
++
++      // --- browser stumble (renderer drains these; the extension owns the other side) ---
++      getBrowserStumbleRequest: function () { return jget(SE.bstumbleRequest()).then(function (j) { return (j && j.request) || null; }); },
++      clearBrowserStumbleRequest: function () { return jsend("POST", SE.bstumbleRequest(), { request: null }).then(function () {}); },
++      deliverBrowserStumbleResults: function (items) { return jsend("POST", SE.bstumbleResults(), { items: items || [] }).then(function () {}); },
++      drainBrowserStumbleFeedback: function () { return jget(SE.bstumbleFeedback()).then(function (j) { return (j && j.feedback) || []; }); }
+     };
+ 
+     root.Store = Store;

@@ -7,6 +7,7 @@ const assert = require("assert");
 const fs = require("fs"), path = require("path"), os = require("os");
 const { openDb, getKV, setKV, upsertCard, upsertSaved } = require("../core/db.js");
 const autoimport = require("../core/autoimport.js");
+const captureQueue = require("../core/capture-queue.js");
 
 let pass = 0, fail = 0;
 function t(name, fn) {
@@ -19,6 +20,7 @@ function tmpStore() {
   return dir;
 }
 function readJsonKV(db, key) {
+  if(key === "ia_capture_queue") return captureQueue.read(db).map((entry) => entry.capture);
   const raw = getKV(db, key);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch (e) { return null; }

@@ -28,6 +28,7 @@ t("fp endpoints", () => {
 });
 t("capture + batch endpoints", () => {
   assert.strictEqual(SE.captures(), "/api/captures");
+  assert.strictEqual(SE.captureAck(), "/api/captures/ack");
   assert.strictEqual(SE.captureRequest(), "/api/capture-request");
   assert.strictEqual(SE.batchState(), "/api/batch-state");
   assert.strictEqual(SE.batchProgress(), "/api/batch-progress");

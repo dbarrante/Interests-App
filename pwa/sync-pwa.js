@@ -17,6 +17,7 @@
   const SCHEMA_VERSION = 2; // must track core/db.js's SCHEMA_VERSION
   const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000; // see core/sync.js's own comment on this constant
   const SYNC_ROOT = "/Interests App/sync";
+  const RECOVERY_KEY = "pre-merge";
 
   function safeImgId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
@@ -80,6 +81,40 @@
       ? { data: stripSecrets(settingsRaw), updatedAt: Number(settingsUpdatedAt) || 0 }
       : { data: null, updatedAt: 0 };
     return { cards, saved, tombstones, settings };
+  }
+
+  // PWA data has no filesystem snapshot equivalent. Before a peer merge, keep
+  // one complete local journal entry in IndexedDB, including image Blobs. The
+  // journal is local-only and is never published to Dropbox.
+  async function writeRecoveryJournal() {
+    const [cards, saved, kv, fp, tombstones, images] = await Promise.all([
+      idb.getAll("cards"), idb.getAll("saved"), idb.getAll("kv"), idb.getAll("fp"),
+      idb.getAll("tombstones"), idb.getAll("images"),
+    ]);
+    const journal = { key: RECOVERY_KEY, version: 1, createdAt: Date.now(), cards, saved, kv, fp, tombstones, images };
+    await idb.put("recovery", journal);
+    return journal;
+  }
+
+  async function recoveryStatus() {
+    const journal = await idb.get("recovery", RECOVERY_KEY);
+    return journal ? { available: true, createdAt: journal.createdAt, counts: {
+      cards: journal.cards.length, saved: journal.saved.length, images: journal.images.length,
+    } } : { available: false };
+  }
+
+  async function recoverLastMerge() {
+    const journal = await idb.get("recovery", RECOVERY_KEY);
+    if (!journal) return { ok: false, reason: "No PWA recovery journal is available." };
+    await idb.replaceStores(journal);
+    return { ok: true, createdAt: journal.createdAt, counts: {
+      cards: journal.cards.length, saved: journal.saved.length, images: journal.images.length,
+    } };
+  }
+
+  async function bumpMutationRevision() {
+    const current = Number(await idb.kvGet("_pwa_mutation_revision")) || 0;
+    await idb.kvSet("_pwa_mutation_revision", current + 1);
   }
 
   async function readPeers(accessToken, selfDeviceId) {
@@ -167,6 +202,14 @@
   const IMAGE_DOWNLOAD_CONCURRENCY = 4;
 
   async function applyMergeToLocal(plan, accessToken, onProgress) {
+    try {
+      await writeRecoveryJournal();
+    } catch (e) {
+      const error = new Error("PWA recovery journal could not be written; merge aborted safely");
+      error.code = "RECOVERY_JOURNAL_FAILED";
+      error.cause = e;
+      throw error;
+    }
     // Phase 1: classify synchronously (cheap) — every safe-id upsert applies
     // immediately; images are no longer downloaded during sync (spec
     // 2026-07-17 — on-demand images: the renderer fetches via ensureImage()
@@ -252,6 +295,7 @@
     }
 
     const changed = (upsertsApplied + plan.deletes.length) > 0 || settingsApplied;
+    if (changed) await bumpMutationRevision();
     return { changed, upserts: upsertsApplied, deletes: plan.deletes.length, settings: settingsApplied, imagesFailed: imagesFailed, applyFailures: applyFailures };
   }
 
@@ -303,7 +347,7 @@
 
   async function publishSnapshot(accessToken, deviceId, deviceLabel, onProgress, mergeChanged) {
     console.log("sync: publishSnapshot — starting for device", deviceId);
-    const [cardRows, savedRows, tombRows] = await Promise.all([idb.getAll("cards"), idb.getAll("saved"), idb.getAll("tombstones")]);
+    const [cardRows, savedRows, tombRows, mutationRevision] = await Promise.all([idb.getAll("cards"), idb.getAll("saved"), idb.getAll("tombstones"), idb.kvGet("_pwa_mutation_revision")]);
     const settingsRaw = await idb.kvGet("ia_settings");
     const settingsUpdatedAt = await idb.kvGet("ia_settings_updatedAt");
     console.log("sync: publishSnapshot — local read done. cards=" + cardRows.length + " saved=" + savedRows.length);
@@ -319,6 +363,7 @@
       maxSavedUpdatedAt: savedRows.reduce((m, r) => Math.max(m, Number(r.updatedAt) || 0), 0),
       maxTombDeletedAt: tombRows.reduce((m, r) => Math.max(m, Number(r.deletedAt) || 0), 0),
       settingsUpdatedAt: Number(settingsUpdatedAt) || 0,
+      mutationRevision: Number(mutationRevision) || 0,
     };
     const sig = contentSignature(agg); // pwa/merge.js — global, like mergeSnapshots
     let lastSig = null, lastClean = false;
@@ -520,5 +565,5 @@
     }
   }
 
-  window.IASync = { ensureDeviceIdentity, setDeviceLabel, runSyncCycle, ensureImage };
+  window.IASync = { ensureDeviceIdentity, setDeviceLabel, runSyncCycle, ensureImage, recoveryStatus, recoverLastMerge };
 })();
