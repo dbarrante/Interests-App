@@ -44,6 +44,54 @@ t("isBadImg: an idb: local cache ref or a non-social CDN URL with '?oe=' noise -
   assert.ok(!CS.isBadImg("https://cdn.example.com/photo.jpg?oe=123"));   // unrelated host, coincidental param
 });
 
+/* ---------- isGenericTitle ---------- */
+t("isGenericTitle: blank/whitespace -> generic", () => {
+  assert.ok(CS.isGenericTitle("", "https://example.com/a"));
+  assert.ok(CS.isGenericTitle("   ", "https://example.com/a"));
+  assert.ok(CS.isGenericTitle(undefined, "https://example.com/a"));
+  assert.ok(CS.isGenericTitle(null, "https://example.com/a"));
+});
+t("isGenericTitle: under 25 chars -> generic", () => {
+  assert.ok(CS.isGenericTitle("Short title here", "https://example.com/a")); // 17 chars
+});
+t("isGenericTitle: 'N photos/videos' -> generic", () => {
+  assert.ok(CS.isGenericTitle("12 photos from the trip", "https://example.com/a"));
+  assert.ok(CS.isGenericTitle("3 videos you might like", "https://example.com/a"));
+});
+t("isGenericTitle: bare URL as title -> generic", () => {
+  assert.ok(CS.isGenericTitle("https://www.instagram.com/p/Cabc123XYZ/", "https://www.instagram.com/p/Cabc123XYZ/"));
+});
+t("isGenericTitle: title equals the URL's domain -> generic", () => {
+  assert.ok(CS.isGenericTitle("instagram.com", "https://www.instagram.com/reel/xyz"));
+  assert.ok(CS.isGenericTitle("Instagram.com", "https://instagram.com/reel/xyz")); // case-insensitive
+});
+t("isGenericTitle: platform-name blocklist (exact, case-insensitive) -> generic", () => {
+  ["Facebook", "instagram", "Pinterest", "YouTube", "no title", "Untitled", "Untitled Pin Page"]
+    .forEach(bad => assert.ok(CS.isGenericTitle(bad, "https://example.com/a"), bad + " should be flagged"));
+});
+t("isGenericTitle: templated generic nouns -> generic", () => {
+  ["Facebook post", "Saved video", "Instagram reel", "Pinterest pin", "Saved item"]
+    .forEach(bad => assert.ok(CS.isGenericTitle(bad, "https://example.com/a"), bad + " should be flagged"));
+});
+t("isGenericTitle: 'Instagram post <slug>' -> generic even when long", () => {
+  assert.ok(CS.isGenericTitle("Instagram post abc123xyz456slug789", "https://instagram.com/p/x"));
+});
+t("isGenericTitle: '<Platform> post by <Author>' -> generic", () => {
+  assert.ok(CS.isGenericTitle("Facebook post by Jane Smith Cooking Co", "https://facebook.com/x"));
+});
+t("isGenericTitle: a real descriptive title -> NOT generic", () => {
+  assert.ok(!CS.isGenericTitle("How to Build a Backyard Pizza Oven This Weekend", "https://example.com/pizza-oven"));
+  assert.ok(!CS.isGenericTitle("SpaceX Starship Completes First Orbital Refueling Test", "https://spacenews.example.com/starship"));
+});
+t("isGenericTitle: a title that happens to contain a generic word but isn't just that word -> NOT generic", () => {
+  assert.ok(!CS.isGenericTitle("Reel Mower Maintenance: A Complete Seasonal Guide", "https://example.com/mower"));
+});
+t("isGenericTitle: url missing/malformed never throws", () => {
+  assert.doesNotThrow(() => CS.isGenericTitle("Some Title Long Enough To Pass", undefined));
+  assert.doesNotThrow(() => CS.isGenericTitle("Some Title Long Enough To Pass", "not a url"));
+  assert.doesNotThrow(() => CS.isGenericTitle("Some Title Long Enough To Pass", ""));
+});
+
 /* ---------- hammingDist (perceptual dHash comparison) ---------- */
 // Live bug 2026-07-15 (follow-on): Instagram serves the same "trouble displaying this
 // video" error page for reels it currently won't play, and captureTab dutifully

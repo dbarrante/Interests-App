@@ -28,6 +28,36 @@
   // never be treated as a permanently-good image, only ever "idb:"-cached bytes are.
   function isBadImg(u) { return !u || isFavicon(u) || /s0\.wp\.com\/mshots|thum\.io|microlink|webcache\.googleusercontent/i.test(u) || (/scontent[.-]|cdninstagram\.com|fbcdn\.net/i.test(u) && /[?&]oe=/i.test(u)); }
 
+  // isGenericTitle(title, url): does this title need replacing? Combines a
+  // length/pattern heuristic (ported from index.html's former genericTitle())
+  // with an explicit platform-name/templated-generic blocklist and a
+  // domain-equals-title check. This is the ONE canonical "bad title" check —
+  // used by single/bulk refresh AND the Library Health "Title issues" tab.
+  var GENERIC_TITLE_BLOCKLIST = {
+    "facebook": 1, "instagram": 1, "pinterest": 1, "twitter": 1, "x": 1,
+    "youtube": 1, "tiktok": 1, "reddit": 1, "no title": 1, "untitled": 1,
+    "untitled pin page": 1
+  };
+  var GENERIC_TITLE_NOUN_RE = /^(facebook|fb|instagram|ig|pinterest|saved)?\s?(post|video|reel|photo|photos|story|link|watch|pin|item)s?$/i;
+  var GENERIC_TITLE_PLATFORM_POST_RE = /^instagram post\b/i;
+  var GENERIC_TITLE_POST_BY_RE = /^(facebook|instagram|pinterest)\s+post\s+by\b/i;
+  function isGenericTitle(title, url) {
+    var t = String(title == null ? "" : title).trim();
+    if (!t) return true;
+    if (t.length < 25) return true;
+    if (/^\d+\s*(photo|video)s?\b/i.test(t)) return true;
+    if (/^https?:\/\//i.test(t)) return true;
+    var tl = t.toLowerCase();
+    var dom = "";
+    try { dom = new URL(String(url || "")).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { dom = ""; }
+    if (dom && tl === dom) return true;
+    if (GENERIC_TITLE_BLOCKLIST[tl]) return true;
+    if (GENERIC_TITLE_NOUN_RE.test(tl)) return true;
+    if (GENERIC_TITLE_PLATFORM_POST_RE.test(tl)) return true;
+    if (GENERIC_TITLE_POST_BY_RE.test(tl)) return true;
+    return false;
+  }
+
   // Bit-distance between two equal-length binary hash strings (e.g. a 64-bit
   // perceptual image dHash) -- used to detect near-duplicate screenshots (a known
   // junk error page) that an exact string match like imgFp would miss. Mismatched
@@ -94,7 +124,7 @@
   }
 
   var api = {
-    isFavicon: isFavicon, isBadImg: isBadImg, hammingDist: hammingDist,
+    isFavicon: isFavicon, isBadImg: isBadImg, isGenericTitle: isGenericTitle, hammingDist: hammingDist,
     captureable: captureable, captureableFb: captureableFb,
     needsCapture: needsCapture, needsRetry: needsRetry,
     needsFbCapture: needsFbCapture, fbMiss: fbMiss,
@@ -109,6 +139,7 @@
   if (root) {
     root.isFavicon = isFavicon;
     root.isBadImg = isBadImg;
+    root.isGenericTitle = isGenericTitle;
     root.hammingDist = hammingDist;
     root.captureable = captureable;
     root.captureableFb = captureableFb;
