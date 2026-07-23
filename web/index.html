@@ -4757,14 +4757,17 @@ async function generateUniqueTitle(card, extraAvoid){
     try{ reply = await callAI(buildTitlePrompt({url:card.url, domain:dom, description, avoidTitles})); }
     catch(e){ console.warn("AI title generation failed", e); return null; }
     const candidate = parseTitleReply(reply);
-    if(!candidate) continue;
+    if(!candidate || isGenericTitle(candidate, card.url)){ if(candidate) avoidTitles = avoidTitles.concat([candidate]).slice(-3); continue; }
     const key = normalizeTitleKey(candidate);
     if(!existing.has(key)) return candidate;
     avoidTitles = avoidTitles.concat([candidate]).slice(-3);
   }
-  // Still colliding after 3 tries: disambiguate with the domain, then a numeric suffix.
+  // Still colliding/generic after 3 tries: disambiguate with the domain, then a numeric suffix.
+  // If even the disambiguated title would still read as generic (e.g. no domain and every
+  // candidate was too short), give up rather than apply a title the detector will just re-flag.
   const last = avoidTitles[avoidTitles.length-1] || (dom || "Untitled");
   let disambiguated = dom ? (last+" — "+dom) : last;
+  if(isGenericTitle(disambiguated, card.url)) return null;
   if(!existing.has(normalizeTitleKey(disambiguated))) return disambiguated;
   let n=2;
   while(existing.has(normalizeTitleKey(disambiguated+" ("+n+")"))) n++;

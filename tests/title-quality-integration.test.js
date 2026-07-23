@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const { extractFn } = require("./_extract");
 const { buildTitlePrompt, parseTitleReply } = require("../web/title-ai.js");
+const { isGenericTitle } = require("../web/lib/capture-state.js");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 
@@ -18,7 +19,7 @@ function loadTitleFns(aiReplies) {
   const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
   const callAI = async () => { const r = aiReplies[callCount]; callCount++; if (r instanceof Error) throw r; return r; };
   const IA_AI = { hasAIKey: () => true };
-  const sandbox = { imported: [], saved: [], buildTitlePrompt, parseTitleReply, domain, callAI, IA_AI, console };
+  const sandbox = { imported: [], saved: [], buildTitlePrompt, parseTitleReply, domain, callAI, IA_AI, isGenericTitle, console };
   const src = [
     extractFn(html, "normalizeTitleKey"),
     extractFn(html, "allTitleKeys"),
@@ -27,10 +28,10 @@ function loadTitleFns(aiReplies) {
   // eval in a function scope closed over `sandbox`'s properties as locals —
   // matches loadFns' approach (_extract.js) but with our own controlled globals.
   const factory = new Function(
-    "imported", "saved", "buildTitlePrompt", "parseTitleReply", "domain", "callAI", "IA_AI",
+    "imported", "saved", "buildTitlePrompt", "parseTitleReply", "domain", "callAI", "IA_AI", "isGenericTitle",
     src + "\nreturn { normalizeTitleKey, allTitleKeys, generateUniqueTitle };"
   );
-  return { fns: factory(sandbox.imported, sandbox.saved, sandbox.buildTitlePrompt, sandbox.parseTitleReply, sandbox.domain, sandbox.callAI, sandbox.IA_AI), sandbox, callCountRef: () => callCount };
+  return { fns: factory(sandbox.imported, sandbox.saved, sandbox.buildTitlePrompt, sandbox.parseTitleReply, sandbox.domain, sandbox.callAI, sandbox.IA_AI, sandbox.isGenericTitle), sandbox, callCountRef: () => callCount };
 }
 
 let pass = 0, fail = 0;
@@ -78,6 +79,13 @@ async function t(name, fn) { try { await fn(); pass++; console.log("  ok  " + na
     const { fns } = loadTitleFns([]);
     const result = await fns.generateUniqueTitle({ id: "new", desc: "", url: "" });
     assert.strictEqual(result, null);
+  });
+
+  await t("generateUniqueTitle rejects a unique-but-still-generic candidate and keeps retrying", async () => {
+    const { fns, callCountRef } = loadTitleFns(["Short One", "A Sufficiently Long Descriptive Title Here"]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "d", url: "https://x.com/new" });
+    assert.strictEqual(result, "A Sufficiently Long Descriptive Title Here");
+    assert.strictEqual(callCountRef(), 2, "should have retried after the first candidate was rejected for being generic, not just for colliding");
   });
 
   await t("generateUniqueTitle checks extraAvoid (in-flight batch titles) alongside the library", async () => {
