@@ -48,6 +48,12 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(body, /isGenericTitle\(it\.title, ?it\.url\)/, "should re-check isGenericTitle after the free re-fetch");
     assert.match(body, /generateUniqueTitle\(it\)/, "should call generateUniqueTitle for a still-generic title");
   });
+  t(label + ": bulk applyCaptureResult uses isGenericTitle instead of the old blank-or-domain gate", () => {
+    assert.match(src, /if\(r\.title && isGenericTitle\(c\.title, ?c\.url\)\) c\.title=r\.title;/);
+  });
+  t(label + ": drainCaptures uses isGenericTitle instead of the 'Saved/From your' prefix gate", () => {
+    assert.match(src, /if\(cap\.title && \(force \|\| isGenericTitle\(match\.title, ?match\.url\)\)\)\{ match\.title=cap\.title; changed=true; \}/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
