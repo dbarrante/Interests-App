@@ -102,6 +102,17 @@ t("Stumble refill is bounded and reports a partially filled 2/4-card deal", () =
   assert.ok(html.indexOf("function stumbleRefill(") < 0, "the redundant header refill button/handler is gone");
 });
 
+t("Stumble hides collection view controls and has no redundant header refill button", () => {
+  const start = html.indexOf("function renderCatBar(");
+  const body = html.slice(start, html.indexOf("\n}", start) + 2);
+  assert.ok(body.indexOf('curTab==="stumble" ? ""') >= 0,
+    "shared 1x1/2x2/4x4/Detail/List controls are omitted only on Stumble");
+  assert.ok(html.indexOf('id="refreshBtn"') < 0, "New ideas header button is removed");
+  assert.ok(html.indexOf("stumbleRefill") < 0, "header refill handler has no remaining references");
+  assert.ok(html.indexOf("syncRefillBtn") < 0, "header button state helper has no remaining references");
+  assert.ok(html.indexOf("New ideas") < 0, "Stumble help and comments no longer mention the removed button");
+});
+
 t("Feed runtime surface is removed, including inline handlers", () => {
   assert.ok(html.indexOf('id="view-feed"') < 0, "Feed view is gone");
   assert.ok(!/\blet\s+feed\b/.test(html), "feed global is gone");

@@ -1156,12 +1156,13 @@ function renderCatBar(){
     : !catHtml ? ""
     : !mobileFilterOpen ? toggleChip
     : toggleChip + catHtml;
-  document.getElementById("catBar").innerHTML = mobileCatHtml
-    + `<span style="flex:1"></span>`
+  // Stumble has no alternate views (list/grid) to toggle — skip the view row entirely.
+  const viewHtml = curTab==="stumble" ? "" : `<span style="flex:1"></span>`
     + VIEWS.map(([v,label])=>
     `<button class="catpill${viewMode===v?" on":""}" style="${viewMode===v?"background:var(--ink)":""}" title="View"
       onclick="setView('${v}')">${label}</button>`).join("")
     + (curTab==="imported" ? `<button class="catpill" title="Open reader view" onclick="openReader()">&#128214; Reader</button>` : "");
+  document.getElementById("catBar").innerHTML = mobileCatHtml + viewHtml;
   requestAnimationFrame(setStickyOffsets);
 }
 function setFilter(k){

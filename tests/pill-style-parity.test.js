@@ -17,7 +17,20 @@ ok(".tg.on active style exists", /\.tg\.on\{[^}]*background:var\(--accent\)[^}]*
 ok("stCatSideHTML builds a .tag-side aside with .tg pills", /function stCatSideHTML\(\)[\s\S]{0,220}?class="tag-side"[\s\S]{0,160}?class="tg/.test(src));
 ok("renderStumble wraps content beside the sidebar (stWrap → imp-body + stCatSideHTML)", /function stWrap\([\s\S]{0,160}?imp-body[\s\S]{0,60}?stCatSideHTML\(\)/.test(src));
 ok("stumble top-bar pills are gated on the sidebar being off", /curTab==="stumble"[\s\S]{0,260}?stSidebarOn\(\) \? ""/.test(src));
-ok("stumble never uses the chunky .catpill", !/curTab==="stumble"[\s\S]{0,300}?class="catpill/.test(src));
+// renderCatBar has TWO separate `curTab==="stumble"` checks: the category-pill
+// selection (this assertion) and, further down, a `? "" : ...view-toggle row`
+// guard whose catpill-classed buttons only exist in the FALSE branch (never
+// rendered on Stumble). Scope this check to the first occurrence only — a
+// blanket file-wide search would false-positive on that second, unrelated,
+// already-empty-string-gated occurrence regardless of window size.
+{
+  const firstIdx = src.indexOf('curTab==="stumble"');
+  const secondIdx = src.indexOf('curTab==="stumble"', firstIdx + 1);
+  const catPillCheckRegion = src.slice(firstIdx, secondIdx);
+  ok("stumble never uses the chunky .catpill", !/curTab==="stumble"[\s\S]{0,300}?class="catpill/.test(catPillCheckRegion));
+}
+ok("the view-toggle row's .catpill buttons are gated behind an empty-string Stumble branch",
+  /curTab==="stumble" \? "" : `<span style="flex:1">/.test(src));
 
 // Saved category sidebar (v1.12.14) uses .tg with counts, mirroring the tag sidebar.
 ok("catSideHTML uses .tg pills with a count <b>", /function catSideHTML\(\)[\s\S]{0,600}?class="tg[\s\S]{0,120}?<b>/.test(src));
