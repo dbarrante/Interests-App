@@ -24,6 +24,22 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": addClip uses isGenericTitle", () => {
     assert.match(src, /if\(cap\.title && \(isNew \|\| isGenericTitle\(item\.title\|\|"", ?item\.url\)\)\) item\.title = cap\.title\.slice\(0,250\);/);
   });
+  t(label + ": normalizeTitleKey exists and normalizes case/whitespace", () => {
+    assert.match(src, /function normalizeTitleKey\(t\)\{/);
+  });
+  t(label + ": allTitleKeys scans both imported and saved", () => {
+    const m = /function allTitleKeys\(excludeId\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "allTitleKeys not found");
+    assert.match(m[1], /imported\.forEach/);
+    assert.match(m[1], /saved\.forEach/);
+  });
+  t(label + ": generateUniqueTitle retries up to 3 times on collision, then disambiguates", () => {
+    const m = /async function generateUniqueTitle\(card, ?extraAvoid\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "generateUniqueTitle not found");
+    assert.match(m[1], /attempt\s*<\s*3/, "should retry up to 3 times");
+    assert.match(m[1], /buildTitlePrompt\(/);
+    assert.match(m[1], /parseTitleReply\(/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

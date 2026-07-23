@@ -4792,6 +4792,53 @@ function normTitle(t){
   if (s.length < 10 || s.split(" ").length < 2) return "";       // too short to group on safely
   return s;
 }
+// Exact-after-normalization title key for LIBRARY-WIDE UNIQUENESS. Deliberately
+// NOT normTitle() (that's a lossy fuzzy-grouping key for the Duplicates tab —
+// too aggressive for "must be unique", which needs a much lighter touch).
+function normalizeTitleKey(t){ return String(t==null?"":t).toLowerCase().trim().replace(/\s+/g," "); }
+// Every current title in the library (imported + saved), normalized, minus
+// the card being (re)titled itself (so a card checking against its OWN
+// current title doesn't spuriously collide with itself).
+function allTitleKeys(excludeId){
+  const keys = new Set();
+  imported.forEach(c=>{ if(c && c.id!==excludeId && c.title) keys.add(normalizeTitleKey(c.title)); });
+  saved.forEach(c=>{ if(c && c.id!==excludeId && c.title) keys.add(normalizeTitleKey(c.title)); });
+  return keys;
+}
+// Generates a unique, non-generic AI title for one card (imported OR saved —
+// both use .title; description is .desc for imported, .benefit for saved).
+// Returns the title string, or null when generation isn't possible (no AI
+// key, or there's no description AND no url — not enough signal for a
+// meaningful title). extraAvoid: additional in-flight titles to avoid (the
+// Library-Health "Suggest titles" batch flow passes the titles it already
+// accepted earlier in the same run, so two suggestions can't collide with
+// each other before either is saved).
+async function generateUniqueTitle(card, extraAvoid){
+  if(!IA_AI.hasAIKey()) return null;
+  const description = card.desc || card.benefit || "";
+  if(!description && !card.url) return null;
+  const dom = domain(card.url)||"";
+  const existing = allTitleKeys(card.id);
+  (extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));
+  let avoidTitles = [];
+  for(let attempt=0; attempt<3; attempt++){
+    let reply;
+    try{ reply = await callAI(buildTitlePrompt({url:card.url, domain:dom, description, avoidTitles})); }
+    catch(e){ console.warn("AI title generation failed", e); return null; }
+    const candidate = parseTitleReply(reply);
+    if(!candidate) continue;
+    const key = normalizeTitleKey(candidate);
+    if(!existing.has(key)) return candidate;
+    avoidTitles = avoidTitles.concat([candidate]).slice(-3);
+  }
+  // Still colliding after 3 tries: disambiguate with the domain, then a numeric suffix.
+  const last = avoidTitles[avoidTitles.length-1] || (dom || "Untitled");
+  let disambiguated = dom ? (last+" — "+dom) : last;
+  if(!existing.has(normalizeTitleKey(disambiguated))) return disambiguated;
+  let n=2;
+  while(existing.has(normalizeTitleKey(disambiguated+" ("+n+")"))) n++;
+  return disambiguated+" ("+n+")";
+}
 // Pick the member to KEEP from a duplicate group. Higher score wins.
 function dupePrimary(members){
   const score = (mem)=>{
