@@ -12,7 +12,7 @@ const path = require("path");
 function extractFn(html, name) {
   // Find the function declaration. Must be preceded by a newline or start of
   // string so we don't accidentally match an inner function with the same name.
-  const declRe = new RegExp("(?:^|\\n)(function " + name + "\\b[^{]*)\\{", "m");
+  const declRe = new RegExp("(?:^|\\n)((?:async\\s+)?function " + name + "\\b[^{]*)\\{", "m");
   const dm = declRe.exec(html);
   if (!dm) return null;
 
