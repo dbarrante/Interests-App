@@ -40,6 +40,14 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /buildTitlePrompt\(/);
     assert.match(m[1], /parseTitleReply\(/);
   });
+  t(label + ": enrichOnOpen calls generateUniqueTitle automatically when still generic", () => {
+    const start = src.indexOf("async function enrichOnOpen(");
+    const end = src.indexOf("\nif(changed){", start) >= 0 ? src.indexOf("\nif(changed){", start) : src.indexOf("    if(changed){", start);
+    assert.ok(start >= 0 && end > start, "enrichOnOpen not found");
+    const body = src.slice(start, end);
+    assert.match(body, /isGenericTitle\(it\.title, ?it\.url\)/, "should re-check isGenericTitle after the free re-fetch");
+    assert.match(body, /generateUniqueTitle\(it\)/, "should call generateUniqueTitle for a still-generic title");
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

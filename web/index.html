@@ -4007,6 +4007,12 @@ async function enrichOnOpen(it, idx){
         if(d.length>10 && d.length<250){ it.desc=d; changed=true; }
       }catch(e){ console.warn("AI desc failed",e); }
     }
+    if(isGenericTitle(it.title, it.url)){
+      try{
+        const suggested = await generateUniqueTitle(it);
+        if(suggested){ it.title=suggested; changed=true; }
+      }catch(e){ console.warn("AI title generation failed",e); }
+    }
     if(changed){
       Store.putCards(imported);
       if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
