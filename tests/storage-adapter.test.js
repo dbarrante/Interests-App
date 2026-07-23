@@ -39,6 +39,13 @@ function loadStoreWithFetch(fetchImpl) {
     assert.strictEqual(r.name, "interests-backup-2026-06-26");
   });
 
+  await run("Store.backupNow forwards the destructive-cleanup safety flag", async () => {
+    calls = [];
+    const Store = loadStoreWithFetch(stub(() => ({ ok: true, verified: true })));
+    await Store.backupNow({ safety: true });
+    assert.deepStrictEqual(JSON.parse(calls[0].opts.body), { safety: true });
+  });
+
   await run("Store.listBackups GETs /api/backups and unwraps .backups", async () => {
     calls = [];
     const Store = loadStoreWithFetch(stub(() => ({ backups: [{ name: "interests-backup-2026-06-26", date: "2026-06-26", counts: {} }] })));

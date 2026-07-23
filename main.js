@@ -6,8 +6,10 @@ const { startServer } = require("./core/server");
 const sync = require("./core/sync");
 const { createAsyncSync } = require("./core/syncworker");
 const undiciGuard = require("./core/undici-guard");
-const { setKV, counts } = require("./core/db");
+const { setKV, getKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
+const { ensureChromeForAutoImport } = require("./core/chrome-launch");
+const { createChromeAvailabilityMonitor } = require("./core/chrome-monitor");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
 // from a cancelled/aborted response body during a link sweep) that would otherwise crash
@@ -26,6 +28,7 @@ let shutdownStarted = false;
 let httpServer = null;
 let ctx = null;                 // hoisted so will-quit / timers can reach it
 let timers = null;              // { stop() } from core/synctimers — hoisted for will-quit
+let chromeAvailabilityMonitor = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -106,6 +109,17 @@ if (!gotLock) {
 
       createWindow(port);
 
+      // Platform auto-import runs in the Chrome extension. While automatic
+      // checks are enabled, keep a visible Chrome window available. The first
+      // check runs after createWindow so detection cannot delay the UI; the
+      // minute timer covers Chrome being closed after Interests App starts.
+      chromeAvailabilityMonitor = createChromeAvailabilityMonitor({
+        readSettings: () => getKV(ctx.db, "ia_settings"),
+        ensureChrome: ensureChromeForAutoImport,
+        log: (e) => console.warn("auto-import: Chrome availability check failed:", e && e.message),
+      });
+      chromeAvailabilityMonitor.start();
+
       // Launch merge AFTER the window exists. It used to run synchronously
       // BEFORE the server/window: with a big peer delta the app showed no
       // window at all for the whole merge — "clicking does nothing" — and the
@@ -183,6 +197,7 @@ if (!gotLock) {
       }
     } catch (e) { /* best-effort */ }
     if (timers) { try { timers.stop(); } catch (e) {} }
+    if (chromeAvailabilityMonitor) { try { chromeAvailabilityMonitor.stop(); } catch (e) {} }
     if (httpServer) {
       try { httpServer.close(); } catch (_) { /* ignore */ }
     }

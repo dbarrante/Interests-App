@@ -88,6 +88,56 @@ const idb = {
       return new Promise((resolve, reject) => {
         s.transaction.oncomplete = () => resolve();
         s.transaction.onerror = () => reject(s.transaction.error);
+        s.transaction.onabort = () => reject(s.transaction.error || new Error("IndexedDB write aborted"));
+      });
+    });
+  },
+  putAcross(storeValues) {
+    const names = Object.keys(storeValues || {}).filter((name) => (storeValues[name] || []).length);
+    if (!names.length) return Promise.resolve();
+    return openDb().then((db) => new Promise((resolve, reject) => {
+      const transaction = db.transaction(names, "readwrite");
+      names.forEach((name) => (storeValues[name] || []).forEach((value) => transaction.objectStore(name).put(value)));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error("IndexedDB multi-store write aborted"));
+    }));
+  },
+  markNotDuplicates(entries) {
+    const requested = Array.isArray(entries) ? entries : [];
+    return openDb().then((db) => new Promise((resolve, reject) => {
+      const transaction = db.transaction(["cards", "saved"], "readwrite");
+      let changed = 0, failure = null;
+      requested.forEach((entry) => {
+        const store = transaction.objectStore(entry.scope === "saved" ? "saved" : "cards");
+        const request = store.get(String(entry.id));
+        request.onsuccess = () => {
+          const item = request.result;
+          if (!item) { failure = new Error("A duplicate card changed before the choice could be saved."); transaction.abort(); return; }
+          const prior = Array.isArray(item.dupeNotDuplicateGroups) ? item.dupeNotDuplicateGroups.filter((v) => typeof v === "string") : [];
+          if (prior.indexOf(entry.key) >= 0) return;
+          item.dupeNotDuplicateGroups = prior.slice(-49).concat([entry.key]);
+          item.updatedAt = Date.now(); changed++;
+          store.put(item);
+        };
+        request.onerror = () => { failure = request.error; transaction.abort(); };
+      });
+      transaction.oncomplete = () => resolve({ ok:true, changed });
+      transaction.onerror = () => { failure = failure || transaction.error; };
+      transaction.onabort = () => reject(failure || transaction.error || new Error("IndexedDB duplicate decision aborted"));
+    }));
+  },
+  // Full-array replacement must be one transaction. A clear followed by a
+  // separate putMany can strand the store empty if the browser suspends or the
+  // second transaction fails between those two operations.
+  replaceAll(storeName, values) {
+    return tx(storeName, "readwrite").then((s) => {
+      s.clear();
+      values.forEach((v) => s.put(v));
+      return new Promise((resolve, reject) => {
+        s.transaction.oncomplete = () => resolve();
+        s.transaction.onerror = () => reject(s.transaction.error);
+        s.transaction.onabort = () => reject(s.transaction.error || new Error("IndexedDB replacement aborted"));
       });
     });
   },

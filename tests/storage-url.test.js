@@ -22,6 +22,9 @@ t("saved endpoints", () => {
   assert.strictEqual(SE.saved(), "/api/saved");
   assert.strictEqual(SE.savedItem("s9"), "/api/saved/s9");
 });
+t("not-duplicate decision endpoint", () => {
+  assert.strictEqual(SE.notDuplicate(), "/api/duplicates/not-duplicate");
+});
 t("fp endpoints", () => {
   assert.strictEqual(SE.fp(), "/api/fp");
   assert.strictEqual(SE.fpItem("c4"), "/api/fp/c4");

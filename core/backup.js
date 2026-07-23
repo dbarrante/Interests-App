@@ -101,6 +101,13 @@ function backupCountsMatch(a, b) {
 
 function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
+// A dated daily backup, or an undated pre-cleanup safety snapshot (never rotated).
+const DATED_BACKUP_NAME = /^interests-backup-(\d{4}-\d{2}-\d{2})$/;
+const SAFETY_BACKUP_NAME = /^interests-backup-before-cleanup-(\d+)-([a-f0-9]{12})$/;
+function isValidBackupName(name) {
+  return DATED_BACKUP_NAME.test(String(name || "")) || SAFETY_BACKUP_NAME.test(String(name || ""));
+}
+
 function copyFileSync(src, dst) {
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   fs.copyFileSync(src, dst);
@@ -124,7 +131,7 @@ function verifyBackupFolder(folder, expectedCounts) {
 
   let database;
   try {
-    database = new DatabaseSync(path.join(folder, "interests.db"));
+    database = new DatabaseSync(path.join(folder, "interests.db"), { readOnly: true });
     const integrity = database.prepare("PRAGMA integrity_check").get();
     if (!integrity || integrity.integrity_check !== "ok") return false;
     const dc = counts(database);
@@ -164,70 +171,108 @@ function buildPortableSnapshot(db) {
   };
 }
 
-// Create dropboxBackupDir()/interests-backup-YYYY-MM-DD/, copy interests.db + new/
-// changed images, write meta.json LAST (presence signals a complete write).
-function runBackup(db, storeDir) {
+// A hard process/power stop can occur between the two publication renames.
+// If the canonical name is absent, recover the newest verified displaced copy
+// before beginning another backup. Hidden candidates are never auto-deleted.
+function recoverInterruptedPublish(backupRoot, name) {
+  const destRoot = path.join(backupRoot, name);
+  if (fs.existsSync(destRoot)) return;
+  let candidates = [];
+  try {
+    candidates = fs.readdirSync(backupRoot)
+      .filter(function (n) { return n.indexOf("." + name + ".previous-") === 0; })
+      .map(function (n) {
+        let mtime = 0;
+        try { mtime = fs.statSync(path.join(backupRoot, n)).mtimeMs; } catch (e) {}
+        return { name: n, mtime };
+      })
+      .sort(function (a, b) { return b.mtime - a.mtime; });
+  } catch (e) { return; }
+  for (const candidate of candidates) {
+    // verifyBackupFolder (not verifyBackup) — these hidden ".name.previous-*"
+    // candidates never match the public dated/safety naming pattern, so the
+    // name-allowlisted verifyBackup would always reject them.
+    const folder = path.join(backupRoot, candidate.name);
+    const meta = readMeta(folder);
+    if (!meta || !verifyBackupFolder(folder, meta._counts)) continue;
+    fs.renameSync(folder, destRoot);
+    return;
+  }
+}
+
+// Build a fresh image-bearing snapshot in a hidden stage, verify it, then publish
+// by same-parent rename. Cleanup snapshots use unique non-rotating names.
+function runBackup(db, storeDir, opts) {
+  opts = opts || {};
   const c = counts(db);
   const cnt = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(storeDir) | 0 };
-  const name = "interests-backup-" + dateStamp();
-  const destRoot = path.join(dropboxBackupDir(), name);
-  const stageRoot = destRoot + ".staging-" + process.pid + "-" + Date.now();
+  const name = opts.safety
+    ? ("interests-backup-before-cleanup-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex"))
+    : ("interests-backup-" + dateStamp());
+  const backupRoot = dropboxBackupDir();
+  const destRoot = path.join(backupRoot, name);
+  const token = process.pid + "-" + Date.now();
+  const stageName = "." + name + ".staging-" + token;
+  const previousName = "." + name + ".previous-" + token;
+  const stageRoot = path.join(backupRoot, stageName);
+  const previousRoot = path.join(backupRoot, previousName);
   const stageImages = path.join(stageRoot, "images");
-  fs.mkdirSync(stageImages, { recursive: true });
+  fs.mkdirSync(backupRoot, { recursive: true });
+  recoverInterruptedPublish(backupRoot, name);
 
   // Flush WAL pages into interests.db so a backup taken while the live db is open
   // captures the most recent committed writes (the on-disk file lags the -wal sidecar).
   try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
   catch (e) { throw new Error("backup WAL checkpoint failed: " + (e && e.message || e)); }
 
-  // Reuse a verified same-day image set when possible, but never write into
-  // the published folder. A failed run therefore leaves the prior good backup
-  // untouched and the new folder is only published after verification.
-  let reused = false;
+  let displaced = false;
   try {
-    const oldMeta = readMeta(destRoot);
-    reused = !!(oldMeta && verifyBackupFolder(destRoot, oldMeta._counts));
-  } catch (e) { reused = false; }
-  if (reused) fs.cpSync(destRoot, stageRoot, { recursive: true });
+    // Build a fresh exact mirror. Never trust an older shard merely because its
+    // id and byte length happen to match the live file.
+    fs.mkdirSync(stageImages, { recursive: true });
+    copyFileSync(path.join(storeDir, "interests.db"), path.join(stageRoot, "interests.db"));
 
-  // Copy the database into staging; the published same-day backup is never
-  // overwritten in place.
-  copyFileSync(path.join(storeDir, "interests.db"), path.join(stageRoot, "interests.db"));
-
-  // incremental image copy
-  const srcImages = imagesDir(storeDir);
-  for (const id of changedImageIds(storeDir, stageImages)) {
-    copyFileSync(path.join(srcImages, id + ".jpg"), path.join(stageImages, id + ".jpg"));
-  }
-  const sourceIds = new Set(listImageIds(storeDir).map(function (id) { return id + ".jpg"; }));
-  for (const nameInStage of fs.readdirSync(stageImages)) {
-    if (/\.jpg$/.test(nameInStage) && !sourceIds.has(nameInStage)) {
-      fs.rmSync(path.join(stageImages, nameInStage), { force: true });
+    // Exact image copy from the live store.
+    const srcImages = imagesDir(storeDir);
+    for (const id of listImageIds(storeDir)) {
+      copyFileSync(path.join(srcImages, id + ".jpg"), path.join(stageImages, id + ".jpg"));
     }
-  }
 
   // Portable snapshot BEFORE meta.json — meta.json's presence is the backup's
   // completion marker (see readMeta/verifyBackup below), so everything else
   // must be written first.
-  fs.writeFileSync(path.join(stageRoot, "snapshot.json"), JSON.stringify(buildPortableSnapshot(db)));
+    fs.writeFileSync(path.join(stageRoot, "snapshot.json"), JSON.stringify(buildPortableSnapshot(db)));
 
-  // meta.json LAST
-  fs.writeFileSync(path.join(stageRoot, "meta.json"), JSON.stringify({ _counts: cnt, _images: imageManifest(stageImages), ts: Date.now() }));
-  if (!verifyBackupFolder(stageRoot, cnt)) throw new Error("backup verification failed");
+    // meta.json LAST. _images carries a per-file sha256 manifest so verification
+    // (verifyBackupFolder) catches silent content corruption, not just a count match.
+    fs.writeFileSync(path.join(stageRoot, "meta.json"), JSON.stringify({ _counts: cnt, _images: imageManifest(stageImages), ts: Date.now() }));
+    if (!verifyBackupFolder(stageRoot, cnt)) throw new Error("staged backup verification failed");
 
-  // Publish after verification. If replacing the dated folder fails, restore
-  // the displaced prior copy so an operational error never exposes a blank or
-  // partial same-day backup.
-  let displaced = null;
-  try {
+    // Publish by same-parent renames. Keep the displaced backup until the
+    // canonical replacement has itself passed verification.
     if (fs.existsSync(destRoot)) {
-      displaced = destRoot + ".previous-" + process.pid + "-" + Date.now();
-      fs.renameSync(destRoot, displaced);
+      fs.renameSync(destRoot, previousRoot);
+      displaced = true;
     }
-    fs.renameSync(stageRoot, destRoot);
-    if (displaced) { try { fs.rmSync(displaced, { recursive: true, force: true }); } catch (e) {} }
+    try {
+      fs.renameSync(stageRoot, destRoot);
+      if (!verifyBackup(name, cnt)) throw new Error("published backup verification failed");
+    } catch (publishError) {
+      if (displaced) {
+        try { fs.renameSync(destRoot, stageRoot); } catch (e) {}
+        fs.renameSync(previousRoot, destRoot);
+        displaced = false;
+      }
+      throw publishError;
+    }
+    if (displaced) {
+      fs.rmSync(previousRoot, { recursive: true, force: true });
+      displaced = false;
+    }
   } catch (e) {
-    try { if (!fs.existsSync(destRoot) && displaced && fs.existsSync(displaced)) fs.renameSync(displaced, destRoot); } catch (restoreError) {}
+    try { fs.rmSync(stageRoot, { recursive: true, force: true }); } catch (cleanupError) {}
+    // Never remove previousRoot here: if rollback failed it is the only known
+    // good copy and its hidden name keeps automatic rotation away from it.
     throw e;
   }
   // Record last-known-healthy counts OUTSIDE the store (config.json) so a
@@ -247,25 +292,27 @@ function listBackups() {
   const root = dropboxBackupDir();
   let names = [];
   try { names = fs.readdirSync(root); } catch (e) { return []; }
-  const re = /^interests-backup-(\d{4}-\d{2}-\d{2})$/;
   return names
     .map(function (n) {
-      const m = re.exec(n);
-      if (!m) return null;
+      const dated = DATED_BACKUP_NAME.exec(n);
+      const safety = SAFETY_BACKUP_NAME.exec(n);
+      if (!dated && !safety) return null;
       let isDir = false;
       try { isDir = fs.statSync(path.join(root, n)).isDirectory(); } catch (e) { isDir = false; }
       if (!isDir) return null;
       const meta = readMeta(path.join(root, n));
-      return { name: n, date: m[1], counts: meta ? meta._counts : null };
+      const sortTs = safety ? (+safety[1] || 0) : Date.parse(dated[1] + "T00:00:00Z");
+      return { name: n, date: dated ? dated[1] : new Date(sortTs).toISOString(), counts: meta ? meta._counts : null, safety: !!safety, sortTs };
     })
     .filter(Boolean)
-    .sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+    .sort(function (a, b) { return b.sortTs - a.sortTs; });
 }
 
-// True iff the named backup has interests.db, an images/ file count equal to
-// expectedCounts.images, and meta._counts matching expectedCounts.
+// True iff the named backup has an integrity-checked database with matching
+// row counts, a byte-exact image set (per-file sha256, not just a count match),
+// and matching completion metadata.
 function verifyBackup(name, expectedCounts) {
-  if (!/^interests-backup-\d{4}-\d{2}-\d{2}$/.test(String(name || ""))) return false;
+  if (!isValidBackupName(name)) return false;
   const folder = path.join(dropboxBackupDir(), name);
   const meta = readMeta(folder);
   return !!meta && verifyBackupFolder(folder, expectedCounts || meta._counts);
@@ -307,7 +354,7 @@ function overlayImages(srcImages, dstImages) {
 // restore is recoverable), then swap the backup's db + images into the live store
 // and reopen. Old/live data is never destroyed without a snapshot first.
 function restore(name, ctx) {
-  if (!/^interests-backup-\d{4}-\d{2}-\d{2}$/.test(String(name || ""))) return { ok: false };
+  if (!isValidBackupName(name)) return { ok: false };
   const backupFolder = path.join(dropboxBackupDir(), name);
   let hasDb = false;
   try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }

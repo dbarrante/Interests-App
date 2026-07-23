@@ -160,6 +160,158 @@ t("runBackup copies db + images and verifyBackup confirms", () => {
   });
 });
 
+t("runBackup creates an exact same-day image mirror after live removals", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    images.putImg(store, "orphan", TINY_JPG);
+
+    const first = backup.runBackup(db, store);
+    assert.strictEqual(first.counts.images, 2);
+    fs.rmSync(path.join(store, "images", "orphan.jpg"));
+    const liveC1 = path.join(store, "images", "c1.jpg");
+    const sameSize = fs.statSync(liveC1).size;
+    fs.writeFileSync(liveC1, Buffer.alloc(sameSize, 7));
+
+    const refreshed = backup.runBackup(db, store);
+    const backupImages = path.join(backup.dropboxBackupDir(), refreshed.name, "images");
+    assert.deepStrictEqual(fs.readdirSync(backupImages).filter(function (n) { return n.endsWith(".jpg"); }).sort(), ["c1.jpg"]);
+    assert.deepStrictEqual(fs.readFileSync(path.join(backupImages, "c1.jpg")), fs.readFileSync(liveC1), "same-size changed bytes are refreshed");
+    assert.strictEqual(backup.verifyBackup(refreshed.name, refreshed.counts), true);
+    db.close();
+  });
+});
+
+t("runBackup creates unique non-rotating cleanup safety snapshots", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const out = backup.runBackup(db, store, { safety: true });
+    assert.match(out.name, /^interests-backup-before-cleanup-\d+-[a-f0-9]{12}$/);
+    assert.strictEqual(backup.verifyBackup(out.name, out.counts), true);
+    assert.strictEqual(backup.listBackups().some(function (b) { return b.name === out.name && b.safety; }), true);
+    backup.rotate(0);
+    assert.strictEqual(fs.existsSync(path.join(backup.dropboxBackupDir(), out.name)), true, "rotation ignores cleanup snapshots");
+    db.close();
+  });
+});
+
+t("cleanup safety snapshots remain distinct when timestamps collide", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const originalNow = Date.now;
+    Date.now = function () { return 1700000000000; };
+    let first, second;
+    try {
+      first = backup.runBackup(db, store, { safety: true });
+      const liveFile = path.join(store, "images", "c1.jpg");
+      fs.writeFileSync(liveFile, Buffer.alloc(fs.statSync(liveFile).size, 9));
+      second = backup.runBackup(db, store, { safety: true });
+    } finally {
+      Date.now = originalNow;
+    }
+    assert.notStrictEqual(first.name, second.name);
+    assert.strictEqual(backup.verifyBackup(first.name, first.counts), true);
+    assert.strictEqual(backup.verifyBackup(second.name, second.counts), true);
+    const root = backup.dropboxBackupDir();
+    assert.notDeepStrictEqual(fs.readFileSync(path.join(root, first.name, "images", "c1.jpg")), fs.readFileSync(path.join(root, second.name, "images", "c1.jpg")));
+    db.close();
+  });
+});
+
+t("verifyBackup rejects metadata counts not present in the copied database", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const out = backup.runBackup(db, store);
+    const claimed = { imported: 2, saved: 0, images: 0 };
+    const folder = path.join(backup.dropboxBackupDir(), out.name);
+    fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: claimed, ts: Date.now() }));
+    assert.strictEqual(backup.verifyBackup(out.name, claimed), false);
+    db.close();
+  });
+});
+
+t("runBackup preserves the prior verified backup when staged refresh fails", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    images.putImg(store, "prior", TINY_JPG);
+    const first = backup.runBackup(db, store);
+    const priorCounts = first.counts;
+    const priorFolder = path.join(backup.dropboxBackupDir(), first.name);
+    fs.rmSync(path.join(store, "images", "prior.jpg"));
+
+    const originalCopy = fs.copyFileSync;
+    fs.copyFileSync = function (src, dst) {
+      if (src === path.join(store, "interests.db") && dst.indexOf(".staging-") >= 0) throw new Error("simulated staged write failure");
+      return originalCopy.apply(fs, arguments);
+    };
+    try {
+      assert.throws(function () { backup.runBackup(db, store); }, /simulated staged write failure/);
+    } finally {
+      fs.copyFileSync = originalCopy;
+    }
+
+    assert.strictEqual(backup.verifyBackup(first.name, priorCounts), true);
+    assert.deepStrictEqual(fs.readdirSync(path.join(priorFolder, "images")).filter(function (n) { return n.endsWith(".jpg"); }).sort(), ["c1.jpg", "prior.jpg"]);
+    db.close();
+  });
+});
+
+t("runBackup rolls the prior verified backup back when publish rename fails", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    images.putImg(store, "prior", TINY_JPG);
+    const first = backup.runBackup(db, store);
+    const priorCounts = first.counts;
+    fs.rmSync(path.join(store, "images", "prior.jpg"));
+
+    const originalRename = fs.renameSync;
+    fs.renameSync = function (src, dst) {
+      if (src.indexOf(".staging-") >= 0 && dst === path.join(backup.dropboxBackupDir(), first.name)) throw new Error("simulated publish failure");
+      return originalRename.apply(fs, arguments);
+    };
+    try {
+      assert.throws(function () { backup.runBackup(db, store); }, /simulated publish failure/);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
+    assert.strictEqual(backup.verifyBackup(first.name, priorCounts), true);
+    db.close();
+  });
+});
+
+t("runBackup reconciles a verified backup displaced by an interrupted publish", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const first = backup.runBackup(db, store);
+    const root = backup.dropboxBackupDir();
+    const hidden = "." + first.name + ".previous-interrupted";
+    fs.renameSync(path.join(root, first.name), path.join(root, hidden));
+
+    const refreshed = backup.runBackup(db, store);
+    assert.strictEqual(backup.verifyBackup(refreshed.name, refreshed.counts), true);
+    assert.strictEqual(fs.existsSync(path.join(root, hidden)), false, "verified displaced folder was reconciled");
+    db.close();
+  });
+});
+
 t("runBackup writes a portable snapshot.json with unstripped settings", () => {
   withBackupDir(function () {
     const store = newStore();

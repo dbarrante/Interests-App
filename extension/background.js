@@ -1410,9 +1410,9 @@ function waitTabComplete(tabId, timeoutMs) {
       catch (e) { finish(); }
     }
     try { chrome.tabs.onUpdated.addListener(onUpd); } catch (e) {}
-    probe();
     keepAlive = setInterval(probe, 1000);
     deadline = setTimeout(finish, timeoutMs || 30000);
+    probe();
   });
 }
 // Automated version of the manual "Refresh → Save to Interests" flow for a

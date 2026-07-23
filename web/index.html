@@ -254,6 +254,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #modal.open{display:flex}
 #healthModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:95;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
 #healthModal.open{display:flex}
+#healthModal.dupe-fullscreen{padding:0;align-items:stretch}
+#healthModal.dupe-fullscreen .dupe-box{width:100vw;max-width:none;height:100dvh;max-height:none;border-radius:0}
+#healthModal.dupe-fullscreen .dupe-large-grid{grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr))}
+#healthModal.dupe-fullscreen .dupe-card-photo{aspect-ratio:16/10}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 #healthBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
 #healthBody .dupe-row .meta .t{cursor:pointer}
@@ -267,12 +271,38 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;justify-content:flex-end}
 .dupe-group{border:1px solid var(--line);border-radius:11px;padding:10px;margin:12px 0}
 .dupe-row{display:flex;align-items:center;gap:12px;padding:6px 4px}
+.dupe-row-photo{display:flex;flex-shrink:0;cursor:pointer}
 .dupe-row img,.dupe-row .ph{width:64px;height:48px;object-fit:cover;border-radius:7px;background:#e8e4de;flex-shrink:0}
 .dupe-row .meta{flex:1;min-width:0}
 .dupe-row .meta .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dupe-row .meta .s{font-size:12px;opacity:.7}
 .dupe-row.keep{background:rgba(34,139,69,.12);border-radius:8px}
 .dupe-badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--line)}
+.dupe-modebar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:4px 4px 12px}
+.dupe-review-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.dupe-modecopy{font-size:12px;color:var(--muted);line-height:1.4}
+.dupe-modecopy b{display:block;color:var(--ink);font-size:13px}
+.dupe-modes{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:999px}
+.dupe-modes button{border:0;background:transparent;color:var(--muted);border-radius:999px;padding:7px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.dupe-modes button.on{background:var(--ink);color:var(--card)}
+.dupe-progress{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:8px 4px 12px}
+.dupe-progress-title{font-size:14px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dupe-progress-count{font-size:12px;color:var(--muted);white-space:nowrap}
+.dupe-large-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.dupe-review-card{border:1px solid var(--line);border-radius:11px;overflow:hidden;display:flex;flex-direction:column;min-width:0;background:var(--card)}
+.dupe-review-card.keep{border:2px solid #228b45;background:rgba(34,139,69,.06)}
+.dupe-card-photo{position:relative;width:100%;aspect-ratio:4/3;background:#e8e4de;overflow:hidden;cursor:pointer}
+.dupe-card-photo img,.dupe-card-photo .ph{width:100%;height:100%;object-fit:cover;border-radius:0;background:#e8e4de;display:block}
+.dupe-card-photo .ph:after{content:"No image";display:flex;align-items:center;justify-content:center;height:100%;font-size:12px;color:var(--muted)}
+.dupe-card-keep{position:absolute;top:8px;left:8px;background:#228b45;color:#fff;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.dupe-card-desc{padding:11px 12px;flex:1;min-width:0}
+.dupe-card-desc .t{font-size:13px;font-weight:700;line-height:1.35}
+.dupe-card-desc .d{font-size:12px;line-height:1.45;color:var(--muted);margin-top:6px;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.dupe-card-desc .s{font-size:11px;color:var(--muted);margin-top:8px}
+.dupe-card-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;border-top:1px solid var(--line);font-size:12px;flex-wrap:wrap}
+.dupe-safety{font-size:12px;color:var(--muted);line-height:1.45;padding:12px 4px 2px}
+.dupe-safety b{color:var(--ink)}
+@media(max-width:700px){.dupe-large-grid{grid-template-columns:1fr}.dupe-card-photo{aspect-ratio:16/10}.dupe-box{width:min(620px,96vw)}}
 .modal-box{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);max-width:560px;width:100%;padding:26px 28px;position:relative;max-height:85vh;overflow:auto}
 .mclose{position:absolute;top:12px;right:14px;border:0;background:transparent;font-size:17px;cursor:pointer;color:var(--muted)}
 .modal-box h2{font-size:18px;margin-bottom:12px}
@@ -642,7 +672,8 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 
       <div class="sec" id="secAutoImport">
         <h3>Platform auto-import</h3>
-        <div class="hint" style="margin-bottom:10px">On a schedule you pick, the browser extension quietly checks your Facebook, Instagram, Pinterest, and Google Saved pages for anything you saved natively there — no capture click needed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on the platform.</div>
+        <div class="hint" style="margin-bottom:10px">On a schedule you pick, the browser extension checks your Facebook, Instagram, Pinterest, and Google Saved pages for anything you saved natively there — no capture click needed. When this is enabled, the desktop app keeps a visible Chrome window available and reopens it within about a minute if it is closed. New posts land in the <b>Imported</b> tab as taste signals, with pictures backfilled later by the normal “Get pictures” flow. Nothing on the platform ever deletes a card here: something you remove from the app stays removed even if it's still saved on the platform.</div>
+        <div id="autoImportPwaNote" class="hint" style="display:none;margin-bottom:10px;padding:9px 11px;border:1px solid var(--line);border-radius:9px">These settings are read-only on iPhone. Change them in the Windows app; Dropbox sync brings the current choices here. The Windows app and browser extension must be running to perform checks—your iPhone does not sign in to or scrape these platforms.</div>
         <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">
           <input type="checkbox" id="autoImportToggle" style="width:auto"> Check automatically
         </label>
@@ -664,7 +695,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <select id="autoImportEvery" style="width:auto;margin-left:6px"><option value="24">Once a day</option><option value="12">12 hours</option><option value="8">8 hours</option><option value="4">4 hours</option><option value="2">2 hours</option><option value="1">1 hour</option></select>
         </div>
         <div style="margin-top:12px">
-          <button class="btn btn-ghost" onclick="autoImportCheckNow()">&#8635; Check now</button>
+          <button class="btn btn-ghost" id="autoImportCheckBtn" onclick="autoImportCheckNow()">&#8635; Check now</button>
         </div>
         <div id="autoImportStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
       </div>
@@ -884,9 +915,10 @@ function setCardImage(it, src){
     Store.imgPut(it.id, src);                                   // write the file
     const fp = imgFp(src); _fpMap[it.id]=fp; Store.fpSet(it.id, fp);   // placeholder fp (no bytes kept)
   } else {
-    const wasIdb = (it.img && (""+it.img).indexOf("idb:")===0);
+    const oldId = it.img && (""+it.img).indexOf("idb:")===0 ? (""+it.img).slice(4) : "";
     it.img=src||"";
-    if(wasIdb){ Store.imgDel(it.id); if(_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); } }
+    if(oldId===String(it.id)){ Store.imgDel(oldId); }
+    if(oldId&&_fpMap[it.id]){ delete _fpMap[it.id]; Store.fpDel(it.id); }
   }
 }
 // Capture/import paths must await the file and fingerprint writes before the
@@ -1786,21 +1818,28 @@ function renderSettings(){
   if(typeof renderPwaRecoveryStatus === "function") renderPwaRecoveryStatus();
   if(typeof renderBackupList === "function") renderBackupList();
   if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
-  // Desktop-only (secAutoImport is hidden on the PWA via window.IA_IDB below) — the
-  // PWA's Store has no auto-import methods, so this block must never run there.
-  if(!window.IA_IDB && document.getElementById("autoImportToggle")){
+  // These preferences live in ia_settings and sync between PWA and desktop.
+  // Only the desktop Core + browser extension perform the actual platform check.
+  if(document.getElementById("autoImportToggle")){
     document.getElementById("autoImportToggle").checked = !!S.autoImportOn;
-    document.getElementById("autoImportToggle").onchange = e=>{ S.autoImportOn=e.target.checked; save("settings",S); toast(S.autoImportOn?"Facebook/Instagram auto-import: checking once a day":"Auto-import off"); };
     document.getElementById("autoImportFbToggle").checked = S.autoImportFb!==false;
-    document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
     document.getElementById("autoImportIgToggle").checked = S.autoImportIg!==false;
-    document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
     document.getElementById("autoImportPinToggle").checked = S.autoImportPin!==false;
-    document.getElementById("autoImportPinToggle").onchange = e=>{ S.autoImportPin=e.target.checked; save("settings",S); };
     document.getElementById("autoImportGsToggle").checked = S.autoImportGs!==false;
-    document.getElementById("autoImportGsToggle").onchange = e=>{ S.autoImportGs=e.target.checked; save("settings",S); };
     document.getElementById("autoImportEvery").value = String(S.autoImportEvery||24);
-    document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
+    if(window.IA_IDB){
+      const note=document.getElementById("autoImportPwaNote"), btn=document.getElementById("autoImportCheckBtn");
+      if(note) note.style.display="block";
+      ["autoImportToggle","autoImportFbToggle","autoImportIgToggle","autoImportPinToggle","autoImportGsToggle","autoImportEvery"].forEach(id=>{ document.getElementById(id).disabled=true; });
+      if(btn){ btn.innerHTML="Runs on Windows"; btn.disabled=true; }
+    }else{
+      document.getElementById("autoImportToggle").onchange = e=>{ S.autoImportOn=e.target.checked; save("settings",S); toast(S.autoImportOn?"Facebook/Instagram auto-import: checking once a day":"Auto-import off"); };
+      document.getElementById("autoImportFbToggle").onchange = e=>{ S.autoImportFb=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportIgToggle").onchange = e=>{ S.autoImportIg=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportPinToggle").onchange = e=>{ S.autoImportPin=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportGsToggle").onchange = e=>{ S.autoImportGs=e.target.checked; save("settings",S); };
+      document.getElementById("autoImportEvery").onchange = e=>{ S.autoImportEvery=Number(e.target.value)||24; save("settings",S); toast("Auto-import: checking every "+(S.autoImportEvery===24?"day":S.autoImportEvery+" hour"+(S.autoImportEvery>1?"s":""))); };
+    }
     renderAutoImportStatus();
   }
 }
@@ -1812,6 +1851,10 @@ function renderSettings(){
 let _autoImportReqAt = 0;                 // when the user last tapped "Check now"
 const AUTO_IMPORT_WAIT_MS = 120000;       // show "Checking…" this long before "no response"
 async function autoImportCheckNow(){
+  if(window.IA_IDB){
+    toast("Automatic platform checks run from the Windows app and browser extension.", 5000);
+    return;
+  }
   _autoImportReqAt = Date.now();
   try{ await Store.setAutoImportRequest(_autoImportReqAt); }catch(e){ _autoImportReqAt = 0; toast("Couldn't reach the app service"); return; }
   toast("Checking Facebook/Instagram now — this can take a little while…", 4000);
@@ -1844,6 +1887,10 @@ function _autoImportRowHTML(label, platform, st){
 // records written by core/autoimport.js's processBatch) and paints a bar per platform.
 async function renderAutoImportStatus(){
   const el = document.getElementById("autoImportStatus"); if(!el) return;
+  if(window.IA_IDB){
+    el.innerHTML = "Current settings are shown above. Checks run from the Windows browser extension; new cards return here through Dropbox sync.";
+    return;
+  }
   let st = {fb:null, ig:null};
   try{ st = await Store.getAutoImportStatus() || st; }catch(e){}
   el.innerHTML = _autoImportRowHTML("Facebook","fb",st) + _autoImportRowHTML("Instagram","ig",st) + _autoImportRowHTML("Pinterest","pin",st) + _autoImportRowHTML("Google","gs",st);
@@ -2761,7 +2808,7 @@ function attachCardImages(){
     const setSrc = (im, id) => { Store.ensureImage(id).then(()=>{ im.src = Store.imgUrl(id); }); };
     const load = im=>{
       if(im.getAttribute("src")) return;
-      const idbId = im.getAttribute("data-imgid");        // Imported card: keyed by card id
+      const idbId = im.getAttribute("data-imgid");        // Exact persisted idb: pointer (not necessarily the card id after a safe merge)
       if(idbId){ im.loading="lazy"; setSrc(im, idbId); return; }
       const sid = im.getAttribute("data-imgsrc");          // Discovery/Saved card: resolve the item's image
       if(sid){ const it=findItem(sid); const s=it&&it.image; if(s && String(s).indexOf("idb:")===0){ im.loading="lazy"; setSrc(im, String(s).slice(4)); } else if(s){ im.src=s; } else { nextImg(im, sid); } }
@@ -3549,7 +3596,7 @@ function impCardHTML(it,idx){
   // <img data-imgid> for attachCardImages to fill from the service URL; a thumb-first
   // ternary would otherwise fall back to favicon/IM and leave nothing to fill.
   const icon = isIdbImg
-    ? `<img class="th" data-imgid="${esc(it.id)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
+    ? `<img class="th" data-imgid="${esc(String(it.img).slice(4))}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
     : (thumb
       ? `<img class="th" src="${esc(thumb)}" loading="lazy" onclick="impOpen(${idx})" onerror="${fvFallback}">`
       : (dom
@@ -3794,7 +3841,7 @@ function readerImgHTML(it){
   const yt = /^YouTube/i.test(it.title) || /youtu/.test(dom);
   const thumb = impThumb(it);
   const isIdbImg = it.img && String(it.img).indexOf("idb:")===0;
-  if(isIdbImg) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
+  if(isIdbImg) return `<img data-imgid="${esc(String(it.img).slice(4))}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
   if(thumb) return `<img src="${esc(thumb)}" loading="lazy" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`;
   return `<div class="ic">${yt?"YT":"IM"}</div>`;
 }
@@ -4692,14 +4739,17 @@ function openHealth(tab){
   _healthTab = tab || "dupes";
   _healthScanned = {};
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {};
+  _dupeFullScreen = false;
+  document.getElementById("healthModal").classList.remove("dupe-fullscreen");
   document.getElementById("healthModal").classList.add("open");
   renderHealth();
 }
 function closeHealth(){
-  document.getElementById("healthModal").classList.remove("open");
+  _dupeFullScreen = false;
+  document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {};
 }
-function healthSwitch(tab){ if(tab===_healthTab) return; _healthTab = tab; renderHealth(); }
+function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
 document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
 // Unified keydown handler for all overlay surfaces (was three separate keydown
@@ -4776,18 +4826,82 @@ function renderHealth(){
   if(tab==="nolink") return renderHealthNoLink(list);
 }
 // ---- Duplicates tab ----
+let _dupeReviewMode = "single";
+let _dupeReviewIndex = 0;
+let _dupeSpared = new Set();
+let _dupeFullScreen = false;
+function dupeSetFullscreen(on){
+  _dupeFullScreen = on==null ? !_dupeFullScreen : !!on;
+  document.getElementById("healthModal").classList.toggle("dupe-fullscreen",_dupeFullScreen);
+  const button=document.getElementById("dupeFullscreenBtn");
+  if(button){ button.textContent=_dupeFullScreen?"Exit full screen":"Full screen"; button.setAttribute("aria-pressed",String(_dupeFullScreen)); }
+}
+function dupeToggleRemoval(key,checked){
+  if(checked) _dupeSpared.delete(key); else _dupeSpared.add(key);
+}
+function dupeSetReviewMode(mode){
+  _dupeReviewMode = mode==="all" ? "all" : "single";
+  _dupeReviewIndex = Math.min(_dupeReviewIndex, Math.max(0,_dupeGroups.length-1));
+  renderHealthDupes(document.getElementById("healthList"));
+}
+function dupeReviewMove(delta){
+  _dupeReviewIndex = Math.max(0,Math.min(_dupeGroups.length-1,_dupeReviewIndex+delta));
+  renderHealthDupes(document.getElementById("healthList"));
+}
+function dupeModeBarHTML(){
+  return `<div class="dupe-modebar">
+    <div class="dupe-modecopy"><b>Review layout</b>Focus on one duplicate set or scan all groups.</div>
+    <div class="dupe-review-controls"><button class="btn btn-ghost" id="dupeFullscreenBtn" aria-pressed="${_dupeFullScreen}" onclick="dupeSetFullscreen()">${_dupeFullScreen?"Exit full screen":"Full screen"}</button>
+      <div class="dupe-modes" role="group" aria-label="Duplicate review layout">
+        <button class="${_dupeReviewMode==="all"?"on":""}" aria-pressed="${_dupeReviewMode==="all"}" onclick="dupeSetReviewMode('all')">All groups</button>
+        <button class="${_dupeReviewMode==="single"?"on":""}" aria-pressed="${_dupeReviewMode==="single"}" onclick="dupeSetReviewMode('single')">One at a time</button>
+      </div></div></div>`;
+}
+function dupeCompactGroupHTML(g,gi){
+  return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
+    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey)).join("")}</div>`;
+}
+function dupeLargeCardHTML(mem,gi,keep){
+  const it=mem.card;
+  const dom=domain(it.url)||(mem.scope==="saved"?"saved":"");
+  const date=it.sdate?new Date(it.sdate).toLocaleDateString():"";
+  const tag=mem.scope==="saved"?"Saved":"Imported";
+  const desc=it.desc||it.benefit||"No description saved.";
+  return `<div class="dupe-review-card${keep?" keep":""}">
+    <div class="dupe-card-photo" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" ondblclick="dupeOpenOriginal(this)" title="Double-click to open original">${dupeThumb(mem)}${keep?`<span class="dupe-card-keep">&#10003; Keep</span>`:""}</div>
+    <div class="dupe-card-desc"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
+      <div class="d">${esc(desc)}</div>
+      <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
+    <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
+      ? `<span>Best copy</span>`
+      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+         <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
+    </div></div>`;
+}
 function renderHealthDupes(list){
-  if(!_healthScanned.dupes){ _dupeGroups = scanDuplicates(); _healthScanned.dupes = true; }
+  if(!_healthScanned.dupes){ _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _healthScanned.dupes = true; }
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
   if(!_dupeGroups.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found.</div>`; return; }
-  list.innerHTML = `
-    <div class="s" style="opacity:.75;padding:2px 4px 10px">${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy of each is kept (green); uncheck any you want to spare, or "Keep this" to change which one stays.</div>
-    ${_dupeGroups.map((g,gi)=>`<div class="dupe-group">
-      ${g.members.slice().sort((a,b)=> (a.card.id===g.keepId?-1:1)-(b.card.id===g.keepId?-1:1))
-          .map(m=>dupeRowHTML(m, gi, m.card.id===g.keepId)).join("")}
-    </div>`).join("")}
-    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px">
-      <button class="btn btn-primary" onclick="applyDupeRemoval()">Remove selected</button></div>`;
+  _dupeReviewIndex=Math.min(_dupeReviewIndex,_dupeGroups.length-1);
+  const summary=`${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy is kept; uncheck any duplicate you want to spare.`;
+  if(_dupeReviewMode==="all"){
+    list.innerHTML=`${dupeModeBarHTML()}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
+      ${_dupeGroups.map(dupeCompactGroupHTML).join("")}
+      <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices</button></div>`;
+  } else {
+    const g=_dupeGroups[_dupeReviewIndex];
+    const sorted=g.members.slice().sort((a,b)=>(dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1));
+    const title=(g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0]).card.title||"Duplicate set";
+    list.innerHTML=`${dupeModeBarHTML()}
+      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
+        <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
+      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey)).join("")}</div>
+      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
+      <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="dupeReviewMove(1)" ${_dupeReviewIndex===_dupeGroups.length-1?"disabled":""}>Skip for now</button>
+          <button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices &amp; next &#8594;</button></div></div>`;
+  }
   attachCardImages();
 }
 // ---- Dead & unsafe tab ----
@@ -4888,16 +5002,37 @@ function scanDuplicates(){
   members.forEach((m,i)=>{ const r=find(i); (groups[r]=groups[r]||[]).push(m); });
   const out = [];
   Object.values(groups).forEach(mem=>{
-    if (mem.length < 2) return;
-    out.push({ members: mem, keepId: dupePrimary(mem).card.id });
+    if (mem.length < 2 || dupeGroupDismissed(mem)) return;
+    out.push({ members: mem, keepKey: dupeMemberKey(dupePrimary(mem)) });
   });
   return out;
 }
+function dupeGroupKey(members){
+  return JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+}
+function dupeGroupDismissed(members){
+  const key=JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  return (members||[]).length>1&&members.every(m=>Array.isArray(m.card&&m.card.dupeNotDuplicateGroups)&&m.card.dupeNotDuplicateGroups.indexOf(key)>=0);
+}
+function markDupeGroupNotDuplicate(members,importedById,savedById){
+  if((members||[]).length<2) return false;
+  const key=JSON.stringify(members.map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  let changed=false;
+  members.forEach(m=>{
+    const card=(m.scope==="saved"?savedById:importedById).get(m.card.id);
+    if(!card) return;
+    const prior=Array.isArray(card.dupeNotDuplicateGroups)?card.dupeNotDuplicateGroups:[];
+    if(prior.indexOf(key)>=0) return;
+    card.dupeNotDuplicateGroups=prior.concat([key]); changed=true;
+  });
+  return changed;
+}
+function dupeMemberKey(mem){ return String(mem&&mem.scope||"")+":"+String(mem&&mem.card&&mem.card.id||""); }
 let _dupeGroups = [];
 function dupeThumb(mem){
   const it = mem.card;
   const v = itemImg(it, mem.scope);
-  if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(it.id)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
+  if (v && String(v).indexOf("idb:")===0) return `<img data-imgid="${esc(String(v).slice(4))}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;   // lazy-loaded after render (attachCardImages) — may not be in the bounded cache
   const src = resolveImg(v);
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;
   return `<div class="ph"></div>`;
@@ -4908,69 +5043,215 @@ function dupeRowHTML(mem, gi, keep){
   const date = it.sdate ? new Date(it.sdate).toLocaleDateString() : "";
   const tag = mem.scope==="saved" ? "Saved" : "Imported";
   return `<div class="dupe-row${keep?" keep":""}">
-    ${dupeThumb(mem)}
+    <div class="dupe-row-photo" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" ondblclick="dupeOpenOriginal(this)" title="Double-click to open original">${dupeThumb(mem)}</div>
     <div class="meta"><div class="t">${esc(it.title||dom||"(untitled)")}</div>
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
+    ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
-      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" checked style="width:auto"> remove</label>
-         <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(it.id)}')">Keep this</button>`}
+      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+         <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
   </div>`;
 }
 // "Keep this" in the Duplicates tab: change which card stays, re-render the tab in place.
-function dupeSetKeep(gi, id){
-  if (_dupeGroups[gi]) _dupeGroups[gi].keepId = id;
+function dupeSetKeep(gi, key){
+  if (_dupeGroups[gi]) _dupeGroups[gi].keepKey = key;
   renderHealthDupes(document.getElementById("healthList"));
 }
-async function applyDupeRemoval(){
-  snapshotBeforeDestructive();
-  const checked = new Set(Array.prototype.map.call(
-    document.querySelectorAll('#healthBody input[data-rm]:checked'), el=>el.getAttribute("data-rm")));
-  if (!checked.size){ toast("Nothing selected to remove"); return; }
-  const rmImported = new Set(), rmSaved = new Set();
-  let removed = 0;
-  for (const g of _dupeGroups){
-    const keep = g.members.find(m=>m.card.id===g.keepId) || g.members[0];
-    const keepIsSaved = keep.scope==="saved";
-    for (const mem of g.members){
-      if (mem===keep) continue;
-      if (!checked.has(mem.scope+":"+mem.card.id)) continue;   // user spared it
-      const src = itemImg(mem.card, mem.scope);
-      const k = keep.card;
-      // merge best fields into the kept card
-      const keepImg = itemImg(k, keep.scope);
-      const keepHasImg = keepImg && (String(keepImg).indexOf("idb:")===0 || !isBadImg(resolveImg(keepImg)));
-      const srcIsIdb = src && String(src).indexOf("idb:")===0;
-      const srcHasImg = src && (srcIsIdb || !isBadImg(resolveImg(src)));
-      let keptSrcImg = false;
-      if (!keepHasImg && srcHasImg){
-        // copy the good image into the kept card. Image bytes live in service files now;
-        // for an idb source just point the kept card at the SAME image ref (no byte copy),
-        // and don't delete that file below. For http(s)/data sources, store inline as before.
-        if (srcIsIdb){ if(keepIsSaved) k.image = src; else k.img = src; keptSrcImg = true; }
-        else { setItemImg(k, keep.scope, resolveImg(src)); }
-      }
-      if (!k.desc && mem.card.desc) k.desc = mem.card.desc;
-      if (!k.sdate && mem.card.sdate) k.sdate = mem.card.sdate;
-      if (mem.card.tags && mem.card.tags.length) k.tags = [...new Set([...(k.tags||[]), ...mem.card.tags])];
-      if (mem.card.liked) k.liked = true;
-      if (mem.card.captured && (!k.captured || mem.card.captured < k.captured)) k.captured = mem.card.captured;
-      if (mem.card.blocked && !k.blocked) k.blocked = mem.card.blocked;
-      // delete the removed card's own (now orphaned) image + its fingerprint — unless the
-      // kept card just adopted that same image ref (keptSrcImg), in which case keep the file.
-      if (srcIsIdb && !keptSrcImg){ Store.imgDel(mem.card.id); if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; Store.fpDel(mem.card.id); } }
-      (mem.scope==="saved" ? rmSaved : rmImported).add(mem.card.id);
-      removed++;
+function dupeOpenButtonHTML(mem){
+  const it=mem.card||{};
+  return `<button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" data-dupe-scope="${esc(mem.scope)}" data-dupe-id="${esc(it.id||"")}" onclick="dupeOpenOriginal(this)" ${it.url?"":"disabled"} title="Open this card's original page in the browser">Open original</button>`;
+}
+function dupeOpenOriginal(button){
+  const scope=button&&button.getAttribute("data-dupe-scope");
+  const id=button&&button.getAttribute("data-dupe-id");
+  const collection=scope==="saved"?saved:scope==="imported"?imported:[];
+  const item=collection.find(card=>card&&String(card.id)===String(id));
+  if(!item||!/^https?:\/\//i.test(item.url||"")){ toast("This duplicate has no web page to open.",4000); return; }
+  openLink(item.url);
+}
+function dupeSnapshotSignature(cards,saves){
+  let hash=2166136261;
+  const rows=(cards||[]).map(c=>"i:"+JSON.stringify(c)).concat((saves||[]).map(c=>"s:"+JSON.stringify(c))).sort();
+  for(const row of rows){ for(let i=0;i<row.length;i++){ hash^=row.charCodeAt(i); hash=Math.imul(hash,16777619); } }
+  return (cards||[]).length+":"+(saves||[]).length+":"+(hash>>>0).toString(16);
+}
+async function createDupeSafetySnapshot(){
+  try{
+    if(window.IA_IDB){
+      const key="ia_dupe_safety_snapshot";
+      const groups=_dupeReviewMode==="single"?[_dupeGroups[_dupeReviewIndex]].filter(Boolean):_dupeGroups;
+      const refs=new Set();
+      groups.forEach(g=>g.members.forEach(m=>{ const v=itemImg(m.card,m.scope); if(v&&String(v).indexOf("idb:")===0) refs.add(String(v).slice(4)); }));
+      const imageIds=[];
+      for(const id of refs){ if(!await Store.ensureImage(id)||!await Store.imgHas(id)) return null; imageIds.push(id); }
+      const sig=dupeSnapshotSignature(imported,saved);
+      const snapshot={at:Date.now(),sig,imageIds,imported,saved};
+      await Store.kvSet(key,snapshot);
+      const check=await Store.kvGet(key);
+      if(!check||check.sig!==sig||dupeSnapshotSignature(check.imported,check.saved)!==sig) return null;
+      for(const id of imageIds){ if(!await Store.imgHas(id)) return null; }
+      return {kind:"pwa",key,sig};
     }
+    const result=await Store.backupNow({safety:true});
+    return result&&result.ok!==false&&result.verified===true?{kind:"desktop",name:result.name||""}:null;
+  }catch(e){ console.warn("duplicate cleanup safety snapshot failed",e); return null; }
+}
+async function restoreDupeSafetySnapshot(silent){
+  if(!window.IA_IDB){ if(!silent) toast("Use Settings → Restore to recover a desktop cleanup.",6000); return false; }
+  try{
+    const snapshot=await Store.kvGet("ia_dupe_safety_snapshot");
+    if(!snapshot||snapshot.sig!==dupeSnapshotSignature(snapshot.imported,snapshot.saved)) throw new Error("recovery journal failed verification");
+    if(!silent&&!confirm("Restore the library state from immediately before the last duplicate cleanup?")) return false;
+    for(const id of snapshot.imageIds||[]){ if(!await Store.imgHas(id)) throw new Error("a recovery image is missing"); }
+    await Store.putCards(snapshot.imported,{confirm:true});
+    await Store.putSaved(snapshot.saved,{confirm:true});
+    imported=snapshot.imported; saved=snapshot.saved; updateCounts();
+    _healthScanned.dupes=false; _dupeReviewIndex=0;
+    if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+    if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+    if(!silent) toast("Library restored from the duplicate-cleanup recovery journal.",6000);
+    return true;
+  }catch(e){ if(!silent) toast("Recovery failed: "+(e&&e.message||e),8000); return false; }
+}
+function mergeDupeMetadata(target,source){
+  const skip=new Set(["id","img","image","updatedAt","dupeNotDuplicateGroups"]);
+  const joinText=new Set(["desc","benefit","note","notes"]);
+  const earliest=new Set(["ts","sdate","captured","clipped","createdAt"]);
+  const latest=new Set(["lastUpdate","blocked"]);
+  const conflicts=Object.assign({},target.dupeConflicts||{});
+  const empty=v=>v==null||v==="";
+  Object.keys(source||{}).forEach(field=>{
+    if(skip.has(field)) return;
+    const sv=source[field], tv=target[field]; if(empty(sv)) return;
+    if(empty(tv)){ target[field]=sv; return; }
+    if(Array.isArray(sv)){
+      const vals=Array.isArray(tv)?tv.slice():[]; const seen=new Set(vals.map(v=>JSON.stringify(v)));
+      sv.forEach(v=>{ const k=JSON.stringify(v); if(!seen.has(k)){ seen.add(k); vals.push(v); } }); target[field]=vals; return;
+    }
+    if(typeof sv==="boolean"){ target[field]=!!tv||sv; return; }
+    if(typeof sv==="number"&&typeof tv==="number"&&earliest.has(field)){ target[field]=Math.min(tv,sv); return; }
+    if(typeof sv==="number"&&typeof tv==="number"&&latest.has(field)){ target[field]=Math.max(tv,sv); return; }
+    if(joinText.has(field)&&typeof sv==="string"&&typeof tv==="string"&&tv!==sv){ target[field]=tv+"\n\n"+sv; return; }
+    if(sv&&tv&&typeof sv==="object"&&typeof tv==="object"){
+      if(JSON.stringify(sv)!==JSON.stringify(tv)){ const vals=conflicts[field]||[tv]; if(!vals.some(v=>JSON.stringify(v)===JSON.stringify(sv))) vals.push(sv); conflicts[field]=vals; }
+      target[field]=Object.assign({},sv,tv); return;
+    }
+    if(tv!==sv){ const vals=conflicts[field]||[tv]; if(!vals.some(v=>JSON.stringify(v)===JSON.stringify(sv))) vals.push(sv); conflicts[field]=vals; }
+  });
+  if(Object.keys(conflicts).length) target.dupeConflicts=conflicts;
+}
+function dupeImageRefs(cards,saves){
+  const refs=new Set();
+  (cards||[]).forEach(c=>{ const v=c&&itemImg(c,"imported"); if(v&&String(v).indexOf("idb:")===0) refs.add(String(v).slice(4)); });
+  (saves||[]).forEach(c=>{ const v=c&&itemImg(c,"saved"); if(v&&String(v).indexOf("idb:")===0) refs.add(String(v).slice(4)); });
+  return refs;
+}
+async function rollbackDupePersistence(safety){
+  try{
+    if(safety&&safety.kind==="pwa") return await restoreDupeSafetySnapshot(true);
+    if(safety&&safety.name){ const r=await Store.restore(safety.name); if(r&&r.ok===true){ setTimeout(()=>location.reload(),300); return true; } }
+  }catch(e){ console.error("duplicate cleanup rollback failed",e); }
+  return false;
+}
+async function applyDupeRemoval(){
+  const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
+  const priorIndex=_dupeReviewIndex;
+  const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
+  const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  if(!checked.size){
+    const changes=[];
+    groupsToProcess.forEach(g=>{
+      const key=dupeGroupKey(g.members);
+      g.members.forEach(mem=>changes.push({scope:mem.scope,id:mem.card.id,key}));
+    });
+    showBusyOverlay("Saving your keep choices…");
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    try{
+      const batches=new Map(); changes.forEach(change=>{ if(!batches.has(change.key)) batches.set(change.key,[]); batches.get(change.key).push(change); });
+      for(const batch of batches.values()) await Store.markNotDuplicates(batch);
+      changes.forEach(change=>{
+        const collection=change.scope==="saved"?saved:imported;
+        const item=collection.find(card=>card&&String(card.id)===String(change.id)); if(!item) return;
+        const prior=Array.isArray(item.dupeNotDuplicateGroups)?item.dupeNotDuplicateGroups:[];
+        if(prior.indexOf(change.key)<0) item.dupeNotDuplicateGroups=prior.slice(-49).concat([change.key]);
+      });
+      _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
+      _healthScanned.dupes=false; renderHealth();
+      toast("Kept the cards and marked them as not duplicates.",5000);
+    }catch(e){
+      try{ imported=await Store.getCards(); saved=await Store.getSaved(); updateCounts(); }catch(_){}
+      _healthScanned.dupes=false; renderHealth();
+      toast("The keep choices could not be saved. No cards were removed — please try again.",7000);
+    }finally{ hideBusyOverlay(); }
+    return;
   }
-  // Splice + persist via the shared helper. skipImg: the merge loop above already did
-  // the conditional per-card image/fp cleanup (so a file the kept card adopted survives).
-  if (rmImported.size) removeCards(rmImported, {scope:"imported", skipImg:true});
-  if (rmSaved.size) removeCards(rmSaved, {scope:"saved", skipImg:true});
-  _dupeGroups = scanDuplicates();   // re-scan so the tab reflects what's left
+  showBusyOverlay("Creating a verified safety snapshot…");
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  const safety=await createDupeSafetySnapshot();
+  if(!safety){ hideBusyOverlay(); toast("Duplicate cleanup stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
+  let nextImported=imported.map(c=>c&&Object.assign({},c));
+  let nextSaved=saved.map(c=>c&&Object.assign({},c));
+  const nextImportedById=new Map(nextImported.filter(Boolean).map(c=>[c.id,c]));
+  const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
+  const rmImported=new Set(),rmSaved=new Set(),orphanImages=[],imageCopies=[];
+  let removed=0,notDuplicateGroups=0;
+  for(const g of groupsToProcess){
+    const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
+    const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
+    for(const mem of g.members){
+      if(mem===keep||!checked.has(mem.scope+":"+mem.card.id)) continue;
+      const src=itemImg(mem.card,mem.scope),keepImg=itemImg(k,keep.scope);
+      const keepHasImg=keepImg&&(String(keepImg).indexOf("idb:")===0||!isBadImg(resolveImg(keepImg)));
+      const srcIsIdb=src&&String(src).indexOf("idb:")===0;
+      const srcHasImg=src&&(srcIsIdb||!isBadImg(resolveImg(src)));
+      let keptSrcImg=false;
+      if(!keepHasImg&&srcHasImg){
+        if(srcIsIdb){ const sourceId=String(src).slice(4),targetId=String(k.id); setItemImg(k,keep.scope,"idb:"+targetId); imageCopies.push({sourceId,targetId}); }
+        else setItemImg(k,keep.scope,resolveImg(src));
+      }
+      mergeDupeMetadata(k,mem.card);
+      if(srcIsIdb&&!keptSrcImg&&!window.IA_IDB) orphanImages.push({imageId:String(src).slice(4),cardId:mem.card.id});
+      (mem.scope==="saved"?rmSaved:rmImported).add(mem.card.id); removed++;
+    }
+    const retained=g.members.filter(mem=>mem===keep||!checked.has(mem.scope+":"+mem.card.id));
+    if(markDupeGroupNotDuplicate(retained,nextImportedById,nextSavedById)) notDuplicateGroups++;
+  }
+  nextImported=nextImported.filter(c=>c&&!rmImported.has(c.id));
+  nextSaved=nextSaved.filter(c=>c&&!rmSaved.has(c.id));
+  try{
+    updateBusyOverlay("Saving your duplicate cleanup…");
+    for(const copy of imageCopies){ await Store.imgCopy(copy.sourceId,copy.targetId); if(!await Store.imgHas(copy.targetId)) throw new Error("copied image could not be verified"); }
+    const cardsResult=await Store.putCards(nextImported,{confirm:true});
+    if(cardsResult&&cardsResult.preserved) _reconcileById(nextImported,cardsResult.preserved);
+    const savedResult=await Store.putSaved(nextSaved,{confirm:true});
+    if(savedResult&&savedResult.preserved) _reconcileById(nextSaved,savedResult.preserved);
+  }catch(e){
+    const recovered=await rollbackDupePersistence(safety);
+    hideBusyOverlay();
+    toast(recovered?"Duplicate cleanup stopped safely; the previous library was restored.":"Duplicate cleanup failed. Use the verified safety backup to restore before continuing.",9000);
+    return;
+  }
+  imported=nextImported; saved=nextSaved; updateCounts();
+  updateBusyOverlay("Finishing image cleanup…");
+  const liveImageRefs=dupeImageRefs(nextImported,nextSaved),deletedImageIds=new Set();
+  for(const ref of orphanImages){
+    if(liveImageRefs.has(ref.imageId)) continue;
+    if(deletedImageIds.has(ref.imageId)) continue; deletedImageIds.add(ref.imageId);
+    try{ const imageId=ref.imageId; await Store.imgDel(imageId); if(_fpMap[ref.cardId]){ delete _fpMap[ref.cardId]; await Store.fpDel(ref.cardId); } }catch(e){ console.warn("duplicate orphan image cleanup deferred",ref.imageId,e); }
+  }
+  rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
+  _dupeGroups=scanDuplicates();
+  if(_dupeReviewMode==="single"){
+    const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
+    _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);
+    if(_dupeReviewIndex<0) _dupeReviewIndex=0;
+  }
   if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
-  if (curTab==="imported") renderImported(); else if (curTab==="saved") renderSaved();
-  toast("Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept the best copy of each", 5000);
+  if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+  hideBusyOverlay();
+  const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
+  toast(removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.",6000);
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
@@ -5282,7 +5563,7 @@ async function drainCaptures(){
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
   if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
-  else { const wasIdb=(item.image && (""+item.image).indexOf("idb:")===0); item.image=src||""; if(wasIdb) Store.imgDel(item.id); }
+  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); }
 }
 async function setSavedImageDurably(item, src){
   const oldImg=item.image;
@@ -5621,13 +5902,11 @@ async function pollSyncChanged(){
 setInterval(pollSyncChanged, 30000);
 setInterval(pollBatchProgress, 1500);
 setupPasteToCard();
-// Desktop-only Settings sections are fully functional on the real app but
-// silent no-ops on the PWA build (pwa/storage-pwa.js permanently stubs
-// their backing calls) — hide them there rather than show controls that
-// can never do anything. window.IA_IDB is set only by pwa/idb.js, which
-// only pwa/index.html loads, so this is a reliable PWA-vs-desktop check.
+// Hide only settings that truly require local desktop APIs. Platform auto-import
+// preferences remain visible because ia_settings syncs them to Windows, where
+// the Core service and browser extension perform the checks.
 if (window.IA_IDB) {
-  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"].forEach(function(id){
+  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.style.display = "none";
   });

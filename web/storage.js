@@ -13,6 +13,7 @@
     card: function (id) { return "/api/cards/" + encodeURIComponent(id); },
     saved: function () { return "/api/saved"; },
     savedItem: function (id) { return "/api/saved/" + encodeURIComponent(id); },
+    notDuplicate: function () { return "/api/duplicates/not-duplicate"; },
     fp: function () { return "/api/fp"; },
     fpItem: function (id) { return "/api/fp/" + encodeURIComponent(id); },
     captures: function () { return "/api/captures"; },
@@ -132,10 +133,12 @@
       },
       patchSaved: function (item) { return jsend("PATCH", SE.savedItem(item.id), { item: item }).then(function () {}); },
       delSaved: function (id) { return jsend("DELETE", SE.savedItem(id)).then(function () {}); },
+      markNotDuplicates: function (entries) { return jsend("POST", SE.notDuplicate(), { entries: entries || [] }); },
 
       // --- images: plain URLs for <img src>; no blob fetch, no in-memory cache ---
       imgUrl: function (id) { return SE.imgUrl(id); },
       imgPut: function (id, dataUrl) { return jsend("PUT", SE.imgUrl(id), { data: dataUrl }).then(function () {}); },
+      imgCopy: function (sourceId, targetId) { return jsend("POST", SE.imgUrl(targetId) + "/copy", { sourceId: sourceId }).then(function () {}); },
       imgDel: function (id) { return jsend("DELETE", SE.imgUrl(id)).then(function () {}); },
       imgHas: function (id) {
         return root.fetch(SE.imgUrl(id), { method: "GET" }).then(function (r) { return r.ok; }).catch(function () { return false; });
@@ -159,7 +162,7 @@
       setBatchProgress: function (p) { return jsend("POST", SE.batchProgress(), { progress: p }).then(function () {}); },
 
       // --- backup / restore / store location / import ---
-      backupNow: function () { return jsend("POST", SE.backup()); },
+      backupNow: function (opts) { return jsend("POST", SE.backup(), opts || {}); },
       listBackups: function () { return jget(SE.backups()).then(function (j) { return (j && j.backups) || []; }); },
       restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
       recoveryStatus: function () { return Promise.resolve({ available: false, reason: "PWA-only recovery journal" }); },

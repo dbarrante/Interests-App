@@ -1,0 +1,171 @@
+// Startup-only Chrome availability helper for platform auto-import.
+// Shell-free by design: a fixed PowerShell binary checks for a visible Chrome
+// window, and Chrome launches only from known Google installation paths.
+const childProcess = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+const POWERSHELL_EXE = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+function autoImportEnabled(settingsRaw) {
+  try {
+    const settings = JSON.parse(settingsRaw || "null");
+    return !!settings && settings.autoImportOn === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function chromeCandidates(platform) {
+  if (platform !== "win32") return [];
+  return [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ];
+}
+
+function verifyGoogleSignature(executable, opts) {
+  opts = opts || {};
+  const execFile = opts.execFile || childProcess.execFile;
+  // The caller only supplies one of chromeCandidates(), after canonical-path
+  // equality. Encode the fixed script so PowerShell cannot reinterpret the
+  // executable path as command text or split it at spaces.
+  const quotedPath = String(executable).replace(/'/g, "''");
+  const script = "$p='" + quotedPath + "'; $s=Get-AuthenticodeSignature -LiteralPath $p; if($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match '(^|, )O=Google LLC(,|$)'){exit 0}else{exit 1}";
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return new Promise((resolve) => {
+    try {
+      execFile(POWERSHELL_EXE, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        { windowsHide: true, timeout: 5000 }, (err) => resolve(!err));
+    } catch (_) { resolve(false); }
+  });
+}
+
+async function findChromeExecutable(opts) {
+  opts = opts || {};
+  const realpath = opts.realpath || fs.realpathSync;
+  const stat = opts.stat || fs.statSync;
+  const verifySignature = opts.verifySignature || verifyGoogleSignature;
+  const candidates = chromeCandidates(opts.platform || process.platform);
+  for (const candidate of candidates) {
+    try {
+      const resolved = realpath(candidate);
+      if (path.win32.normalize(resolved).toLowerCase() !== path.win32.normalize(candidate).toLowerCase()) continue;
+      if (!stat(resolved).isFile()) continue;
+      if (await verifySignature(resolved, opts)) return resolved;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function isChromeRunning(opts) {
+  opts = opts || {};
+  const platform = opts.platform || process.platform;
+  if (platform !== "win32") return Promise.resolve(false);
+  const execFile = opts.execFile || childProcess.execFile;
+  // Chrome can leave background processes behind, and a process can own more
+  // than one top-level window. Enumerate every HWND owned by every Chrome PID;
+  // a visible, titled window counts even when minimized (the monitor must not
+  // create a new window every minute merely because the user minimized one).
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "try {",
+    "$src=@'",
+    "using System;",
+    "using System.Collections.Generic;",
+    "using System.ComponentModel;",
+    "using System.Runtime.InteropServices;",
+    "public static class IAChromeWindows {",
+    "  private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);",
+    "  [DllImport(\"user32.dll\", SetLastError=true)] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);",
+    "  [DllImport(\"user32.dll\")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);",
+    "  [DllImport(\"user32.dll\")] private static extern bool IsWindowVisible(IntPtr hWnd);",
+    "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hWnd);",
+    "  public static bool HasUsableWindow(int[] processIds) {",
+    "    var wanted = new HashSet<uint>();",
+    "    if (processIds != null) foreach (int id in processIds) if (id > 0) wanted.Add((uint)id);",
+    "    bool found = false;",
+    "    bool completed = EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {",
+    "      uint pid; GetWindowThreadProcessId(hWnd, out pid);",
+    "      if (wanted.Contains(pid) && IsWindowVisible(hWnd) && GetWindowTextLength(hWnd) > 0) { found = true; return false; }",
+    "      return true;",
+    "    }, IntPtr.Zero);",
+    "    if (!completed && !found) throw new Win32Exception(Marshal.GetLastWin32Error());",
+    "    return found;",
+    "  }",
+    "}",
+    "'@",
+    "Add-Type -TypeDefinition $src",
+    "$ids=@(Get-Process -Name chrome -ErrorAction SilentlyContinue | ForEach-Object {[int]$_.Id})",
+    "if([IAChromeWindows]::HasUsableWindow([int[]]$ids)){'OPEN'}else{'CLOSED'}",
+    "} catch { exit 1 }",
+  ].join("\n");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return new Promise((resolve) => {
+    try {
+      execFile(POWERSHELL_EXE, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        { windowsHide: true, timeout: 5000 }, (err, stdout) => {
+          if (err) { resolve(null); return; }
+          const marker = String(stdout || "").trim();
+          if (marker === "OPEN") { resolve(true); return; }
+          if (marker === "CLOSED") { resolve(false); return; }
+          resolve(null);
+        });
+    } catch (_) { resolve(null); }
+  });
+}
+
+function launchChrome(executable, opts) {
+  opts = opts || {};
+  const spawn = opts.spawn || childProcess.spawn;
+  return new Promise((resolve, reject) => {
+    let child;
+    // A bare chrome.exe or chrome://newtab/ can be absorbed by Chrome's
+    // background-app mode without showing UI. A normal HTTPS navigation with
+    // --new-window reliably requests a user-facing browser window.
+    try { child = spawn(executable, ["--new-window", "https://www.google.com/"], { detached: true, stdio: "ignore" }); }
+    catch (e) { reject(e); return; }
+    if (!child || typeof child.once !== "function") { reject(new Error("Chrome process did not start")); return; }
+    child.once("error", reject);
+    child.once("spawn", () => {
+      if (typeof child.unref === "function") child.unref();
+      resolve();
+    });
+  });
+}
+
+async function ensureChromeForAutoImport(opts) {
+  opts = opts || {};
+  if (!autoImportEnabled(opts.settingsRaw)) return { action: "disabled" };
+
+  const running = await (opts.isRunning || isChromeRunning)();
+  if (running) return { action: "already-running" };
+  if (running !== false) return { action: "check-failed" };
+
+  if (typeof opts.shouldLaunch === "function") {
+    try { if (!opts.shouldLaunch()) return { action: "cancelled" }; }
+    catch (_) { return { action: "cancelled" }; }
+  }
+
+  const executable = await (opts.findExecutable || findChromeExecutable)();
+  if (!executable) return { action: "not-found" };
+
+  if (typeof opts.shouldLaunch === "function") {
+    try { if (!opts.shouldLaunch()) return { action: "cancelled" }; }
+    catch (_) { return { action: "cancelled" }; }
+  }
+
+  try { await (opts.launch || launchChrome)(executable); }
+  catch (e) { return { action: "launch-failed", error: String(e && e.message || e) }; }
+  return { action: "launched", executable };
+}
+
+module.exports = {
+  autoImportEnabled,
+  chromeCandidates,
+  findChromeExecutable,
+  verifyGoogleSignature,
+  isChromeRunning,
+  launchChrome,
+  ensureChromeForAutoImport,
+};

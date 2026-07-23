@@ -97,7 +97,7 @@
         changed = true;
         return nowStamp(Object.assign({}, row));
       });
-      return idb.clear(storeName).then(() => idb.putMany(storeName, stamped)).then(() => changed ? bumpMutationRevision() : undefined);
+      return idb.replaceAll(storeName, stamped).then(() => changed ? bumpMutationRevision() : undefined);
     });
   }
 
@@ -126,11 +126,24 @@
     putSaved(arr, opts) { return guardedReplace("saved", arr, opts).then(() => ({ ok: true })); },
     patchSaved(item) { return idb.put("saved", nowStamp(Object.assign({}, item))).then(() => bumpMutationRevision()); },
     delSaved(id) { return idb.delete("saved", id).then(() => idb.addTombstone("saved", id)).then(() => bumpMutationRevision()); },
+    markNotDuplicates(entries) {
+      return idb.markNotDuplicates(Array.isArray(entries) ? entries : []).then((r) => {
+        return (r && r.changed) ? bumpMutationRevision().then(() => r) : r;
+      });
+    },
 
     // --- images: /idb-img/<id> is served by sw.js's fetch handler ---
     imgUrl(id) { return "idb-img/" + encodeURIComponent(id); },
     imgPut(id, dataUrl) {
       return dataUrlToBlob(dataUrl).then((blob) => idb.put("images", { id, blob, type: blob.type })).then(() => {});
+    },
+    imgCopy(sourceId, targetId) {
+      return idb.get("images", sourceId).then((row) => {
+        if (!row || !row.blob) throw new Error("Source image is missing.");
+        return idb.put("images", { id:targetId, blob:row.blob, type:row.type || row.blob.type });
+      }).then(() => idb.get("images", targetId)).then((row) => {
+        if (!row || !row.blob) throw new Error("Copied image could not be verified.");
+      });
     },
     imgDel(id) { return idb.delete("images", id).then(() => {}); },
     imgHas(id) { return idb.get("images", id).then((row) => !!row); },

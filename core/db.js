@@ -166,6 +166,11 @@ function allCards(db) {
   return db.prepare("SELECT * FROM cards").all().map(rowToCard);
 }
 
+function getCard(db, id) {
+  const row = db.prepare("SELECT * FROM cards WHERE id=?").get(id);
+  return row ? rowToCard(row) : null;
+}
+
 // node:sqlite has no named-param helper here; bind positional `?` params in column order.
 const _CARD_INSERT_SQL =
   "INSERT INTO cards(id,url,platform,cat,ts,img_file,img_url,data,updatedAt) VALUES(?,?,?,?,?,?,?,?,?) " +
@@ -340,6 +345,28 @@ function rowToSaved(row) {
 
 function allSaved(db) {
   return db.prepare("SELECT * FROM saved").all().map(rowToSaved);
+}
+
+function getSaved(db, id) {
+  const row = db.prepare("SELECT * FROM saved WHERE id=?").get(id);
+  return row ? rowToSaved(row) : null;
+}
+
+// Add one duplicate-review marker without round-tripping the rest of the row.
+// Callers that update multiple rows must hold their write transaction before
+// reading/validating the rows so a concurrent sync write cannot be overwritten.
+function addNotDuplicateMarker(db, scope, id, key) {
+  const table = scope === "saved" ? "saved" : "cards";
+  const row = db.prepare("SELECT data FROM " + table + " WHERE id=?").get(id);
+  if (!row) return null;
+  const data = _safeParseData(row.data);
+  const prior = Array.isArray(data.dupeNotDuplicateGroups)
+    ? data.dupeNotDuplicateGroups.filter(v => typeof v === "string") : [];
+  if (prior.indexOf(key) >= 0) return false;
+  data.dupeNotDuplicateGroups = prior.slice(-49).concat([key]);
+  db.prepare("UPDATE " + table + " SET data=?, updatedAt=? WHERE id=?").run(JSON.stringify(data), Date.now(), id);
+  bumpMutationRevision(db);
+  return true;
 }
 
 // node:sqlite has no named-param helper here; bind positional `?` params in column order.
@@ -530,8 +557,9 @@ function serializeLibrary(db) {
 
 module.exports = {
   openDb, SCHEMA_VERSION, getKV, setKV, delKV, counts, bumpMutationRevision,
-  rowToCard, cardToRow, cardSig, allCards, replaceCards, upsertCard, upsertCardSynced, deleteCard,
-  rowToSaved, savedToRow, savedSig, allSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
+  rowToCard, cardToRow, cardSig, allCards, getCard, replaceCards, upsertCard, upsertCardSynced, deleteCard,
+  rowToSaved, savedToRow, savedSig, allSaved, getSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
+  addNotDuplicateMarker,
   getFp, setFp, delFp, allFp,
   addTombstone, allTombstones, delTombstone, pruneTombstones,
   cardsSince, savedSince, tombstonesSince,

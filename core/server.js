@@ -31,6 +31,9 @@ const PORT_MAX = 3465;
 const GLOBAL_JSON_BODY_CAP = 16 * 1024 * 1024;
 const CAPTURE_BODY_CAP = 8 * 1024 * 1024;
 const AUTOIMPORT_BODY_CAP = 1024 * 1024;
+// Duplicate-review decisions are small metadata-only payloads; no reason to
+// let them ride on the large image/import parser budget.
+const NOT_DUPLICATE_BODY_CAP = 384 * 1024;
 
 // Origins allowed to reach the local API. The app UI runs on the loopback
 // address (http://127.0.0.1:<port> / http://localhost:<port>) and the Chrome
@@ -51,6 +54,7 @@ function jsonBodyVerify(req, res, buffer) {
   let cap = GLOBAL_JSON_BODY_CAP;
   if (req.path === "/api/captures" || req.path === "/api/captures/ack") cap = CAPTURE_BODY_CAP;
   else if (req.path === "/api/auto-import") cap = AUTOIMPORT_BODY_CAP;
+  else if (req.path === "/api/duplicates/not-duplicate") cap = NOT_DUPLICATE_BODY_CAP;
   if (buffer.length > cap) {
     const error = new Error("request body too large");
     error.status = 413;
@@ -191,8 +195,8 @@ function createServer(ctx) {
     next();
   });
 
-  // The verifier applies tighter caps to the high-volume capture mailboxes
-  // before JSON is accepted by a route. The larger general cap preserves the
+  // The verifier applies tighter caps to specific high-volume or metadata-only
+  // routes before JSON is accepted. The larger general cap preserves the
   // existing bulk-card contract without allowing an unbounded parser.
   app.use(express.json({ limit: GLOBAL_JSON_BODY_CAP, verify: jsonBodyVerify }));
 
@@ -263,6 +267,73 @@ function createServer(ctx) {
     ctx.syncDirty = true;
     dbm.deleteCard(ctx.db, req.params.id);
     res.json({ ok: true });
+  });
+
+  // Additive duplicate-review decision. This deliberately updates only the
+  // marker on the server's CURRENT row instead of round-tripping the renderer's
+  // whole library (or a potentially stale copy of the card).
+  app.post("/api/duplicates/not-duplicate", (req, res) => {
+    const entries = req.body && req.body.entries;
+    if (!Array.isArray(entries) || entries.length < 2 || entries.length > 200) {
+      return res.status(400).json({ ok: false, error: "invalid_entries" });
+    }
+    const parsed = [];
+    let keyBytes = 0;
+    for (const raw of entries) {
+      const scope = raw && raw.scope, id = raw && String(raw.id || ""), key = raw && raw.key;
+      if ((scope !== "imported" && scope !== "saved") || !id || id.length > 512 || typeof key !== "string" || !key || key.length > 131072) {
+        return res.status(400).json({ ok: false, error: "invalid_entry" });
+      }
+      keyBytes += Buffer.byteLength(key, "utf8");
+      if (keyBytes > 262144) return res.status(413).json({ ok: false, error: "entries_too_large" });
+      parsed.push({ scope, id, key });
+    }
+    const groups = new Map();
+    for (const entry of parsed) {
+      if (!groups.has(entry.key)) groups.set(entry.key, []);
+      groups.get(entry.key).push(entry);
+    }
+    const expectedByKey = new Map();
+    for (const [key, groupEntries] of groups) {
+      let members;
+      try { members = JSON.parse(key); } catch (e) { members = null; }
+      if (!Array.isArray(members) || members.length !== groupEntries.length || members.length > 200) {
+        return res.status(400).json({ ok: false, error: "invalid_key" });
+      }
+      const requested = new Set(groupEntries.map(entry => entry.scope + "\n" + entry.id));
+      if (requested.size !== groupEntries.length || members.some(member => !Array.isArray(member) || member.length !== 4 ||
+          (member[0] !== "imported" && member[0] !== "saved") || typeof member[1] !== "string" ||
+          typeof member[2] !== "string" || typeof member[3] !== "string" ||
+          !requested.has(member[0] + "\n" + member[1]))) {
+        return res.status(400).json({ ok: false, error: "invalid_key" });
+      }
+      const memberById = new Map(members.map(member => [member[0] + "\n" + member[1], member]));
+      if (memberById.size !== members.length) return res.status(400).json({ ok: false, error: "invalid_key" });
+      expectedByKey.set(key, memberById);
+    }
+    let changed = 0;
+    ctx.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const entry of parsed) {
+        const item = entry.scope === "saved" ? dbm.getSaved(ctx.db, entry.id) : dbm.getCard(ctx.db, entry.id);
+        const expected = expectedByKey.get(entry.key).get(entry.scope + "\n" + entry.id);
+        const current = [entry.scope, String(item && item.id || ""), String(item && item.url || "").trim().toLowerCase(),
+          String(item && item.title || "").trim().toLowerCase().replace(/\s+/g, " ")];
+        if (!item || JSON.stringify(current) !== JSON.stringify(expected)) {
+          ctx.db.exec("ROLLBACK");
+          return res.status(409).json({ ok: false, error: "row_changed" });
+        }
+      }
+      for (const entry of parsed) {
+        if (dbm.addNotDuplicateMarker(ctx.db, entry.scope, entry.id, entry.key)) changed++;
+      }
+      ctx.db.exec("COMMIT");
+    } catch (e) {
+      try { ctx.db.exec("ROLLBACK"); } catch (_) {}
+      throw e;
+    }
+    if (changed) ctx.syncDirty = true;
+    res.json({ ok: true, changed });
   });
 
   // --- Saved ---
@@ -345,6 +416,18 @@ function createServer(ctx) {
     } catch (e) {
       if (isInvalidImgId(e)) return res.status(400).json({ ok: false, error: "invalid image id" });
       if (e && e.code === "EMPTY_IMAGE") return res.status(400).json({ ok: false, error: "empty image data" });
+      throw e;
+    }
+  });
+  app.post("/api/img/:id/copy", (req, res) => {
+    try {
+      const sourceId = req.body && req.body.sourceId;
+      images.safeImgId(req.params.id);
+      images.safeImgId(sourceId);
+      if (!images.copyImg(ctx.storeDir, sourceId, req.params.id)) return res.status(404).json({ ok: false, error: "source_not_found" });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e && e.code === "INVALID_IMG_ID") return res.status(400).json({ ok: false, error: "invalid_id" });
       throw e;
     }
   });
@@ -565,9 +648,10 @@ function createServer(ctx) {
   // ---- backup / restore / health ----
   app.post("/api/backup", (req, res) => {
     try {
-      const out = backup.runBackup(ctx.db, ctx.storeDir);
+      const safety = !!(req.body && req.body.safety);
+      const out = backup.runBackup(ctx.db, ctx.storeDir, { safety });
       const verified = backup.verifyBackup(out.name, out.counts);
-      if (verified) backup.rotate(3);            // only rotate older backups once this one verifies
+      if (verified && !safety) backup.rotate(3); // cleanup snapshots are unique and never auto-rotated
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);
