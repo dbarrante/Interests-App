@@ -100,7 +100,7 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
 }
 
 const sw = fs.readFileSync(path.join(root, "pwa", "sw.js"), "utf8");
-assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v45"/, "PWA cache must be bumped for the cached index edit");
+assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v46"/, "PWA cache must be bumped for the cached index edit");
 
 const pwaIdb = fs.readFileSync(path.join(root, "pwa", "idb.js"), "utf8");
 const pwaStore = fs.readFileSync(path.join(root, "pwa", "storage-pwa.js"), "utf8");

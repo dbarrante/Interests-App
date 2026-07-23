@@ -651,7 +651,14 @@ function createServer(ctx) {
       const safety = !!(req.body && req.body.safety);
       const out = backup.runBackup(ctx.db, ctx.storeDir, { safety });
       const verified = backup.verifyBackup(out.name, out.counts);
-      if (verified && !safety) backup.rotate(3); // cleanup snapshots are unique and never auto-rotated
+      if (verified && !safety) {
+        // Client sends its ia_settings.backupRetainCount; clamp against a
+        // client-controlled value the same way — never trust it blindly.
+        let keep = Number(req.body && req.body.keep);
+        if (!Number.isFinite(keep) || keep < 1) keep = 3;
+        keep = Math.min(Math.floor(keep), 30);
+        backup.rotate(keep); // cleanup snapshots are unique and never auto-rotated
+      }
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);

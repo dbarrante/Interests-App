@@ -741,7 +741,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 
       <div class="sec">
         <h3>Backup &amp; restore</h3>
-        <div class="hint" style="margin-bottom:10px">Full backups — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history — are written and verified by the app into its backups folder. Each one is kept so you can roll back.</div>
+        <div class="hint" style="margin-bottom:10px">Full backups — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history — are written and verified by the app into its backups folder, so you can roll back.</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
           <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
@@ -755,6 +755,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <option value="30">Monthly</option>
         </select>
         <div class="hint">Writes a full, verified backup when you open the app and this much time has passed. (Also: press <b>Ctrl+Shift+B</b> anytime to back up now.)</div>
+        <label style="margin-top:16px;display:block">Backups to retain</label>
+        <input type="number" id="backupRetainCount" min="1" max="30" step="1" style="width:80px">
+        <div class="hint">How many verified backups to keep before older ones are rotated out. Duplicate-cleanup safety snapshots are separate and always keep the 2 most recent.</div>
         <label style="margin-top:16px;display:block">Restore</label>
         <button class="btn btn-primary" onclick="restoreLatest()">&#8617; Restore latest backup</button>
         <div id="backupList"></div>
@@ -853,6 +856,7 @@ const DEFAULTS = {
   newsMix:true,   // blend fresh interest-news into the normal Stumble deck
   captureDelay:3,
   captureConcurrency:3,
+  backupRetainCount:3,
   recaptureMonths:0,
   showDates:false,
   autoBackup:0,
@@ -1375,7 +1379,7 @@ function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if
 async function backupNow(){ return doBackup(true); }
 async function doBackup(manual){
   try{
-    const res = await Store.backupNow();                 // {ok,verified,name,counts}
+    const res = await Store.backupNow({keep: S.backupRetainCount||3});   // {ok,verified,name,counts}
     if(res && res.ok===false){
       if(manual) toast(res.reason || "Backup not available");
       return res;
@@ -1397,7 +1401,7 @@ async function doBackup(manual){
 // the restore overlay); returning null is the hard stop.
 async function verifiedSafetyBackup(action){
   try{
-    const res = await Store.backupNow();
+    const res = await Store.backupNow({keep: S.backupRetainCount||3});
     if(res && res.ok!==false && res.verified===true) return res;
   }catch(e){ console.warn(action+" safety backup failed", e); }
   toast(action+" stopped: a verified safety backup could not be created. No data was changed.", 9000);
@@ -1862,6 +1866,8 @@ function renderSettings(){
   document.getElementById("captureDelay").oninput = e=>{ S.captureDelay=Math.max(0,Math.min(30,+e.target.value||0)); save("settings",S); };
   document.getElementById("captureConcurrency").value = S.captureConcurrency||1;
   document.getElementById("captureConcurrency").oninput = e=>{ S.captureConcurrency=Math.max(1,Math.min(10,+e.target.value||1)); save("settings",S); };
+  document.getElementById("backupRetainCount").value = S.backupRetainCount||3;
+  document.getElementById("backupRetainCount").oninput = e=>{ S.backupRetainCount=Math.max(1,Math.min(30,+e.target.value||3)); save("settings",S); };
   document.getElementById("recaptureMonths").value = String(S.recaptureMonths||0);
   document.getElementById("recaptureMonths").onchange = e=>{ S.recaptureMonths=+e.target.value||0; save("settings",S); };
   document.getElementById("darkToggle").checked = (localStorage.getItem("ia_theme")==="dark");
@@ -4719,7 +4725,7 @@ function cancelProfile(){ document.getElementById("profileReview").style.display
 // Capture a safety backup BEFORE a bulk-destructive op (dedup/groom), so a mistaken
 // removal is recoverable. The Core service writes + verifies a full backup.
 function snapshotBeforeDestructive(){
-  try{ Store.backupNow(); }catch(e){}   // fire-and-forget
+  try{ Store.backupNow({keep: S.backupRetainCount||3}); }catch(e){}   // fire-and-forget
 }
 // Shared user-reviewed card removal used by every Library-health tab (Duplicates,
 // Dead & unsafe, Failed captures, No link). Cleans up each removed card's idb image

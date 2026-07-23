@@ -82,6 +82,43 @@ function listen(app) {
       assert.strictEqual(r.backups[0].name, backupName);
     });
 
+    await run(t("POST /api/backup honors a client-supplied retain count (keep)"), async () => {
+      // Seed extra dated-backup fixtures (older dates, matching content so they
+      // verify) so rotation has something to actually trim.
+      const dc = counts(db);
+      const seedCounts = { imported: dc.cards | 0, saved: dc.saved | 0, images: 1 };
+      for (const date of ["2020-01-01", "2020-01-02", "2020-01-03"]) {
+        const folder = path.join(bdir, "interests-backup-" + date);
+        fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+        fs.copyFileSync(path.join(store, "interests.db"), path.join(folder, "interests.db"));
+        fs.copyFileSync(path.join(store, "images", "c1.jpg"), path.join(folder, "images", "c1.jpg"));
+        const stat = fs.statSync(path.join(folder, "images", "c1.jpg"));
+        const sha256 = require("crypto").createHash("sha256").update(fs.readFileSync(path.join(folder, "images", "c1.jpg"))).digest("hex");
+        fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({
+          _counts: seedCounts, _images: [{ name: "c1.jpg", size: stat.size, sha256 }], ts: Date.now(),
+        }));
+      }
+      const before = (await (await fetch(base + "/api/backups")).json()).backups;
+      assert.ok(before.length >= 4, "seeded fixtures plus the earlier backup are all present");
+
+      const r = await (await fetch(base + "/api/backup", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ keep: 1 }),
+      })).json();
+      assert.strictEqual(r.ok, true);
+      const after = (await (await fetch(base + "/api/backups")).json()).backups;
+      assert.strictEqual(after.length, 1, "keep:1 rotates down to just the newest (the one this call just made)");
+      assert.strictEqual(after[0].name, r.name);
+      backupName = r.name; // subsequent tests restore/reference the current newest
+    });
+
+    await run(t("POST /api/backup clamps an invalid keep instead of crashing"), async () => {
+      const r = await (await fetch(base + "/api/backup", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ keep: -5 }),
+      })).json();
+      assert.strictEqual(r.ok, true, "an out-of-range keep value falls back to the default rather than 500ing");
+      backupName = r.name;
+    });
+
     await run(t("GET /api/health now shows lastBackup"), async () => {
       const h = await (await fetch(base + "/api/health")).json();
       assert.ok(h.lastBackup && h.lastBackup.name === backupName);
