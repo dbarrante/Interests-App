@@ -39,9 +39,19 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const sites = [
       /doBackup\(manual\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
       /verifiedSafetyBackup\(action\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
-      /snapshotBeforeDestructive\(\)\{\s*try\{ Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
+      /Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)\.then\(res=>\{/,
     ];
     for (const re of sites) assert.match(src, re, "a Store.backupNow() call site isn't passing {keep: S.backupRetainCount}");
+  });
+  t(label + ": snapshotBeforeDestructive throttles to once per 5 minutes", () => {
+    assert.match(src, /const DESTRUCTIVE_SNAPSHOT_THROTTLE_MS = 5\*60\*1000;/, "throttle window constant missing or changed");
+    assert.match(src, /if\(Date\.now\(\)-_lastDestructiveSnapshotAt < DESTRUCTIVE_SNAPSHOT_THROTTLE_MS\) return;/,
+      "early-return throttle check missing");
+  });
+  t(label + ": the throttle window only starts on a CONFIRMED verified success", () => {
+    assert.match(src,
+      /if\(res && res\.ok!==false && res\.verified===true\) _lastDestructiveSnapshotAt=Date\.now\(\);/,
+      "timestamp update isn't gated on ok!==false && verified===true — a failed/unverified attempt must not block a retry");
   });
 }
 

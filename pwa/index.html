@@ -4724,8 +4724,20 @@ function cancelProfile(){ document.getElementById("profileReview").style.display
 
 // Capture a safety backup BEFORE a bulk-destructive op (dedup/groom), so a mistaken
 // removal is recoverable. The Core service writes + verifies a full backup.
+// Throttled to once per DESTRUCTIVE_SNAPSHOT_THROTTLE_MS: this fires before
+// every single-card action across 8+ Library-health flows, each doing a full,
+// non-incremental rewrite of the whole image library. Working through cards
+// faster than Dropbox can re-sync ~600MB+ repeatedly caused sustained lock
+// contention on the backup folder's publish rename (2026-07-23 incident). The
+// throttle window only starts on a CONFIRMED verified success — a failed
+// attempt never blocks a retry.
+let _lastDestructiveSnapshotAt = 0;
+const DESTRUCTIVE_SNAPSHOT_THROTTLE_MS = 5*60*1000;
 function snapshotBeforeDestructive(){
-  try{ Store.backupNow({keep: S.backupRetainCount||3}); }catch(e){}   // fire-and-forget
+  if(Date.now()-_lastDestructiveSnapshotAt < DESTRUCTIVE_SNAPSHOT_THROTTLE_MS) return;   // a recent verified backup already covers this
+  Store.backupNow({keep: S.backupRetainCount||3}).then(res=>{
+    if(res && res.ok!==false && res.verified===true) _lastDestructiveSnapshotAt=Date.now();
+  }).catch(()=>{});
 }
 // Shared user-reviewed card removal used by every Library-health tab (Duplicates,
 // Dead & unsafe, Failed captures, No link). Cleans up each removed card's idb image
