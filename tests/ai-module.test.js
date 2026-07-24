@@ -139,6 +139,81 @@ t("callAI surfaces non-ok API errors", async () => {
   } finally { delete global.fetch; }
 });
 
+// ---- opts.model override tests ----
+t("callAI opts.model overrides the configured model (gemini)", async () => {
+  const settings = { provider:"gemini", keys:{ gemini:"KEY" }, models:{ gemini:"gemini-2.5-flash" }, localUrl:"" };
+  IA_AI.configure(() => settings);
+  let seenUrl;
+  global.fetch = async (url) => { seenUrl = url; return { ok:true, json: async () => ({ candidates:[{ content:{ parts:[{ text:"hi" }] } }] }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "gemini-2.5-pro" });
+    assert.ok(seenUrl.indexOf("/models/gemini-2.5-pro:") >= 0, "used the override model, not the configured one: " + seenUrl);
+  } finally { delete global.fetch; }
+});
+t("callAI opts.model overrides the configured model (anthropic)", async () => {
+  IA_AI.configure(() => ({ provider:"anthropic", keys:{ anthropic:"K" }, models:{ anthropic:"claude-default" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ content:[{ type:"text", text:"hi" }] }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "claude-override" });
+    assert.strictEqual(seenBody.model, "claude-override");
+  } finally { delete global.fetch; }
+});
+t("callAI opts.model overrides the configured model (openai)", async () => {
+  IA_AI.configure(() => ({ provider:"openai", keys:{ openai:"K" }, models:{ openai:"gpt-default" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ output_text:"hi" }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "gpt-override" });
+    assert.strictEqual(seenBody.model, "gpt-override");
+  } finally { delete global.fetch; }
+});
+t("callAI opts.model overrides the configured model (groq)", async () => {
+  IA_AI.configure(() => ({ provider:"groq", keys:{ groq:"K" }, models:{ groq:"groq-default" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ choices:[{ message:{ content:"hi" } }] }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "groq-override" });
+    assert.strictEqual(seenBody.model, "groq-override");
+  } finally { delete global.fetch; }
+});
+t("callAI opts.model overrides the configured model (openrouter)", async () => {
+  IA_AI.configure(() => ({ provider:"openrouter", keys:{ openrouter:"K" }, models:{ openrouter:"or-default" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ choices:[{ message:{ content:"hi" } }] }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "or-override" });
+    assert.strictEqual(seenBody.model, "or-override");
+  } finally { delete global.fetch; }
+});
+t("callAI opts.model overrides the configured model (local)", async () => {
+  IA_AI.configure(() => ({ provider:"local", keys:{}, models:{ local:"local-default" }, localUrl:"http://x" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ choices:[{ message:{ content:"hi" } }] }) }; };
+  try {
+    await IA_AI.callAI("P", { model: "local-override" });
+    assert.strictEqual(seenBody.model, "local-override");
+  } finally { delete global.fetch; }
+});
+t("callAI without opts.model still uses the configured model (regression guard, all providers)", async () => {
+  const cases = [
+    ["gemini", (b, u) => u.indexOf("/models/gem-default:") >= 0],
+    ["anthropic", (b) => b.model === "anthropic-default"],
+    ["openai", (b) => b.model === "openai-default"],
+    ["groq", (b) => b.model === "groq-default"],
+    ["openrouter", (b) => b.model === "openrouter-default"],
+  ];
+  for (const [provider, check] of cases) {
+    IA_AI.configure(() => ({ provider, keys:{ [provider]:"K" }, models:{ [provider]: provider==="gemini"?"gem-default":(provider+"-default") }, localUrl:"" }));
+    let seenBody, seenUrl;
+    global.fetch = async (url, init) => { seenUrl = url; seenBody = init && init.body ? JSON.parse(init.body) : null; return { ok:true, json: async () => ({ candidates:[{content:{parts:[{text:"hi"}]}}], content:[{type:"text",text:"hi"}], output_text:"hi", choices:[{message:{content:"hi"}}] }) }; };
+    try {
+      await IA_AI.callAI("P");
+      assert.ok(check(seenBody, seenUrl), provider + " should use its configured default model when opts.model is absent");
+    } finally { delete global.fetch; }
+  }
+});
+
 // Load a pristine copy of the module (unconfigured) for the configure-guard tests.
 function requireFresh(){
   const p = require.resolve("../web/ai");

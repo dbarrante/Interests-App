@@ -23,7 +23,8 @@
   var hasFetch = (typeof fetch !== "undefined");
 
   /* ============ providers ============ */
-  async function callAnthropic(prompt) {
+  async function callAnthropic(prompt, opts) {
+    opts = opts || {};
     var s = S();
     var r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -34,7 +35,7 @@
         "anthropic-dangerous-direct-browser-access": "true"
       },
       body: JSON.stringify({
-        model: s.models.anthropic, max_tokens: 6000,
+        model: opts.model || s.models.anthropic, max_tokens: 6000,
         tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
         messages: [{ role: "user", content: prompt }]
       })
@@ -43,12 +44,13 @@
     var d = await r.json();
     return (d.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
   }
-  async function callOpenAI(prompt) {
+  async function callOpenAI(prompt, opts) {
+    opts = opts || {};
     var s = S();
     var r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + s.keys.openai },
-      body: JSON.stringify({ model: s.models.openai, tools: [{ type: "web_search" }], input: prompt })
+      body: JSON.stringify({ model: opts.model || s.models.openai, tools: [{ type: "web_search" }], input: prompt })
     });
     if (!r.ok) throw new Error("OpenAI API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
@@ -56,9 +58,10 @@
     (d.output || []).forEach(function (o) { if (o.type === "message") (o.content || []).forEach(function (c) { if (c.type === "output_text") out += c.text; }); });
     return out || d.output_text || "";
   }
-  async function callGemini(prompt) {
+  async function callGemini(prompt, opts) {
+    opts = opts || {};
     var s = S();
-    var url = "https://generativelanguage.googleapis.com/v1beta/models/" + s.models.gemini + ":generateContent?key=" + s.keys.gemini;
+    var url = "https://generativelanguage.googleapis.com/v1beta/models/" + (opts.model || s.models.gemini) + ":generateContent?key=" + s.keys.gemini;
     var r = await fetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] })
@@ -68,12 +71,13 @@
     var parts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
     return parts.map(function (p) { return p.text || ""; }).join("\n");
   }
-  async function callGroq(prompt) {
+  async function callGroq(prompt, opts) {
+    opts = opts || {};
     var s = S();
     var r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + s.keys.groq },
-      body: JSON.stringify({ model: s.models.groq, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify({ model: opts.model || s.models.groq, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
     });
     if (!r.ok) throw new Error("Groq API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
@@ -82,7 +86,7 @@
   async function callOpenRouter(prompt, opts) {
     var s = S();
     opts = opts || {};
-    var body = { model: s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: prompt }] };
+    var body = { model: opts.model || s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: prompt }] };
     if (opts.webSearch) {
       body.max_tokens = 2500;
       body.tools = [{
@@ -102,13 +106,14 @@
     var d = await r.json();
     return (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
   }
-  async function callLocal(prompt) {
+  async function callLocal(prompt, opts) {
+    opts = opts || {};
     var s = S();
     var headers = { "Content-Type": "application/json" };
     if (s.keys.local) headers["Authorization"] = "Bearer " + s.keys.local;
     var r = await fetch(s.localUrl + "/chat/completions", {
       method: "POST", headers: headers,
-      body: JSON.stringify({ model: s.models.local, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify({ model: opts.model || s.models.local, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
     }).catch(function () { throw new Error("Can't reach " + s.localUrl + ". If using Ollama, start it with OLLAMA_ORIGINS=* set."); });
     if (!r.ok) throw new Error("Endpoint error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
