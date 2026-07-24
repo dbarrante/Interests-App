@@ -4784,13 +4784,8 @@ let _tesseractLoad = null;
 function loadTesseract(){
   if(window.Tesseract) return Promise.resolve(window.Tesseract);
   if(_tesseractLoad) return _tesseractLoad;
-  _tesseractLoad = new Promise((resolve, reject)=>{
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js";
-    s.onload = ()=>resolve(window.Tesseract);
-    s.onerror = ()=>reject(new Error("Failed to load Tesseract.js"));
-    document.head.appendChild(s);
-  });
+  // vendored locally — the Electron CSP (script-src 'self') blocks the CDN
+  _tesseractLoad = loadScript("tesseract.min.js").then(()=>window.Tesseract);
   return _tesseractLoad;
 }
 // Accept the OCR result only if it clears a real bar: garbage/noise text
