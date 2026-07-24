@@ -4746,8 +4746,14 @@ function allTitleKeys(excludeId){
 // each other before either is saved).
 async function generateUniqueTitle(card, extraAvoid){
   if(!IA_AI.hasAIKey()) return null;
-  const description = card.desc || card.benefit || "";
-  if(!description && !card.url) return null;
+  const rawDesc = card.desc || card.benefit || "";
+  // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
+  // time (see enrichOnOpen), not real content — treat it as no description, same as
+  // the "is this a real description" check elsewhere in this file.
+  const description = (rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "";
+  // Per the title-quality design spec: the URL/domain alone isn't enough signal for
+  // a meaningful title, so a real description is required, not merely optional.
+  if(!description) return null;
   const dom = domain(card.url)||"";
   const existing = allTitleKeys(card.id);
   (extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));

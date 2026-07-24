@@ -81,6 +81,27 @@ async function t(name, fn) { try { await fn(); pass++; console.log("  ok  " + na
     assert.strictEqual(result, null);
   });
 
+  await t("generateUniqueTitle returns null when desc is empty but a url is present (URL alone isn't enough signal)", async () => {
+    const { fns, callCountRef } = loadTitleFns([]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "", url: "https://facebook.com/permalink.php?story_fbid=123&id=456" });
+    assert.strictEqual(result, null);
+    assert.strictEqual(callCountRef(), 0, "should not call the AI when there's no real description");
+  });
+
+  await t("generateUniqueTitle treats a 'Saved from X' placeholder desc as no real description, even with a url", async () => {
+    const { fns, callCountRef } = loadTitleFns([]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "Saved from Facebook", url: "https://facebook.com/permalink.php?story_fbid=123&id=456" });
+    assert.strictEqual(result, null);
+    assert.strictEqual(callCountRef(), 0, "boilerplate 'Saved from ...' desc must not be treated as real content");
+  });
+
+  await t("generateUniqueTitle treats a 'From your X' placeholder desc as no real description", async () => {
+    const { fns, callCountRef } = loadTitleFns([]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "From your Saved list", url: "https://facebook.com/x" });
+    assert.strictEqual(result, null);
+    assert.strictEqual(callCountRef(), 0, "boilerplate 'From your ...' desc must not be treated as real content");
+  });
+
   await t("generateUniqueTitle rejects a unique-but-still-generic candidate and keeps retrying", async () => {
     const { fns, callCountRef } = loadTitleFns(["Short One", "A Sufficiently Long Descriptive Title Here"]);
     const result = await fns.generateUniqueTitle({ id: "new", desc: "d", url: "https://x.com/new" });
