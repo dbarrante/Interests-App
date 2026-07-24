@@ -42,6 +42,19 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /OCR_MIN_CHARS/);
     assert.match(m[1], /OCR_MIN_CONFIDENCE/);
   });
+  t(label + ": ocrExtractText passes Tesseract.recognize() a 3rd-arg options object pointing workerPath/corePath at same-origin vendored files (not the CDN defaults Tesseract.js falls back to, which the Electron app's script-src/worker-src CSP blocks)", () => {
+    const m = /async function ocrExtractText\(card\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "ocrExtractText not found");
+    const call = /Tesseract\.recognize\(\s*dataUrl\s*,\s*"eng"\s*,\s*\{([\s\S]*?)\}\s*\)/.exec(m[1]);
+    assert.ok(call, "Tesseract.recognize(...) must be called with a 3rd argument options object");
+    // Resolved via document.baseURI (not location.origin), same-origin either way, but
+    // also correct when index.html is served under a subpath (e.g. the PWA's GitHub
+    // Pages deploy at https://dbarrante.github.io/Interests-App/).
+    assert.match(call[1], /workerPath\s*:\s*new URL\(\s*["']worker\.min\.js["']\s*,\s*document\.baseURI\s*\)\.href/, "workerPath must be a same-origin, subpath-safe URL to the vendored worker script");
+    assert.match(call[1], /corePath\s*:\s*new URL\(\s*["']tesseract-core-simd-lstm\.wasm\.js["']\s*,\s*document\.baseURI\s*\)\.href/, "corePath must be a same-origin, subpath-safe URL to the vendored WASM core");
+    assert.doesNotMatch(m[1], /cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/, "ocrExtractText must not reference an external CDN host -- blocked by the Electron app's script-src 'self' CSP");
+    assert.doesNotMatch(m[1], /location\.origin/, "must resolve relative to document.baseURI, not location.origin -- location.origin breaks when the page is served under a subpath (PWA/GitHub Pages)");
+  });
   t(label + ": OCR thresholds match the design spec (>=15 chars, >=60% confidence)", () => {
     assert.match(src, /const OCR_MIN_CHARS\s*=\s*15;/);
     assert.match(src, /const OCR_MIN_CONFIDENCE\s*=\s*60;/);

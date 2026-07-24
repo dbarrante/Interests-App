@@ -188,6 +188,23 @@ async function post(base, route, body, headers) {
       const csp = r.headers.get("content-security-policy");
       assert.ok(csp && csp.indexOf("default-src 'self'") >= 0, "CSP present with default-src 'self'");
     });
+    // Tier 1 OCR (Tesseract.js v5) needs: a Worker (worker-src blob:) and WASM
+    // compilation (script-src 'wasm-unsafe-eval') -- both same-origin, no CDN
+    // widening. See tests/title-tiers-structural.test.js for the vendored-file
+    // (no-CDN) half of this guarantee.
+    await t("CSP allows same-origin Worker creation (worker-src 'self' blob:) for Tesseract.js OCR", async () => {
+      const r = await fetch(base + "/");
+      const csp = r.headers.get("content-security-policy");
+      assert.ok(csp && /worker-src\s+'self'\s+blob:/.test(csp), "CSP has worker-src 'self' blob:");
+    });
+    await t("CSP allows WASM compilation ('wasm-unsafe-eval' in script-src) for Tesseract.js OCR", async () => {
+      const r = await fetch(base + "/");
+      const csp = r.headers.get("content-security-policy");
+      const scriptSrc = (csp || "").split(";").map(s => s.trim()).find(s => s.startsWith("script-src"));
+      assert.ok(scriptSrc && scriptSrc.indexOf("'wasm-unsafe-eval'") >= 0, "script-src has 'wasm-unsafe-eval'");
+      assert.ok(scriptSrc && scriptSrc.indexOf("'self'") >= 0, "script-src still 'self'-scoped (no CDN widening)");
+      assert.doesNotMatch(scriptSrc, /https:|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/, "script-src must not be widened to allow external hosts");
+    });
 
     // --- image-id 400 mapping (CRITICAL companion) ---
     // These percent-encoded ids reach the :id route param as a traversal value

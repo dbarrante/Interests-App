@@ -1,0 +1,11 @@
+# Vendored third-party libraries (JSZip, Tesseract.js + its worker + WASM
+# core) must be treated as binary — never line-ending-normalized by Git. Their
+# exact byte counts are validated against upstream (see docs/superpowers
+# review notes for the OCR/CSP fix), and this box's own git config has
+# core.autocrlf=true at the system level, which would otherwise silently
+# rewrite LF -> CRLF on every future checkout and drift the vendored files
+# away from their audited bytes.
+web/*.min.js -text
+pwa/*.min.js -text
+web/*.wasm.js -text
+pwa/*.wasm.js -text

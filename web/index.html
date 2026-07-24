@@ -4803,7 +4803,18 @@ async function ocrExtractText(card){
     if(!image) return null;
     const Tesseract = await loadTesseract();
     const dataUrl = "data:"+image.mediaType+";base64,"+image.base64;
-    const result = await Tesseract.recognize(dataUrl, "eng");
+    // workerPath/corePath must point at the vendored, same-origin copies --
+    // Tesseract's own Worker + importScripts() calls otherwise default to an
+    // external CDN, which the Electron app's script-src 'self' CSP blocks.
+    // Resolved relative to document.baseURI (page-relative, not the bare
+    // origin) so this also works when index.html is served under a subpath,
+    // e.g. the PWA build at https://dbarrante.github.io/Interests-App/ -- for
+    // Electron (served at the origin root) this resolves to the exact same
+    // URL that was live-verified.
+    const result = await Tesseract.recognize(dataUrl, "eng", {
+      workerPath: new URL("worker.min.js", document.baseURI).href,
+      corePath: new URL("tesseract-core-simd-lstm.wasm.js", document.baseURI).href
+    });
     const words = (result && result.data && result.data.words) || [];
     const good = words.filter(w=>w.confidence>=OCR_MIN_CONFIDENCE).map(w=>w.text).join(" ").trim().replace(/\s+/g," ");
     return good.length>=OCR_MIN_CHARS ? good : null;
