@@ -4905,6 +4905,21 @@ function renderHealth(){
 // ---- Duplicates tab ----
 let _dupeReviewMode = "single";
 let _dupeReviewIndex = 0;
+// Desktop-only safety-snapshot reuse (2026-07-24): applyDupeRemoval used to
+// take a full-library Store.backupNow({safety:true}) on every single
+// removal — 25-47s each, and doing that repeatedly in one review sitting is
+// what actually triggered the Dropbox publish-lock bug fixed the same day
+// (core/backup.js). Same throttle shape as snapshotBeforeDestructive: only
+// re-arm on a confirmed verified success, never on a failed/reused attempt.
+let _dupeSafetyCache = { at: 0, safety: null };
+const DUPE_SAFETY_REUSE_MS = 5*60*1000;
+// Pure decision rule (no DOM/Store access) — desktop only; the PWA
+// (window.IA_IDB) branch always takes its own cheap per-group-scoped
+// snapshot and is untouched by this throttle.
+function shouldReuseDupeSafety(cache, now, isIdb, windowMs){
+  if(windowMs==null) windowMs = DUPE_SAFETY_REUSE_MS;
+  return !isIdb && !!(cache && cache.safety) && (now - (cache ? cache.at : 0)) < windowMs;
+}
 let _dupeSpared = new Set();
 let _dupeFullScreen = false;
 function dupeSetFullscreen(on){
@@ -5348,7 +5363,13 @@ async function applyDupeRemoval(){
   }
   showBusyOverlay("Creating a verified safety snapshot…");
   await new Promise(resolve=>requestAnimationFrame(resolve));
-  const safety=await createDupeSafetySnapshot();
+  let safety;
+  if(shouldReuseDupeSafety(_dupeSafetyCache, Date.now(), !!window.IA_IDB)){
+    safety = _dupeSafetyCache.safety;
+  } else {
+    safety = await createDupeSafetySnapshot();
+    if(!window.IA_IDB && safety) _dupeSafetyCache = {at:Date.now(), safety};
+  }
   if(!safety){ hideBusyOverlay(); toast("Duplicate cleanup stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
   let nextImported=imported.map(c=>c&&Object.assign({},c));
   let nextSaved=saved.map(c=>c&&Object.assign({},c));

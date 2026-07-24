@@ -16,6 +16,8 @@ function featureSlice(source) {
 
 for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(source, /let _dupeReviewMode\s*=\s*"single"/, name + " defaults to focused review");
+  assert.match(source, /let _dupeSafetyCache\s*=\s*\{\s*at:\s*0,\s*safety:\s*null\s*\};/, name + " declares the safety-snapshot reuse cache");
+  assert.match(source, /const DUPE_SAFETY_REUSE_MS\s*=\s*5\*60\*1000;/, name + " throttles safety-snapshot reuse to 5 minutes");
   assert.match(source, /function dupeSetReviewMode\(mode\)/, name + " exposes the two review modes");
   assert.match(source, /One at a time/, name + " labels the focused mode clearly");
   assert.match(source, /All groups/, name + " retains the compact all-groups mode");
@@ -55,10 +57,14 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(block, /function dupeSnapshotSignature\(/, name + " verifies journal content, not counts alone");
   assert.match(block, /async function restoreDupeSafetySnapshot\(/, name + " provides an actual PWA recovery path");
   assert.match(block, /function mergeDupeMetadata\(/, name + " defines the keeper metadata merge policy");
-  assert.match(block, /const safety=await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
+  assert.match(block, /await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
     name + " fails closed when the safety snapshot cannot be verified");
   assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("for(const g of groupsToProcess)"),
     name + " verifies the safety snapshot before processing removals");
+  assert.match(block, /shouldReuseDupeSafety\(_dupeSafetyCache, ?Date\.now\(\), ?!!window\.IA_IDB\)/,
+    name + " reuses a recently-verified desktop safety snapshot instead of taking a fresh one on every card");
+  assert.match(block, /_dupeSafetyCache\s*=\s*\{\s*at:\s*Date\.now\(\),\s*safety\s*\}/,
+    name + " only arms the reuse cache after a fresh confirmed snapshot, never a reused or failed one");
   assert.match(block, /!window\.IA_IDB/, name + " retains PWA image bytes so its local journal remains recoverable");
   assert.match(block, /Store\.ensureImage\(id\)[\s\S]*?Store\.imgHas\(id\)/,
     name + " hydrates and verifies every referenced PWA image before snapshotting");
@@ -117,7 +123,7 @@ assert.match(pwaIdb, /markNotDuplicates\(entries\)[\s\S]*?db\.transaction\(\["ca
 assert.match(pwaIdb, /transaction\.onabort = \(\) => reject/,
   "PWA multi-row writes reject transaction aborts");
 
-const { mergeDupeMetadata, dupeSnapshotSignature, dupeGroupKey, dupeGroupDismissed, markDupeGroupNotDuplicate, dupeMemberKey } = loadFns(["mergeDupeMetadata", "dupeSnapshotSignature", "dupeGroupKey", "dupeGroupDismissed", "markDupeGroupNotDuplicate", "dupeMemberKey"]);
+const { mergeDupeMetadata, dupeSnapshotSignature, dupeGroupKey, dupeGroupDismissed, markDupeGroupNotDuplicate, dupeMemberKey, shouldReuseDupeSafety } = loadFns(["mergeDupeMetadata", "dupeSnapshotSignature", "dupeGroupKey", "dupeGroupDismissed", "markDupeGroupNotDuplicate", "dupeMemberKey", "shouldReuseDupeSafety"]);
 const keeper = { id:"keep", image:"idb:keep", desc:"Primary description", tags:["one"], liked:false, captured:200, blocked:10, category:"Work", meta:{owner:"keeper"} };
 const source = { id:"remove", image:"idb:remove", desc:"Unique source description", notes:"Personal note", tags:["one","two"], liked:true, captured:100, blocked:20, category:"Ideas", meta:{owner:"source",sourceOnly:true}, dupeNotDuplicateGroups:["old-unrelated-group"] };
 mergeDupeMetadata(keeper, source);
@@ -158,5 +164,21 @@ assert.strictEqual(dupeGroupDismissed(members), false, "the same cards resurface
 assert.notStrictEqual(dupeMemberKey({scope:"imported",card:{id:"same"}}), dupeMemberKey({scope:"saved",card:{id:"same"}}), "cross-collection id collisions cannot select the wrong keeper");
 members[0].card.title = "";
 assert.strictEqual(markDupeGroupNotDuplicate(members, importedById, savedById), false, "repeating the same decision is idempotent");
+
+/* ---------- shouldReuseDupeSafety ----------
+   The real function defaults its 4th param (windowMs) to the module-level
+   DUPE_SAFETY_REUSE_MS constant, which loadFns' isolated eval doesn't carry
+   over — every call below passes the window explicitly (5*60*1000) so the
+   default-value branch (the only thing that would reference the missing
+   outer const) never runs in this standalone context. */
+const REUSE_WINDOW_MS = 5*60*1000;
+assert.strictEqual(shouldReuseDupeSafety({at:0, safety:null}, Date.now(), false, REUSE_WINDOW_MS), false, "no cached safety -> false");
+{
+  const now = 1000000;
+  assert.strictEqual(shouldReuseDupeSafety({at: now - 60000, safety: {kind:"desktop", name:"interests-backup-before-cleanup-x"}}, now, false, REUSE_WINDOW_MS), true, "cached within the window, desktop -> true");
+  assert.strictEqual(shouldReuseDupeSafety({at: now - (REUSE_WINDOW_MS + 1), safety: {kind:"desktop", name:"x"}}, now, false, REUSE_WINDOW_MS), false, "cached but past the 5-minute window -> false");
+  assert.strictEqual(shouldReuseDupeSafety({at: now - 60000, safety: {kind:"desktop", name:"x"}}, now, true, REUSE_WINDOW_MS), false, "cached and within window, but PWA (IA_IDB) -> false");
+  assert.strictEqual(shouldReuseDupeSafety({at: now - REUSE_WINDOW_MS, safety: {kind:"desktop", name:"x"}}, now, false, REUSE_WINDOW_MS), false, "exactly at the window boundary -> false (strictly less-than)");
+}
 
 console.log("duplicate review mode tests passed");
