@@ -21,6 +21,15 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /idb:/, "must handle idb:-backed images");
     assert.match(m[1], /Store\.ensureImage/);
   });
+  t(label + ": resolveCardImageForAI reads card.img or card.image (saved-scope cards store the image under .image)", () => {
+    const m = /async function resolveCardImageForAI\(card\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "resolveCardImageForAI not found");
+    assert.match(
+      m[1],
+      /card\s*&&\s*\(card\.img\s*\|\|\s*card\.image\)/,
+      "must fall back to card.image for saved-scope cards, matching the card.desc || card.benefit convention used elsewhere"
+    );
+  });
   t(label + ": resolveCardImageForAI returns null on failure, never throws to its caller", () => {
     const m = /async function resolveCardImageForAI\(card\)\{([\s\S]*?)\n\}/.exec(src);
     assert.match(m[1], /catch\s*\(e\)\{[^}]*return null;/);

@@ -4750,7 +4750,7 @@ function allTitleKeys(excludeId){
 // treat null as "this tier can't run," never as an error to surface.
 async function resolveCardImageForAI(card){
   try{
-    const img = card && card.img;
+    const img = card && (card.img || card.image);
     if(!img) return null;
     let srcUrl;
     if(String(img).indexOf("idb:")===0){

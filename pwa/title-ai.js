@@ -66,7 +66,7 @@
   var FB_COLLECTION_RE = /^From your '(.+)' Facebook collection$/;
   var FB_NON_PAGE_SEGMENTS = { "reel": 1, "permalink.php": 1, "photo.php": 1, "watch": 1, "groups": 1, "story.php": 1, "share": 1, "p": 1 };
   function extractWeakContext(card) {
-    var desc = String((card && card.desc) || "");
+    var desc = String((card && (card.desc || card.benefit)) || "");
     var m = FB_COLLECTION_RE.exec(desc.trim());
     var collection = m ? m[1] : "";
     var pageSlug = "";

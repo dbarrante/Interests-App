@@ -70,6 +70,14 @@ t("extractWeakContext: missing/invalid url -> no throw, empty pageSlug", () => {
   assert.strictEqual(t2.extractWeakContext({}).pageSlug, "");
   assert.strictEqual(t2.extractWeakContext({ url: "not a url" }).pageSlug, "");
 });
+t("extractWeakContext: saved-scope card (benefit, not desc) still extracts the collection name", () => {
+  const r = t2.extractWeakContext({ benefit: "From your 'VR Stuff' Facebook collection", url: "https://facebook.com/x/posts/1" });
+  assert.strictEqual(r.collection, "VR Stuff");
+});
+t("extractWeakContext: desc takes priority over benefit when both are present", () => {
+  const r = t2.extractWeakContext({ desc: "From your 'Desc Wins' Facebook collection", benefit: "From your 'Benefit Loses' Facebook collection", url: "https://facebook.com/x/posts/1" });
+  assert.strictEqual(r.collection, "Desc Wins");
+});
 
 // ---- composeFallbackTitle ----
 t("composeFallbackTitle: composes a factual, non-fabricated label", () => {
