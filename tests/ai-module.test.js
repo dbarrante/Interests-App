@@ -214,6 +214,86 @@ t("callAI without opts.model still uses the configured model (regression guard, 
   }
 });
 
+// ---- opts.image multimodal support tests ----
+const SAMPLE_IMAGE = { mediaType: "image/jpeg", base64: "ZmFrZWJ5dGVz" };   // "fakebytes"
+
+t("callAI opts.image builds an Anthropic image content block", async () => {
+  IA_AI.configure(() => ({ provider:"anthropic", keys:{ anthropic:"K" }, models:{ anthropic:"m" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ content:[{ type:"text", text:"hi" }] }) }; };
+  try {
+    await IA_AI.callAI("PROMPT", { image: SAMPLE_IMAGE });
+    const content = seenBody.messages[0].content;
+    assert.ok(Array.isArray(content), "content becomes an array when an image is attached");
+    const img = content.find(b => b.type === "image");
+    assert.deepStrictEqual(img.source, { type:"base64", media_type:"image/jpeg", data:"ZmFrZWJ5dGVz" });
+    assert.ok(content.some(b => b.type === "text" && b.text === "PROMPT"));
+  } finally { delete global.fetch; }
+});
+t("callAI opts.image builds an OpenAI input_image part", async () => {
+  IA_AI.configure(() => ({ provider:"openai", keys:{ openai:"K" }, models:{ openai:"m" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ output_text:"hi" }) }; };
+  try {
+    await IA_AI.callAI("PROMPT", { image: SAMPLE_IMAGE });
+    const content = seenBody.input[0].content;
+    assert.ok(content.some(c => c.type === "input_text" && c.text === "PROMPT"));
+    assert.ok(content.some(c => c.type === "input_image" && c.image_url === "data:image/jpeg;base64,ZmFrZWJ5dGVz"));
+  } finally { delete global.fetch; }
+});
+t("callAI opts.image builds a Gemini inline_data part", async () => {
+  IA_AI.configure(() => ({ provider:"gemini", keys:{ gemini:"K" }, models:{ gemini:"m" }, localUrl:"" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ candidates:[{content:{parts:[{text:"hi"}]}}] }) }; };
+  try {
+    await IA_AI.callAI("PROMPT", { image: SAMPLE_IMAGE });
+    const parts = seenBody.contents[0].parts;
+    assert.ok(parts.some(p => p.text === "PROMPT"));
+    assert.ok(parts.some(p => p.inline_data && p.inline_data.mime_type === "image/jpeg" && p.inline_data.data === "ZmFrZWJ5dGVz"));
+  } finally { delete global.fetch; }
+});
+for (const [provider, urlKeyword] of [["groq", "api.groq.com"], ["openrouter", "openrouter.ai"]]) {
+  t("callAI opts.image builds an image_url content part (" + provider + ")", async () => {
+    IA_AI.configure(() => ({ provider, keys:{ [provider]:"K" }, models:{ [provider]:"m" }, localUrl:"" }));
+    let seenBody;
+    global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ choices:[{message:{content:"hi"}}] }) }; };
+    try {
+      await IA_AI.callAI("PROMPT", { image: SAMPLE_IMAGE });
+      const content = seenBody.messages[0].content;
+      assert.ok(content.some(c => c.type === "text" && c.text === "PROMPT"));
+      assert.ok(content.some(c => c.type === "image_url" && c.image_url.url === "data:image/jpeg;base64,ZmFrZWJ5dGVz"));
+    } finally { delete global.fetch; }
+  });
+}
+t("callAI opts.image builds an image_url content part (local)", async () => {
+  IA_AI.configure(() => ({ provider:"local", keys:{}, models:{ local:"m" }, localUrl:"http://x" }));
+  let seenBody;
+  global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ choices:[{message:{content:"hi"}}] }) }; };
+  try {
+    await IA_AI.callAI("PROMPT", { image: SAMPLE_IMAGE });
+    const content = seenBody.messages[0].content;
+    assert.ok(content.some(c => c.type === "image_url" && c.image_url.url === "data:image/jpeg;base64,ZmFrZWJ5dGVz"));
+  } finally { delete global.fetch; }
+});
+t("callAI without opts.image sends plain string content (regression guard, all providers)", async () => {
+  const cases = [
+    ["anthropic", (b) => b.messages[0].content === "P"],
+    ["openai", (b) => b.input === "P"],
+    ["gemini", (b) => b.contents[0].parts[0].text === "P" && b.contents[0].parts.length === 1],
+    ["groq", (b) => b.messages[0].content === "P"],
+    ["openrouter", (b) => b.messages[0].content === "P"],
+  ];
+  for (const [provider, check] of cases) {
+    IA_AI.configure(() => ({ provider, keys:{ [provider]:"K" }, models:{ [provider]:"m" }, localUrl:"" }));
+    let seenBody;
+    global.fetch = async (_url, init) => { seenBody = JSON.parse(init.body); return { ok:true, json: async () => ({ candidates:[{content:{parts:[{text:"hi"}]}}], content:[{type:"text",text:"hi"}], output_text:"hi", choices:[{message:{content:"hi"}}] }) }; };
+    try {
+      await IA_AI.callAI("P");
+      assert.ok(check(seenBody), provider + " must keep sending a plain string content when no image is attached");
+    } finally { delete global.fetch; }
+  }
+});
+
 // Load a pristine copy of the module (unconfigured) for the configure-guard tests.
 function requireFresh(){
   const p = require.resolve("../web/ai");

@@ -23,6 +23,10 @@
   async function callAnthropic(prompt, opts) {
     opts = opts || {};
     var s = S();
+    var content = opts.image ? [
+      { type: "image", source: { type: "base64", media_type: opts.image.mediaType, data: opts.image.base64 } },
+      { type: "text", text: prompt }
+    ] : prompt;
     var r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -34,7 +38,7 @@
       body: JSON.stringify({
         model: opts.model || s.models.anthropic, max_tokens: 6000,
         tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
-        messages: [{ role: "user", content: prompt }]
+        messages: [{ role: "user", content: content }]
       })
     });
     if (!r.ok) throw new Error("Anthropic API error " + r.status + ": " + (await r.text()).slice(0, 300));
@@ -44,10 +48,17 @@
   async function callOpenAI(prompt, opts) {
     opts = opts || {};
     var s = S();
+    var input = opts.image ? [{
+      role: "user",
+      content: [
+        { type: "input_text", text: prompt },
+        { type: "input_image", image_url: "data:" + opts.image.mediaType + ";base64," + opts.image.base64 }
+      ]
+    }] : prompt;
     var r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + s.keys.openai },
-      body: JSON.stringify({ model: opts.model || s.models.openai, tools: [{ type: "web_search" }], input: prompt })
+      body: JSON.stringify({ model: opts.model || s.models.openai, tools: [{ type: "web_search" }], input: input })
     });
     if (!r.ok) throw new Error("OpenAI API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
@@ -59,22 +70,28 @@
     opts = opts || {};
     var s = S();
     var url = "https://generativelanguage.googleapis.com/v1beta/models/" + (opts.model || s.models.gemini) + ":generateContent?key=" + s.keys.gemini;
+    var parts = [{ text: prompt }];
+    if (opts.image) parts.push({ inline_data: { mime_type: opts.image.mediaType, data: opts.image.base64 } });
     var r = await fetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] })
+      body: JSON.stringify({ contents: [{ parts: parts }], tools: [{ google_search: {} }] })
     });
     if (!r.ok) throw new Error("Gemini API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
-    var parts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
-    return parts.map(function (p) { return p.text || ""; }).join("\n");
+    var respParts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
+    return respParts.map(function (p) { return p.text || ""; }).join("\n");
   }
   async function callGroq(prompt, opts) {
     opts = opts || {};
     var s = S();
+    var content = opts.image ? [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: "data:" + opts.image.mediaType + ";base64," + opts.image.base64 } }
+    ] : prompt;
     var r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + s.keys.groq },
-      body: JSON.stringify({ model: opts.model || s.models.groq, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify({ model: opts.model || s.models.groq, temperature: 0.8, messages: [{ role: "user", content: content }] })
     });
     if (!r.ok) throw new Error("Groq API error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
@@ -83,7 +100,11 @@
   async function callOpenRouter(prompt, opts) {
     var s = S();
     opts = opts || {};
-    var body = { model: opts.model || s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: prompt }] };
+    var content = opts.image ? [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: "data:" + opts.image.mediaType + ";base64," + opts.image.base64 } }
+    ] : prompt;
+    var body = { model: opts.model || s.models.openrouter, temperature: 0.8, messages: [{ role: "user", content: content }] };
     if (opts.webSearch) {
       body.max_tokens = 2500;
       body.tools = [{
@@ -108,9 +129,13 @@
     var s = S();
     var headers = { "Content-Type": "application/json" };
     if (s.keys.local) headers["Authorization"] = "Bearer " + s.keys.local;
+    var content = opts.image ? [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: "data:" + opts.image.mediaType + ";base64," + opts.image.base64 } }
+    ] : prompt;
     var r = await fetch(s.localUrl + "/chat/completions", {
       method: "POST", headers: headers,
-      body: JSON.stringify({ model: opts.model || s.models.local, temperature: 0.8, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify({ model: opts.model || s.models.local, temperature: 0.8, messages: [{ role: "user", content: content }] })
     }).catch(function () { throw new Error("Can't reach " + s.localUrl + ". If using Ollama, start it with OLLAMA_ORIGINS=* set."); });
     if (!r.ok) throw new Error("Endpoint error " + r.status + ": " + (await r.text()).slice(0, 300));
     var d = await r.json();
