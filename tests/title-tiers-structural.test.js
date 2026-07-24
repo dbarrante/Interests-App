@@ -25,6 +25,24 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const m = /async function resolveCardImageForAI\(card\)\{([\s\S]*?)\n\}/.exec(src);
     assert.match(m[1], /catch\s*\(e\)\{[^}]*return null;/);
   });
+  t(label + ": ocrExtractText loads Tesseract.js on demand and applies a confidence/length bar", () => {
+    const m = /async function ocrExtractText\(card\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "ocrExtractText not found");
+    assert.match(m[1], /resolveCardImageForAI\(card\)/);
+    assert.match(m[1], /loadTesseract\(/);
+    assert.match(m[1], /OCR_MIN_CHARS/);
+    assert.match(m[1], /OCR_MIN_CONFIDENCE/);
+  });
+  t(label + ": OCR thresholds match the design spec (>=15 chars, >=60% confidence)", () => {
+    assert.match(src, /const OCR_MIN_CHARS\s*=\s*15;/);
+    assert.match(src, /const OCR_MIN_CONFIDENCE\s*=\s*60;/);
+  });
+  t(label + ": loadTesseract lazy-loads from a CDN, cached after first load", () => {
+    const m = /function loadTesseract\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "loadTesseract not found");
+    assert.match(m[1], /cdnjs\.cloudflare\.com|jsdelivr\.net|unpkg\.com/, "must load from a CDN, not bundle the library");
+    assert.match(m[1], /window\.Tesseract/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

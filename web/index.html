@@ -4772,6 +4772,42 @@ async function resolveCardImageForAI(card){
     return { mediaType:"image/jpeg", base64: btoa(binary) };
   }catch(e){ console.warn("resolveCardImageForAI failed", e); return null; }
 }
+// Tier 1 of tiered title generation (spec §1): OCR the card's image via
+// Tesseract.js, loaded on demand from a CDN the first time it's needed —
+// same lazy-load pattern already used for JSZip (see CLAUDE.md's External
+// Services list) — never bundled, zero cost for cards that never reach this
+// tier. Cached after first load so repeated calls in one bulk-suggest run
+// don't re-fetch the library.
+const OCR_MIN_CHARS = 15;
+const OCR_MIN_CONFIDENCE = 60;
+let _tesseractLoad = null;
+function loadTesseract(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  if(_tesseractLoad) return _tesseractLoad;
+  _tesseractLoad = new Promise((resolve, reject)=>{
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js";
+    s.onload = ()=>resolve(window.Tesseract);
+    s.onerror = ()=>reject(new Error("Failed to load Tesseract.js"));
+    document.head.appendChild(s);
+  });
+  return _tesseractLoad;
+}
+// Accept the OCR result only if it clears a real bar: garbage/noise text
+// from plain photos (no actual overlaid text) routinely scores low
+// confidence and must not be handed to the AI as if it were real content.
+async function ocrExtractText(card){
+  try{
+    const image = await resolveCardImageForAI(card);
+    if(!image) return null;
+    const Tesseract = await loadTesseract();
+    const dataUrl = "data:"+image.mediaType+";base64,"+image.base64;
+    const result = await Tesseract.recognize(dataUrl, "eng");
+    const words = (result && result.data && result.data.words) || [];
+    const good = words.filter(w=>w.confidence>=OCR_MIN_CONFIDENCE).map(w=>w.text).join(" ").trim().replace(/\s+/g," ");
+    return good.length>=OCR_MIN_CHARS ? good : null;
+  }catch(e){ console.warn("ocrExtractText failed", e); return null; }
+}
 // Generates a unique, non-generic AI title for one card (imported OR saved —
 // both use .title; description is .desc for imported, .benefit for saved).
 // Returns the title string, or null when generation isn't possible (no AI
