@@ -4015,7 +4015,7 @@ async function enrichOnOpen(it, idx){
     }
     if(isGenericTitle(it.title, it.url)){
       try{
-        const suggested = await generateUniqueTitle(it);
+        const suggested = await generateUniqueTitle(it, undefined, false);
         if(suggested){ it.title=suggested; changed=true; }
       }catch(e){ console.warn("AI title generation failed",e); }
     }
@@ -4914,14 +4914,21 @@ async function fallbackCollectionTitle(card, collection, extraAvoid){
 //   0. a real (non-boilerplate) description -> straight to the AI loop
 //   1. OCR the card's image; if it finds legible text, treat that as the
 //      description (cheaper AND more accurate than vision for quote cards)
-//   2. no legible text -> a vision LLM call on the actual image
+//   2. no legible text -> a vision LLM call on the actual image (PAID tier —
+//      gated by allowVision, see below)
 //   3. everything above failed/unavailable -> a plain, true, non-AI label
 //      from the card's Facebook collection name, if it has one
 // Returns null when NONE of the above produced anything (no AI key, or no
 // signal of any kind). extraAvoid: additional in-flight titles to avoid
 // (the Library-Health "Suggest titles" batch flow passes titles it already
-// accepted earlier in the same run).
-async function generateUniqueTitle(card, extraAvoid){
+// accepted earlier in the same run). allowVision: gates Tier 2, the paid
+// vision-LLM call, which has no picker/cost visibility to the user — it
+// defaults to true so the explicit Title Issues "Suggest titles" batch flow
+// (suggestTitlesForFlagged) keeps the full pipeline unchanged; enrichOnOpen
+// (auto-triggered just by opening a card) passes allowVision=false so it only
+// ever benefits from the free tiers (real description, OCR, deterministic
+// collection fallback) and never silently reaches the paid tier.
+async function generateUniqueTitle(card, extraAvoid, allowVision=true){
   if(!IA_AI.hasAIKey()) return null;
   const rawDesc = card.desc || card.benefit || "";
   // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
@@ -4934,10 +4941,12 @@ async function generateUniqueTitle(card, extraAvoid){
   const ocrText = await ocrExtractText(card);
   if(ocrText) return titleFromSignal(card, {description:ocrText, ocr:true, extraAvoid, collection:weak.collection});
 
-  const image = await resolveCardImageForAI(card);
-  if(image){
-    const title = await titleFromSignal(card, {image, extraAvoid, collection:weak.collection, model:_titleVisionModel||undefined});
-    if(title) return title;
+  if(allowVision){
+    const image = await resolveCardImageForAI(card);
+    if(image){
+      const title = await titleFromSignal(card, {image, extraAvoid, collection:weak.collection, model:_titleVisionModel||undefined});
+      if(title) return title;
+    }
   }
 
   if(weak.collection) return fallbackCollectionTitle(card, weak.collection, extraAvoid);

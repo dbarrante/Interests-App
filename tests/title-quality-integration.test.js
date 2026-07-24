@@ -179,6 +179,44 @@ async function t(name, fn) { try { await fn(); pass++; console.log("  ok  " + na
     assert.strictEqual(visionCalled, false);
   });
 
+  await t("generateUniqueTitle: allowVision=false skips the paid vision tier and falls through to Tier 3 collection fallback", async () => {
+    const { fns, callCountRef } = loadTitleFns([], {
+      ocrExtractText: async () => null,
+      resolveCardImageForAI: async () => ({ mediaType:"image/jpeg", base64:"xyz" }),
+    });
+    const result = await fns.generateUniqueTitle(
+      { id:"new", desc:"From your 'VR Stuff' Facebook collection", url:"https://facebook.com/x/posts/1" },
+      undefined,
+      false
+    );
+    assert.strictEqual(result, "VR Stuff — saved from a Facebook collection");
+    assert.strictEqual(callCountRef(), 0, "the paid vision AI call must never fire when allowVision===false");
+  });
+
+  await t("generateUniqueTitle: allowVision=false with no collection either declines (no vision call, no fallback)", async () => {
+    const { fns, callCountRef } = loadTitleFns([], {
+      ocrExtractText: async () => null,
+      resolveCardImageForAI: async () => ({ mediaType:"image/jpeg", base64:"xyz" }),
+    });
+    const result = await fns.generateUniqueTitle(
+      { id:"new", desc:"Saved from Facebook", url:"https://facebook.com/x/posts/1" },
+      undefined,
+      false
+    );
+    assert.strictEqual(result, null);
+    assert.strictEqual(callCountRef(), 0, "the paid vision AI call must never fire when allowVision===false");
+  });
+
+  await t("generateUniqueTitle: allowVision omitted (matches suggestTitlesForFlagged's call) still runs the vision tier — regression guard", async () => {
+    const { fns, callCountRef } = loadTitleFns(["A Title Generated From The Vision Model"], {
+      ocrExtractText: async () => null,
+      resolveCardImageForAI: async () => ({ mediaType:"image/jpeg", base64:"xyz" }),
+    });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"Saved from Facebook", url:"https://facebook.com/x/posts/1", img:"idb:new" });
+    assert.strictEqual(result, "A Title Generated From The Vision Model");
+    assert.strictEqual(callCountRef(), 1, "vision tier must still fire when allowVision is simply not passed");
+  });
+
   await t("fallbackCollectionTitle: respects uniqueness (disambiguates on collision)", async () => {
     const { fns, sandbox } = loadTitleFns([]);
     sandbox.imported.push({ id:"existing", title:"VR Stuff — saved from a Facebook collection", url:"https://x.com/e" });
