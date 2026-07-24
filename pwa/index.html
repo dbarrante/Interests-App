@@ -1805,7 +1805,7 @@ function renderSettings(){
     const on = l.dataset.p===S.provider;
     l.classList.toggle("on", on);
     l.querySelector("input").checked = on;
-    l.onclick = ()=>{ S.provider=l.dataset.p; renderSettings(); };
+    l.onclick = ()=>{ S.provider=l.dataset.p; _titleVisionModels=null; _titleVisionModel=""; renderSettings(); };
   });
   const p = PROVIDERS[S.provider];
   const localExtra = S.provider!=="local" ? "" : `
@@ -5325,11 +5325,11 @@ function renderHealthTitles(list){
   const hasSuggestions = Object.keys(_titleSuggestions).length>0;
   if(_titleVisionModels===null && (S.provider==="openrouter" || S.provider==="gemini")){
     _titleVisionModels = [];   // avoid re-triggering the fetch while it's in flight
-    loadVisionModelsForPicker().then(models=>{ _titleVisionModels = models; if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList")); });
+    loadVisionModelsForPicker().then(models=>{ _titleVisionModels = models; if(!_titleVisionModel && models.length) _titleVisionModel = models[0].id; if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList")); });
   }
   list.innerHTML = `
     <div class="s" style="opacity:.75;padding:2px 4px 10px">${flagged.length} card${flagged.length>1?"s have":" has"} a missing, generic, or platform-only title.${hasSuggestions?" Review the suggested titles below, uncheck any you don't want, then Apply.":" Check the ones to fix, then Suggest titles."}</div>
-    ${visionPickerHTML(_titleVisionModels)}
+    ${(S.provider==="openrouter"||S.provider==="gemini") ? visionPickerHTML(_titleVisionModels) : ""}
     ${flagged.map(m=>{
       const it=m.card, dom=domain(it.url)||"";
       const key=m.scope+":"+it.id;

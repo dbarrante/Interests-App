@@ -61,6 +61,30 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const region = src.slice(start, start + 4000);
     assert.match(region, /visionPickerHTML\(/);
   });
+  t(label + ": renderHealthTitles gates the picker render on S.provider (openrouter/gemini only)", () => {
+    const start = src.indexOf("function renderHealthTitles(list){");
+    assert.ok(start >= 0, "renderHealthTitles not found");
+    const region = src.slice(start, start + 4000);
+    assert.match(
+      region,
+      /\(S\.provider===["']openrouter["']\|\|S\.provider===["']gemini["']\)\s*\?\s*visionPickerHTML\(_titleVisionModels\)\s*:\s*""/,
+      "the visionPickerHTML(...) call must be gated on S.provider, not unconditional"
+    );
+  });
+  t(label + ": loadVisionModelsForPicker's resolution seeds _titleVisionModel with the cheapest model when unset", () => {
+    assert.match(
+      src,
+      /loadVisionModelsForPicker\(\)\.then\(models=>\{\s*_titleVisionModels\s*=\s*models;\s*if\(!_titleVisionModel\s*&&\s*models\.length\)\s*_titleVisionModel\s*=\s*models\[0\]\.id;/,
+      "must default _titleVisionModel to models[0].id (cheapest) when the user hasn't picked one"
+    );
+  });
+  t(label + ": switching provider in Settings resets the vision picker cache", () => {
+    assert.match(
+      src,
+      /S\.provider=l\.dataset\.p;\s*_titleVisionModels\s*=\s*null;\s*_titleVisionModel\s*=\s*"";/,
+      "the provider-picker onclick must reset _titleVisionModels/_titleVisionModel so a stale list/selection doesn't leak across providers"
+    );
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
