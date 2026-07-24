@@ -4,25 +4,35 @@
 (function (root) {
   "use strict";
 
-  // buildTitlePrompt({url, domain, description, avoidTitles}) — asks for
+  // buildTitlePrompt({url, domain, description, avoidTitles, hasImage, ocr, collection}) — asks for
   // exactly one title, <=8 words, grounded in whatever context is available.
   // avoidTitles (0+ strings) are titles already taken in the library — only
   // populated on a uniqueness-collision retry (see generateUniqueTitle in
   // index.html), so the common case (first attempt) never mentions them.
+  // hasImage, ocr, collection are optional context flags for richer prompting.
   function buildTitlePrompt(info) {
     info = info || {};
     var url = String(info.url || "");
     var domain = String(info.domain || "");
     var description = String(info.description || "").slice(0, 1000);
     var avoidTitles = Array.isArray(info.avoidTitles) ? info.avoidTitles.filter(Boolean) : [];
+    var hasImage = !!info.hasImage;
+    var ocr = !!info.ocr;
+    var collection = String(info.collection || "");
     var lines = [
       "Write ONE short, descriptive, specific title for this saved web page, 8 words or fewer.",
-      "No platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject.",
-      "",
-      "URL: " + url,
-      "Domain: " + domain,
-      "Description: " + description
+      "No platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject."
     ];
+    if (hasImage) {
+      lines.push("An image of the actual saved content is attached — base the title on what's shown. If the image contains legible text (e.g. a quote), use that as the primary basis. Otherwise describe what's depicted.");
+    }
+    if (ocr) {
+      lines.push("The description below was extracted via OCR from an image and may contain minor recognition errors — treat it as approximate, not verbatim-perfect.");
+    }
+    lines.push("", "URL: " + url, "Domain: " + domain, "Description: " + description);
+    if (collection) {
+      lines.push("This was saved from the user's '" + collection + "' collection (context only — do not assume this describes the specific content).");
+    }
     if (avoidTitles.length) {
       lines.push("");
       lines.push("Do not reuse any of these exact titles (already used elsewhere in the library):");

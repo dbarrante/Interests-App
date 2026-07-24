@@ -80,5 +80,27 @@ t("composeFallbackTitle: even a 1-character collection name produces a >=25-char
   assert.ok(out.length >= 25, "must clear isGenericTitle's length floor: " + out.length);
 });
 
+// ---- buildTitlePrompt: new flags (hasImage, ocr, collection) ----
+t("buildTitlePrompt: unchanged output when no new flags are passed (regression guard)", () => {
+  const before = t2.buildTitlePrompt({ url:"https://x.com/a", domain:"x.com", description:"d" });
+  assert.ok(!/attached/i.test(before));
+  assert.ok(!/OCR/i.test(before));
+  assert.ok(!/collection/i.test(before));
+});
+t("buildTitlePrompt: hasImage adds an image-grounding instruction", () => {
+  const p = t2.buildTitlePrompt({ url:"u", domain:"d", description:"", hasImage:true });
+  assert.match(p, /image of the actual saved content is attached/i);
+});
+t("buildTitlePrompt: ocr adds an approximate-text caveat", () => {
+  const p = t2.buildTitlePrompt({ url:"u", domain:"d", description:"extracted text", ocr:true });
+  assert.match(p, /OCR/i);
+  assert.match(p, /approximate/i);
+});
+t("buildTitlePrompt: collection is included as supplementary context, not a standalone claim", () => {
+  const p = t2.buildTitlePrompt({ url:"u", domain:"d", description:"d", collection:"VR Stuff" });
+  assert.match(p, /VR Stuff/);
+  assert.match(p, /context only/i);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
