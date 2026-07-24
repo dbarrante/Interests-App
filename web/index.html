@@ -4736,6 +4736,42 @@ function allTitleKeys(excludeId){
   saved.forEach(c=>{ if(c && c.id!==excludeId && c.title) keys.add(normalizeTitleKey(c.title)); });
   return keys;
 }
+// Resolves a card's image to downscaled JPEG bytes for an AI vision/OCR call
+// (spec: docs/superpowers/specs/2026-07-24-vision-title-generation-design.md
+// §3). Shared by the OCR tier and the vision tier — same downscale budget
+// (1024px longest edge, ~0.7 JPEG quality) keeps payload/cost bounded for
+// both. Returns null on ANY failure (no image, fetch/decode error) — callers
+// treat null as "this tier can't run," never as an error to surface.
+async function resolveCardImageForAI(card){
+  try{
+    const img = card && card.img;
+    if(!img) return null;
+    let srcUrl;
+    if(String(img).indexOf("idb:")===0){
+      const id = String(img).slice(4);
+      await Store.ensureImage(id);
+      srcUrl = Store.imgUrl(id);
+    } else if(/^https?:\/\//i.test(img)){
+      srcUrl = img;
+    } else {
+      return null;
+    }
+    const blob = await (await fetch(srcUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const maxEdge = 1024;
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width*scale)), h = Math.max(1, Math.round(bitmap.height*scale));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const outBlob = await canvas.convertToBlob({type:"image/jpeg", quality:0.7});
+    const buf = await outBlob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+    return { mediaType:"image/jpeg", base64: btoa(binary) };
+  }catch(e){ console.warn("resolveCardImageForAI failed", e); return null; }
+}
 // Generates a unique, non-generic AI title for one card (imported OR saved —
 // both use .title; description is .desc for imported, .benefit for saved).
 // Returns the title string, or null when generation isn't possible (no AI
