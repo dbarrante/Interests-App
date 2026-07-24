@@ -48,7 +48,37 @@
     return s;
   }
 
-  var api = { buildTitlePrompt: buildTitlePrompt, parseTitleReply: parseTitleReply };
+  // extractWeakContext(card) — the ONE genuine signal inside otherwise-inert
+  // capture-time boilerplate: the user's own Facebook collection/list name.
+  // Never enough alone for a confident title (see generateUniqueTitle's Tier
+  // 3 in index.html) — only ever used as supplementary AI-prompt context, or
+  // as the sole input to the deterministic (non-AI) fallback label.
+  var FB_COLLECTION_RE = /^From your '(.+)' Facebook collection$/;
+  var FB_NON_PAGE_SEGMENTS = { "reel": 1, "permalink.php": 1, "photo.php": 1, "watch": 1, "groups": 1, "story.php": 1, "share": 1, "p": 1 };
+  function extractWeakContext(card) {
+    var desc = String((card && card.desc) || "");
+    var m = FB_COLLECTION_RE.exec(desc.trim());
+    var collection = m ? m[1] : "";
+    var pageSlug = "";
+    try {
+      var u = new URL(String((card && card.url) || ""));
+      if (/(^|\.)facebook\.com$/i.test(u.hostname) || /(^|\.)fb\.watch$/i.test(u.hostname)) {
+        var seg = (u.pathname.split("/").filter(Boolean)[0] || "");
+        if (seg && !FB_NON_PAGE_SEGMENTS[seg.toLowerCase()]) pageSlug = seg;
+      }
+    } catch (e) {}
+    return { collection: collection, pageSlug: pageSlug };
+  }
+
+  // composeFallbackTitle(collection) — Tier 3's deterministic, non-AI label
+  // (generateUniqueTitle in index.html/pwa). Padding text is fixed so even a
+  // 1-character collection name clears isGenericTitle()'s 25-char floor;
+  // callers still re-check isGenericTitle() themselves as a backstop.
+  function composeFallbackTitle(collection) {
+    return String(collection || "").trim() + " — saved from a Facebook collection";
+  }
+
+  var api = { buildTitlePrompt: buildTitlePrompt, parseTitleReply: parseTitleReply, extractWeakContext: extractWeakContext, composeFallbackTitle: composeFallbackTitle };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  if (root) { root.buildTitlePrompt = buildTitlePrompt; root.parseTitleReply = parseTitleReply; }
+  if (root) { root.buildTitlePrompt = buildTitlePrompt; root.parseTitleReply = parseTitleReply; root.extractWeakContext = extractWeakContext; root.composeFallbackTitle = composeFallbackTitle; }
 })(typeof self !== "undefined" ? self : this);

@@ -41,5 +41,44 @@ t("parseTitleReply on empty/garbage -> null", () => {
   assert.strictEqual(t2.parseTitleReply(null), null);
 });
 
+// ---- extractWeakContext ----
+t("extractWeakContext: extracts the collection name from the exact boilerplate string", () => {
+  const r = t2.extractWeakContext({ desc: "From your 'VR Stuff' Facebook collection", url: "https://facebook.com/x/posts/1" });
+  assert.strictEqual(r.collection, "VR Stuff");
+});
+t("extractWeakContext: no match -> empty collection", () => {
+  const r = t2.extractWeakContext({ desc: "Saved from Facebook", url: "https://facebook.com/x/posts/1" });
+  assert.strictEqual(r.collection, "");
+});
+t("extractWeakContext: missing desc -> empty collection, no throw", () => {
+  const r = t2.extractWeakContext({ url: "https://facebook.com/x/posts/1" });
+  assert.strictEqual(r.collection, "");
+});
+t("extractWeakContext: extracts the page slug from a facebook.com URL", () => {
+  const r = t2.extractWeakContext({ desc: "", url: "https://www.facebook.com/uploadvr/posts/pfbid0abc" });
+  assert.strictEqual(r.pageSlug, "uploadvr");
+});
+t("extractWeakContext: reel/permalink.php/etc are not page slugs", () => {
+  assert.strictEqual(t2.extractWeakContext({ url: "https://www.facebook.com/reel/12345/" }).pageSlug, "");
+  assert.strictEqual(t2.extractWeakContext({ url: "https://www.facebook.com/permalink.php?story_fbid=1&id=2" }).pageSlug, "");
+  assert.strictEqual(t2.extractWeakContext({ url: "https://www.facebook.com/watch/?v=1" }).pageSlug, "");
+});
+t("extractWeakContext: non-Facebook URL -> empty pageSlug", () => {
+  assert.strictEqual(t2.extractWeakContext({ url: "https://example.com/whatever" }).pageSlug, "");
+});
+t("extractWeakContext: missing/invalid url -> no throw, empty pageSlug", () => {
+  assert.strictEqual(t2.extractWeakContext({}).pageSlug, "");
+  assert.strictEqual(t2.extractWeakContext({ url: "not a url" }).pageSlug, "");
+});
+
+// ---- composeFallbackTitle ----
+t("composeFallbackTitle: composes a factual, non-fabricated label", () => {
+  assert.strictEqual(t2.composeFallbackTitle("VR Stuff"), "VR Stuff — saved from a Facebook collection");
+});
+t("composeFallbackTitle: even a 1-character collection name produces a >=25-char result", () => {
+  const out = t2.composeFallbackTitle("X");
+  assert.ok(out.length >= 25, "must clear isGenericTitle's length floor: " + out.length);
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
