@@ -4877,31 +4877,32 @@ async function ocrExtractText(card){
     return good.length>=OCR_MIN_CHARS ? good : null;
   }catch(e){ console.warn("ocrExtractText failed", e); return null; }
 }
-// Generates a unique, non-generic AI title for one card (imported OR saved —
-// both use .title; description is .desc for imported, .benefit for saved).
-// Returns the title string, or null when generation isn't possible (no AI
-// key, or there's no description AND no url — not enough signal for a
-// meaningful title). extraAvoid: additional in-flight titles to avoid (the
-// Library-Health "Suggest titles" batch flow passes the titles it already
-// accepted earlier in the same run, so two suggestions can't collide with
-// each other before either is saved).
-async function generateUniqueTitle(card, extraAvoid){
-  if(!IA_AI.hasAIKey()) return null;
-  const rawDesc = card.desc || card.benefit || "";
-  // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
-  // time (see enrichOnOpen), not real content — treat it as no description, same as
-  // the "is this a real description" check elsewhere in this file.
-  const description = (rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "";
-  // Per the title-quality design spec: the URL/domain alone isn't enough signal for
-  // a meaningful title, so a real description is required, not merely optional.
-  if(!description) return null;
+// Vision model override for the Title Issues tab's "Suggest titles" flow
+// (spec §2) — set by the picker UI, "" means "use the provider's configured
+// default model." Only ever consulted by Tier 2 (vision); OCR/text tiers
+// never need a model override. enrichOnOpen's single-card automatic refresh
+// has no picker context and always uses "" (the default model).
+let _titleVisionModel = "";
+
+// Shared "ask the AI for one unique, non-generic title" loop. Used for every
+// AI-backed tier (a real description, OCR'd text, or an attached image) —
+// they differ only in what grounding is fed in; the uniqueness/retry/
+// disambiguation logic below is identical either way.
+async function titleFromSignal(card, opts){
+  opts = opts || {};
+  const description = opts.description || "";
   const dom = domain(card.url)||"";
   const existing = allTitleKeys(card.id);
-  (extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));
+  (opts.extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));
   let avoidTitles = [];
+  const callOpts = {};
+  if(opts.image) callOpts.image = opts.image;
+  if(opts.model) callOpts.model = opts.model;
   for(let attempt=0; attempt<3; attempt++){
     let reply;
-    try{ reply = await callAI(buildTitlePrompt({url:card.url, domain:dom, description, avoidTitles})); }
+    try{
+      reply = await callAI(buildTitlePrompt({url:card.url, domain:dom, description, avoidTitles, ocr:!!opts.ocr, hasImage:!!opts.image, collection:opts.collection}), callOpts);
+    }
     catch(e){ console.warn("AI title generation failed", e); return null; }
     const candidate = parseTitleReply(reply);
     if(!candidate || isGenericTitle(candidate, card.url)){ if(candidate) avoidTitles = avoidTitles.concat([candidate]).slice(-3); continue; }
@@ -4919,6 +4920,58 @@ async function generateUniqueTitle(card, extraAvoid){
   let n=2;
   while(existing.has(normalizeTitleKey(disambiguated+" ("+n+")"))) n++;
   return disambiguated+" ("+n+")";
+}
+
+// Tier 3 (spec §1): deterministic, non-AI fallback — stating the user's true
+// collection name is not a hallucination the way inventing what a specific
+// post says would be. Still runs the same uniqueness/disambiguation as every
+// other tier, just without any AI call or retry loop.
+async function fallbackCollectionTitle(card, collection, extraAvoid){
+  const candidate = composeFallbackTitle(collection);
+  if(isGenericTitle(candidate, card.url)) return null;   // defensive backstop, see design spec §1 Tier 3
+  const existing = allTitleKeys(card.id);
+  (extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));
+  if(!existing.has(normalizeTitleKey(candidate))) return candidate;
+  let n=2;
+  while(existing.has(normalizeTitleKey(candidate+" ("+n+")"))) n++;
+  return candidate+" ("+n+")";
+}
+
+// Generates a unique, non-generic AI title for one card (imported OR saved —
+// both use .title; description is .desc for imported, .benefit for saved).
+// Tiered pipeline (spec: docs/superpowers/specs/2026-07-24-vision-title-
+// generation-design.md), cheapest/most-certain first:
+//   0. a real (non-boilerplate) description -> straight to the AI loop
+//   1. OCR the card's image; if it finds legible text, treat that as the
+//      description (cheaper AND more accurate than vision for quote cards)
+//   2. no legible text -> a vision LLM call on the actual image
+//   3. everything above failed/unavailable -> a plain, true, non-AI label
+//      from the card's Facebook collection name, if it has one
+// Returns null when NONE of the above produced anything (no AI key, or no
+// signal of any kind). extraAvoid: additional in-flight titles to avoid
+// (the Library-Health "Suggest titles" batch flow passes titles it already
+// accepted earlier in the same run).
+async function generateUniqueTitle(card, extraAvoid){
+  if(!IA_AI.hasAIKey()) return null;
+  const rawDesc = card.desc || card.benefit || "";
+  // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
+  // time (see enrichOnOpen), not real content — treat it as no description, same as
+  // the "is this a real description" check elsewhere in this file.
+  const description = (rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "";
+  const weak = extractWeakContext(card);
+  if(description) return titleFromSignal(card, {description, extraAvoid, collection:weak.collection});
+
+  const ocrText = await ocrExtractText(card);
+  if(ocrText) return titleFromSignal(card, {description:ocrText, ocr:true, extraAvoid, collection:weak.collection});
+
+  const image = await resolveCardImageForAI(card);
+  if(image){
+    const title = await titleFromSignal(card, {image, extraAvoid, collection:weak.collection, model:_titleVisionModel||undefined});
+    if(title) return title;
+  }
+
+  if(weak.collection) return fallbackCollectionTitle(card, weak.collection, extraAvoid);
+  return null;
 }
 // Pick the member to KEEP from a duplicate group. Higher score wins.
 function dupePrimary(members){

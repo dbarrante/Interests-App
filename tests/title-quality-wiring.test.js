@@ -33,12 +33,29 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /imported\.forEach/);
     assert.match(m[1], /saved\.forEach/);
   });
-  t(label + ": generateUniqueTitle retries up to 3 times on collision, then disambiguates", () => {
+  t(label + ": generateUniqueTitle runs the tiered pipeline in order (desc -> OCR -> vision -> collection fallback)", () => {
     const m = /async function generateUniqueTitle\(card, ?extraAvoid\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "generateUniqueTitle not found");
+    const body = m[1];
+    const iDesc = body.indexOf("if(description)");
+    const iOcr = body.indexOf("ocrExtractText(card)");
+    const iVision = body.indexOf("resolveCardImageForAI(card)");
+    const iFallback = body.indexOf("fallbackCollectionTitle(");
+    assert.ok(iDesc >= 0 && iOcr > iDesc && iVision > iOcr && iFallback > iVision, "tiers must run in cost/certainty order");
+  });
+  t(label + ": titleFromSignal retries up to 3 times on collision, then disambiguates", () => {
+    const m = /async function titleFromSignal\(card, ?opts\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "titleFromSignal not found");
     assert.match(m[1], /attempt\s*<\s*3/, "should retry up to 3 times");
     assert.match(m[1], /buildTitlePrompt\(/);
     assert.match(m[1], /parseTitleReply\(/);
+  });
+  t(label + ": fallbackCollectionTitle never calls the AI", () => {
+    const m = /async function fallbackCollectionTitle\(card, ?collection, ?extraAvoid\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "fallbackCollectionTitle not found");
+    assert.doesNotMatch(m[1], /callAI\(/);
+    assert.match(m[1], /composeFallbackTitle\(/);
+    assert.match(m[1], /isGenericTitle\(/);
   });
   t(label + ": enrichOnOpen calls generateUniqueTitle automatically when still generic", () => {
     const start = src.indexOf("async function enrichOnOpen(");

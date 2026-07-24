@@ -8,30 +8,48 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { extractFn } = require("./_extract");
-const { buildTitlePrompt, parseTitleReply } = require("../web/title-ai.js");
+const { buildTitlePrompt, parseTitleReply, extractWeakContext, composeFallbackTitle } = require("../web/title-ai.js");
 const { isGenericTitle } = require("../web/lib/capture-state.js");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 
-function loadTitleFns(aiReplies) {
+function loadTitleFns(aiReplies, opts) {
+  opts = opts || {};
   // aiReplies: array of strings, one per callAI invocation, consumed in order.
   let callCount = 0;
   const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
-  const callAI = async () => { const r = aiReplies[callCount]; callCount++; if (r instanceof Error) throw r; return r; };
+  const callAI = async (prompt, callOpts) => { const r = aiReplies[callCount]; callCount++; if (r instanceof Error) throw r; return r; };
   const IA_AI = { hasAIKey: () => true };
-  const sandbox = { imported: [], saved: [], buildTitlePrompt, parseTitleReply, domain, callAI, IA_AI, isGenericTitle, console };
+  // Fakes for the browser-only tiers — real behavior is manually verified
+  // (Task 10); these let the ORDERING/short-circuit logic be tested here.
+  const ocrExtractText = opts.ocrExtractText || (async () => null);
+  const resolveCardImageForAI = opts.resolveCardImageForAI || (async () => null);
+  const sandbox = { imported: [], saved: [], buildTitlePrompt, parseTitleReply, domain, callAI, IA_AI, isGenericTitle, extractWeakContext, composeFallbackTitle, ocrExtractText, resolveCardImageForAI, console };
+  // generateUniqueTitle reads the module-level `_titleVisionModel` (Tier 2's
+  // vision-model override) as a free variable — extractFn only pulls function
+  // bodies, so pull this one statement out of the real source too, rather than
+  // hardcoding a copy that could drift from the shipped declaration.
+  const visionModelDecl = /\nlet _titleVisionModel = [^\n]*;/.exec(html);
+  if (!visionModelDecl) throw new Error("_titleVisionModel declaration not found in index.html");
   const src = [
+    visionModelDecl[0].trim(),
     extractFn(html, "normalizeTitleKey"),
     extractFn(html, "allTitleKeys"),
+    extractFn(html, "titleFromSignal"),
+    extractFn(html, "fallbackCollectionTitle"),
     extractFn(html, "generateUniqueTitle"),
   ].join("\n");
   // eval in a function scope closed over `sandbox`'s properties as locals —
   // matches loadFns' approach (_extract.js) but with our own controlled globals.
   const factory = new Function(
     "imported", "saved", "buildTitlePrompt", "parseTitleReply", "domain", "callAI", "IA_AI", "isGenericTitle",
-    src + "\nreturn { normalizeTitleKey, allTitleKeys, generateUniqueTitle };"
+    "extractWeakContext", "composeFallbackTitle", "ocrExtractText", "resolveCardImageForAI",
+    src + "\nreturn { normalizeTitleKey, allTitleKeys, titleFromSignal, fallbackCollectionTitle, generateUniqueTitle };"
   );
-  return { fns: factory(sandbox.imported, sandbox.saved, sandbox.buildTitlePrompt, sandbox.parseTitleReply, sandbox.domain, sandbox.callAI, sandbox.IA_AI, sandbox.isGenericTitle), sandbox, callCountRef: () => callCount };
+  return {
+    fns: factory(sandbox.imported, sandbox.saved, sandbox.buildTitlePrompt, sandbox.parseTitleReply, sandbox.domain, sandbox.callAI, sandbox.IA_AI, sandbox.isGenericTitle, sandbox.extractWeakContext, sandbox.composeFallbackTitle, sandbox.ocrExtractText, sandbox.resolveCardImageForAI),
+    sandbox, callCountRef: () => callCount
+  };
 }
 
 let pass = 0, fail = 0;
@@ -116,6 +134,56 @@ async function t(name, fn) { try { await fn(); pass++; console.log("  ok  " + na
       ["A Title Already Suggested This Batch"]
     );
     assert.strictEqual(result, "A Genuinely Different New Title");
+  });
+
+  await t("generateUniqueTitle Tier 1: uses OCR'd text as the description when there's no real desc", async () => {
+    const { fns } = loadTitleFns(["A Title Extracted From OCR Text"], { ocrExtractText: async () => "some legible quote text" });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"Saved from Facebook", url:"https://facebook.com/x/posts/1" });
+    assert.strictEqual(result, "A Title Extracted From OCR Text");
+  });
+
+  await t("generateUniqueTitle Tier 2: falls back to vision when OCR finds nothing", async () => {
+    const { fns } = loadTitleFns(["A Title Generated From The Vision Model"], {
+      ocrExtractText: async () => null,
+      resolveCardImageForAI: async () => ({ mediaType:"image/jpeg", base64:"xyz" }),
+    });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"Saved from Facebook", url:"https://facebook.com/x/posts/1", img:"idb:new" });
+    assert.strictEqual(result, "A Title Generated From The Vision Model");
+  });
+
+  await t("generateUniqueTitle Tier 3: deterministic collection fallback when OCR and vision both fail", async () => {
+    const { fns, callCountRef } = loadTitleFns([], {
+      ocrExtractText: async () => null,
+      resolveCardImageForAI: async () => null,
+    });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"From your 'VR Stuff' Facebook collection", url:"https://facebook.com/x/posts/1" });
+    assert.strictEqual(result, "VR Stuff — saved from a Facebook collection");
+    assert.strictEqual(callCountRef(), 0, "Tier 3 must never call the AI");
+  });
+
+  await t("generateUniqueTitle: declines when OCR, vision, AND collection are all unavailable", async () => {
+    const { fns } = loadTitleFns([], { ocrExtractText: async () => null, resolveCardImageForAI: async () => null });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"Saved from Facebook", url:"https://facebook.com/x/posts/1" });
+    assert.strictEqual(result, null);
+  });
+
+  await t("generateUniqueTitle: a real description skips OCR/vision/fallback entirely (cheapest path first)", async () => {
+    let ocrCalled = false, visionCalled = false;
+    const { fns } = loadTitleFns(["A Genuinely Unique Real Article Title"], {
+      ocrExtractText: async () => { ocrCalled = true; return null; },
+      resolveCardImageForAI: async () => { visionCalled = true; return null; },
+    });
+    const result = await fns.generateUniqueTitle({ id:"new", desc:"A genuinely real description of the content", url:"https://x.com/new" });
+    assert.strictEqual(result, "A Genuinely Unique Real Article Title");
+    assert.strictEqual(ocrCalled, false);
+    assert.strictEqual(visionCalled, false);
+  });
+
+  await t("fallbackCollectionTitle: respects uniqueness (disambiguates on collision)", async () => {
+    const { fns, sandbox } = loadTitleFns([]);
+    sandbox.imported.push({ id:"existing", title:"VR Stuff — saved from a Facebook collection", url:"https://x.com/e" });
+    const result = await fns.fallbackCollectionTitle({ id:"new", url:"https://facebook.com/x" }, "VR Stuff", []);
+    assert.strictEqual(result, "VR Stuff — saved from a Facebook collection (2)");
   });
 
   console.log(pass + " passed, " + fail + " failed");
