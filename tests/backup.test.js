@@ -366,6 +366,80 @@ t("runBackup rolls the prior verified backup back when publish rename fails", ()
   });
 });
 
+// RENAME_RETRY_ATTEMPTS in core/backup.js — kept in sync manually; a mismatch
+// only makes the "gives up" test below assert the wrong count, not silently pass.
+const EXPECTED_RENAME_RETRY_ATTEMPTS = 45;
+
+t("runBackup retries the publish rename after a transient EPERM and succeeds", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+
+    // Live-measured 2026-07-24 against a production library: Dropbox held the
+    // publish-rename lock for ~20s (32 attempts) before clearing on its own —
+    // not "a beat". core/backup.js's retry budget covers that with margin; this
+    // test only proves the retry-then-succeed mechanics, so the mock sleep is
+    // stubbed to instant (real timing is covered by the live measurement, not
+    // re-asserted here — a 20s+ sleep has no place in a fast test suite).
+    const originalSleep = backup._timing.sleepSync;
+    backup._timing.sleepSync = function () {};
+    let publishAttempts = 0;
+    const originalRename = fs.renameSync;
+    fs.renameSync = function (src, dst) {
+      const isPublish = String(src).indexOf(".staging-") >= 0 && String(dst).indexOf(".staging-") < 0 && String(dst).indexOf(".previous-") < 0;
+      if (isPublish) {
+        publishAttempts++;
+        if (publishAttempts < 3) { const e = new Error("simulated transient lock"); e.code = "EPERM"; throw e; }
+      }
+      return originalRename.apply(fs, arguments);
+    };
+    let out;
+    try {
+      out = backup.runBackup(db, store, { safety: true });
+    } finally {
+      fs.renameSync = originalRename;
+      backup._timing.sleepSync = originalSleep;
+    }
+
+    assert.strictEqual(publishAttempts, 3, "should have retried the publish rename twice before succeeding on the 3rd attempt");
+    assert.strictEqual(backup.verifyBackup(out.name, out.counts), true);
+    db.close();
+  });
+});
+
+t("runBackup gives up and rolls back after the publish rename keeps failing with a transient error", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const first = backup.runBackup(db, store);
+    const priorCounts = first.counts;
+
+    const originalSleep = backup._timing.sleepSync;
+    backup._timing.sleepSync = function () {};
+    let publishAttempts = 0;
+    const originalRename = fs.renameSync;
+    fs.renameSync = function (src, dst) {
+      const isPublish = String(src).indexOf(".staging-") >= 0 && String(dst).indexOf(".staging-") < 0 && String(dst).indexOf(".previous-") < 0;
+      if (isPublish) { publishAttempts++; const e = new Error("simulated persistent lock"); e.code = "EPERM"; throw e; }
+      return originalRename.apply(fs, arguments);
+    };
+    try {
+      assert.throws(function () { backup.runBackup(db, store); }, /simulated persistent lock/);
+    } finally {
+      fs.renameSync = originalRename;
+      backup._timing.sleepSync = originalSleep;
+    }
+
+    assert.strictEqual(publishAttempts, EXPECTED_RENAME_RETRY_ATTEMPTS, "should retry exactly RENAME_RETRY_ATTEMPTS times before giving up");
+    assert.strictEqual(backup.verifyBackup(first.name, priorCounts), true, "the prior verified backup must survive an exhausted-retry publish failure");
+    db.close();
+  });
+});
+
 t("runBackup reconciles a verified backup displaced by an interrupted publish", () => {
   withBackupDir(function () {
     const store = newStore();

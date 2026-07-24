@@ -114,6 +114,35 @@ function copyFileSync(src, dst) {
   fs.copyFileSync(src, dst);
 }
 
+// Overridable seam so tests can make retries instant (see tests/backup.test.js) —
+// production always goes through the real Atomics.wait block.
+const timing = {
+  sleepSync: function (ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },
+};
+
+// Dropbox actively syncing the backups folder can hold a lock on the exact
+// publish rename below (EPERM/EBUSY/EACCES). Live-measured against a
+// production library, 2026-07-24: an initial 900ms retry budget (3 attempts,
+// 300ms apart) still failed 2 of 5 real safety-snapshot publishes outright.
+// Instrumenting a single failure end to end showed the lock cleared on its
+// own after ~20s (32 attempts, ~600-750ms apart) — Dropbox's own sync
+// bookkeeping over the just-written ~600MB/6000-image batch, not a real
+// conflict — so the fix is a longer bounded wait, not a different mechanism.
+// RENAME_RETRY_ATTEMPTS/DELAY give ~33s of headroom past that measurement.
+// Non-transient errors (e.g. a genuinely missing path) still fail immediately.
+const TRANSIENT_RENAME_CODES = { EPERM: 1, EBUSY: 1, EACCES: 1 };
+const RENAME_RETRY_ATTEMPTS = 45;
+const RENAME_RETRY_DELAY_MS = 750;
+function renameSyncWithRetry(src, dst) {
+  for (let attempt = 1; ; attempt++) {
+    try { return fs.renameSync(src, dst); }
+    catch (e) {
+      if (attempt >= RENAME_RETRY_ATTEMPTS || !TRANSIENT_RENAME_CODES[e && e.code]) throw e;
+      timing.sleepSync(RENAME_RETRY_DELAY_MS);
+    }
+  }
+}
+
 function imageManifest(folder) {
   let names = [];
   try { names = fs.readdirSync(folder); } catch (e) { return []; }
@@ -418,19 +447,23 @@ function runBackup(db, storeDir, opts) {
     // re-hash) would just re-verify what copyImagesAndBuildManifest already
     // proved above — confirm the db+meta.json landed intact instead.
     if (fs.existsSync(destRoot)) {
-      fs.renameSync(destRoot, previousRoot);
+      renameSyncWithRetry(destRoot, previousRoot);
       displaced = true;
     }
     try {
-      fs.renameSync(stageRoot, destRoot);
+      renameSyncWithRetry(stageRoot, destRoot);
       const publishedMeta = readMeta(destRoot);
       if (!publishedMeta || !backupCountsMatch(publishedMeta._counts, cnt) || !verifyDbOnly(path.join(destRoot, "interests.db"), cnt)) {
         throw new Error("published backup verification failed");
       }
     } catch (publishError) {
       if (displaced) {
-        try { fs.renameSync(destRoot, stageRoot); } catch (e) {}
-        fs.renameSync(previousRoot, destRoot);
+        try { renameSyncWithRetry(destRoot, stageRoot); } catch (e) {}
+        // The most safety-critical rename in this function: it restores the
+        // prior known-good backup. Retried like every other rename here for
+        // the same reason — a Dropbox lock at this exact moment is exactly as
+        // plausible as at the publish rename it's cleaning up after.
+        renameSyncWithRetry(previousRoot, destRoot);
         displaced = false;
       }
       throw publishError;
@@ -622,4 +655,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog };
+module.exports = { detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog, _timing: timing };
