@@ -294,6 +294,31 @@ t("callAI without opts.image sends plain string content (regression guard, all p
   }
 });
 
+// ---- listVisionModels tests ----
+t("listVisionModels: filters to image-capable models, sorts by estimated cost", async () => {
+  global.fetch = async (url) => {
+    assert.strictEqual(url, "https://openrouter.ai/api/v1/models");
+    return { ok:true, json: async () => ({ data: [
+      { id:"openai/gpt-4o-mini", name:"OpenAI: GPT-4o-mini", architecture:{ input_modalities:["text","image","file"] }, pricing:{ prompt:"0.00000015", completion:"0.0000006" } },
+      { id:"meta-llama/llama-3.3-70b-instruct:free", name:"Llama 3.3 70B", architecture:{ input_modalities:["text"] }, pricing:{ prompt:"0", completion:"0" } },
+      { id:"anthropic/claude-sonnet-4", name:"Claude Sonnet 4", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0.000003", completion:"0.000015" } },
+    ] }) };
+  };
+  try {
+    const models = await IA_AI.listVisionModels();
+    assert.deepStrictEqual(models.map(m => m.id), ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4"], "text-only model excluded; cheapest first");
+    assert.ok(models[0].estCostPerCard > 0);
+    assert.ok(models[0].estCostPerCard < models[1].estCostPerCard);
+    assert.strictEqual(models[0].name, "OpenAI: GPT-4o-mini");
+  } finally { delete global.fetch; }
+});
+t("listVisionModels: throws a clear error on a non-ok response", async () => {
+  global.fetch = async () => ({ ok:false, status:503 });
+  try {
+    await assert.rejects(IA_AI.listVisionModels(), /OpenRouter models API error 503/);
+  } finally { delete global.fetch; }
+});
+
 // Load a pristine copy of the module (unconfigured) for the configure-guard tests.
 function requireFresh(){
   const p = require.resolve("../web/ai");

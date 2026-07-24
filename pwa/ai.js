@@ -142,6 +142,30 @@
     return (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
   }
 
+  // listVisionModels() — OpenRouter only (see design doc's Research section:
+  // Gemini's models.list API exposes neither modality nor pricing fields).
+  // Public, unauthenticated endpoint. estCostPerCard is an ESTIMATE: a fixed
+  // image-token budget for our ~1024px downscaled JPEG (see
+  // resolveCardImageForAI) plus the prompt/completion tokens a title call
+  // actually uses, priced at the model's published per-token rate. Different
+  // providers tile images differently, so this is a ballpark for picking a
+  // model, not an exact bill.
+  var VISION_EST_IMAGE_TOKENS = 1500, VISION_EST_PROMPT_TOKENS = 250, VISION_EST_COMPLETION_TOKENS = 20;
+  async function listVisionModels() {
+    var r = await fetch("https://openrouter.ai/api/v1/models");
+    if (!r.ok) throw new Error("OpenRouter models API error " + r.status);
+    var d = await r.json();
+    return (d.data || [])
+      .filter(function (m) { return m.architecture && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.indexOf("image") >= 0; })
+      .map(function (m) {
+        var promptPrice = Number(m.pricing && m.pricing.prompt) || 0;
+        var completionPrice = Number(m.pricing && m.pricing.completion) || 0;
+        var estCostPerCard = (VISION_EST_IMAGE_TOKENS + VISION_EST_PROMPT_TOKENS) * promptPrice + VISION_EST_COMPLETION_TOKENS * completionPrice;
+        return { id: m.id, name: m.name || m.id, estCostPerCard: estCostPerCard };
+      })
+      .sort(function (a, b) { return a.estCostPerCard - b.estCostPerCard; });
+  }
+
   var PROVIDER_CALLERS = {
     anthropic: callAnthropic, openai: callOpenAI, gemini: callGemini,
     groq: callGroq, openrouter: callOpenRouter, local: callLocal
@@ -214,6 +238,7 @@
     hasAIKey: hasAIKey,
     creditsMessage: creditsMessage,
     parseJsonArray: parseJsonArray,
+    listVisionModels: listVisionModels,
     // exposed for completeness / potential direct use; dispatch normally via callAI
     callAnthropic: callAnthropic, callOpenAI: callOpenAI, callGemini: callGemini,
     callGroq: callGroq, callOpenRouter: callOpenRouter, callLocal: callLocal,
