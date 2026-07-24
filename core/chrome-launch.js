@@ -64,40 +64,26 @@ function isChromeRunning(opts) {
   if (platform !== "win32") return Promise.resolve(false);
   const execFile = opts.execFile || childProcess.execFile;
   // Chrome can leave background processes behind, and a process can own more
-  // than one top-level window. Enumerate every HWND owned by every Chrome PID;
-  // a visible, titled window counts even when minimized (the monitor must not
+  // than one top-level window. Check every Chrome PID's own main window; a
+  // visible, titled window counts even when minimized (the monitor must not
   // create a new window every minute merely because the user minimized one).
+  //
+  // This runs from a fresh powershell.exe every ~60s (see core/chrome-monitor.js)
+  // for the app's whole lifetime while auto-import is on. An earlier version used
+  // Add-Type to inline-compile a small C# EnumWindows/P-Invoke helper -- cold C#
+  // compilation in a brand-new process every minute (plus the extra AV scrutiny
+  // inline-compiled native-API code invites) was the likely cause of recurring
+  // multi-second app stalls (2026-07-24, VMMEM pegging observed in Task Manager).
+  // .NET's Process.MainWindowHandle/MainWindowTitle (exposed for free by
+  // Get-Process) gives the same "has a real top-level window" answer with no
+  // compilation step at all.
   const script = [
     "$ErrorActionPreference='Stop'",
     "try {",
-    "$src=@'",
-    "using System;",
-    "using System.Collections.Generic;",
-    "using System.ComponentModel;",
-    "using System.Runtime.InteropServices;",
-    "public static class IAChromeWindows {",
-    "  private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);",
-    "  [DllImport(\"user32.dll\", SetLastError=true)] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);",
-    "  [DllImport(\"user32.dll\")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);",
-    "  [DllImport(\"user32.dll\")] private static extern bool IsWindowVisible(IntPtr hWnd);",
-    "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hWnd);",
-    "  public static bool HasUsableWindow(int[] processIds) {",
-    "    var wanted = new HashSet<uint>();",
-    "    if (processIds != null) foreach (int id in processIds) if (id > 0) wanted.Add((uint)id);",
-    "    bool found = false;",
-    "    bool completed = EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {",
-    "      uint pid; GetWindowThreadProcessId(hWnd, out pid);",
-    "      if (wanted.Contains(pid) && IsWindowVisible(hWnd) && GetWindowTextLength(hWnd) > 0) { found = true; return false; }",
-    "      return true;",
-    "    }, IntPtr.Zero);",
-    "    if (!completed && !found) throw new Win32Exception(Marshal.GetLastWin32Error());",
-    "    return found;",
-    "  }",
-    "}",
-    "'@",
-    "Add-Type -TypeDefinition $src",
-    "$ids=@(Get-Process -Name chrome -ErrorAction SilentlyContinue | ForEach-Object {[int]$_.Id})",
-    "if([IAChromeWindows]::HasUsableWindow([int[]]$ids)){'OPEN'}else{'CLOSED'}",
+    "$procs=Get-Process -Name chrome -ErrorAction SilentlyContinue",
+    "$found=$false",
+    "foreach($p in $procs){ if($p.MainWindowHandle -ne [IntPtr]::Zero -and $p.MainWindowTitle -ne ''){ $found=$true; break } }",
+    "if($found){'OPEN'}else{'CLOSED'}",
     "} catch { exit 1 }",
   ].join("\n");
   const encoded = Buffer.from(script, "utf16le").toString("base64");

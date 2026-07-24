@@ -164,11 +164,16 @@ async function t(name, fn) {
     assert.ok(calledArgs.includes("-EncodedCommand"));
     const encoded = calledArgs[calledArgs.indexOf("-EncodedCommand") + 1];
     const script = Buffer.from(encoded, "base64").toString("utf16le");
-    assert.match(script, /EnumWindows/);
-    assert.match(script, /GetWindowThreadProcessId/);
-    assert.match(script, /GetWindowTextLength/);
-    assert.match(script, /IsWindowVisible/);
+    assert.match(script, /Get-Process -Name chrome/);
+    assert.match(script, /MainWindowHandle/);
+    assert.match(script, /MainWindowTitle/);
     assert.doesNotMatch(script, /IsIconic/);
+    // Regression guard: an earlier version inline-compiled a C# EnumWindows
+    // helper via Add-Type on every invocation -- cold compilation in a fresh
+    // process every ~60s was the likely cause of recurring app stalls
+    // (2026-07-24). Must never come back.
+    assert.doesNotMatch(script, /Add-Type/);
+    assert.doesNotMatch(script, /EnumWindows/);
     assert.match(script, /ErrorActionPreference='Stop'/);
   });
 
