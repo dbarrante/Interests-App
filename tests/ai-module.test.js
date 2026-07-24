@@ -312,6 +312,22 @@ t("listVisionModels: filters to image-capable models, sorts by estimated cost", 
     assert.strictEqual(models[0].name, "OpenAI: GPT-4o-mini");
   } finally { delete global.fetch; }
 });
+t("listVisionModels: excludes models with negative pricing (OpenRouter's variable-pricing sentinel)", async () => {
+  global.fetch = async (url) => {
+    return { ok:true, json: async () => ({ data: [
+      { id:"openai/gpt-4o-mini", name:"OpenAI: GPT-4o-mini", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0.00000015", completion:"0.0000006" } },
+      { id:"openrouter/auto-beta", name:"Auto Router (Beta)", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"-1", completion:"-1" } },
+      { id:"anthropic/claude-sonnet-4", name:"Claude Sonnet 4", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0.000003", completion:"0.000015" } },
+    ] }) };
+  };
+  try {
+    const models = await IA_AI.listVisionModels();
+    const modelIds = models.map(m => m.id);
+    assert.ok(!modelIds.includes("openrouter/auto-beta"), "model with negative prompt pricing should be excluded");
+    assert.ok(!modelIds.includes("openrouter/auto-beta"), "model with negative completion pricing should be excluded");
+    assert.deepStrictEqual(modelIds, ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4"], "legitimate models still included, sorted by cost");
+  } finally { delete global.fetch; }
+});
 t("listVisionModels: throws a clear error on a non-ok response", async () => {
   global.fetch = async () => ({ ok:false, status:503 });
   try {

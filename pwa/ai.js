@@ -156,7 +156,13 @@
     if (!r.ok) throw new Error("OpenRouter models API error " + r.status);
     var d = await r.json();
     return (d.data || [])
-      .filter(function (m) { return m.architecture && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.indexOf("image") >= 0; })
+      .filter(function (m) {
+        if (!m.architecture || !Array.isArray(m.architecture.input_modalities) || m.architecture.input_modalities.indexOf("image") < 0) return false;
+        // Exclude models with negative pricing (OpenRouter's sentinel for variable/dynamic pricing like auto-router)
+        var promptPrice = Number(m.pricing && m.pricing.prompt) || 0;
+        var completionPrice = Number(m.pricing && m.pricing.completion) || 0;
+        return promptPrice >= 0 && completionPrice >= 0;
+      })
       .map(function (m) {
         var promptPrice = Number(m.pricing && m.pricing.prompt) || 0;
         var completionPrice = Number(m.pricing && m.pricing.completion) || 0;
