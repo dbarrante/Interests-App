@@ -1694,7 +1694,13 @@ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && _sync
 async function rehydrateAfterSync(){
   imported = await Store.getCards();
   saved    = await Store.getSaved();
+  const prevProvider = S.provider;
   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
+  // A background sync (no forced reload) can silently swap S.provider out from
+  // under the vision picker — reset its cache same as the manual provider-picker
+  // click does, but only when the provider actually changed, so an unrelated
+  // settings sync doesn't clobber an in-progress model pick.
+  if(S.provider !== prevProvider){ _titleVisionModels=null; _titleVisionModel=""; }
   _lastSettingsJson = JSON.stringify(S);   // baseline, not a user edit — must not stamp ia_settings_updatedAt
   rebuildCats();
   updateCounts();

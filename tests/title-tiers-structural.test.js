@@ -85,6 +85,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "the provider-picker onclick must reset _titleVisionModels/_titleVisionModel so a stale list/selection doesn't leak across providers"
     );
   });
+  t(label + ": rehydrateAfterSync resets the vision picker cache when a background sync changes S.provider", () => {
+    const m = /async function rehydrateAfterSync\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "rehydrateAfterSync not found");
+    assert.match(m[1], /const prevProvider\s*=\s*S\.provider;/, "must capture the pre-Object.assign provider to detect a change");
+    assert.match(
+      m[1],
+      /if\s*\(\s*S\.provider\s*!==\s*prevProvider\s*\)\s*\{\s*_titleVisionModels\s*=\s*null;\s*_titleVisionModel\s*=\s*"";\s*\}/,
+      "must reset _titleVisionModels/_titleVisionModel when a sync silently changes S.provider, guarded so unrelated syncs don't clobber an in-progress pick"
+    );
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
