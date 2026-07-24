@@ -4909,8 +4909,16 @@ let _dupeReviewIndex = 0;
 // take a full-library Store.backupNow({safety:true}) on every single
 // removal — 25-47s each, and doing that repeatedly in one review sitting is
 // what actually triggered the Dropbox publish-lock bug fixed the same day
-// (core/backup.js). Same throttle shape as snapshotBeforeDestructive: only
-// re-arm on a confirmed verified success, never on a failed/reused attempt.
+// (core/backup.js). Only re-arm on a confirmed verified success, never on a
+// failed/reused attempt — same rule snapshotBeforeDestructive already uses,
+// though unlike that fire-and-forget gate, this cached name IS consumed as
+// a real rollback target (rollbackDupePersistence): what actually makes
+// reuse safe is that restore() re-verifies the named backup and fails
+// closed before any swap (core/backup.js), not just the arming rule.
+// Known trade-off: a reused snapshot can be up to 5 min stale, so a
+// rollback during that window won't restore cards imported/synced in after
+// it was taken — recoverable (restore() itself snapshots current state
+// before swapping) but not surfaced to the user if it happens.
 let _dupeSafetyCache = { at: 0, safety: null };
 const DUPE_SAFETY_REUSE_MS = 5*60*1000;
 // Pure decision rule (no DOM/Store access) — desktop only; the PWA
