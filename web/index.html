@@ -4809,6 +4809,33 @@ async function ocrExtractText(card){
 // never need a model override. enrichOnOpen's single-card automatic refresh
 // has no picker context and always uses "" (the default model).
 let _titleVisionModel = "";
+let _titleVisionModels = null;   // cached picker options for the current provider; null = not loaded yet
+// Curated Gemini vision models + approximate per-card cost (design spec's
+// Research section: Gemini's models.list API exposes neither pricing nor a
+// modality flag, unlike OpenRouter's — every current Gemini model is
+// natively multimodal, so there's nothing to "discover" here beyond cost).
+// [id, name, approxCostPerCard] — manually sourced from Google's published
+// per-token rates, verified 2026-07-24; re-check periodically.
+const GEMINI_VISION_MODELS = [
+  ["gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite", 0.0006],
+  ["gemini-2.5-flash", "Gemini 2.5 Flash", 0.0022],
+  ["gemini-2.5-pro", "Gemini 2.5 Pro", 0.0110],
+];
+async function loadVisionModelsForPicker(){
+  if(S.provider==="openrouter"){
+    try{ return await IA_AI.listVisionModels(); }catch(e){ console.warn("listVisionModels failed", e); return []; }
+  }
+  if(S.provider==="gemini"){
+    return GEMINI_VISION_MODELS.map(m=>({id:m[0], name:m[1], estCostPerCard:m[2]}));
+  }
+  return [];
+}
+function visionPickerHTML(models){
+  if(!models || !models.length) return "";
+  const opts = models.map(m=>`<option value="${esc(m.id)}"${m.id===_titleVisionModel?" selected":""}>${esc(m.name)} — ~$${m.estCostPerCard.toFixed(4)}/card</option>`).join("");
+  return `<div class="s" style="padding:6px 4px 10px">Vision model for photos with no legible text:
+    <select onchange="_titleVisionModel=this.value" style="margin-left:6px">${opts}</select></div>`;
+}
 
 // Shared "ask the AI for one unique, non-generic title" loop. Used for every
 // AI-backed tier (a real description, OCR'd text, or an attached image) —
@@ -5222,8 +5249,13 @@ function renderHealthTitles(list){
   const flagged = flaggedTitleCards();
   if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; _titleSuggestions={}; return; }
   const hasSuggestions = Object.keys(_titleSuggestions).length>0;
+  if(_titleVisionModels===null && (S.provider==="openrouter" || S.provider==="gemini")){
+    _titleVisionModels = [];   // avoid re-triggering the fetch while it's in flight
+    loadVisionModelsForPicker().then(models=>{ _titleVisionModels = models; if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList")); });
+  }
   list.innerHTML = `
     <div class="s" style="opacity:.75;padding:2px 4px 10px">${flagged.length} card${flagged.length>1?"s have":" has"} a missing, generic, or platform-only title.${hasSuggestions?" Review the suggested titles below, uncheck any you don't want, then Apply.":" Check the ones to fix, then Suggest titles."}</div>
+    ${visionPickerHTML(_titleVisionModels)}
     ${flagged.map(m=>{
       const it=m.card, dom=domain(it.url)||"";
       const key=m.scope+":"+it.id;

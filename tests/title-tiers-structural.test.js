@@ -44,6 +44,23 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.doesNotMatch(m[1], /cdnjs\.cloudflare\.com|jsdelivr\.net|unpkg\.com/, "must not load Tesseract.js from a CDN -- blocked by the Electron app's script-src 'self' CSP");
     assert.match(m[1], /window\.Tesseract/);
   });
+  t(label + ": GEMINI_VISION_MODELS is a curated, dated, all-multimodal list (design spec: Gemini's API exposes no pricing/modality)", () => {
+    assert.match(src, /const GEMINI_VISION_MODELS\s*=\s*\[/);
+    assert.match(src, /gemini-2\.5-flash-lite/);
+  });
+  t(label + ": loadVisionModelsForPicker dispatches OpenRouter (dynamic) vs Gemini (curated) vs everything else (none)", () => {
+    const m = /async function loadVisionModelsForPicker\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "loadVisionModelsForPicker not found");
+    assert.match(m[1], /IA_AI\.listVisionModels\(\)/);
+    assert.match(m[1], /GEMINI_VISION_MODELS/);
+  });
+  t(label + ": the picker is wired into renderHealthTitles and writes to _titleVisionModel", () => {
+    assert.match(src, /_titleVisionModel\s*=\s*this\.value/);
+    const start = src.indexOf("function renderHealthTitles(list){");
+    assert.ok(start >= 0, "renderHealthTitles not found");
+    const region = src.slice(start, start + 4000);
+    assert.match(region, /visionPickerHTML\(/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
