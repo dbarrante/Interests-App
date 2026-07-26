@@ -106,7 +106,16 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
 }
 
 const sw = fs.readFileSync(path.join(root, "pwa", "sw.js"), "utf8");
-assert.match(sw, /SHELL_CACHE = "interests-pwa-shell-v51"/, "PWA cache must be bumped for the cached index edit");
+// This feature edited pwa/index.html, which the service worker caches
+// cache-first, so it required a shell bump to v51. Assert a FLOOR, not the
+// literal version: pinning the exact string made every later, unrelated bump
+// fail this test (it broke on v52), which trains people to edit the assertion
+// rather than think about it. A floor still catches the real regression --
+// someone lowering or reverting the bump.
+const swVer = /SHELL_CACHE = "interests-pwa-shell-v(\d+)"/.exec(sw);
+assert.ok(swVer, "SHELL_CACHE version not found in pwa/sw.js");
+assert.ok(Number(swVer[1]) >= 51,
+  "PWA cache must stay bumped for the cached index edit (>= v51, found v" + swVer[1] + ")");
 
 const pwaIdb = fs.readFileSync(path.join(root, "pwa", "idb.js"), "utf8");
 const pwaStore = fs.readFileSync(path.join(root, "pwa", "storage-pwa.js"), "utf8");
