@@ -659,6 +659,13 @@ function newestDatedSnapshotTime() {
     // mismatched images is a narrower gap this cheap check accepts.
     const meta = readMeta(path.join(backupRoot, n));
     if (!meta) continue;
+    // A totally empty snapshot is not a recovery point, and treating it as one
+    // suppresses the next real snapshot for a full interval — so a store that
+    // was briefly unreadable would go a week without a durable backup after it
+    // healed. It verifies (0 files matches 0 expected), so only the counts
+    // themselves distinguish it.
+    const mc = meta._counts;
+    if (mc && ((mc.imported | 0) + (mc.saved | 0) + (mc.images | 0)) === 0) continue;
     if (t > best) best = t;
   }
   return best;
@@ -724,24 +731,47 @@ function updateMirror(db, storeDir) {
 
   const srcImages = imagesDir(storeDir);
   const ids = listImageIds(storeDir);
-  const c = counts(db);   // needed early: the >=100 guard's escape hatch below reads live card counts
+  const c = counts(db);
 
-  // Collapse guards (data-safety review, 2026-07-26): listImageIds silently
-  // returns [] for a MISSING images dir (a poisoned store pointer, a store on
-  // a not-yet-downloaded Dropbox placeholder, mid-restore, ...). Without a
-  // guard that reads as "the library now has 0 images", every one of the
-  // mirror's existing images gets deleted below, an empty result still
-  // verifies (0 manifest entries === 0 expected), and the freshest recovery
-  // point is destroyed with no error raised. Unlike runBackup (which would
-  // just create an ADDITIONAL, separately-named bad dated folder), this
-  // function overwrites the one and only mirror in place, so it must fail
-  // closed here.
-  //
-  // A MISSING images dir is the crisp, unambiguous form of this failure, and
-  // the only one refused unconditionally. It is directly checkable rather than
-  // inferred from a ratio, and — critically — it clears itself the moment the
-  // dir exists again, so refusing here cannot wedge the mirror the way a stale
+  // Store-sanity gate: refuses when the live store's images are incomplete
+  // relative to what its own database expects. See assertStoreLooksSane.
   assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length });
+
+  // The gate above is self-relative, so it is silent when the store reads as
+  // wholly EMPTY -- zero expected, zero present, internally consistent. That is
+  // correct for a user who cleared their library, and indistinguishable from it
+  // by counts alone. But it is also what a lost/replaced interests.db or a store
+  // pointer aimed at a fresh directory looks like (openDb CREATEs the tables, so
+  // any openable directory reads as a healthy empty library), and this function
+  // mutates the ONE mirror IN PLACE -- it would unlink every image and overwrite
+  // the db, leaving a result that still verifies and is byte-for-byte
+  // indistinguishable from a healthy mirror. Master had no mirror to lose and
+  // re-took a full dated backup every merge; here the next durable copy can be
+  // up to FULL_SNAPSHOT_INTERVAL_MS old.
+  //
+  // So PRESERVE rather than refuse. Refusing is the shape that latched the
+  // mirror in six earlier revisions of this guard; promoting always lets the
+  // update proceed, so it cannot wedge anything. The displaced copy lands under
+  // the pre-cleanup safety name, which rotate() can never select and
+  // rotateNamedSnapshots keeps 2 of (with its own guard against a collapsed
+  // newest evicting a healthy older one).
+  //
+  // Self-limiting: after the rename the mirror folder is gone, so the next run
+  // sees no baseline and promotes nothing.
+  const prevMirrorCards = prevMeta && prevMeta._counts
+    ? ((prevMeta._counts.imported | 0) + (prevMeta._counts.saved | 0)) : 0;
+  if (((c.cards | 0) + (c.saved | 0)) === 0 && (prevMirrorCards >= 100 || prevImageCount >= 100)) {
+    const promoted = path.join(backupRoot, "interests-backup-before-cleanup-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex"));
+    try {
+      renameSyncWithRetry(destRoot, promoted);
+      console.error("backup: live store reads empty but the mirror held " + prevMirrorCards + " cards / " +
+        prevImageCount + " images — preserved it as " + path.basename(promoted) + " before rebuilding the mirror");
+    } catch (e) {
+      // Could not preserve it, so do NOT overwrite it either.
+      throw new Error("mirror: live store reads empty but the mirror holds " + prevMirrorCards +
+        " cards / " + prevImageCount + " images, and it could not be preserved (" + (e && e.message || e) + ")");
+    }
+  }
 
   fs.mkdirSync(destImages, { recursive: true });
   // Sweep tmp db copies left behind by earlier failed runs before adding

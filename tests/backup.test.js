@@ -383,6 +383,44 @@ t("the gate does not depend on the mirror's own marker (nothing to go stale)", (
     db.close();
   });
 });
+t("an empty-reading source PRESERVES the mirror instead of overwriting it", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 150; i++) {
+      upsertCard(db, { id: "pv" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:pv" + i });
+      images.putImg(store, "pv" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+    db.close();
+
+    // The store's db is lost/replaced (config-pointer incident class, or a
+    // pointer aimed at a fresh dir). openDb CREATEs the tables, so it reads as
+    // a perfectly healthy EMPTY library -- expected 0, present 0, internally
+    // consistent -- which the self-relative gate is correctly silent about.
+    // In place, that would unlink all 150 mirror images and overwrite its db,
+    // leaving a result that still verifies.
+    fs.rmSync(path.join(store, "interests.db"), { force: true });
+    for (const n of fs.readdirSync(path.join(store, "images"))) fs.rmSync(path.join(store, "images", n), { force: true });
+    const db2 = openDb(store);
+    const r = backup.updateMirror(db2, store);   // must NOT throw -- refusing is the latching shape
+    assert.strictEqual(r.counts.imported, 0, "the mirror is rebuilt from the (empty) live store");
+
+    const preserved = fs.readdirSync(bdir).filter(n => /^interests-backup-before-cleanup-/.test(n));
+    assert.strictEqual(preserved.length, 1, "the pre-loss mirror must be preserved under a safety-snapshot name");
+    const meta = JSON.parse(fs.readFileSync(path.join(bdir, preserved[0], "meta.json"), "utf8"));
+    assert.strictEqual(meta._counts.images, 150, "with its images intact");
+    assert.strictEqual(meta._counts.imported, 150, "and its card rows intact");
+    assert.strictEqual(backup.verifyBackup(preserved[0], meta._counts), true, "and it must verify");
+
+    // Self-limiting: the mirror folder was renamed away, so the next run has no
+    // baseline and promotes nothing.
+    backup.updateMirror(db2, store);
+    assert.strictEqual(fs.readdirSync(bdir).filter(n => /^interests-backup-before-cleanup-/.test(n)).length, 1,
+      "repeated empty runs must not accumulate promotions");
+    db2.close();
+  });
+});
 t("the gate CANNOT latch: a legitimate bulk delete clears it with no override", () => {
   withBackupDir(function () {
     const store = newStore();
