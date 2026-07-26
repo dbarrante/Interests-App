@@ -328,6 +328,30 @@ t("listVisionModels: excludes models with negative pricing (OpenRouter's variabl
     assert.deepStrictEqual(modelIds, ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4"], "legitimate models still included, sorted by cost");
   } finally { delete global.fetch; }
 });
+t("listVisionModels: excludes single-purpose models that cannot write a title", async () => {
+  // Image-capable != able to write a title. These are all real OpenRouter
+  // entries priced at $0.0000, so cost-sorting floated them to the top of the
+  // picker and the cheapest-model default auto-selected one: the content-safety
+  // classifier answered "User Safety: safe" to every card (2026-07-25).
+  global.fetch = async () => ({ ok:true, json: async () => ({ data: [
+    { id:"nvidia/nemotron-3.5-content-safety:free", name:"NVIDIA: Nemotron 3.5 Content Safety (free)", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0", completion:"0" } },
+    { id:"google/lyria-3-pro-preview", name:"Google: Lyria 3 Pro Preview", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0", completion:"0" } },
+    { id:"openrouter/free", name:"Free Models Router", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0", completion:"0" } },
+    { id:"meta-llama/llama-guard-4-12b", name:"Llama Guard 4 12B", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0", completion:"0" } },
+    { id:"openai/gpt-4o-mini", name:"OpenAI: GPT-4o-mini", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0.00000015", completion:"0.0000006" } },
+    { id:"google/gemma-3-4b-it", name:"Google: Gemma 3 4B", architecture:{ input_modalities:["text","image"] }, pricing:{ prompt:"0", completion:"0" } },
+  ] }) });
+  try {
+    const ids = (await IA_AI.listVisionModels()).map(m => m.id);
+    assert.ok(!ids.includes("nvidia/nemotron-3.5-content-safety:free"), "content-safety classifier must be excluded");
+    assert.ok(!ids.includes("google/lyria-3-pro-preview"), "music generator must be excluded");
+    assert.ok(!ids.includes("openrouter/free"), "model router must be excluded");
+    assert.ok(!ids.includes("meta-llama/llama-guard-4-12b"), "guard/moderation model must be excluded");
+    assert.ok(ids.includes("openai/gpt-4o-mini"), "a normal general-purpose vision model must survive");
+    assert.ok(ids.includes("google/gemma-3-4b-it"), "a legitimately free general-purpose vision model must survive");
+  } finally { delete global.fetch; }
+});
+
 t("listVisionModels: throws a clear error on a non-ok response", async () => {
   global.fetch = async () => ({ ok:false, status:503 });
   try {

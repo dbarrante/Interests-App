@@ -41,7 +41,7 @@ html.dark .imp-card img.th{background:#2c2926}
 html.dark .imp-acts button{background:#2c2926;color:#cfc9c0}
 html.dark .tagchip{background:#2c2926;color:#cfc9c0}
 html.dark .tg{background:#332f2a;color:#cfc9c0}
-html.dark .imp-edit,html.dark .imp-refresh{background:rgba(36,33,32,.95)}
+html.dark .imp-edit,html.dark .imp-refresh,html.dark .imp-title{background:rgba(36,33,32,.95)}
 html.dark .banner{background:#2e2920;border-color:#5a4f33;color:var(--ink)}
 html.dark .note{border-color:#5a4f33}
 
@@ -385,15 +385,16 @@ body.reader-locked{overflow:hidden}
 .pickov{position:absolute;inset:0;z-index:5;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
 .pickov:hover{background:rgba(194,65,12,.08)}
 .selpick .pickov{background:rgba(194,65,12,.13)}
-.imp-edit,.imp-refresh,.imp-reader{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.imp-edit,.imp-refresh,.imp-reader,.imp-title{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .imp-edit{right:6px}
 .imp-refresh{right:40px;font-size:15px}
 .imp-reader{right:74px}
-.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader{display:flex}
-.imp-edit:hover,.imp-refresh:hover,.imp-reader:hover{border-color:var(--accent);color:var(--accent)}
+.imp-title{right:108px;font-size:12px;font-weight:700;letter-spacing:-.02em}
+.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader,.imp-card:hover .imp-title{display:flex}
+.imp-edit:hover,.imp-refresh:hover,.imp-reader:hover,.imp-title:hover{border-color:var(--accent);color:var(--accent)}
 /* Touch devices have no hover state, so hover-only icons are otherwise unreachable —
    show them unconditionally at mobile width, matching the app's other ≤760px rules. */
-@media(max-width:760px){.imp-edit,.imp-refresh,.imp-reader{display:flex}}
+@media(max-width:760px){.imp-edit,.imp-refresh,.imp-reader,.imp-title{display:flex}}
 .imp-refresh.spin{animation:ispin .7s linear infinite}
 @keyframes ispin{to{transform:rotate(360deg)}}
 .ed-row{display:flex;gap:8px;margin-top:18px}
@@ -3616,7 +3617,7 @@ function impCardHTML(it,idx){
         ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
         : `<div class="ic">${yt?"YT":"IM"}</div>`));
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
-    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
+    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-title" title="Suggest a new title for this card (AI)" onclick="event.stopPropagation();impRefreshTitle(${idx})">Aa</button><button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1;min-width:0">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${(it.ts||0)>_impPrevSeen?'<span class="newpill">NEW</span>':""}${esc(it.title)}</div>
@@ -4849,7 +4850,13 @@ async function loadVisionModelsForPicker(){
 }
 function visionPickerHTML(models){
   if(!models || !models.length) return "";
-  const opts = models.map(m=>`<option value="${esc(m.id)}"${m.id===_titleVisionModel?" selected":""}>${esc(m.name)} — ~$${m.estCostPerCard.toFixed(4)}/card</option>`).join("");
+  // Free models are $0 but heavily rate-limited, which matters a lot here:
+  // a 100-card batch is 100 sequential calls. Flag them the same way the
+  // Settings model picker already does (orModelCost).
+  const opts = models.map(m=>{
+    const price = m.estCostPerCard>0 ? ("~$"+m.estCostPerCard.toFixed(4)+"/card") : "free ⚠ rate-limited";
+    return `<option value="${esc(m.id)}"${m.id===_titleVisionModel?" selected":""}>${esc(m.name)} — ${esc(price)}</option>`;
+  }).join("");
   return `<div class="s" style="padding:6px 4px 10px">Vision model for photos with no legible text:
     <select onchange="_titleVisionModel=this.value" style="margin-left:6px">${opts}</select></div>`;
 }
@@ -4865,6 +4872,14 @@ async function titleFromSignal(card, opts){
   const existing = allTitleKeys(card.id);
   (opts.extraAvoid||[]).forEach(t=>existing.add(normalizeTitleKey(t)));
   let avoidTitles = [];
+  // Candidates that PASSED the quality gate but collided with a title already
+  // in the library. ONLY these may be domain-disambiguated below. A candidate
+  // rejected as generic/garbage must never be laundered into a title by
+  // bolting a domain onto it: that is exactly how a mis-selected content-safety
+  // classifier's "User Safety: safe" (17 chars, correctly rejected) came back as
+  // "User Safety: safe — facebook.com" (32 chars, sails past the 25-char floor)
+  // and filled the review list with junk (2026-07-25).
+  let lastCollided = "";
   const callOpts = {};
   if(opts.image) callOpts.image = opts.image;
   if(opts.model) callOpts.model = opts.model;
@@ -4878,13 +4893,16 @@ async function titleFromSignal(card, opts){
     if(!candidate || isGenericTitle(candidate, card.url)){ if(candidate) avoidTitles = avoidTitles.concat([candidate]).slice(-3); continue; }
     const key = normalizeTitleKey(candidate);
     if(!existing.has(key)) return candidate;
+    lastCollided = candidate;
     avoidTitles = avoidTitles.concat([candidate]).slice(-3);
   }
-  // Still colliding/generic after 3 tries: disambiguate with the domain, then a numeric suffix.
-  // If even the disambiguated title would still read as generic (e.g. no domain and every
-  // candidate was too short), give up rather than apply a title the detector will just re-flag.
-  const last = avoidTitles[avoidTitles.length-1] || (dom || "Untitled");
-  let disambiguated = dom ? (last+" — "+dom) : last;
+  // Every attempt failed the quality gate -> decline outright. No title is
+  // better than a dressed-up bad one; the card simply stays flagged for a
+  // later pass with a better model.
+  if(!lastCollided) return null;
+  // A genuinely good title that was already taken: disambiguate with the
+  // domain, then a numeric suffix.
+  let disambiguated = dom ? (lastCollided+" — "+dom) : lastCollided;
   if(isGenericTitle(disambiguated, card.url)) return null;
   if(!existing.has(normalizeTitleKey(disambiguated))) return disambiguated;
   let n=2;
@@ -5291,6 +5309,49 @@ function updateTitleSelCount(){
 }
 function titleSelectAll(on){ _titleSelBoxes().forEach(cb=>{ cb.checked=!!on; }); updateTitleSelCount(); }
 function titleSelectFirst(n){ _titleSelBoxes().forEach((cb,i)=>{ cb.checked = i<n; }); updateTitleSelCount(); }
+// --- One-card title regeneration -------------------------------------------
+// Shared by the Title-issues per-row retry and the card-grid hover icon.
+// Returns the new title, or null (the failure is already toasted).
+// Vision IS allowed here, unlike enrichOnOpen's automatic on-open refresh:
+// this only fires from a deliberate click on ONE card, so the cost is bounded
+// and user-initiated — the same reasoning that lets the explicit bulk Suggest
+// flow use it.
+async function regenerateTitleFor(card, extraAvoid, busyLabel){
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return null; }
+  showBusyOverlay(busyLabel||"Generating a new title…");
+  await new Promise(r=>requestAnimationFrame(r));
+  let out=null;
+  try{ out = await generateUniqueTitle(card, extraAvoid); }
+  catch(e){ console.warn("title regeneration failed", e); }
+  hideBusyOverlay();
+  if(!out) toast("Couldn't generate a title for that card — check your AI key/credits, or it may have no usable text or image.", 7000);
+  return out;
+}
+// Title-issues row retry: stages a fresh suggestion for review rather than
+// writing it, matching the rest of that panel (nothing lands until Apply).
+async function retryTitleSuggestion(key){
+  const m = flaggedTitleCards().find(x=>(x.scope+":"+x.card.id)===key);
+  if(!m){ toast("That card is no longer in this list."); return; }
+  // Don't collide with the other suggestions still pending review in this batch.
+  const others = Object.keys(_titleSuggestions).filter(k=>k!==key).map(k=>_titleSuggestions[k]);
+  const out = await regenerateTitleFor(m.card, others, "Suggesting a new title…");
+  if(!out) return;
+  _titleSuggestions[key]=out;
+  if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
+  toast("New suggestion ready — review it, then Apply.", 5000);
+}
+// Card-grid hover icon: no review step here (same as the ↻ image refresh it
+// sits beside), so this applies straight away and shows what it wrote.
+async function impRefreshTitle(idx){
+  const it = imported[idx]; if(!it) return;
+  const out = await regenerateTitleFor(it, null, "Generating a new title…");
+  if(!out) return;
+  it.title = out.slice(0,250);
+  await persistCards();
+  updateCounts();
+  if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+  toast("New title: "+out, 7000);
+}
 function renderHealthTitles(list){
   const flagged = flaggedTitleCards();
   if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; _titleSuggestions={}; return; }
@@ -5303,6 +5364,10 @@ function renderHealthTitles(list){
     <div class="s" style="opacity:.75;padding:2px 4px 10px">${flagged.length} card${flagged.length>1?"s have":" has"} a missing, generic, or platform-only title.${hasSuggestions?" Review the suggested titles below, uncheck any you don't want, then Apply.":" Check the ones to fix, then Suggest titles."}</div>
     ${(S.provider==="openrouter"||S.provider==="gemini") ? visionPickerHTML(_titleVisionModels) : ""}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 4px 10px">
+      ${hasSuggestions
+        ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="_titleSuggestions={};renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
+        : `<button class="btn btn-primary" onclick="suggestTitlesForFlagged()">Suggest titles</button>`}
+      <span style="width:1px;height:22px;background:var(--line);margin:0 2px"></span>
       <button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectAll(true)">Select all</button>
       <button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectAll(false)">Deselect all</button>
       ${flagged.length>100 ? `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectFirst(100)">Select first 100</button>` : ""}
@@ -5317,16 +5382,12 @@ function renderHealthTitles(list){
           <div class="s">${esc(dom||"no link")} · <span class="dupe-badge">${m.scope==="saved"?"Saved":"Imported"}</span></div>
           ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%">` : ""}
         </div>
+        <button class="btn btn-ghost" style="padding:4px 9px;font-size:14px;line-height:1;flex-shrink:0" title="Suggest a new title for just this card" onclick="retryTitleSuggestion('${esc(key)}')">&#8635;</button>
         ${suggestion==null
           ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel onchange="updateTitleSelCount()" style="width:auto"> include</label>`
           : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-apply checked onchange="updateTitleSelCount()" style="width:auto"> apply</label>`}
       </div>`;
-    }).join("")}
-    <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px;gap:8px">
-      ${hasSuggestions
-        ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="_titleSuggestions={};renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
-        : `<button class="btn btn-primary" onclick="suggestTitlesForFlagged()">Suggest titles</button>`}
-    </div>`;
+    }).join("")}`;
   updateTitleSelCount();
   attachCardImages();
 }

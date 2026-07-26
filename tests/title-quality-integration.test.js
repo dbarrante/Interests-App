@@ -72,18 +72,36 @@ async function t(name, fn) { try { await fn(); pass++; console.log("  ok  " + na
   });
 
   await t("generateUniqueTitle disambiguates with the domain after 3 straight collisions", async () => {
-    const { fns, sandbox } = loadTitleFns(["Same Title Every Time", "Same Title Every Time", "Same Title Every Time"]);
-    sandbox.imported.push({ id: "existing", title: "Same Title Every Time", url: "https://x.com/existing" });
+    const { fns, sandbox } = loadTitleFns(["The Same Descriptive Title Every Time", "The Same Descriptive Title Every Time", "The Same Descriptive Title Every Time"]);
+    sandbox.imported.push({ id: "existing", title: "The Same Descriptive Title Every Time", url: "https://x.com/existing" });
     const result = await fns.generateUniqueTitle({ id: "new", desc: "d", url: "https://pizza-blog.example.com/new" });
-    assert.strictEqual(result, "Same Title Every Time — pizza-blog.example.com");
+    assert.strictEqual(result, "The Same Descriptive Title Every Time — pizza-blog.example.com");
   });
 
   await t("generateUniqueTitle appends a numeric suffix if even the disambiguated title collides", async () => {
-    const { fns, sandbox } = loadTitleFns(["Same Title Every Time", "Same Title Every Time", "Same Title Every Time"]);
-    sandbox.imported.push({ id: "existing1", title: "Same Title Every Time", url: "https://x.com/e1" });
-    sandbox.imported.push({ id: "existing2", title: "Same Title Every Time — pizza-blog.example.com", url: "https://x.com/e2" });
+    const { fns, sandbox } = loadTitleFns(["The Same Descriptive Title Every Time", "The Same Descriptive Title Every Time", "The Same Descriptive Title Every Time"]);
+    sandbox.imported.push({ id: "existing1", title: "The Same Descriptive Title Every Time", url: "https://x.com/e1" });
+    sandbox.imported.push({ id: "existing2", title: "The Same Descriptive Title Every Time — pizza-blog.example.com", url: "https://x.com/e2" });
     const result = await fns.generateUniqueTitle({ id: "new", desc: "d", url: "https://pizza-blog.example.com/new" });
-    assert.strictEqual(result, "Same Title Every Time — pizza-blog.example.com (2)");
+    assert.strictEqual(result, "The Same Descriptive Title Every Time — pizza-blog.example.com (2)");
+  });
+
+  await t("a candidate rejected by the quality gate is NEVER laundered into a title by appending the domain", async () => {
+    // Regression: a mis-selected content-safety classifier answered
+    // "User Safety: safe" to every prompt. At 17 chars isGenericTitle correctly
+    // rejected it -- but the old fallback grabbed the last rejected candidate
+    // and bolted the domain on, yielding "User Safety: safe — facebook.com"
+    // (32 chars), which sailed past the 25-char floor and filled a real review
+    // queue with junk (2026-07-25).
+    const { fns } = loadTitleFns(["User Safety: safe", "User Safety: safe", "User Safety: safe"]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "a genuine description", url: "https://facebook.com/x/posts/1" });
+    assert.strictEqual(result, null, "must decline outright, not return a domain-suffixed version of rejected garbage");
+  });
+
+  await t("three junk replies in a row decline rather than dressing up the last one", async () => {
+    const { fns } = loadTitleFns(["short", "tiny", "no"]);
+    const result = await fns.generateUniqueTitle({ id: "new", desc: "a genuine description", url: "https://pizza-blog.example.com/new" });
+    assert.strictEqual(result, null);
   });
 
   await t("generateUniqueTitle returns null when there's no AI key", async () => {

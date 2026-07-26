@@ -41,6 +41,11 @@
   var GENERIC_TITLE_NOUN_RE = /^(facebook|fb|instagram|ig|pinterest|saved)?\s?(post|video|reel|photo|photos|story|link|watch|pin|item)s?$/i;
   var GENERIC_TITLE_PLATFORM_POST_RE = /^instagram post\b/i;
   var GENERIC_TITLE_POST_BY_RE = /^(facebook|instagram|pinterest)\s+post\s+by\b/i;
+  // Model output that isn't a title at all: a moderation classifier's verdict
+  // ("User Safety: safe") or a refusal preamble. Anchored and colon-bound so an
+  // ordinary title that merely starts with the word "safe" -- e.g. "Safe
+  // Woodworking Practices for Beginners" -- is NOT caught.
+  var NON_TITLE_REPLY_RE = /^(user +)?safety *:|^(i'?m sorry|i cannot|i can'?t|i am unable|as an ai|unable to)([^a-z]|$)/i;
   function isGenericTitle(title, url) {
     var t = String(title == null ? "" : title).trim();
     if (!t) return true;
@@ -52,6 +57,7 @@
     if (GENERIC_TITLE_NOUN_RE.test(tl)) return true;
     if (GENERIC_TITLE_PLATFORM_POST_RE.test(tl)) return true;
     if (GENERIC_TITLE_POST_BY_RE.test(tl)) return true;
+    if (NON_TITLE_REPLY_RE.test(t)) return true;
     if (t.length < 25) return true;
     if (/^\d+\s*(photo|video)s?\b/i.test(t)) return true;
     if (/^https?:\/\//i.test(t)) return true;

@@ -154,6 +154,14 @@
   // providers tile images differently, so this is a ballpark for picking a
   // model, not an exact bill.
   var VISION_EST_IMAGE_TOKENS = 1500, VISION_EST_PROMPT_TOKENS = 250, VISION_EST_COMPLETION_TOKENS = 20;
+  // Image-capable does NOT mean able to write a title. Sorting purely by price
+  // floats free single-purpose models to the top of the picker, where the
+  // cheapest-model default then auto-selects them: nvidia/nemotron-3.5-content-safety
+  // is a moderation classifier that answers "User Safety: safe" to every prompt,
+  // and google/lyria-* are music generators. Both are $0.0000 and both were
+  // ranked #1 and #5 on 2026-07-25, filling a real review queue with junk.
+  // Match on id+name so either naming convention is caught.
+  var NON_TITLE_MODEL_RE = /guard|safety|moderation|lyria|whisper|tts|embed|rerank|router/i;
   async function listVisionModels() {
     var r = await fetch("https://openrouter.ai/api/v1/models");
     if (!r.ok) throw new Error("OpenRouter models API error " + r.status);
@@ -161,6 +169,7 @@
     return (d.data || [])
       .filter(function (m) {
         if (!m.architecture || !Array.isArray(m.architecture.input_modalities) || m.architecture.input_modalities.indexOf("image") < 0) return false;
+        if (NON_TITLE_MODEL_RE.test(String(m.id || "") + " " + String(m.name || ""))) return false;
         // Exclude models with negative pricing (OpenRouter's sentinel for variable/dynamic pricing like auto-router)
         var promptPrice = Number(m.pricing && m.pricing.prompt) || 0;
         var completionPrice = Number(m.pricing && m.pricing.completion) || 0;
