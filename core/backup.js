@@ -304,16 +304,16 @@ function sweepOrphanedArtifacts(backupRoot) {
   return cleaned;
 }
 
+// Cards+saved in a backup's recorded counts — the "how much library is in here"
+// number the collapsed-newest guards compare.
+function countsSize(c) { return c ? ((c.imported | 0) + (c.saved | 0)) : 0; }
+
 // Cleanup/restore safety snapshots use unique, non-daily names (see runBackup)
 // specifically so a rotation pass never mistakes one for a stale dated backup —
 // but that also means nothing else ever cleans them up, and each is a near-full
 // image-library mirror. Keep only the newest `keep` VERIFIED ones (same
 // never-delete-a-good-one-for-an-unverified-one rule as rotate()), capped per
 // call for the same reason as sweepOrphanedArtifacts above.
-// Cards+saved in a backup's recorded counts — the "how much library is in here"
-// number the collapsed-newest guards compare.
-function countsSize(c) { return c ? ((c.imported | 0) + (c.saved | 0)) : 0; }
-
 function rotateNamedSnapshots(backupRoot, re, keep) {
   let names = [];
   try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
