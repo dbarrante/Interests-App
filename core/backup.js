@@ -310,6 +310,10 @@ function sweepOrphanedArtifacts(backupRoot) {
 // image-library mirror. Keep only the newest `keep` VERIFIED ones (same
 // never-delete-a-good-one-for-an-unverified-one rule as rotate()), capped per
 // call for the same reason as sweepOrphanedArtifacts above.
+// Cards+saved in a backup's recorded counts — the "how much library is in here"
+// number the collapsed-newest guards compare.
+function countsSize(c) { return c ? ((c.imported | 0) + (c.saved | 0)) : 0; }
+
 function rotateNamedSnapshots(backupRoot, re, keep) {
   let names = [];
   try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
@@ -328,14 +332,13 @@ function rotateNamedSnapshots(backupRoot, re, keep) {
   // store's two newest snapshots would evict every good pre-collapse one. The
   // 5-minute throttle means two destructive ops are enough. Never let a
   // materially SMALLER snapshot delete a materially larger one.
-  const newestSize = ((newestMeta._counts && newestMeta._counts.imported) | 0)
-    + ((newestMeta._counts && newestMeta._counts.saved) | 0);
+  const newestSize = countsSize(newestMeta._counts);
   let cleaned = 0;
   for (let i = keep; i < candidates.length && cleaned < MAX_CLEANUP_PER_CALL; i++) {
     const folder = path.join(backupRoot, candidates[i].name);
     const meta = readMeta(folder);
     if (!meta || !verifyBackupFolder(folder, meta._counts)) continue; // don't delete an unverified one
-    const thisSize = ((meta._counts && meta._counts.imported) | 0) + ((meta._counts && meta._counts.saved) | 0);
+    const thisSize = countsSize(meta._counts);
     if (thisSize >= 100 && newestSize < thisSize * 0.1) continue;   // a collapsed newest must not evict a healthy older one
     try { fs.rmSync(folder, { recursive: true, force: true }); cleaned++; } catch (e) {}
   }
@@ -574,29 +577,12 @@ function assertStoreLooksSane(o) {
   const what = o.what || "backup";
   const expected = expectedLocalImageCount(o.db);
   const actual = o.curImages | 0;
-  let curCards = 0;
-  try { const cc = counts(o.db); curCards = (cc.cards | 0) + (cc.saved | 0); } catch (e) {}
   // A missing images dir is the same failure in its crispest form. Checked
   // separately because listImageIds() reports [] for it, which is
   // indistinguishable from an empty dir by count alone.
   if (!fs.existsSync(imagesDir(o.storeDir)) && expected > 0) {
     throw new Error(what + ": live images dir is missing but the library expects " + expected +
       " images — refusing to write a backup");
-  }
-  // An INTERNALLY INCONSISTENT store: no rows at all, yet a substantial images
-  // folder. A library the user genuinely emptied loses both together, so this
-  // shape means the database was lost or replaced while its images survived --
-  // and capturing it publishes a card-less snapshot that verifies, unlocks
-  // rotate()'s newest-must-verify gate, and evicts a good older backup. Not
-  // history-based (both numbers are read from the store right now) and it
-  // clears the moment the rows are back, so it cannot latch.
-  // updateMirror opts out: it handles this state by PRESERVING the mirror under
-  // a safety name and rebuilding, which is strictly better than refusing. It is
-  // also the caller that gates sync, and refusing here would block the very
-  // peer merge that refills a store whose database was lost.
-  if (!o.cardlessHandledByCaller && curCards === 0 && actual >= 100) {
-    throw new Error(what + ": the store has no cards at all but " + actual +
-      " images are on disk — refusing to write a backup (the database looks lost rather than intentionally emptied)");
   }
   // The >=100 floor keeps small libraries out: at low counts the ratio is too
   // coarse to mean anything, and the blast radius is correspondingly small.
@@ -752,7 +738,7 @@ function updateMirror(db, storeDir) {
 
   // Store-sanity gate: refuses when the live store's images are incomplete
   // relative to what its own database expects. See assertStoreLooksSane.
-  assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length, cardlessHandledByCaller: true });
+  assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length });
 
   // The gate above is self-relative, so it is silent when the store reads as
   // wholly EMPTY -- zero expected, zero present, internally consistent. That is
@@ -1017,11 +1003,25 @@ function rotate(keep) {
   for (let i = 0; i < list.length; i++) { if (DATED_BACKUP_NAME.test(list[i].name)) datedIdx.push(i); }
   if (!datedIdx.length) return;                       // nothing dated to rotate
   if (!isVerified(datedIdx[0])) return;                // newest DATED backup is unverified → rotate nothing
+  // ...and a COLLAPSED newest must not evict good older ones either. A snapshot
+  // of a store whose database was lost (no rows, images still on disk) verifies
+  // perfectly well — its own file count matches its own manifest — so "newest
+  // verifies" alone would unlock rotation and age out genuinely good backups.
+  // Same guard rotateNamedSnapshots already applies to safety snapshots.
+  //
+  // Deliberately a ROTATION gate rather than a refusal to WRITE the snapshot:
+  // refusing is the shape that latched this feature's guards through six
+  // revisions (a store left with orphaned image files and no rows would be
+  // refused forever, with no override), whereas declining to delete only ever
+  // preserves and needs no escape hatch.
+  const newestSize = countsSize(list[datedIdx[0]].counts);
   const candidates = pickBackupsToDelete(list.map(function (b) { return b.name; }), keep);
   for (let i = 0; i < list.length; i++) {
     const b = list[i];
     if (candidates.indexOf(b.name) < 0) continue;   // within the keep window
     if (!isVerified(i)) continue;                    // don't delete an unverified backup
+    const thisSize = countsSize(b.counts);
+    if (thisSize >= 100 && newestSize < thisSize * 0.1) continue;   // never drop a healthy backup for a collapsed newest
     try { fs.rmSync(path.join(dropboxBackupDir(), b.name), { recursive: true, force: true }); } catch (e) {}
   }
 }

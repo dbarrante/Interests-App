@@ -673,7 +673,7 @@ function createServer(ctx) {
       // "backup failed". It clears itself once the images are back; there is
       // nothing to override and nothing to reset.
       const msg = (e && e.message) || "";
-      if (/images? (dir is missing|on disk)|expects \d+ images/.test(msg)) {
+      if (/images dir is missing|expects \d+ images but only/.test(msg)) {
         return res.status(409).json({ ok: false, error: msg });
       }
       res.status(500).json({ ok: false, error: "backup failed" });

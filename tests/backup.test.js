@@ -456,25 +456,31 @@ t("a lost db with images still on disk promotes ONCE, not on every merge", () =>
     db2.close();
   });
 });
-t("runBackup refuses a store with no cards but a full images folder", () => {
-  withBackupDir(function () {
+t("a card-less newest snapshot cannot evict good older backups", () => {
+  withBackupDir(function (bdir) {
+    for (const d of ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04"]) mkBackupFolder(bdir, d, { imgFiles: 1, cards: 150 });
+
+    // A store whose database was lost but whose images survive produces a
+    // card-less snapshot that VERIFIES — its own file count matches its own
+    // manifest — so "newest verifies" alone would unlock rotation and age out
+    // genuinely good older backups.
+    //
+    // Deliberately a ROTATION gate, not a refusal to write: refusing is the
+    // shape that latched this feature's guards through six revisions (a store
+    // left with orphaned image files and no rows would be refused forever),
+    // whereas declining to delete only ever preserves.
     const store = newStore();
     const db = openDb(store);
-    for (let i = 0; i < 120; i++) {
-      upsertCard(db, { id: "ci" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:ci" + i });
-      images.putImg(store, "ci" + i, TINY_JPG);
-    }
-    backup.runBackup(db, store);
-    db.close();
+    for (let i = 0; i < 120; i++) images.putImg(store, "cl" + i, TINY_JPG);
+    const bad = backup.runBackup(db, store);
+    assert.strictEqual(bad.counts.imported, 0, "sanity: the snapshot really is card-less");
+    assert.strictEqual(backup.verifyBackup(bad.name, bad.counts), true, "sanity: and it really does verify");
 
-    // Rows gone, images intact — internally inconsistent, so the database was
-    // lost rather than the library intentionally emptied. Capturing it publishes
-    // a card-less snapshot that VERIFIES, takes today's name, unlocks rotate()'s
-    // newest-must-verify gate and evicts a good older backup.
-    fs.rmSync(path.join(store, "interests.db"), { force: true });
-    const db2 = openDb(store);
-    assert.throws(() => backup.runBackup(db2, store), /no cards at all but 120 images/);
-    db2.close();
+    backup.rotate(3);
+    const dated = fs.readdirSync(bdir).filter(n => /^interests-backup-\d{4}-\d{2}-\d{2}$/.test(n)).sort();
+    assert.ok(dated.indexOf("interests-backup-2020-01-01") >= 0,
+      "the oldest good backup must survive a collapsed newest: " + dated.join(", "));
+    db.close();
   });
 });
 t("the gate CANNOT latch: a legitimate bulk delete clears it with no override", () => {
@@ -1304,12 +1310,17 @@ function mkBackupFolder(bdir, date, opts) {
   const folder = path.join(bdir, "interests-backup-" + date);
   fs.mkdirSync(path.join(folder, "images"), { recursive: true });
   for (let i = 0; i < (opts.imgFiles || 0); i++) fs.writeFileSync(path.join(folder, "images", "img" + i + ".jpg"), Buffer.alloc(4, 1));
-  if (opts.db !== false) { const d = openDb(folder); upsertCard(d, { id: "fixture-" + date, url: "https://fixture/" + date }); d.close(); }
+  const nCards = opts.cards != null ? opts.cards : 1;
+  if (opts.db !== false) {
+    const d = openDb(folder);
+    for (let i = 0; i < nCards; i++) upsertCard(d, { id: "fixture-" + date + "-" + i, url: "https://fixture/" + date + "/" + i });
+    d.close();
+  }
   const manifest = fs.readdirSync(path.join(folder, "images")).filter(n => n.endsWith(".jpg")).sort().map(n => {
     const file = path.join(folder, "images", n);
     return { name: n, size: fs.statSync(file).size, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };
   });
-  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: 1, saved: 0, images: opts.metaImages != null ? opts.metaImages : (opts.imgFiles || 0) }, _images: manifest, ts: 1 }));
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: nCards, saved: 0, images: opts.metaImages != null ? opts.metaImages : (opts.imgFiles || 0) }, _images: manifest, ts: 1 }));
   return folder;
 }
 
