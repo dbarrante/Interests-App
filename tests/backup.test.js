@@ -488,11 +488,108 @@ t("ensureBackupBeforeMerge still takes an overdue dated snapshot when the mirror
     for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "wd" + i + ".jpg"), { force: true });
 
     assert.throws(() => backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: 0 }),
-      /image count collapsed/, "the mirror failure must still propagate — sync's fail-closed contract");
-    // ...but the dated snapshot must NOT have been cancelled by it. Losing the
-    // cheap recovery point must not also lose the durable one.
+      /collapsed/, "the failure must still propagate — sync's fail-closed contract");
+    // The store is BROKEN here, so no dated snapshot may be written either. An
+    // earlier version of this test asserted only that a snapshot EXISTED, which
+    // passed just as happily on a 0-image one — and a 0-image dated snapshot is
+    // actively dangerous: it VERIFIES (0 files matches 0 expected), becomes the
+    // newest dated backup, unlocks rotate()'s "newest must verify" gate and
+    // deletes a good older backup, and makes newestDatedSnapshotTime() report
+    // today so the next real snapshot is suppressed for a week.
     const dated = fs.readdirSync(bdir).filter(n => /^interests-backup-\d{4}-\d{2}-\d{2}$/.test(n));
-    assert.strictEqual(dated.length, 1, "a wedged mirror must not suppress the weekly point-in-time snapshot too");
+    assert.deepStrictEqual(dated, [], "a collapsed store must not be captured as a point-in-time snapshot");
+    db.close();
+  });
+});
+t("a healthy store still gets its overdue dated snapshot even when the mirror fails for an unrelated reason", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 3; i++) {
+      upsertCard(db, { id: "hs" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:hs" + i });
+      images.putImg(store, "hs" + i, TINY_JPG);
+    }
+    // Mirror fails on a transient rename, NOT on a store-sanity problem — the
+    // store itself is fine, so the durable snapshot must still be taken.
+    const realRename = fs.renameSync;
+    fs.renameSync = function (from, to) {
+      if (String(to).endsWith("interests.db")) { const e = new Error("EPERM"); e.code = "EPERM"; throw e; }
+      return realRename.apply(fs, arguments);
+    };
+    try {
+      assert.throws(() => backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: 0 }));
+    } finally { fs.renameSync = realRename; }
+
+    const dated = fs.readdirSync(bdir).filter(n => /^interests-backup-\d{4}-\d{2}-\d{2}$/.test(n));
+    assert.strictEqual(dated.length, 1, "losing the cheap recovery point must not also lose the durable one");
+    const meta = JSON.parse(fs.readFileSync(path.join(bdir, dated[0], "meta.json"), "utf8"));
+    assert.strictEqual(meta._counts.images, 3, "and the snapshot must actually contain the images");
+    assert.strictEqual(backup.verifyBackup(dated[0], meta._counts), true);
+    db.close();
+  });
+});
+t("runBackup itself refuses a collapsed store, so POST /api/backup cannot publish one either", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 100; i++) {
+      upsertCard(db, { id: "rb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:rb" + i });
+      images.putImg(store, "rb" + i, TINY_JPG);
+    }
+    backup.runBackup(db, store);   // establishes a good baseline
+    for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "rb" + i + ".jpg"), { force: true });
+
+    // The guard belongs to the STORE, not to one backup format: the daily
+    // client-driven POST /api/backup path reaches runBackup directly, never
+    // through ensureBackupBeforeMerge, so guarding only the merge gate would
+    // leave this hole wide open.
+    assert.throws(() => backup.runBackup(db, store), /collapsed/,
+      "a dated snapshot of a collapsed store verifies, unlocks rotation, and deletes a good backup");
+    db.close();
+  });
+});
+t("a pre-cleanup safety snapshot is still allowed on a collapsed store", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 100; i++) {
+      upsertCard(db, { id: "sf" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:sf" + i });
+      images.putImg(store, "sf" + i, TINY_JPG);
+    }
+    backup.runBackup(db, store);
+    for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "sf" + i + ".jpg"), { force: true });
+
+    // Its whole job is to preserve whatever state the store is in RIGHT NOW,
+    // sane or not, before a destructive operation — refusing it would remove
+    // the safety net exactly when the store is already in trouble.
+    const r = backup.runBackup(db, store, { safety: true });
+    assert.ok(r && r.name && /before-cleanup/.test(r.name), "the safety snapshot must not be blocked by the sanity gate");
+    db.close();
+  });
+});
+t("a routine backup does not overwrite the collapse witness with a collapsed count", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 200; i++) {
+      upsertCard(db, { id: "lw" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:lw" + i });
+      images.putImg(store, "lw" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+    assert.strictEqual(config.getLastCounts().cards, 200, "sanity: the witness starts healthy");
+
+    // Cards gutted, images intact — the image-based guard cannot see this, so
+    // the mirror run succeeds. It must NOT then erase the evidence:
+    // lastcounts.json is the only thing config.evaluateStoreSafety has to
+    // detect a swapped/gutted store at boot.
+    for (let i = 0; i < 197; i++) deleteCard(db, "lw" + i, Date.now());
+    backup.updateMirror(db, store);
+    assert.strictEqual(config.getLastCounts().cards, 200,
+      "the witness must survive a collapse so the boot-time check still fires");
+    const safety = config.evaluateStoreSafety({
+      storeDir: store, counts: { cards: 3, saved: 0 }, lastCounts: config.getLastCounts(),
+    });
+    assert.ok(safety.collapsedCounts, "the boot-time collapse detector must still fire");
     db.close();
   });
 });
