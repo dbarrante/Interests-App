@@ -12,7 +12,7 @@
 
 - Backend code under `core/` is **CommonJS**, directly `require()`-able from tests.
 - Tests are **plain Node `assert` scripts**, run via `node tests/<name>.test.js`; `node tests/run.js` runs the syntax gate + all `*.test.js`.
-- `web/index.html` and `pwa/index.html` must stay **byte-identical for shared functions** — existing tests enforce this.
+- `web/index.html` and `pwa/index.html` must stay **byte-identical for shared functions** — several existing tests enforce this, and any new shared function must match. **One deliberate exception:** `resolveCardImageForAI` diverges in Task 4, because the PWA has no Core service and falls back to the `allorigins` proxy. No existing test asserts byte-parity on that function; do not converge it.
 - Every inline `<script>` must keep parsing: `node tests/syntax-check.js`.
 - **Never** edit shipped HTML by generating code through nested shell/Python string layers. Use the `Edit` tool against exact strings. Two files were corrupted with literal backspace bytes that way. After editing, scan: `[\x00-\x08\x0b\x0c\x0e-\x1f]` must be 0 in both HTML files.
 - Any edit to `pwa/index.html` requires a `SHELL_CACHE` bump in `pwa/sw.js` before release.
