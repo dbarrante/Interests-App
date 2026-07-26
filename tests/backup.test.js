@@ -117,7 +117,7 @@ t("changedImageIds: same-size content changes are selected", () => {
 });
 
 /* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
-const { openDb, upsertCard, upsertSaved, counts, setKV } = require("../core/db.js");
+const { openDb, upsertCard, upsertSaved, deleteCard, counts, setKV } = require("../core/db.js");
 const images = require("../core/images.js");
 const config = require("../core/config.js");
 
@@ -136,6 +136,319 @@ function withBackupDir(fn) {
   try { return fn(bdir); }
   finally { config.saveConfig(orig || {}); }
 }
+
+/* ---- incremental mirror ----
+   The rolling mirror exists because sync called runBackup() before EVERY merge
+   (runSync fires every 3 min), and runBackup writes every image to a staging
+   path then renames -- ~12,000 Dropbox file operations per merge on a 6,000
+   image library. The mirror updates in place so an unchanged library costs zero
+   image writes. */
+t("updateMirror writes everything on a cold run, then NOTHING when unchanged", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 5; i++) {
+      upsertCard(db, { id: "m" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:m" + i });
+      images.putImg(store, "m" + i, TINY_JPG);
+    }
+    const cold = backup.updateMirror(db, store);
+    assert.strictEqual(cold.written, 5, "cold run must write every image");
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, cold.counts), true, "mirror must verify");
+
+    const noop = backup.updateMirror(db, store);
+    assert.strictEqual(noop.written, 0, "an unchanged library must rewrite ZERO images -- the entire point of the mirror");
+    assert.strictEqual(noop.removed, 0);
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, noop.counts), true, "mirror must still verify after a no-op");
+    db.close();
+  });
+});
+t("updateMirror rewrites only changed images and drops ones the store no longer has", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 4; i++) {
+      upsertCard(db, { id: "d" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:d" + i });
+      images.putImg(store, "d" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // Change d1's bytes on disk (the mirror compares content hashes, so any
+    // differing content counts) and drop d2 from the store entirely.
+    fs.writeFileSync(path.join(store, "images", "d1.jpg"), Buffer.from("different image bytes entirely"));
+    fs.unlinkSync(path.join(store, "images", "d2.jpg"));
+    const r = backup.updateMirror(db, store);
+    assert.strictEqual(r.written, 1, "only the changed image is rewritten");
+    assert.strictEqual(r.removed, 1, "the image dropped from the live store is removed from the mirror");
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, r.counts), true);
+    db.close();
+  });
+});
+t("a torn mirror (no meta.json) fails verification, and re-running heals it", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "t1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:t1" });
+    images.putImg(store, "t1", TINY_JPG);
+    const r = backup.updateMirror(db, store);
+    // Simulate a crash mid-update: meta.json is the completion marker and is
+    // written LAST, so its absence must make the folder untrustworthy.
+    fs.rmSync(path.join(bdir, backup.MIRROR_NAME, "meta.json"), { force: true });
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, r.counts), false, "a mirror with no completion marker must NOT verify");
+    const again = backup.updateMirror(db, store);
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, again.counts), true, "re-running must heal it");
+    db.close();
+  });
+});
+t("the mirror is offered for restore (listBackups) and passes the name allowlist", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "l1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:l1" });
+    images.putImg(store, "l1", TINY_JPG);
+    backup.updateMirror(db, store);
+    const listed = backup.listBackups().find(function (b) { return b.name === backup.MIRROR_NAME; });
+    assert.ok(listed, "the freshest recovery point must be visible for restore");
+    assert.strictEqual(listed.mirror, true);
+    db.close();
+  });
+});
+t("ensureBackupBeforeMerge always refreshes the mirror but only makes a dated snapshot when the newest aged out", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "e1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:e1" });
+    images.putImg(store, "e1", TINY_JPG);
+    const WEEK = 7 * 24 * 3600 * 1000;
+
+    const first = backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: WEEK });
+    assert.ok(first.full, "no dated snapshot exists yet -> one must be created");
+    assert.ok(first.mirror, "mirror is always refreshed");
+
+    const second = backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: WEEK });
+    assert.strictEqual(second.full, null, "a fresh dated snapshot exists -> must NOT write another full copy");
+    assert.ok(second.mirror, "but the mirror is still refreshed, so the merge stays protected");
+
+    const aged = backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: 1 });
+    assert.ok(aged.full, "once the newest dated snapshot ages out, a new full one is written");
+    db.close();
+  });
+});
+t("sync uses ensureBackupBeforeMerge, not a full runBackup, as its pre-merge gate", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "core", "sync.js"), "utf8");
+  assert.ok(src.includes("backup.ensureBackupBeforeMerge(ctx.db, ctx.storeDir)"),
+    "sync must use the incremental gate");
+  assert.ok(!/backupFn = opts\.backupFn \|\| function \(\) \{ backup\.runBackup\(/.test(src),
+    "sync must no longer default to a full runBackup on every merge");
+});
+
+/* ---- data-safety review fixes (2026-07-26) ----
+   Found reviewing the mirror above: listImageIds silently returns [] for a
+   MISSING images dir, which without a guard reads as "the library now has 0
+   images" and the mirror's own delete-stale-images loop would wipe the
+   freshest recovery point -- and still "verify" (0 manifest entries === 0
+   expected), so it fails open rather than closed. */
+t("updateMirror refuses to run when the live images dir is missing but the mirror previously had images", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "cg1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:cg1" });
+    images.putImg(store, "cg1", TINY_JPG);
+    backup.updateMirror(db, store); // establish a real, non-empty mirror
+
+    fs.rmSync(path.join(store, "images"), { recursive: true, force: true });
+    assert.throws(() => backup.updateMirror(db, store), /images dir is missing/,
+      "must refuse rather than wipe the mirror's images to match a vanished source dir");
+
+    // ...and it must CLEAR itself once the dir is back, rather than latching on
+    // a stale baseline: this guard gates every sync merge, so a permanent throw
+    // would silently stop all syncing (the BLOCKING-2 wedge class).
+    fs.mkdirSync(path.join(store, "images"), { recursive: true });
+    images.putImg(store, "cg1", TINY_JPG);
+    assert.strictEqual(backup.updateMirror(db, store).counts.images, 1);
+    db.close();
+  });
+});
+t("updateMirror refuses to run when the live image count collapses by more than half", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 100; i++) {
+      upsertCard(db, { id: "cc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:cc" + i });
+      images.putImg(store, "cc" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // Simulate an offline-placeholder / not-yet-downloaded Dropbox folder, or a
+    // botched store move: most images are just gone, but the db still
+    // references them all.
+    for (let i = 0; i < 60; i++) fs.rmSync(path.join(store, "images", "cc" + i + ".jpg"), { force: true });
+    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/);
+    db.close();
+  });
+});
+t("updateMirror refuses when a large library's images dir is emptied in place but its cards remain", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 100; i++) {
+      upsertCard(db, { id: "ce" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:ce" + i });
+      images.putImg(store, "ce" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // The dir still EXISTS (so the missing-dir guard does not fire) but every
+    // image is gone while all 100 cards remain — images vanishing out from
+    // under a stable library, which must never be mirrored through.
+    for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "ce" + i + ".jpg"), { force: true });
+    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/);
+    db.close();
+  });
+});
+t("updateMirror allows a large library's images to drop when its card count drops in step (real bulk cleanup)", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 100; i++) {
+      upsertCard(db, { id: "cb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:cb" + i });
+      images.putImg(store, "cb" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // A genuine bulk cleanup: cards AND their images go together. Refusing this
+    // would wedge the mirror — and every sync merge — permanently, because the
+    // baseline can never advance past 100 while the guard throws.
+    for (let i = 0; i < 90; i++) {
+      deleteCard(db, "cb" + i, Date.now());
+      fs.rmSync(path.join(store, "images", "cb" + i + ".jpg"), { force: true });
+    }
+    const r = backup.updateMirror(db, store);
+    assert.strictEqual(r.counts.images, 10);
+    db.close();
+  });
+});
+t("updateMirror still works normally on a genuinely small (<100 image) library — the collapse guard has a floor", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "sm1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:sm1" });
+    images.putImg(store, "sm1", TINY_JPG);
+    backup.updateMirror(db, store);
+    fs.unlinkSync(path.join(store, "images", "sm1.jpg")); // dropped the only image
+    const r = backup.updateMirror(db, store); // must NOT throw — below the 100-image floor
+    assert.strictEqual(r.counts.images, 0);
+    db.close();
+  });
+});
+
+t("updateMirror self-heals an in-place-corrupted image (same byte length, different content)", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 5; i++) {
+      upsertCard(db, { id: "sh" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:sh" + i });
+      images.putImg(store, "sh" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // Corrupt the MIRROR's own copy (not the source) at the exact same byte
+    // length -- the size check alone can never catch this.
+    const mirrorImg = path.join(bdir, backup.MIRROR_NAME, "images", "sh2.jpg");
+    const original = fs.readFileSync(mirrorImg);
+    const corrupted = Buffer.from(original); corrupted[10] = corrupted[10] ^ 0xff;
+    assert.strictEqual(corrupted.length, original.length, "corruption must preserve byte length to test the size-check blind spot");
+    fs.writeFileSync(mirrorImg, corrupted);
+
+    // The test library is well under MIRROR_RECHECK_SLICE, so every "unchanged"
+    // file gets its dest re-hashed on the very next run.
+    const r = backup.updateMirror(db, store);
+    assert.strictEqual(fs.readFileSync(mirrorImg).equals(original), true, "the corrupted copy must be rewritten from the live source");
+    assert.ok(r.written >= 1, "the self-heal must count as a write");
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, r.counts), true);
+    db.close();
+  });
+});
+
+t("rotate() is not frozen by an unrelated newer entry (the mirror) failing to verify", () => {
+  withBackupDir(function (bdir) {
+    // 4 healthy dated backups (mkBackupFolder creates each its own valid,
+    // WAL-flushed db — the same helper the pre-existing rotate tests above
+    // already rely on), so rotate(keep=3) has real work to do.
+    for (const d of ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04"]) mkBackupFolder(bdir, d, { imgFiles: 1 });
+
+    // A mirror that IS newest by sort order (meta.json exists with a fresh,
+    // real `ts`, exactly like a real in-place update) but fails deeper
+    // verification — an image the manifest claims to have is simply missing,
+    // with meta.json left untouched, mimicking a mirror caught mid-write.
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "rf1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:rf1" });
+    images.putImg(store, "rf1", TINY_JPG);
+    backup.updateMirror(db, store);
+    fs.rmSync(path.join(bdir, backup.MIRROR_NAME, "images", "rf1.jpg"), { force: true });
+
+    const list = backup.listBackups();
+    assert.strictEqual(list[0].mirror, true, "sanity: the mirror really does sort first (fresh meta.json ts)");
+    assert.strictEqual(backup.verifyBackup(backup.MIRROR_NAME, list[0].counts), false,
+      "sanity: the mirror really is unverified (an image the manifest claims is now missing)");
+
+    backup.rotate(3);
+    const remainingDated = fs.readdirSync(bdir).filter(n => /^interests-backup-\d{4}-\d{2}-\d{2}$/.test(n));
+    assert.strictEqual(remainingDated.length, 3, "dated rotation must proceed on its own merits, not freeze because an unrelated newer entry is broken");
+    db.close();
+  });
+});
+
+t("newestDatedSnapshotTime ignores a dated folder with no meta.json (not a real recovery point yet)", () => {
+  withBackupDir(function (bdir) {
+    const folder = path.join(bdir, "interests-backup-2099-01-01");
+    fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+    // no meta.json written — an incomplete/corrupt folder
+    assert.strictEqual(backup.newestDatedSnapshotTime(), 0, "a folder with no completion marker must not count as a fresh snapshot");
+  });
+});
+t("newestDatedSnapshotTime ignores a future-dated folder (clock skew must never suppress the next real snapshot)", () => {
+  withBackupDir(function (bdir) {
+    const farFuture = "interests-backup-2099-01-01";
+    const folder = path.join(bdir, farFuture);
+    fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "interests.db"), Buffer.from("not a real db"));
+    fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ _counts: { imported: 0, saved: 0, images: 0 }, _images: [], ts: Date.now() }));
+    assert.strictEqual(backup.newestDatedSnapshotTime(), 0, "a future-dated folder must not suppress a real full snapshot from being taken");
+  });
+});
+
+t("restore(MIRROR_NAME) freezes the mirror first and restores correctly from the frozen copy", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    let db = openDb(store);
+    upsertCard(db, { id: "rm1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:rm1" });
+    images.putImg(store, "rm1", TINY_JPG);
+    backup.updateMirror(db, store);
+
+    // Mutate the live store AFTER the mirror snapshot, so a correct restore
+    // must bring it back to 1 card, not 2.
+    upsertCard(db, { id: "rm2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "" });
+    assert.strictEqual(counts(db).cards, 2);
+
+    const ctx = { db, storeDir: store, reopen: () => openDb(store) };
+    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    assert.strictEqual(r.ok, true, "error: " + (r.error || ""));
+    assert.strictEqual(counts(ctx.db).cards, 1, "must restore to the mirror's 1-card state, not the mutated 2-card live state");
+    ctx.db.close();
+  });
+});
+t("restore(MIRROR_NAME) fails closed (does not touch the live store) when the mirror does not exist yet", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "nm1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:nm1" });
+    const ctx = { db, storeDir: store, reopen: () => openDb(store) };
+    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    assert.strictEqual(r.ok, false, "no mirror has ever been written — restore must fail, not crash or touch the live store");
+    assert.strictEqual(counts(ctx.db).cards, 1, "live store must be completely untouched");
+    ctx.db.close();
+  });
+});
 
 t("runBackup copies db + images and verifyBackup confirms", () => {
   withBackupDir(function () {

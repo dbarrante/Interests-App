@@ -105,8 +105,24 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 const DATED_BACKUP_NAME = /^interests-backup-(\d{4}-\d{2}-\d{2})$/;
 const SAFETY_BACKUP_NAME = /^interests-backup-before-cleanup-(\d+)-([a-f0-9]{12})$/;
 const RESTORE_BACKUP_NAME = /^interests-backup-before-restore-\d+$/;
+// The always-current incremental mirror. Stable name (never dated), updated
+// IN PLACE so unchanged image files are never rewritten -- that is the whole
+// point: Dropbox then syncs only the delta instead of re-uploading ~6,000
+// files every time. Deliberately excluded from every rotation regex: it is a
+// single rolling copy, not a point-in-time snapshot, so nothing may age it out.
+const MIRROR_NAME = "interests-mirror";
+// How stale the newest dated point-in-time snapshot may get before a merge
+// forces a fresh full one. The mirror covers "recover the latest good state";
+// these cover "recover what it looked like N days ago".
+const FULL_SNAPSHOT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+// Gate for every name that gets joined onto the backup root — keep it an
+// allowlist. MIRROR_NAME is compared as an exact literal (not a pattern), so it
+// adds no traversal surface, and it MUST be allowed: the mirror is the freshest
+// recovery point, and without this both verifyBackup() and restore() would
+// refuse it, making it unusable exactly when it matters.
 function isValidBackupName(name) {
-  return DATED_BACKUP_NAME.test(String(name || "")) || SAFETY_BACKUP_NAME.test(String(name || ""));
+  const n = String(name || "");
+  return DATED_BACKUP_NAME.test(n) || SAFETY_BACKUP_NAME.test(n) || n === MIRROR_NAME;
 }
 
 function copyFileSync(src, dst) {
@@ -349,7 +365,12 @@ function drainBackupBacklog(maxRounds) {
   for (; rounds < maxRounds; rounds++) {
     const cleaned = sweepOrphanedArtifacts(backupRoot)
       + rotateNamedSnapshots(backupRoot, SAFETY_BACKUP_NAME, 2)
-      + rotateUnverifiedSnapshots(backupRoot, RESTORE_BACKUP_NAME, 2);
+      + rotateUnverifiedSnapshots(backupRoot, RESTORE_BACKUP_NAME, 2)
+      // Defense in depth for freezeMirrorForRestore's throwaway output: restore()
+      // cleans these up itself in a finally, but a hard process/power stop mid-
+      // restore skips that entirely, same class of risk sweepOrphanedArtifacts
+      // already exists for.
+      + rotateUnverifiedSnapshots(backupRoot, MIRROR_FREEZE_NAME, 1);
     if (!cleaned) break;
     totalCleaned += cleaned;
   }
@@ -496,6 +517,239 @@ function readMeta(folder) {
 }
 
 // Scan dropboxBackupDir() for dated backup folders, newest first.
+// Newest dated point-in-time snapshot, as an epoch ms (0 when none exists).
+function newestDatedSnapshotTime() {
+  const backupRoot = dropboxBackupDir();
+  let names = [];
+  try { names = fs.readdirSync(backupRoot); } catch (e) { return 0; }
+  const now = Date.now();
+  let best = 0;
+  for (const n of names) {
+    const m = DATED_BACKUP_NAME.exec(n);
+    if (!m) continue;
+    const t = Date.parse(m[1] + "T00:00:00Z");   // dateStamp() is UTC, parse to match
+    if (!isFinite(t) || t > now) continue;   // clock-skew guard: a future-dated folder
+                                              // must never suppress the next real snapshot
+    // Only a cheap check (does meta.json exist and parse -- the completion
+    // marker) — NOT a full verifyBackup, which re-hashes every image and would
+    // be a real cost run every merge. A folder whose marker is missing/corrupt
+    // isn't a confirmed recovery point yet and must not suppress a genuinely-
+    // needed fresh snapshot; a folder with a valid marker but a corrupt db or
+    // mismatched images is a narrower gap this cheap check accepts.
+    const meta = readMeta(path.join(backupRoot, n));
+    if (!meta) continue;
+    if (t > best) best = t;
+  }
+  return best;
+}
+
+// Refresh the rolling mirror IN PLACE. Only images whose content actually
+// changed are rewritten; images dropped from the live store are removed.
+//
+// Why in place rather than the stage+publish-rename dance runBackup uses: that
+// dance is atomic, but it necessarily writes every file to a NEW path and then
+// moves it, so Dropbox sees ~6,000 creations + ~6,000 deletions per run. Sync
+// calls this before EVERY merge (runSync fires every 3 minutes), which is what
+// made Dropbox churn continuously. Updating in place makes the common case --
+// nothing or almost nothing changed -- cost close to zero files.
+//
+// The price is that this folder is not atomic while it is being written, so:
+//   * meta.json (the completion marker readMeta/verifyBackup key off) is
+//     DELETED first and rewritten LAST. A crash mid-update therefore leaves a
+//     folder that fails verification rather than one that looks complete.
+//   * the dated snapshots runBackup writes are untouched and stay atomic, so a
+//     torn mirror never leaves you without an independent recovery point.
+// Throws if the result does not verify -- callers (sync) treat a throw as
+// "do not proceed with the destructive operation".
+// How many previously-"unchanged" images get a full byte-for-byte re-hash of
+// their DEST copy each run, on a rotating cursor persisted in meta.json. The
+// normal skip path trusts the dest's recorded sha256 plus a size check — real,
+// but it means a mirror file silently corrupted in place at the same byte
+// length (bit rot, a bad Dropbox conflict resolution) is never caught or
+// repaired. This makes the mirror self-heal within a bounded number of runs
+// instead of staying silently wrong forever — data-safety review, 2026-07-26.
+const MIRROR_RECHECK_SLICE = 25;
+
+function updateMirror(db, storeDir) {
+  const backupRoot = dropboxBackupDir();
+  const destRoot = path.join(backupRoot, MIRROR_NAME);
+  const destImages = path.join(destRoot, "images");
+  const metaPath = path.join(destRoot, "meta.json");
+
+  // Read the previous manifest BEFORE invalidating it: its per-file sha256 is
+  // what lets us skip rewriting unchanged images.
+  const prevMeta = readMeta(destRoot);
+  const prevByName = Object.create(null);
+  if (prevMeta && Array.isArray(prevMeta._images)) {
+    for (const e of prevMeta._images) { if (e && e.name) prevByName[e.name] = e; }
+  }
+  // The baseline for the collapse guards below must survive meta.json itself
+  // going missing (e.g. a crash mid-previous-run left it deleted, per the
+  // invalidate-first/rewrite-last completion-marker scheme) — otherwise the
+  // ONE moment the mirror is in a torn, unconfirmed state is also the moment
+  // its collapse protection goes inert. Fall back to the actual files sitting
+  // in destImages, which is what the delete loop below actually operates on.
+  let prevDiskCount = 0;
+  try { prevDiskCount = fs.readdirSync(destImages).filter(function (n) { return n.endsWith(".jpg"); }).length; } catch (e) {}
+  const prevImageCount = Math.max(prevMeta && prevMeta._counts ? (prevMeta._counts.images | 0) : 0, prevDiskCount);
+
+  const srcImages = imagesDir(storeDir);
+  const ids = listImageIds(storeDir);
+  const c = counts(db);   // needed early: the >=100 guard's escape hatch below reads live card counts
+
+  // Collapse guards (data-safety review, 2026-07-26): listImageIds silently
+  // returns [] for a MISSING images dir (a poisoned store pointer, a store on
+  // a not-yet-downloaded Dropbox placeholder, mid-restore, ...). Without a
+  // guard that reads as "the library now has 0 images", every one of the
+  // mirror's existing images gets deleted below, an empty result still
+  // verifies (0 manifest entries === 0 expected), and the freshest recovery
+  // point is destroyed with no error raised. Unlike runBackup (which would
+  // just create an ADDITIONAL, separately-named bad dated folder), this
+  // function overwrites the one and only mirror in place, so it must fail
+  // closed here.
+  //
+  // A MISSING images dir is the crisp, unambiguous form of this failure, and
+  // the only one refused unconditionally. It is directly checkable rather than
+  // inferred from a ratio, and — critically — it clears itself the moment the
+  // dir exists again, so refusing here cannot wedge the mirror the way a stale
+  // count baseline can (the baseline can never advance while the guard throws,
+  // and since ensureBackupBeforeMerge gates every merge, a permanent throw
+  // here silently stops ALL syncing). An EMPTY-but-present dir is a real,
+  // observed state, not a broken pointer, so it falls through to the
+  // proportional guard below instead.
+  if (!fs.existsSync(srcImages) && prevImageCount > 0) {
+    throw new Error("mirror: live images dir is missing (mirror has " + prevImageCount + " images) — refusing to update the mirror");
+  }
+  // Everything short of a missing dir -- including an emptied one -- is judged
+  // proportionally, and gets an escape hatch: a real bulk dedup/cleanup reduces
+  // the store's own card count roughly in step with its image count, in the
+  // same operation. Images vanishing while the card count stays put means the
+  // images disappeared out from under a stable library -- a broken/incomplete
+  // images dir, not a user action -- and that is exactly the case this guard
+  // exists to catch. Without the escape hatch, a single legitimate large
+  // cleanup would wedge the mirror (and, since ensureBackupBeforeMerge runs it
+  // before every merge, every subsequent sync) permanently: prevImageCount can
+  // never advance past the stale baseline once the guard starts throwing.
+  //
+  // The >=100 floor keeps small libraries out of this entirely -- at low counts
+  // the ratios are too coarse to mean anything (dropping the only image of a
+  // 1-image library is a 100% "collapse"), and the blast radius of being wrong
+  // is correspondingly small.
+  if (prevImageCount >= 100 && ids.length < prevImageCount * 0.5) {
+    const prevCardCount = prevMeta && prevMeta._counts ? ((prevMeta._counts.imported | 0) + (prevMeta._counts.saved | 0)) : 0;
+    const curCardCount = (c.cards | 0) + (c.saved | 0);
+    const imageRatio = ids.length / prevImageCount;
+    const cardRatio = prevCardCount > 0 ? (curCardCount / prevCardCount) : imageRatio;
+    if (cardRatio > imageRatio + 0.25) {
+      throw new Error("mirror: live image count collapsed " + prevImageCount + " -> " + ids.length +
+        " without a matching drop in card count (" + prevCardCount + " -> " + curCardCount + ") — refusing to update the mirror");
+    }
+  }
+
+  fs.mkdirSync(destImages, { recursive: true });
+  try { fs.rmSync(metaPath, { force: true }); } catch (e) {}   // invalidate first
+
+  // Flush WAL pages into interests.db first — the on-disk file lags the -wal
+  // sidecar while the live db is open, so copying without this captures a stale
+  // db whose row counts will not match `cnt` (exactly what runBackup does, and
+  // omitting it here made verification fail outright).
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
+  catch (e) { throw new Error("mirror WAL checkpoint failed: " + (e && e.message || e)); }
+
+  const cnt = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(storeDir) | 0 };
+  // Write the db to a tmp file and rename into place (same directory, so the
+  // rename is atomic) rather than overwriting interests.db directly. meta.json
+  // is already gone at this point, so a crash mid-copy already failed
+  // verification either way — but a raw overwrite can leave interests.db
+  // itself torn, which invalidates every image that update WOULD have left
+  // intact. The tmp+rename makes that one crash window harmless too. Goes
+  // through the same retry wrapper as every other rename in this file — this
+  // one lands inside the Dropbox-synced backups folder too, and now runs
+  // every ~3 minutes via ensureBackupBeforeMerge, not just once a day.
+  const dbTmp = path.join(destRoot, "interests.db.tmp." + process.pid + "." + Date.now());   // matches the existing *.tmp.* .gitignore convention
+  copyFileSync(path.join(storeDir, "interests.db"), dbTmp);
+  renameSyncWithRetry(dbTmp, path.join(destRoot, "interests.db"));
+
+  const live = Object.create(null);
+  const manifest = [];
+  let written = 0;
+  const recheckCursor = (prevMeta && Number.isFinite(prevMeta._recheckCursor)) ? prevMeta._recheckCursor : 0;
+  const recheckStart = ids.length ? (recheckCursor % ids.length) : 0;
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    const name = id + ".jpg";
+    live[name] = 1;
+    const bytes = fs.readFileSync(path.join(srcImages, name));
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    const prev = prevByName[name];
+    // Content decides, not mtime: a same-size same-time file can still differ.
+    let needWrite = !prev || prev.sha256 !== sha || prev.size !== bytes.length;
+    if (!needWrite) {
+      const destPath = path.join(destImages, name);
+      // The manifest says it matches, but the file itself must actually be there
+      // and the right size -- guards against an externally deleted/truncated copy.
+      let destSize = -1;
+      try { destSize = fs.statSync(destPath).size; } catch (e) {}
+      if (destSize !== bytes.length) needWrite = true;
+      else {
+        // Rotating self-heal (see MIRROR_RECHECK_SLICE): same size is not proof
+        // of same bytes. Re-hash a bounded slice of "unchanged" files each run
+        // so in-place corruption is actually caught and repaired, not just
+        // silently trusted forever.
+        const offset = (i - recheckStart + ids.length) % ids.length;
+        if (offset < MIRROR_RECHECK_SLICE) {
+          try {
+            const destSha = crypto.createHash("sha256").update(fs.readFileSync(destPath)).digest("hex");
+            if (destSha !== sha) needWrite = true;
+          } catch (e) { needWrite = true; }
+        }
+      }
+    }
+    if (needWrite) { fs.writeFileSync(path.join(destImages, name), bytes); written++; }
+    manifest.push({ name: name, size: bytes.length, sha256: sha });
+  }
+  const nextRecheckCursor = ids.length ? (recheckStart + MIRROR_RECHECK_SLICE) % ids.length : 0;
+
+  // Drop images the live store no longer has, so the mirror stays an exact copy
+  // rather than an ever-growing union.
+  let removed = 0;
+  try {
+    for (const n of fs.readdirSync(destImages)) {
+      if (!n.endsWith(".jpg") || live[n]) continue;
+      try { fs.unlinkSync(path.join(destImages, n)); removed++; } catch (e) {}
+    }
+  } catch (e) {}
+
+  manifest.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  fs.writeFileSync(path.join(destRoot, "snapshot.json"), JSON.stringify(buildPortableSnapshot(db)));
+  if (manifest.length !== cnt.images || !verifyDbOnly(path.join(destRoot, "interests.db"), cnt)) {
+    throw new Error("mirror verification failed");
+  }
+  fs.writeFileSync(metaPath, JSON.stringify({ _counts: cnt, _images: manifest, ts: Date.now(), _recheckCursor: nextRecheckCursor }));
+  // Out-of-store witness for the 2026-07-17-incident store-collapse detector
+  // (config.evaluateStoreSafety) — runBackup and restore() both refresh this on
+  // every write; the mirror must too, or the baseline goes stale for up to a
+  // week under the new weekly-full-snapshot cadence.
+  try { recordLastCounts({ cards: cnt.imported, saved: cnt.saved }); } catch (e) {}
+  return { name: MIRROR_NAME, counts: cnt, written: written, removed: removed, total: ids.length };
+}
+
+// The pre-merge safety gate sync uses. Always refreshes the cheap mirror (the
+// actual "roll back this merge" recovery point), and additionally forces a full
+// dated snapshot when the newest one has aged past intervalMs. Throws if the
+// mirror cannot be verified, so sync fails closed and skips the merge.
+function ensureBackupBeforeMerge(db, storeDir, opts) {
+  opts = opts || {};
+  const intervalMs = opts.fullSnapshotIntervalMs == null ? FULL_SNAPSHOT_INTERVAL_MS : opts.fullSnapshotIntervalMs;
+  const now = opts.now == null ? Date.now() : opts.now;
+  const mirror = updateMirror(db, storeDir);
+  let full = null;
+  if ((now - newestDatedSnapshotTime()) >= intervalMs) {
+    full = runBackup(db, storeDir);
+  }
+  return { mirror: mirror, full: full };
+}
+
 function listBackups() {
   const root = dropboxBackupDir();
   let names = [];
@@ -504,13 +758,19 @@ function listBackups() {
     .map(function (n) {
       const dated = DATED_BACKUP_NAME.exec(n);
       const safety = SAFETY_BACKUP_NAME.exec(n);
-      if (!dated && !safety) return null;
+      // The mirror is a real, verifiable backup folder -- it must be offered for
+      // restore like any other, otherwise the freshest recovery point is invisible.
+      const mirror = (n === MIRROR_NAME);
+      if (!dated && !safety && !mirror) return null;
       let isDir = false;
       try { isDir = fs.statSync(path.join(root, n)).isDirectory(); } catch (e) { isDir = false; }
       if (!isDir) return null;
       const meta = readMeta(path.join(root, n));
-      const sortTs = safety ? (+safety[1] || 0) : Date.parse(dated[1] + "T00:00:00Z");
-      return { name: n, date: dated ? dated[1] : new Date(sortTs).toISOString(), counts: meta ? meta._counts : null, safety: !!safety, sortTs };
+      let sortTs;
+      if (mirror) sortTs = (meta && meta.ts) || 0;
+      else if (safety) sortTs = (+safety[1] || 0);
+      else sortTs = Date.parse(dated[1] + "T00:00:00Z");
+      return { name: n, date: dated ? dated[1] : new Date(sortTs).toISOString(), counts: meta ? meta._counts : null, safety: !!safety, mirror: mirror, sortTs: sortTs };
     })
     .filter(Boolean)
     .sort(function (a, b) { return b.sortTs - a.sortTs; });
@@ -532,12 +792,22 @@ function verifyBackup(name, expectedCounts) {
 // dropped). The sharded-backup lesson: never delete a good backup for a bad one.
 function rotate(keep) {
   keep = (keep == null) ? 3 : keep;
-  const list = listBackups();                 // newest-first, each {name,date,counts}
+  const list = listBackups();                 // newest-first, mixed: dated + safety + mirror
   if (!list.length) return;
   const verified = list.map(function (b) {
     return b.counts ? verifyBackup(b.name, b.counts) : false;
   });
-  if (!verified[0]) return;                          // newest is unverified → rotate nothing
+  // The "is the newest backup trustworthy" gate must be scored over the DATED
+  // backups specifically — pickBackupsToDelete only ever selects dated names,
+  // so that's the only thing this function can delete. Gating on list[0]
+  // meant an unrelated newer entry (the mirror, or a safety snapshot — both
+  // sorted by wall-clock time and routinely newer than today's dated backup)
+  // could freeze dated-backup rotation indefinitely even when every dated
+  // backup was perfectly healthy. Data-safety review, 2026-07-26.
+  const datedIdx = [];
+  for (let i = 0; i < list.length; i++) { if (DATED_BACKUP_NAME.test(list[i].name)) datedIdx.push(i); }
+  if (!datedIdx.length) return;                       // nothing dated to rotate
+  if (!verified[datedIdx[0]]) return;                  // newest DATED backup is unverified → rotate nothing
   const candidates = pickBackupsToDelete(list.map(function (b) { return b.name; }), keep);
   for (let i = 0; i < list.length; i++) {
     const b = list[i];
@@ -561,14 +831,111 @@ function overlayImages(srcImages, dstImages) {
 // Restore a named backup: safety-snapshot the CURRENT store first (so a mistaken
 // restore is recoverable), then swap the backup's db + images into the live store
 // and reopen. Old/live data is never destroyed without a snapshot first.
+// Pattern for freezeMirrorForRestore's throwaway output — matched only by its
+// own cleanup pass below, never by rotate()/sweepOrphanedArtifacts, so it
+// can't be confused with a real dated/safety snapshot.
+const MIRROR_FREEZE_NAME = /^interests-mirror-freeze-\d+$/;
+
+// The mirror is never atomic while live — the sync worker (a genuine separate
+// thread) can rewrite it in place at any moment (see updateMirror). Reading it
+// directly across restore()'s multi-step, multi-file swap would risk
+// restoring a partially-rewritten mirror, or racing a write mid-copy. Freeze
+// it into a throwaway, independently-verified copy FIRST — built and hashed
+// fresh, the same way a normal backup's stage step is — and have restore()
+// read from that instead of the live mirror.
+//
+// This does not eliminate the race (this copy pass itself still reads a
+// moving target) but narrows the window from "the whole restore" to "one
+// copy pass", and any inconsistency introduced during that pass is caught by
+// the verify below rather than silently propagating into the live store.
+// Data-safety review, 2026-07-26.
+function freezeMirrorForRestore() {
+  const backupRoot = dropboxBackupDir();
+  const liveMirror = path.join(backupRoot, MIRROR_NAME);
+
+  // Read the live mirror's OWN completion marker FIRST, before touching
+  // anything — this is the only independent evidence of what the mirror is
+  // supposed to contain. Its absence means the mirror is mid-update or was
+  // left torn by a crash (updateMirror deletes meta.json first, rewrites it
+  // last), and must be refused outright — restoring from a folder with no
+  // completion marker was the ORIGINAL restore()'s behavior before the
+  // freeze step existed; this preserves it rather than silently deriving
+  // "verification" entirely from what this function just copied itself,
+  // which would rubber-stamp exactly the torn state it's supposed to catch.
+  const liveMeta = readMeta(liveMirror);
+  if (!liveMeta || !liveMeta._counts) {
+    throw new Error("mirror has no completion marker (mid-update or left torn by a crash) — refusing to restore from it");
+  }
+
+  const freezeName = "interests-mirror-freeze-" + Date.now();
+  const freezeRoot = path.join(backupRoot, freezeName);
+  const freezeImages = path.join(freezeRoot, "images");
+  fs.mkdirSync(freezeImages, { recursive: true });
+  copyFileSync(path.join(liveMirror, "interests.db"), path.join(freezeRoot, "interests.db"));
+  const ids = listImageIds(liveMirror);
+  const manifest = copyImagesAndBuildManifest(imagesDir(liveMirror), freezeImages, ids);
+  let dbCounts;
+  try {
+    const database = new DatabaseSync(path.join(freezeRoot, "interests.db"), { readOnly: true });
+    try { dbCounts = counts(database); } finally { try { database.close(); } catch (e2) {} }
+  } catch (e) { throw new Error("frozen mirror copy: unreadable database — " + (e && e.message || e)); }
+  const cnt = { imported: dbCounts.cards | 0, saved: dbCounts.saved | 0, images: manifest.length };
+
+  // Cross-check against the INDEPENDENT reference read before any copying
+  // started. The mirror can be rewritten in place by the sync worker (a
+  // genuine separate thread) at any moment, including during the copy above —
+  // if that happened, what got copied no longer matches what the mirror had
+  // last confirmed about itself, and that must be treated as untrustworthy
+  // rather than re-verified purely against its own just-copied content.
+  if (!backupCountsMatch(cnt, liveMeta._counts)) {
+    throw new Error("mirror changed while freezing it for restore (expected " + JSON.stringify(liveMeta._counts) +
+      ", got " + JSON.stringify(cnt) + ") — refusing to restore from an inconsistent copy");
+  }
+
+  if (!verifyDbOnly(path.join(freezeRoot, "interests.db"), cnt)) {
+    throw new Error("frozen mirror copy failed to verify");
+  }
+  fs.writeFileSync(path.join(freezeRoot, "meta.json"), JSON.stringify({ _counts: cnt, _images: manifest, ts: Date.now() }));
+  if (!verifyBackupFolder(freezeRoot, cnt)) {
+    throw new Error("frozen mirror copy failed independent verification");
+  }
+  return freezeName;
+}
+
 function restore(name, ctx) {
   if (!isValidBackupName(name)) return { ok: false };
-  const backupFolder = path.join(dropboxBackupDir(), name);
+  // The mirror is a moving target — never read it directly across a
+  // multi-step restore. Freeze it first; restore from the frozen copy instead
+  // (see freezeMirrorForRestore). `name` (used for messages/rotation intent)
+  // stays MIRROR_NAME; only the folder actually read from changes.
+  let effectiveName = name;
+  let didFreeze = false;
+  if (name === MIRROR_NAME) {
+    try { effectiveName = freezeMirrorForRestore(); didFreeze = true; }
+    catch (e) { return { ok: false, error: "mirror freeze failed: " + (e && e.message || e) }; }
+  }
+  // Every exit below this point must still clean up the freeze folder — it is
+  // a throwaway, near-full image-library copy sitting in the Dropbox-synced
+  // backups folder, and every early return before this fix leaked one
+  // (freeze folders were only ever rotated after a FULLY successful restore).
+  try {
+    return restoreFromFolder(effectiveName, ctx);
+  } finally {
+    if (didFreeze) { try { rotateUnverifiedSnapshots(dropboxBackupDir(), MIRROR_FREEZE_NAME, 1); } catch (e) {} }
+  }
+}
+
+function restoreFromFolder(effectiveName, ctx) {
+  const backupFolder = path.join(dropboxBackupDir(), effectiveName);
   let hasDb = false;
   try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }
   if (!hasDb) return { ok: false };
   const backupMeta = readMeta(backupFolder);
-  if (!backupMeta || !verifyBackup(name, backupMeta._counts)) return { ok: false, error: "backup not verified" };
+  // Verify the FOLDER we are actually about to read (backupFolder), not a
+  // name-derived re-lookup — verifyBackup(name, ...) re-joins `name` onto the
+  // backup root itself, which for the mirror case is MIRROR_NAME again (the
+  // live, still-mutable folder), silently undoing the freeze above.
+  if (!backupMeta || !verifyBackupFolder(backupFolder, backupMeta._counts)) return { ok: false, error: "backup not verified" };
 
   // 1) safety snapshot of the live store (non-dated name → never auto-rotated).
   // If snapshotting the live db FAILS, abort BEFORE overwriting the live store —
@@ -655,4 +1022,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog, _timing: timing };
+module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog, _timing: timing };

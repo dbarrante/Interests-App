@@ -275,7 +275,14 @@ function applyMerge(ctx, plan, fallbackDirs) {
 function runSync(ctx, opts) {
   opts = opts || {};
   const syncDir = opts.syncDir;
-  const backupFn = opts.backupFn || function () { backup.runBackup(ctx.db, ctx.storeDir); };
+  // Pre-merge safety net. Was runBackup() -- a full ~6,000-file copy -- on EVERY
+  // merge, and runSync fires every 3 minutes, so a single edit on another device
+  // cost ~12,000 Dropbox file operations (every file written to a staging path,
+  // then renamed). ensureBackupBeforeMerge refreshes the in-place mirror instead
+  // (only genuinely changed images are rewritten) and still forces a full dated
+  // snapshot once the newest has aged out. Same fail-closed contract: if it
+  // throws, the merge is skipped.
+  const backupFn = opts.backupFn || function () { backup.ensureBackupBeforeMerge(ctx.db, ctx.storeDir); };
   let changed = false, conflicts = 0;
   // Peer watermarks: last fully-merged publishedAt per peer (kv). Unreadable ⇒
   // absent ⇒ full read (safety bias: when in doubt, don't skip).

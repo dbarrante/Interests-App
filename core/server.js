@@ -698,7 +698,15 @@ function createServer(ctx) {
   app.get("/api/health", (req, res) => {
     const c = counts(ctx.db);
     const list = backup.listBackups();
-    const lastBackup = list.length ? { name: list[0].name, counts: list[0].counts } : null;
+    // list[0] can now be the rolling mirror (sorted by wall-clock time, so it
+    // is routinely newer than the freshest dated snapshot). "Last backup"
+    // should mean a real point-in-time recovery point, not a folder that gets
+    // rewritten in place every few minutes — report the newest non-mirror
+    // entry, with the mirror's own freshness reported alongside it.
+    const lastDated = list.find(function (b) { return !b.mirror; }) || null;
+    const mirrorEntry = list.find(function (b) { return b.mirror; }) || null;
+    const lastBackup = lastDated ? { name: lastDated.name, counts: lastDated.counts } : null;
+    const lastMirrorAt = mirrorEntry ? mirrorEntry.sortTs : null;
     // Store-safety flags (2026-07-17 incident hardening): a store dir under
     // %TEMP% (poisoned config pointer from a killed test run) or counts
     // collapsed vs the last-backup record persisted in config.json. Flags
@@ -715,6 +723,7 @@ function createServer(ctx) {
       storePath: ctx.storeDir,
       counts: { cards: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 },
       lastBackup,
+      lastMirrorAt,
       safety
     });
   });

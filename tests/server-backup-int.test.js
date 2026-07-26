@@ -124,6 +124,18 @@ function listen(app) {
       assert.ok(h.lastBackup && h.lastBackup.name === backupName);
     });
 
+    await run(t("GET /api/health's lastBackup stays the dated snapshot even when the rolling mirror is newer, and lastMirrorAt reports the mirror separately"), async () => {
+      // The mirror is only ever produced by core/sync.js's pre-merge gate, not
+      // any HTTP route -- create one directly, the same way sync would.
+      const backup = require("../core/backup.js");
+      backup.updateMirror(ctx.db, store);
+      const h = await (await fetch(base + "/api/health")).json();
+      assert.ok(h.lastBackup && h.lastBackup.name === backupName,
+        "lastBackup must stay the real dated snapshot, not silently become the volatile mirror");
+      assert.ok(typeof h.lastMirrorAt === "number" && h.lastMirrorAt > 0,
+        "the mirror's own freshness must still be reported, just under its own field");
+    });
+
     await run(t("POST /api/restore round-trips and rebinds ctx.db"), async () => {
       // mutate live to 2 cards, then restore the 1-card backup
       upsertCard(ctx.db, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "" });

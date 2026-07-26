@@ -1591,7 +1591,12 @@ async function restoreFromList(name){
 async function restoreLatest(){
   const list = await Store.listBackups();
   if(!list || !list.length){ toast("No backups found"); return; }
-  return restoreFromList(list[0].name);
+  // list[0] can be the rolling mirror (it sorts by wall-clock time, so it's
+  // routinely "newer" than the freshest dated snapshot) — but it's rewritten
+  // in place every few minutes, not a point-in-time recovery point, so the
+  // "restore latest" button must skip it and land on a real dated backup.
+  const target = list.find(b=>!b.mirror) || list[0];
+  return restoreFromList(target.name);
 }
 async function renderBackupList(){
   const host = document.getElementById("backupList");
