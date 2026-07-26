@@ -41,5 +41,25 @@ t("isProbableHost / isSkippedHost: garbage input does not throw", () => {
   assert.ok(true);
 });
 
+t("isPrivateAddr blocks CGNAT, multicast, reserved and special-purpose IPv4", () => {
+  // Ranges an SSRF guard must refuse that the original list omitted.
+  for (const ip of ["100.64.0.1", "100.127.255.255", "224.0.0.1", "239.255.255.255",
+                    "240.0.0.1", "255.255.255.255", "192.0.0.1", "198.18.0.1", "198.19.255.255"]) {
+    assert.strictEqual(lc.isPrivateAddr(ip), true, ip + " must be blocked");
+  }
+  // Public addresses next to those ranges must still pass.
+  for (const ip of ["100.63.255.255", "100.128.0.1", "223.255.255.255", "192.0.1.1", "198.17.255.255", "198.20.0.1"]) {
+    assert.strictEqual(lc.isPrivateAddr(ip), false, ip + " must stay allowed");
+  }
+});
+
+t("isPrivateAddr blocks IPv6 forms that can wrap a private IPv4", () => {
+  // 6to4 (2002::/16) and NAT64 (64:ff9b::/96) encapsulate an IPv4 address.
+  assert.strictEqual(lc.isPrivateAddr("2002:7f00:0001::1"), true, "6to4 wrapping 127.0.0.1");
+  assert.strictEqual(lc.isPrivateAddr("64:ff9b::7f00:1"), true, "NAT64 wrapping 127.0.0.1");
+  assert.strictEqual(lc.isPrivateAddr("ff02::1"), true, "IPv6 multicast");
+  assert.strictEqual(lc.isPrivateAddr("2606:4700:4700::1111"), false, "public IPv6 must stay allowed");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

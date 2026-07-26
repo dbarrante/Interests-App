@@ -48,18 +48,36 @@ function isPrivateAddr(ip) {
     if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;        // fc00::/7 unique-local
     if (/^fe[89ab][0-9a-f]:/.test(h)) return true;        // fe80::/10 link-local
     if (/^fec[0-9a-f]:/.test(h)) return true;             // fec0::/10 site-local (deprecated)
+    if (/^ff[0-9a-f]{2}:/.test(h)) return true;           // ff00::/8 multicast
+    // 6to4 (2002:AABB:CCDD::/48) and NAT64 (64:ff9b::/96) embed an IPv4 address.
+    // Decode it and apply the v4 rules, or they become a wrapper around loopback.
+    var six4 = h.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4}):/);
+    if (six4) return isPrivateAddr(_v4FromHextets(six4[1], six4[2]));
+    var nat64 = h.match(/^64:ff9b::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (nat64) return isPrivateAddr(_v4FromHextets(nat64[1], nat64[2]));
+    if (/^64:ff9b::/.test(h)) return true;                // any other NAT64 form: refuse rather than guess
     return false;
   }
   var m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
-    var a = +m[1], b = +m[2];
+    var a = +m[1], b = +m[2], c = +m[3];
     if (a === 0 || a === 127 || a === 10) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;    // 100.64/10 CGNAT
+    if (a === 192 && b === 0 && c === 0) return true;     // 192.0.0.0/24 IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 benchmarking
+    if (a >= 224) return true;                            // 224/4 multicast + 240/4 reserved + 255.255.255.255
     return false;
   }
   return false;
+}
+
+// "7f00","0001" -> "127.0.0.1". Used to unwrap 6to4 / NAT64 IPv6 forms.
+function _v4FromHextets(hi, lo) {
+  var a = parseInt(hi, 16) || 0, b = parseInt(lo, 16) || 0;
+  return [(a >> 8) & 255, a & 255, (b >> 8) & 255, b & 255].join(".");
 }
 
 // SSRF guard (synchronous, string-level): only public http(s) hosts may be probed. Rejects
