@@ -71,7 +71,18 @@
         headers: { "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body)
       }).then(function (r) {
-        if (!r.ok) throw new Error(method + " " + url + " -> " + r.status);
+        if (!r.ok) {
+          // Keep the "METHOD url -> status" prefix EXACTLY as-is — several
+          // renderer error paths match on it (persistCards, the global
+          // unhandledrejection net) — and append the server's own explanation
+          // when there is one. Replacing the prefix instead of extending it
+          // silently disabled every one of those matchers.
+          const base = method + " " + url + " -> " + r.status;
+          return r.json().then(
+            function (j) { throw new Error(j && j.error ? base + ": " + j.error : base); },
+            function () { throw new Error(base); }
+          );
+        }
         return r.json();
       });
     };

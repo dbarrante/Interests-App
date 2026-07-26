@@ -275,8 +275,15 @@ function applyMerge(ctx, plan, fallbackDirs) {
 function runSync(ctx, opts) {
   opts = opts || {};
   const syncDir = opts.syncDir;
-  const backupFn = opts.backupFn || function () { backup.runBackup(ctx.db, ctx.storeDir); };
-  let changed = false, conflicts = 0;
+  // Pre-merge safety net. Was runBackup() -- a full ~6,000-file copy -- on EVERY
+  // merge, and runSync fires every 3 minutes, so a single edit on another device
+  // cost ~12,000 Dropbox file operations (every file written to a staging path,
+  // then renamed). ensureBackupBeforeMerge refreshes the in-place mirror instead
+  // (only genuinely changed images are rewritten) and still forces a full dated
+  // snapshot once the newest has aged out. Same fail-closed contract: if it
+  // throws, the merge is skipped.
+  const backupFn = opts.backupFn || function () { backup.ensureBackupBeforeMerge(ctx.db, ctx.storeDir); };
+  let changed = false, conflicts = 0, backupError = null;
   // Peer watermarks: last fully-merged publishedAt per peer (kv). Unreadable ⇒
   // absent ⇒ full read (safety bias: when in doubt, don't skip).
   const seenByDevice = {};
@@ -295,8 +302,24 @@ function runSync(ctx, opts) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
       let backedUp = true;
-      try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
+      try { backupFn(); }
+      catch (e) {
+        backedUp = false;
+        backupError = (e && e.message) || String(e);
+        console.error("sync: safety backup failed, skipping merge this cycle:", backupError);
+        // Recorded, not just logged. The pre-merge gate legitimately refuses
+        // (a collapsed image count, a store that went unreadable), and a
+        // refusal here silently stops ALL merging — on the 3-minute timer path
+        // there is no user in the loop to see a console line. Persisting it
+        // lets /api/sync-status surface "syncing is paused, and why".
+        try { db.setKV(ctx.db, "ia_sync_backup_error", JSON.stringify({ at: Date.now(), error: backupError })); } catch (e2) {}
+      }
       if (backedUp) {
+        // Cleared HERE — the only place we have positive evidence the gate ran
+        // and passed. Clearing it on any quiet cycle instead (no peers, empty
+        // plan) wiped the banner within one tick without ever re-testing the
+        // condition, which made the whole signal unreachable in practice.
+        try { db.setKV(ctx.db, "ia_sync_backup_error", ""); } catch (e) {}
         // Any-holder image fallback: our OWN sync folder first (the most
         // common holder), then every peer folder — see applyMerge.
         const fallbackDirs = [path.join(syncDir, opts.deviceId)].concat(peers.map(function (p) { return p.dir; }));
@@ -347,7 +370,7 @@ function runSync(ctx, opts) {
       } catch (e) {}
     }
   }
-  return { changed: changed, conflicts: conflicts, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
+  return { changed: changed, conflicts: conflicts, backupError: backupError, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }
 
 module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot, readPeerSnapshots, buildLocal, applyMerge, runSync };

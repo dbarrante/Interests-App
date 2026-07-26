@@ -125,8 +125,18 @@ t("PRODUCTION guard locked in source: temp backupDir ignored only when NOT sandb
 /* ---------- wiring source-asserts ---------- */
 t("runBackup records lastCounts to config.json after a successful backup", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "core", "backup.js"), "utf8");
-  assert.ok(/recordLastCounts\(\{ cards: cnt\.imported, saved: cnt\.saved \}\)/.test(src));
+  // Routine backups go through the guarded writer, which refuses to overwrite
+  // the witness with a value that would itself have tripped the collapse
+  // detector below — otherwise the mirror (which now refreshes on every merge)
+  // erased the evidence of a collapse within one sync cycle.
+  assert.ok(/recordLastCountsIfNotACollapse\(cnt\);/.test(src), "runBackup/updateMirror refresh the witness");
+  assert.ok(/function recordLastCountsIfNotACollapse/.test(src) && /recordLastCounts\(\{ cards: nowCards, saved: cnt\.saved \| 0 \}\)/.test(src),
+    "and the guarded writer still ultimately calls recordLastCounts");
 });
+// The BEHAVIOR (a collapsed count must not overwrite the witness) is pinned in
+// tests/backup.test.js, which has withBackupDir() isolation. Calling runBackup
+// from THIS file would resolve dropboxBackupDir() to the real Dropbox folder —
+// the exact near-miss recorded on 2026-07-19.
 t("/api/health exposes the safety evaluation", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "core", "server.js"), "utf8");
   assert.ok(/evaluateStoreSafety\(\{/.test(src) && /safety/.test(src));

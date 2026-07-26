@@ -164,5 +164,35 @@ run("main.js: window created BEFORE the launch merge, which runs on the WORKER f
     "a changed launch merge must signal the renderer (toast + rehydrate)");
 });
 
+// A pre-merge backup refusal skips the merge. That is correct and deliberate
+// (fail closed), but it used to be a console.error and nothing else — on the
+// 3-minute timer path there is no user in the loop, so syncing could stop
+// indefinitely with no signal anywhere. The refusal must be recorded, reported,
+// and must clear itself once the underlying condition does.
+run("a refused pre-merge backup is reported and recorded, then clears on recovery", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-bkerr-"));
+  const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+  const A = mkCtx(root, "A"), B = mkCtx(root, "B");
+  db.upsertCard(A.db, { id: "a1", url: "http://a/1", ts: 1 });
+  sync.runSync(A, { syncDir, deviceId: "devA", deviceLabel: "A", backupFn: noBackup });
+
+  const boom = function () { throw new Error("mirror: live image count collapsed 100 -> 0"); };
+  const bad = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: boom });
+  assert.ok(bad.backupError && /image count collapsed/.test(bad.backupError),
+    "the cycle must report WHY it could not merge, not just log it");
+  assert.ok(!db.allCards(B.db).some(c => c.id === "a1"),
+    "fail-closed: the merge must not have been applied");
+  const rec = JSON.parse(db.getKV(B.db, "ia_sync_backup_error"));
+  assert.ok(rec && /image count collapsed/.test(rec.error) && rec.at > 0,
+    "the refusal must be persisted so /api/sync-status can surface it later");
+
+  // Same peer, backup now working: the merge lands and the sticky flag clears.
+  const good = sync.runSync(B, { syncDir, deviceId: "devB", deviceLabel: "B", backupFn: noBackup });
+  assert.strictEqual(good.backupError, null, "a healthy cycle must not report an error");
+  assert.ok(db.allCards(B.db).some(c => c.id === "a1"), "the deferred merge must land once the backup works");
+  assert.strictEqual(db.getKV(B.db, "ia_sync_backup_error") || "", "",
+    "the banner must clear itself — a sticky error nobody can dismiss is its own bug");
+});
+
 console.log("sync-skip: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

@@ -15,6 +15,7 @@ _recovery/
 saves-*.json
 interests-backup-*
 interests-snapshot-*
+interests-mirror*
 .superpowers/
 .worktrees/
 _livecapture/

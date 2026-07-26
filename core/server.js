@@ -630,8 +630,12 @@ function createServer(ctx) {
     try {
       // Legacy import replaces the live library. It is allowed to proceed only
       // after a fresh backup has been written and independently verified.
+      // safety:true — a pre-destructive-op snapshot must capture whatever state
+      // the store is in right now. Gating it on the store-sanity check would
+      // refuse exactly the degraded store a user is most likely trying to
+      // recover FROM by re-importing, and would do so with no override.
       let safety;
-      try { safety = backup.runBackup(ctx.db, ctx.storeDir); }
+      try { safety = backup.runBackup(ctx.db, ctx.storeDir, { safety: true }); }
       catch (e) { e.code = "SAFETY_BACKUP_FAILED"; throw e; }
       if (!safety || !backup.verifyBackup(safety.name, safety.counts)) {
         return res.status(409).json({ error: "safety backup not verified" });
@@ -663,6 +667,15 @@ function createServer(ctx) {
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);
+      // The store-sanity refusal is the one backup failure a user can act on
+      // (their images folder is incomplete — usually an undownloaded Dropbox
+      // placeholder), so it reaches the client verbatim instead of as a generic
+      // "backup failed". It clears itself once the images are back; there is
+      // nothing to override and nothing to reset.
+      const msg = (e && e.message) || "";
+      if (/images dir is missing|expects \d+ images but only/.test(msg)) {
+        return res.status(409).json({ ok: false, error: msg });
+      }
       res.status(500).json({ ok: false, error: "backup failed" });
     }
   });
@@ -698,7 +711,15 @@ function createServer(ctx) {
   app.get("/api/health", (req, res) => {
     const c = counts(ctx.db);
     const list = backup.listBackups();
-    const lastBackup = list.length ? { name: list[0].name, counts: list[0].counts } : null;
+    // list[0] can now be the rolling mirror (sorted by wall-clock time, so it
+    // is routinely newer than the freshest dated snapshot). "Last backup"
+    // should mean a real point-in-time recovery point, not a folder that gets
+    // rewritten in place every few minutes — report the newest non-mirror
+    // entry, with the mirror's own freshness reported alongside it.
+    const lastDated = list.find(function (b) { return !b.mirror; }) || null;
+    const mirrorEntry = list.find(function (b) { return b.mirror; }) || null;
+    const lastBackup = lastDated ? { name: lastDated.name, counts: lastDated.counts } : null;
+    const lastMirrorAt = mirrorEntry ? mirrorEntry.sortTs : null;
     // Store-safety flags (2026-07-17 incident hardening): a store dir under
     // %TEMP% (poisoned config pointer from a killed test run) or counts
     // collapsed vs the last-backup record persisted in config.json. Flags
@@ -715,6 +736,7 @@ function createServer(ctx) {
       storePath: ctx.storeDir,
       counts: { cards: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 },
       lastBackup,
+      lastMirrorAt,
       safety
     });
   });
@@ -752,10 +774,17 @@ function createServer(ctx) {
     let peers = [];
     try { if (syncDir) peers = sync.readPeerSnapshots(syncDir, sc.deviceId).peers.map(function (p) { return { deviceLabel: p.deviceLabel, deviceId: p.deviceId, publishedAt: p.publishedAt }; }); } catch (e) {}
     let changedAt = 0; try { changedAt = +(dbm.getKV(ctx.db, "ia_sync_changed_at") || 0); } catch (e) {}
+    // Sticky record of a pre-merge backup refusal. The timer path has no user
+    // in the loop, so without this a merge that stops happening is invisible.
+    let backupError = null;
+    try {
+      const raw = dbm.getKV(ctx.db, "ia_sync_backup_error");
+      if (raw) backupError = JSON.parse(raw);
+    } catch (e) { backupError = null; }
     res.json({
       enabled: sc.enabled, folder: syncDir, dropboxFound: dropboxFound,
       deviceId: sc.deviceId, deviceLabel: sc.deviceLabel,
-      peers: peers, changedAt: changedAt,
+      peers: peers, changedAt: changedAt, backupError: backupError,
     });
   });
 
@@ -794,7 +823,7 @@ function createServer(ctx) {
       const r = await Promise.resolve(runner.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true }));
       if (r && r.ok === false) { console.error("sync now failed:", r.error); return res.status(500).json({ ok: false, error: "sync failed" }); }
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
-      res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
+      res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
   });
 
