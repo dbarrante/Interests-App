@@ -421,6 +421,62 @@ t("an empty-reading source PRESERVES the mirror instead of overwriting it", () =
     db2.close();
   });
 });
+t("a lost db with images still on disk promotes ONCE, not on every merge", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 150; i++) {
+      upsertCard(db, { id: "lo" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:lo" + i });
+      images.putImg(store, "lo" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+    db.close();
+
+    // Variant (a): ONLY the database is lost — the images stay on disk. The
+    // rebuilt mirror is then {cards:0, images:150}, so a card baseline that
+    // falls back to the image count stays >=100 forever and re-promotes on
+    // EVERY merge: one permanent full-library folder plus a full image rewrite
+    // every 3 minutes, which is the churn this whole feature exists to remove.
+    fs.rmSync(path.join(store, "interests.db"), { force: true });
+    const db2 = openDb(store);
+
+    const first = backup.updateMirror(db2, store);
+    assert.strictEqual(first.counts.images, 150, "the images are still live, so the mirror keeps them");
+    const after1 = fs.readdirSync(bdir).filter(n => /^interests-backup-before-cleanup-/.test(n));
+    assert.strictEqual(after1.length, 1, "the pre-loss mirror is preserved once");
+    const meta = JSON.parse(fs.readFileSync(path.join(bdir, after1[0], "meta.json"), "utf8"));
+    assert.strictEqual(meta._counts.imported, 150, "and it holds the card rows the live store lost");
+
+    for (let i = 0; i < 4; i++) {
+      const r = backup.updateMirror(db2, store);
+      assert.strictEqual(r.written, 0, "and later runs must not rewrite every image again");
+    }
+    assert.strictEqual(fs.readdirSync(bdir).filter(n => /^interests-backup-before-cleanup-/.test(n)).length, 1,
+      "repeated merges must not accumulate a full-library copy each time");
+    db2.close();
+  });
+});
+t("runBackup refuses a store with no cards but a full images folder", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 120; i++) {
+      upsertCard(db, { id: "ci" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:ci" + i });
+      images.putImg(store, "ci" + i, TINY_JPG);
+    }
+    backup.runBackup(db, store);
+    db.close();
+
+    // Rows gone, images intact — internally inconsistent, so the database was
+    // lost rather than the library intentionally emptied. Capturing it publishes
+    // a card-less snapshot that VERIFIES, takes today's name, unlocks rotate()'s
+    // newest-must-verify gate and evicts a good older backup.
+    fs.rmSync(path.join(store, "interests.db"), { force: true });
+    const db2 = openDb(store);
+    assert.throws(() => backup.runBackup(db2, store), /no cards at all but 120 images/);
+    db2.close();
+  });
+});
 t("the gate CANNOT latch: a legitimate bulk delete clears it with no override", () => {
   withBackupDir(function () {
     const store = newStore();

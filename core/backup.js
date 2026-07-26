@@ -574,12 +574,29 @@ function assertStoreLooksSane(o) {
   const what = o.what || "backup";
   const expected = expectedLocalImageCount(o.db);
   const actual = o.curImages | 0;
+  let curCards = 0;
+  try { const cc = counts(o.db); curCards = (cc.cards | 0) + (cc.saved | 0); } catch (e) {}
   // A missing images dir is the same failure in its crispest form. Checked
   // separately because listImageIds() reports [] for it, which is
   // indistinguishable from an empty dir by count alone.
   if (!fs.existsSync(imagesDir(o.storeDir)) && expected > 0) {
     throw new Error(what + ": live images dir is missing but the library expects " + expected +
       " images — refusing to write a backup");
+  }
+  // An INTERNALLY INCONSISTENT store: no rows at all, yet a substantial images
+  // folder. A library the user genuinely emptied loses both together, so this
+  // shape means the database was lost or replaced while its images survived --
+  // and capturing it publishes a card-less snapshot that verifies, unlocks
+  // rotate()'s newest-must-verify gate, and evicts a good older backup. Not
+  // history-based (both numbers are read from the store right now) and it
+  // clears the moment the rows are back, so it cannot latch.
+  // updateMirror opts out: it handles this state by PRESERVING the mirror under
+  // a safety name and rebuilding, which is strictly better than refusing. It is
+  // also the caller that gates sync, and refusing here would block the very
+  // peer merge that refills a store whose database was lost.
+  if (!o.cardlessHandledByCaller && curCards === 0 && actual >= 100) {
+    throw new Error(what + ": the store has no cards at all but " + actual +
+      " images are on disk — refusing to write a backup (the database looks lost rather than intentionally emptied)");
   }
   // The >=100 floor keeps small libraries out: at low counts the ratio is too
   // coarse to mean anything, and the blast radius is correspondingly small.
@@ -735,7 +752,7 @@ function updateMirror(db, storeDir) {
 
   // Store-sanity gate: refuses when the live store's images are incomplete
   // relative to what its own database expects. See assertStoreLooksSane.
-  assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length });
+  assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length, cardlessHandledByCaller: true });
 
   // The gate above is self-relative, so it is silent when the store reads as
   // wholly EMPTY -- zero expected, zero present, internally consistent. That is
@@ -758,9 +775,18 @@ function updateMirror(db, storeDir) {
   //
   // Self-limiting: after the rename the mirror folder is gone, so the next run
   // sees no baseline and promotes nothing.
-  const prevMirrorCards = prevMeta && prevMeta._counts
-    ? ((prevMeta._counts.imported | 0) + (prevMeta._counts.saved | 0)) : 0;
-  if (((c.cards | 0) + (c.saved | 0)) === 0 && (prevMirrorCards >= 100 || prevImageCount >= 100)) {
+  // The card baseline must be a KNOWN number, not a fallback to the image count.
+  // When the store's db is lost but its images remain, the rebuilt mirror is
+  // {cards:0, images:N}: `prevImageCount` stays >= 100 forever, so falling back
+  // to it re-promotes on EVERY merge — one permanent full-library folder plus a
+  // full image rewrite every 3 minutes, i.e. exactly the churn this feature
+  // removes, now unbounded. Fall back to the image count ONLY when _counts is
+  // absent altogether (a torn baseline), where it is the only signal available.
+  const prevKnownCards = prevMeta && prevMeta._counts
+    ? ((prevMeta._counts.imported | 0) + (prevMeta._counts.saved | 0)) : null;
+  const prevMirrorCards = prevKnownCards === null ? 0 : prevKnownCards;
+  const worthPreserving = prevKnownCards === null ? (prevImageCount >= 100) : (prevKnownCards >= 100);
+  if (((c.cards | 0) + (c.saved | 0)) === 0 && worthPreserving) {
     const promoted = path.join(backupRoot, "interests-backup-before-cleanup-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex"));
     try {
       renameSyncWithRetry(destRoot, promoted);
