@@ -72,7 +72,18 @@
         headers: { "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body)
       }).then(function (r) {
-        if (!r.ok) throw new Error(method + " " + url + " -> " + r.status);
+        if (!r.ok) {
+          // Keep the server's own explanation instead of collapsing every
+          // failure to a bare status code. Some refusals (a collapsed-store
+          // backup) are actionable by the user and carry flags the UI needs to
+          // offer the right override; discarding the body hid all of that.
+          return r.json().then(function (j) {
+            const err = new Error((j && j.error) || (method + " " + url + " -> " + r.status));
+            err.status = r.status;
+            if (j && typeof j === "object") Object.keys(j).forEach(function (k) { if (k !== "error") err[k] = j[k]; });
+            throw err;
+          }, function () { throw new Error(method + " " + url + " -> " + r.status); });
+        }
         return r.json();
       });
     };

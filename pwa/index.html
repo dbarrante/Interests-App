@@ -1396,7 +1396,33 @@ async function doBackup(manual){
     }
     try{ await storageHealthCheck(); }catch(e){}
     return res;
-  }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }
+  }catch(e){
+    // A collapse refusal is the one backup failure the user can actually
+    // resolve, and for anyone with sync off it never reaches the sync banner --
+    // so surface the reason and the override right here, always (not just on a
+    // manual run), or backups just stop with no explanation.
+    if(e && e.collapsed){ showCollapseBanner(e.message||"The library looks much smaller than expected."); }
+    else if(manual) toast("Backup failed: "+(e&&e.message||e));
+    console.warn("backup failed", e);
+  }
+}
+// Persistent, dismissable-only-by-fixing banner for a refused backup. Deliberately
+// not a toast: this state stops ALL backups until a human resolves it.
+function showCollapseBanner(msg){
+  let b = document.getElementById("collapseBanner");
+  if(!b){
+    b = document.createElement("div");
+    b.className = "banner"; b.id = "collapseBanner";
+    const main = document.querySelector("main"); if(main) main.prepend(b); else return;
+  }
+  b.innerHTML = "<span>&#9888; Backups are paused: " + esc(msg) + "</span>";
+  if(typeof Store.rebaselineStoreSafety === "function"){
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary"; btn.style.padding = "6px 14px";
+    btn.textContent = "This was intentional — accept the current size";
+    btn.onclick = function(){ rebaselineStoreSafety(); };
+    b.appendChild(btn);
+  }
 }
 // Destructive operations must not continue on an unavailable or unverified
 // safety backup. The caller owns the user-facing cleanup (for example hiding
@@ -1678,7 +1704,11 @@ async function rebaselineStoreSafety(){
   if(!confirm("Confirm that your library really is this size now.\n\nThis clears the collapse warning and lets backups resume. Only do this if you deliberately removed a large number of items — if items went missing unexpectedly, restore from a backup instead.")) return;
   try{
     const r = await Store.rebaselineStoreSafety();
-    if(r && r.ok){ toast("Baseline updated — backups will resume on the next cycle"); await renderSyncStatus(); }
+    if(r && r.ok){
+      toast("Baseline accepted (" + ((r.counts&&r.counts.cards)|0) + " cards) — backups and syncing will resume");
+      const b = document.getElementById("collapseBanner"); if(b) b.remove();
+      await renderSyncStatus();
+    }
     else toast("Could not update the baseline");
   }catch(e){ toast("Could not update the baseline: " + (e&&e.message||e)); }
 }

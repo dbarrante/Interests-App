@@ -228,6 +228,61 @@ function listen(app) {
       assert.strictEqual(getImgResp.status, 200, "GET /api/img must find the image at the new store dir");
     });
 
+    // The escape hatch, end to end. Five rounds of collapse-guard fixes each
+    // assumed an override existed; none executed it, and it shipped inert --
+    // the guards read the accepted baseline only when their DERIVED baselines
+    // were absent, which never happens once a mirror exists. So this asserts
+    // the endpoint's real effect: a refused backup SUCCEEDS afterwards.
+    await run(t("POST /api/store-safety/rebaseline un-wedges a refused backup"), async () => {
+      const store = newStore();
+      const db = openDb(store);
+      for (let i = 0; i < 200; i++) {
+        upsertCard(db, { id: "rb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:rb" + i });
+        images.putImg(store, "rb" + i, TINY_JPG);
+      }
+      // Its OWN backup dir: storeSanityBaseline reads the mirror/dated snapshots
+      // in whatever folder is configured, and earlier tests here left theirs in
+      // the shared one — which would silently supply the baseline instead.
+      const bdir2 = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvbk-rebase-"));
+      const prevCfg = config.loadConfig();
+      config.saveConfig(Object.assign({}, prevCfg, { backupDir: bdir2 }));
+      const ctx2 = { db, storeDir: store, reopen: () => openDb(store) };
+      const { srv: s2, base: b2 } = await listen(createServer(ctx2));
+      try {
+        assert.strictEqual((await (await fetch(b2 + "/api/backup", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        })).json()).ok, true, "sanity: a healthy backup succeeds");
+
+        for (let i = 0; i < 195; i++) {
+          require("../core/db.js").deleteCard(db, "rb" + i, Date.now());
+          fs.rmSync(path.join(store, "images", "rb" + i + ".jpg"), { force: true });
+        }
+
+        const refused = await fetch(b2 + "/api/backup", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        });
+        const rj = await refused.json();
+        assert.strictEqual(refused.status, 409, "a collapse refusal must be its own status, not a generic 500");
+        assert.strictEqual(rj.collapsed, true, "and must be flagged so the UI can offer the override");
+        assert.ok(/collapsed/.test(rj.error || ""), "and must carry the reason verbatim: " + rj.error);
+
+        const acc = await (await fetch(b2 + "/api/store-safety/rebaseline", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        })).json();
+        assert.strictEqual(acc.ok, true);
+        assert.strictEqual(acc.counts.cards, 5, "the endpoint must record the LIVE counts, not client-supplied ones");
+
+        const after = await (await fetch(b2 + "/api/backup", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        })).json();
+        assert.strictEqual(after.ok, true, "backups must actually resume after accepting the baseline");
+      } finally {
+        await new Promise(function (r) { s2.close(r); });
+        try { ctx2.db.close(); } catch (e) {}
+        config.saveConfig(prevCfg || {});
+      }
+    });
+
     await new Promise(function (res) { srv.close(res); });
     try { ctx.db.close(); } catch (e) {}
   } finally {

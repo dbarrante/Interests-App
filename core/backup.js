@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
-const { loadConfig, isTempPath, recordLastCounts, getLastCounts, appDataDir } = require("./config.js");
+const { loadConfig, isTempPath, recordLastCounts, getLastCounts, getAcceptedBaseline, appDataDir } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
 const { counts, openDb, allCards, allSaved, allTombstones, getKV } = require("./db.js");
 const { setStorePath } = require("./config.js");
@@ -321,11 +321,22 @@ function rotateNamedSnapshots(backupRoot, re, keep) {
   const newestFolder = path.join(backupRoot, candidates[0].name);
   const newestMeta = readMeta(newestFolder);
   if (!newestMeta || !verifyBackupFolder(newestFolder, newestMeta._counts)) return 0; // newest unverified → rotate nothing
+  // Safety snapshots are (correctly) exempt from the store-sanity gate — their
+  // whole job is to capture whatever state the store is in before a destructive
+  // op. But that means a COLLAPSED store still produces them, and a 0-image
+  // snapshot verifies (0 files matches 0 expected), so without this an emptied
+  // store's two newest snapshots would evict every good pre-collapse one. The
+  // 5-minute throttle means two destructive ops are enough. Never let a
+  // materially SMALLER snapshot delete a materially larger one.
+  const newestSize = ((newestMeta._counts && newestMeta._counts.imported) | 0)
+    + ((newestMeta._counts && newestMeta._counts.saved) | 0);
   let cleaned = 0;
   for (let i = keep; i < candidates.length && cleaned < MAX_CLEANUP_PER_CALL; i++) {
     const folder = path.join(backupRoot, candidates[i].name);
     const meta = readMeta(folder);
     if (!meta || !verifyBackupFolder(folder, meta._counts)) continue; // don't delete an unverified one
+    const thisSize = ((meta._counts && meta._counts.imported) | 0) + ((meta._counts && meta._counts.saved) | 0);
+    if (thisSize >= 100 && newestSize < thisSize * 0.1) continue;   // a collapsed newest must not evict a healthy older one
     try { fs.rmSync(folder, { recursive: true, force: true }); cleaned++; } catch (e) {}
   }
   return cleaned;
@@ -551,8 +562,31 @@ function readMeta(folder) {
 // Throws on refusal; returns silently when the store looks sane.
 function assertStoreLooksSane(o) {
   const what = o.what || "backup";
-  const prevImages = o.prevImages | 0;
+  let prevImages = o.prevImages | 0;
   const curImages = o.curImages | 0;
+  // An explicit human "yes, my library really is this size now" OVERRIDES every
+  // derived baseline — it does not merely fill in when they are absent.
+  //
+  // That ordering is the whole point. Every derived baseline (the mirror's
+  // marker, the newest dated snapshot, lastcounts.json) is written BY the
+  // backups these guards gate, so the moment a guard starts refusing, none of
+  // them can advance and the refusal latches forever — all backups AND all
+  // syncing stopped permanently for a user who did nothing but clear their
+  // imported items. The first attempt at an escape hatch was consulted only
+  // when the derived values were missing, which made it completely inert.
+  //
+  // Guards stay ARMED after an accept: they simply re-arm relative to the newly
+  // accepted, smaller size, so a genuine future collapse is still caught. And
+  // because a human can always accept again, no state is unrecoverable.
+  const accepted = getAcceptedBaseline();
+  if (accepted) {
+    const acceptedCards = (accepted.cards | 0) + (accepted.saved | 0);
+    const acceptedImages = accepted.images | 0;
+    // Only ever RELAXES: if the derived baseline is already at or below what the
+    // user accepted, keep the derived one (it is the more recent truth).
+    if (acceptedCards > 0 && acceptedCards < (o.prevCards | 0)) o = Object.assign({}, o, { prevCards: acceptedCards });
+    if (acceptedImages >= 0 && acceptedImages < prevImages) prevImages = acceptedImages;
+  }
   // A MISSING images dir is the crisp, unambiguous form of the failure (a
   // poisoned store pointer, an undownloaded Dropbox placeholder, a botched
   // move) and is refused outright. It is directly checkable rather than
@@ -576,6 +610,10 @@ function assertStoreLooksSane(o) {
   if (prevCardsForTotal <= 0) {
     const lc0 = getLastCounts();
     if (lc0) prevCardsForTotal = (lc0.cards | 0) + (lc0.saved | 0);
+    if (accepted) {
+      const ac = (accepted.cards | 0) + (accepted.saved | 0);
+      if (ac > 0 && (prevCardsForTotal <= 0 || ac < prevCardsForTotal)) prevCardsForTotal = ac;
+    }
   }
   if (prevCardsForTotal >= 100 && curCards < prevCardsForTotal * 0.1) {
     throw new Error(what + ": live card count collapsed " + prevCardsForTotal + " -> " + curCards +
@@ -599,6 +637,15 @@ function assertStoreLooksSane(o) {
   if (prevCards <= 0) {
     const lc = getLastCounts();
     if (lc) prevCards = (lc.cards | 0) + (lc.saved | 0);
+  }
+  // Accepting a baseline must not RE-ARM this arm: pinning prevCards to the
+  // accepted (current) value forces cardRatio to 1.0, which then exceeds
+  // imageRatio + 0.25 for any image drop — so the image arm would fire on a
+  // store whose cards and images fell together, the exact case this arm exists
+  // to permit. Clamp it so an accepted baseline can only ever relax the test.
+  if (accepted) {
+    const ac = (accepted.cards | 0) + (accepted.saved | 0);
+    if (ac > 0 && ac < prevCards) prevCards = ac;
   }
   const imageRatio = curImages / prevImages;
   // No baseline at all ⇒ nothing to judge against ⇒ fail closed. Recoverable by

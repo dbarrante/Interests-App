@@ -667,6 +667,15 @@ function createServer(ctx) {
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);
+      // A collapse refusal must reach the client verbatim, and be flagged. It is
+      // the ONE backup failure the user can actually resolve, and the only other
+      // place it surfaces is the sync banner — invisible to anyone with sync off
+      // or no peers, who would otherwise just watch backups stop with no reason
+      // given and no way to override.
+      const msg = (e && e.message) || "";
+      if (/count collapsed|images dir is missing/.test(msg)) {
+        return res.status(409).json({ ok: false, error: msg, collapsed: true });
+      }
       res.status(500).json({ ok: false, error: "backup failed" });
     }
   });
@@ -742,8 +751,17 @@ function createServer(ctx) {
   app.post("/api/store-safety/rebaseline", (req, res) => {
     try {
       const c = counts(ctx.db);
-      config.recordLastCounts({ cards: c.cards | 0, saved: c.saved | 0 });
-      res.json({ ok: true, counts: { cards: c.cards | 0, saved: c.saved | 0 } });
+      const rec = {
+        cards: c.cards | 0, saved: c.saved | 0,
+        images: imageCount(ctx.storeDir) | 0,
+      };
+      // The accepted-baseline record is what the guards honor unconditionally.
+      // recordLastCounts alone is NOT enough: the guards read it only when their
+      // derived baselines are absent, which made the first version of this
+      // endpoint completely inert while still toasting "backups will resume".
+      config.recordAcceptedBaseline(rec);
+      config.recordLastCounts({ cards: rec.cards, saved: rec.saved });
+      res.json({ ok: true, counts: rec });
     } catch (e) {
       console.error("rebaseline failed:", e);
       res.status(500).json({ ok: false, error: "rebaseline failed" });
