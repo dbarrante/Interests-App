@@ -37,6 +37,7 @@ function loadTitleFns(aiReplies, opts) {
     extractFn(html, "allTitleKeys"),
     extractFn(html, "titleFromSignal"),
     extractFn(html, "fallbackCollectionTitle"),
+    extractFn(html, "looksLikeVideo"),
     extractFn(html, "generateUniqueTitle"),
   ].join("\n");
   // eval in a function scope closed over `sandbox`'s properties as locals —

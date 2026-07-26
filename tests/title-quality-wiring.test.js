@@ -33,14 +33,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /imported\.forEach/);
     assert.match(m[1], /saved\.forEach/);
   });
-  t(label + ": generateUniqueTitle runs the tiered pipeline in order (desc -> OCR -> vision -> collection fallback)", () => {
+  t(label + ": generateUniqueTitle runs the tiered pipeline in order (video-OCR -> desc -> OCR -> vision -> collection fallback)", () => {
     const m = /async function generateUniqueTitle\(card, ?extraAvoid, ?allowVision ?= ?true\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "generateUniqueTitle not found");
     const body = m[1];
+    const iVideoOcr = body.indexOf("if(looksLikeVideo(card)){");
     const iDesc = body.indexOf("if(description)");
-    const iOcr = body.indexOf("ocrExtractText(card)");
+    const iOcr = body.indexOf("const ocrText =");
     const iVision = body.indexOf("resolveCardImageForAI(card)");
     const iFallback = body.indexOf("fallbackCollectionTitle(");
+    assert.ok(iVideoOcr >= 0 && iVideoOcr < iDesc, "a video's burned-in caption must be read before the description");
     assert.ok(iDesc >= 0 && iOcr > iDesc && iVision > iOcr && iFallback > iVision, "tiers must run in cost/certainty order");
   });
   t(label + ": titleFromSignal retries up to 3 times on collision, then disambiguates", () => {
