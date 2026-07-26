@@ -630,8 +630,12 @@ function createServer(ctx) {
     try {
       // Legacy import replaces the live library. It is allowed to proceed only
       // after a fresh backup has been written and independently verified.
+      // safety:true — a pre-destructive-op snapshot must capture whatever state
+      // the store is in right now. Gating it on the store-sanity check would
+      // refuse exactly the degraded store a user is most likely trying to
+      // recover FROM by re-importing, and would do so with no override.
       let safety;
-      try { safety = backup.runBackup(ctx.db, ctx.storeDir); }
+      try { safety = backup.runBackup(ctx.db, ctx.storeDir, { safety: true }); }
       catch (e) { e.code = "SAFETY_BACKUP_FAILED"; throw e; }
       if (!safety || !backup.verifyBackup(safety.name, safety.counts)) {
         return res.status(409).json({ error: "safety backup not verified" });
@@ -726,6 +730,24 @@ function createServer(ctx) {
       lastMirrorAt,
       safety
     });
+  });
+
+  // Accept the CURRENT library size as the new normal. The collapse guards
+  // (backup.assertStoreLooksSane, config.evaluateStoreSafety) compare against
+  // lastcounts.json and deliberately refuse to advance it downward on their own
+  // — otherwise a gutted store would erase the evidence it was gutted. That
+  // leaves a legitimate bulk deletion permanently refused, so there has to be an
+  // explicit human "yes, I meant to do that". Deliberately a POST with no
+  // client-supplied counts: the value written is always the live store's own.
+  app.post("/api/store-safety/rebaseline", (req, res) => {
+    try {
+      const c = counts(ctx.db);
+      config.recordLastCounts({ cards: c.cards | 0, saved: c.saved | 0 });
+      res.json({ ok: true, counts: { cards: c.cards | 0, saved: c.saved | 0 } });
+    } catch (e) {
+      console.error("rebaseline failed:", e);
+      res.status(500).json({ ok: false, error: "rebaseline failed" });
+    }
   });
 
   // ---- data location ----

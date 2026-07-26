@@ -315,6 +315,11 @@ function runSync(ctx, opts) {
         try { db.setKV(ctx.db, "ia_sync_backup_error", JSON.stringify({ at: Date.now(), error: backupError })); } catch (e2) {}
       }
       if (backedUp) {
+        // Cleared HERE — the only place we have positive evidence the gate ran
+        // and passed. Clearing it on any quiet cycle instead (no peers, empty
+        // plan) wiped the banner within one tick without ever re-testing the
+        // condition, which made the whole signal unreachable in practice.
+        try { db.setKV(ctx.db, "ia_sync_backup_error", ""); } catch (e) {}
         // Any-holder image fallback: our OWN sync folder first (the most
         // common holder), then every peer folder — see applyMerge.
         const fallbackDirs = [path.join(syncDir, opts.deviceId)].concat(peers.map(function (p) { return p.dir; }));
@@ -365,9 +370,6 @@ function runSync(ctx, opts) {
       } catch (e) {}
     }
   }
-  // A successful merge clears the sticky flag, so the banner disappears on its
-  // own once the condition that caused the refusal is gone.
-  if (!backupError && mergeClean) { try { db.setKV(ctx.db, "ia_sync_backup_error", ""); } catch (e) {} }
   return { changed: changed, conflicts: conflicts, backupError: backupError, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }
 

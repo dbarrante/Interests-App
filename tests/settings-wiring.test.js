@@ -37,9 +37,14 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
   t(label + ": manual/auto/safety-gate backups all pass the configured retain count", () => {
     const sites = [
+      // The routine backup: gated by the store-sanity check, as it should be.
       /doBackup\(manual\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
-      /verifiedSafetyBackup\(action\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
-      /Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)\.then\(res=>\{/,
+      // The two PRE-DESTRUCTIVE snapshots must additionally pass safety:true.
+      // Without it they go through the store-sanity gate, which refuses a
+      // degraded store — removing the safety net at the exact moment it is
+      // needed, since both callers proceed with the destructive op regardless.
+      /verifiedSafetyBackup\(action\)\{[\s\S]{0,400}?const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3, safety:true\}\)/,
+      /Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3, safety:true\}\)\.then\(res=>\{/,
     ];
     for (const re of sites) assert.match(src, re, "a Store.backupNow() call site isn't passing {keep: S.backupRetainCount}");
   });

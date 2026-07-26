@@ -133,8 +133,17 @@ function withBackupDir(fn) {
   const bdir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-bk-dest-"));
   const orig = config.loadConfig();
   config.saveConfig(Object.assign({}, orig, { backupDir: bdir }));
+  // lastcounts.json is a PROCESS-GLOBAL witness (%APPDATA%), so without this an
+  // earlier test's 200-card store becomes the collapse baseline for the next
+  // test's 3-card one and every subsequent backup is refused. Each withBackupDir
+  // block is a distinct store, so it must start from a clean witness too.
+  const lcPath = path.join(process.env.APPDATA, "Interests App", "lastcounts.json");
+  try { fs.rmSync(lcPath, { force: true }); } catch (e) {}
   try { return fn(bdir); }
-  finally { config.saveConfig(orig || {}); }
+  finally {
+    config.saveConfig(orig || {});
+    try { fs.rmSync(lcPath, { force: true }); } catch (e) {}
+  }
 }
 
 /* ---- incremental mirror ----
@@ -460,11 +469,13 @@ t("no interests.db tmp copy survives a failed mirror update", () => {
     backup.updateMirror(db, store);
 
     const realRename = fs.renameSync;
+    const originalSleep = backup._timing.sleepSync;
+    backup._timing.sleepSync = function () {};   // renameSyncWithRetry waits ~33s for real otherwise
     fs.renameSync = function (from, to) {
       if (String(to).endsWith("interests.db")) { const e = new Error("EPERM"); e.code = "EPERM"; throw e; }
       return realRename.apply(fs, arguments);
     };
-    try { backup.updateMirror(db, store); } catch (e) {} finally { fs.renameSync = realRename; }
+    try { backup.updateMirror(db, store); } catch (e) {} finally { fs.renameSync = realRename; backup._timing.sleepSync = originalSleep; }
 
     // Each leaked tmp is a FULL copy of the database, pid+timestamp unique so
     // they never self-overwrite, in the Dropbox-synced folder. Nothing else
@@ -475,7 +486,7 @@ t("no interests.db tmp copy survives a failed mirror update", () => {
     db.close();
   });
 });
-t("ensureBackupBeforeMerge still takes an overdue dated snapshot when the mirror is wedged", () => {
+t("ensureBackupBeforeMerge writes NO dated snapshot when the store itself is collapsed", () => {
   withBackupDir(function (bdir) {
     const store = newStore();
     const db = openDb(store);
@@ -512,13 +523,15 @@ t("a healthy store still gets its overdue dated snapshot even when the mirror fa
     // Mirror fails on a transient rename, NOT on a store-sanity problem — the
     // store itself is fine, so the durable snapshot must still be taken.
     const realRename = fs.renameSync;
+    const originalSleep = backup._timing.sleepSync;
+    backup._timing.sleepSync = function () {};   // renameSyncWithRetry waits ~33s for real otherwise
     fs.renameSync = function (from, to) {
       if (String(to).endsWith("interests.db")) { const e = new Error("EPERM"); e.code = "EPERM"; throw e; }
       return realRename.apply(fs, arguments);
     };
     try {
       assert.throws(() => backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: 0 }));
-    } finally { fs.renameSync = realRename; }
+    } finally { fs.renameSync = realRename; backup._timing.sleepSync = originalSleep; }
 
     const dated = fs.readdirSync(bdir).filter(n => /^interests-backup-\d{4}-\d{2}-\d{2}$/.test(n));
     assert.strictEqual(dated.length, 1, "losing the cheap recovery point must not also lose the durable one");
@@ -546,6 +559,76 @@ t("runBackup itself refuses a collapsed store, so POST /api/backup cannot publis
     assert.throws(() => backup.runBackup(db, store), /collapsed/,
       "a dated snapshot of a collapsed store verifies, unlocks rotation, and deletes a good backup");
     db.close();
+  });
+});
+t("a TOTAL collapse is refused — the ratios alone cannot see it", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 150; i++) {
+      upsertCard(db, { id: "tc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:tc" + i });
+      images.putImg(store, "tc" + i, TINY_JPG);
+    }
+    const good = backup.runBackup(db, store);
+    assert.strictEqual(good.counts.images, 150);
+
+    // Store emptied in place (poisoned pointer, Dropbox rewind, selective
+    // sync). BOTH ratios are 0, and `0 > 0 + 0.25` is false — so the
+    // proportional arm waves through the single most destructive case while
+    // correctly refusing milder partial ones. Left unguarded, the resulting
+    // 0-image snapshot takes today's date-stamped name, DISPLACES the good
+    // same-day backup, verifies (0 files matches 0 expected), and then unlocks
+    // rotate() to age out older good ones.
+    for (let i = 0; i < 150; i++) deleteCard(db, "tc" + i, Date.now());
+    for (let i = 0; i < 150; i++) fs.rmSync(path.join(store, "images", "tc" + i + ".jpg"), { force: true });
+
+    assert.throws(() => backup.runBackup(db, store), /card count collapsed/);
+    const meta = JSON.parse(fs.readFileSync(path.join(bdir, good.name, "meta.json"), "utf8"));
+    assert.strictEqual(meta._counts.images, 150, "the good same-day backup must be untouched");
+    assert.strictEqual(backup.verifyBackup(good.name, meta._counts), true);
+    db.close();
+  });
+});
+t("a missing images dir is refused even with no image baseline (lastcounts carries cards only)", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 150; i++) upsertCard(db, { id: "nb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i });
+    backup.runBackup(db, store);           // seeds lastcounts.json (cards only, images 0)
+    fs.rmSync(path.join(store, "images"), { recursive: true, force: true });
+
+    // storeSanityBaseline's lastcounts branch has no image witness, so keying
+    // the missing-dir arm purely off prevImages let a vanished images dir under
+    // a large live card count sail straight through.
+    assert.throws(() => backup.runBackup(db, store), /images dir is missing/);
+    db.close();
+  });
+});
+t("freezeMirrorForRestore refuses an image corrupted in place at the same byte length", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 3; i++) {
+      upsertCard(db, { id: "fc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:fc" + i });
+      images.putImg(store, "fc" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+
+    // Same length, different bytes: counts still match, so the count
+    // cross-check passes, and the frozen copy re-hashes its OWN copied bytes —
+    // self-referential, so it always verifies. Only the live marker's per-file
+    // sha256 is an independent record of what the bytes should be.
+    const img = path.join(bdir, backup.MIRROR_NAME, "images", "fc1.jpg");
+    const orig = fs.readFileSync(img);
+    const bad = Buffer.from(orig); bad[10] = bad[10] ^ 0xff;
+    assert.strictEqual(bad.length, orig.length);
+    fs.writeFileSync(img, bad);
+
+    const ctx = { db: db, storeDir: store, reopen: function () { return openDb(store); } };
+    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    assert.strictEqual(r.ok, false, "a corrupted mirror image must not be restored into the live store");
+    assert.ok(/does not match the mirror's own manifest hash/.test(r.error || ""), "and must say why: " + r.error);
+    try { ctx.db.close(); } catch (e) {}
   });
 });
 t("a pre-cleanup safety snapshot is still allowed on a collapsed store", () => {
@@ -578,12 +661,16 @@ t("a routine backup does not overwrite the collapse witness with a collapsed cou
     backup.updateMirror(db, store);
     assert.strictEqual(config.getLastCounts().cards, 200, "sanity: the witness starts healthy");
 
-    // Cards gutted, images intact — the image-based guard cannot see this, so
-    // the mirror run succeeds. It must NOT then erase the evidence:
-    // lastcounts.json is the only thing config.evaluateStoreSafety has to
-    // detect a swapped/gutted store at boot.
+    // Cards gutted. The proportional (image-ratio) arm cannot see this, so the
+    // cards arm must catch it — a total collapse leaves BOTH ratios at 0, and
+    // `0 > 0 + 0.25` is false, which is how the single most destructive case
+    // used to sail through the guard that correctly refused milder ones.
     for (let i = 0; i < 197; i++) deleteCard(db, "lw" + i, Date.now());
-    backup.updateMirror(db, store);
+    assert.throws(() => backup.updateMirror(db, store), /card count collapsed/,
+      "a gutted store must not overwrite the mirror");
+    // ...and the witness must survive it either way: lastcounts.json is the only
+    // thing config.evaluateStoreSafety has to detect a swapped/gutted store at
+    // boot, so a routine backup must never erase the evidence of the collapse.
     assert.strictEqual(config.getLastCounts().cards, 200,
       "the witness must survive a collapse so the boot-time check still fires");
     const safety = config.evaluateStoreSafety({

@@ -1403,7 +1403,10 @@ async function doBackup(manual){
 // the restore overlay); returning null is the hard stop.
 async function verifiedSafetyBackup(action){
   try{
-    const res = await Store.backupNow({keep: S.backupRetainCount||3});
+    // safety:true — same reason as snapshotBeforeDestructive: this snapshot
+    // exists to precede a destructive action, so it must be able to capture a
+    // degraded store rather than being refused by the store-sanity gate.
+    const res = await Store.backupNow({keep: S.backupRetainCount||3, safety:true});
     if(res && res.ok!==false && res.verified===true) return res;
   }catch(e){ console.warn(action+" safety backup failed", e); }
   toast(action+" stopped: a verified safety backup could not be created. No data was changed.", 9000);
@@ -1657,12 +1660,27 @@ async function renderSyncStatus(){
   if (st.backupError && st.backupError.error) {
     backupErrLine = "<div style=\"color:var(--bad,#e5534b)\">⚠ Syncing is paused: the pre-merge safety backup failed — <b>"
       + esc(st.backupError.error) + "</b> (" + esc(new Date(st.backupError.at).toLocaleString()) + ")</div>";
+    // A collapse refusal is deliberately sticky: the guards never lower their
+    // own baseline, or a gutted store would erase the evidence it was gutted.
+    // So an intentional bulk deletion needs an explicit human override, or
+    // backups and syncing stay blocked forever.
+    if (/count collapsed/.test(st.backupError.error) && typeof Store.rebaselineStoreSafety === "function") {
+      backupErrLine += "<div style=\"margin-top:6px\"><button class=\"btn btn-ghost\" onclick=\"rebaselineStoreSafety()\">This was intentional — accept the current library size</button></div>";
+    }
   }
   el.innerHTML =
     "<div>Status: <b>" + (st.enabled ? "on" : "off") + "</b></div>" +
     "<div>This device: <b>" + esc(st.deviceLabel||"") + "</b></div>" +
     "<div>Other devices: <b>" + peers + "</b></div>" +
     lastSyncLine + backupErrLine;
+}
+async function rebaselineStoreSafety(){
+  if(!confirm("Confirm that your library really is this size now.\n\nThis clears the collapse warning and lets backups resume. Only do this if you deliberately removed a large number of items — if items went missing unexpectedly, restore from a backup instead.")) return;
+  try{
+    const r = await Store.rebaselineStoreSafety();
+    if(r && r.ok){ toast("Baseline updated — backups will resume on the next cycle"); await renderSyncStatus(); }
+    else toast("Could not update the baseline");
+  }catch(e){ toast("Could not update the baseline: " + (e&&e.message||e)); }
 }
 async function chooseSyncFolder(){
   const pf = window.ia && window.ia.pickFolder;
@@ -4763,7 +4781,11 @@ let _lastDestructiveSnapshotAt = 0;
 const DESTRUCTIVE_SNAPSHOT_THROTTLE_MS = 5*60*1000;
 function snapshotBeforeDestructive(){
   if(Date.now()-_lastDestructiveSnapshotAt < DESTRUCTIVE_SNAPSHOT_THROTTLE_MS) return;   // a recent verified backup already covers this
-  Store.backupNow({keep: S.backupRetainCount||3}).then(res=>{
+  // safety:true — this IS a pre-destructive-op snapshot, so it must capture the
+  // store in whatever state it is in RIGHT NOW. Without the flag it goes through
+  // the store-sanity gate, which refuses a degraded store — removing the safety
+  // net at exactly the moment it matters, since the caller deletes regardless.
+  Store.backupNow({keep: S.backupRetainCount||3, safety:true}).then(res=>{
     if(res && res.ok!==false && res.verified===true) _lastDestructiveSnapshotAt=Date.now();
   }).catch(()=>{});
 }

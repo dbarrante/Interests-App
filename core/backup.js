@@ -558,8 +558,28 @@ function assertStoreLooksSane(o) {
   // move) and is refused outright. It is directly checkable rather than
   // inferred, and clears itself the moment the dir exists again — so unlike a
   // stale count baseline it cannot latch and wedge every future run.
-  if (!fs.existsSync(imagesDir(o.storeDir)) && prevImages > 0) {
-    throw new Error(what + ": live images dir is missing (last known " + prevImages + " images) — refusing to write a backup");
+  const curCards = o.curCards | 0;
+  // `prevImages > 0 ||curCards > 0`: the lastcounts.json baseline carries no
+  // image witness (images: 0), so keying this solely off prevImages let a
+  // missing images dir under a large live card count sail straight through.
+  if (!fs.existsSync(imagesDir(o.storeDir)) && (prevImages > 0 || curCards > 0)) {
+    throw new Error(what + ": live images dir is missing (last known " + prevImages + " images, " + curCards + " live cards) — refusing to write a backup");
+  }
+  // TOTAL collapse, checked BEFORE the proportional arm because the ratios
+  // cannot see it: when a store is emptied in place both ratios are 0, and
+  // `0 > 0 + 0.25` is false, so the proportional test waves through the single
+  // most destructive case while correctly refusing the milder partial one.
+  // This is deliberately the same predicate config.evaluateStoreSafety uses for
+  // its boot-time warning — a backup must not be more permissive than the
+  // witness write that guards it (recordLastCountsIfNotACollapse).
+  let prevCardsForTotal = o.prevCards | 0;
+  if (prevCardsForTotal <= 0) {
+    const lc0 = getLastCounts();
+    if (lc0) prevCardsForTotal = (lc0.cards | 0) + (lc0.saved | 0);
+  }
+  if (prevCardsForTotal >= 100 && curCards < prevCardsForTotal * 0.1) {
+    throw new Error(what + ": live card count collapsed " + prevCardsForTotal + " -> " + curCards +
+      " — refusing to write a backup (re-baseline in Settings if this was intentional)");
   }
   // Everything short of that — including an emptied-but-present dir — is judged
   // proportionally, with an escape hatch: a real bulk dedup/cleanup drops the
@@ -633,10 +653,17 @@ function storeSanityBaseline() {
       return { images: meta._counts.images | 0, cards: (meta._counts.imported | 0) + (meta._counts.saved | 0) };
     }
   }
+  // lastcounts.json records cards only, so on its own it leaves the image arms
+  // disarmed. Floor the image baseline on the mirror's OWN images dir — the
+  // same trick updateMirror uses (prevDiskCount) — so a marker that is missing
+  // or unparseable does not also take the image guard down with it.
+  let diskImages = 0;
+  try {
+    diskImages = fs.readdirSync(path.join(root, MIRROR_NAME, "images"))
+      .filter(function (n) { return n.endsWith(".jpg"); }).length;
+  } catch (e) {}
   const lc = getLastCounts();
-  // No image witness available — cards only; the image arm simply won't arm.
-  if (lc) return { images: 0, cards: (lc.cards | 0) + (lc.saved | 0) };
-  return { images: 0, cards: 0 };
+  return { images: diskImages, cards: lc ? ((lc.cards | 0) + (lc.saved | 0)) : 0 };
 }
 
 // The mirror's completion marker, set aside (not deleted) while an update is in
@@ -1070,6 +1097,28 @@ function freezeMirrorForRestore() {
   if (!backupCountsMatch(cnt, liveMeta._counts)) {
     throw new Error("mirror changed while freezing it for restore (expected " + JSON.stringify(liveMeta._counts) +
       ", got " + JSON.stringify(cnt) + ") — refusing to restore from an inconsistent copy");
+  }
+  // ...and the CONTENT half of the same cross-check. Counts alone cannot see an
+  // image corrupted in place at the same byte length: the copy reproduces the
+  // bad bytes faithfully, hashes them into its own manifest, and then verifies
+  // against that manifest — self-referential, so it always passes. The live
+  // marker's per-file sha256 is the only independent record of what those bytes
+  // are supposed to be. (updateMirror's rolling recheck slice also catches this,
+  // but it only runs when updateMirror runs, which on a sync-off install is
+  // never.) copyImagesAndBuildManifest already hashed every byte, so this costs
+  // a map lookup per file, not another pass over the data.
+  if (Array.isArray(liveMeta._images) && liveMeta._images.length) {
+    const liveByName = Object.create(null);
+    for (const e of liveMeta._images) { if (e && e.name) liveByName[e.name] = e; }
+    for (const m of manifest) {
+      const ref = liveByName[m.name];
+      if (!ref) {
+        throw new Error("frozen mirror copy contains an image the mirror's manifest does not list (" + m.name + ") — refusing to restore");
+      }
+      if (ref.sha256 && ref.sha256 !== m.sha256) {
+        throw new Error("mirror image " + m.name + " does not match the mirror's own manifest hash (corrupted in place?) — refusing to restore from it");
+      }
+    }
   }
 
   if (!verifyDbOnly(path.join(freezeRoot, "interests.db"), cnt)) {

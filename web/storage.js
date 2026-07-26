@@ -26,6 +26,7 @@
     restore: function () { return "/api/restore"; },
     storeLocation: function () { return "/api/store-location"; },
     storeMove: function () { return "/api/store-location/move"; },
+    storeRebaseline: function () { return "/api/store-safety/rebaseline"; },
     health: function () { return "/api/health"; },
     import: function () { return "/api/import"; },
     syncStatus: function () { return "/api/sync-status"; },
@@ -171,6 +172,9 @@
       setPairingRequired: function (required) { return jsend("POST", SE.pairingConfig(), { required: !!required }); },
       storeLocation: function () { return jget(SE.storeLocation()); },
       moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
+      // Explicit "the library really is this size now" — the only way to clear a
+      // collapse refusal, since the guards never lower the baseline on their own.
+      rebaselineStoreSafety: function () { return jsend("POST", SE.storeRebaseline(), {}); },
       health: function () { return jget(SE.health()); },
       runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); },
 
