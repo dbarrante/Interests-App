@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
-const { loadConfig, isTempPath, recordLastCounts, getLastCounts, getAcceptedBaseline, appDataDir } = require("./config.js");
+const { loadConfig, isTempPath, recordLastCounts, getLastCounts, getAcceptedBaseline, clearAcceptedBaseline, appDataDir } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
 const { counts, openDb, allCards, allSaved, allTombstones, getKV } = require("./db.js");
 const { setStorePath } = require("./config.js");
@@ -534,6 +534,11 @@ function runBackup(db, storeDir, opts) {
   // future boot can notice a collapsed/swapped store that can't vouch for
   // itself (2026-07-17 incident hardening; see config.evaluateStoreSafety).
   recordLastCountsIfNotACollapse(cnt);
+  // Consume the one-shot accept: this backup's own marker now records the
+  // accepted size, so the derived baselines carry the intent forward. Leaving
+  // the token would permanently pin both guards below their >= 100 floors, so a
+  // real collapse months later would pass unchallenged.
+  try { clearAcceptedBaseline(); } catch (e) {}
   // Rotate cleanup safety snapshots AFTER this call's own snapshot is live, so
   // the count this converges to is exactly `keep`, not keep+1. (Restore
   // snapshots are rotated from within restore() itself — a separate path that
@@ -584,8 +589,12 @@ function assertStoreLooksSane(o) {
     const acceptedImages = accepted.images | 0;
     // Only ever RELAXES: if the derived baseline is already at or below what the
     // user accepted, keep the derived one (it is the more recent truth).
+    // Both arms use the same `> 0` floor. `>= 0` on the images side meant a
+    // record with images:0 (or the key missing entirely) silently disabled the
+    // image arm while leaving the card arm armed — a one-character asymmetry in
+    // a function whose whole job is to fail closed.
     if (acceptedCards > 0 && acceptedCards < (o.prevCards | 0)) o = Object.assign({}, o, { prevCards: acceptedCards });
-    if (acceptedImages >= 0 && acceptedImages < prevImages) prevImages = acceptedImages;
+    if (acceptedImages > 0 && acceptedImages < prevImages) prevImages = acceptedImages;
   }
   // A MISSING images dir is the crisp, unambiguous form of the failure (a
   // poisoned store pointer, an undownloaded Dropbox placeholder, a botched
@@ -959,6 +968,11 @@ function updateMirror(db, storeDir) {
   // every write; the mirror must too, or the baseline goes stale for up to a
   // week under the new weekly-full-snapshot cadence.
   recordLastCountsIfNotACollapse(cnt);
+  // Consume the one-shot accept: this backup's own marker now records the
+  // accepted size, so the derived baselines carry the intent forward. Leaving
+  // the token would permanently pin both guards below their >= 100 floors, so a
+  // real collapse months later would pass unchallenged.
+  try { clearAcceptedBaseline(); } catch (e) {}
   return { name: MIRROR_NAME, counts: cnt, written: written, removed: removed, total: ids.length };
 }
 

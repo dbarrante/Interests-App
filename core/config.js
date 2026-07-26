@@ -255,6 +255,19 @@ function getAcceptedBaseline() {
     return rec && typeof rec === "object" ? rec : null;
   } catch (_) { return null; }
 }
+// The accept is a ONE-SHOT unwedge token, not a standing policy. It is consumed
+// as soon as a backup succeeds, because at that moment the derived baselines
+// (the mirror's marker, the newest dated snapshot, lastcounts.json) have all
+// been rewritten at the accepted size and carry the intent forward on their own.
+//
+// Left in place it would permanently lower the baseline: once the library grew
+// back, both guards would still judge it against the frozen accepted value,
+// and their >= 100 floors would keep them switched off — so a genuine later
+// collapse would overwrite the mirror and publish a dated snapshot of the empty
+// store with nothing objecting. (Proven, data-safety review 2026-07-26.)
+function clearAcceptedBaseline() {
+  try { fs.rmSync(acceptedBaselinePath(), { force: true }); } catch (_) {}
+}
 
 // Pure evaluation of boot-time store safety. Flags, never fixes: the caller
 // (main.js dialog / /api/health) surfaces the state and the HUMAN decides —
@@ -309,5 +322,6 @@ module.exports = {
   getLastCounts,
   recordAcceptedBaseline,
   getAcceptedBaseline,
+  clearAcceptedBaseline,
   evaluateStoreSafety,
 };

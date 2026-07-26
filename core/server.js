@@ -755,6 +755,21 @@ function createServer(ctx) {
         cards: c.cards | 0, saved: c.saved | 0,
         images: imageCount(ctx.storeDir) | 0,
       };
+      // "Cards intact, zero images" is never a legitimate steady state for this
+      // app — it is an undownloaded Dropbox placeholder, a mid-move store, or an
+      // external tool having emptied the folder. The image-arm refusal message
+      // also says "collapsed", so the UI offers this override for it too;
+      // without this check the user would be accepting precisely the broken
+      // state the guard just refused, and permanently disarming the image arm.
+      // Enforced server-side so it holds for any client.
+      if (rec.images === 0 && (rec.cards + rec.saved) >= 100) {
+        return res.status(409).json({
+          ok: false,
+          error: "Refusing to accept a baseline with " + (rec.cards + rec.saved) +
+            " items but no images — the images folder looks unavailable rather than intentionally emptied. " +
+            "Check that your store folder is fully downloaded, then try again.",
+        });
+      }
       // The accepted-baseline record is what the guards honor unconditionally.
       // recordLastCounts alone is NOT enough: the guards read it only when their
       // derived baselines are absent, which made the first version of this

@@ -276,10 +276,33 @@ function listen(app) {
           method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
         })).json();
         assert.strictEqual(after.ok, true, "backups must actually resume after accepting the baseline");
+
+        // The image-arm refusal ALSO says "collapsed", so the UI offers this
+        // same override for it — but "cards intact, zero images" is never a
+        // legitimate steady state (undownloaded Dropbox folder, mid-move). The
+        // endpoint must refuse to accept precisely the broken state the guard
+        // just refused, or the image arm is permanently disarmed.
+        for (let i = 195; i < 200; i++) {
+          upsertCard(db, { id: "zz" + i, url: "https://z/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:zz" + i });
+        }
+        for (let i = 0; i < 200; i++) {
+          upsertCard(db, { id: "q" + i, url: "https://q/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:q" + i });
+        }
+        for (const n of fs.readdirSync(path.join(store, "images"))) {
+          fs.rmSync(path.join(store, "images", n), { force: true });
+        }
+        const bad = await fetch(b2 + "/api/store-safety/rebaseline", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        });
+        assert.strictEqual(bad.status, 409, "accepting cards-without-images must be refused");
+        assert.ok(/no images/.test((await bad.json()).error || ""), "and must explain why");
       } finally {
         await new Promise(function (r) { s2.close(r); });
         try { ctx2.db.close(); } catch (e) {}
         config.saveConfig(prevCfg || {});
+        // Don't leave a 5-card accepted baseline in the sandboxed APPDATA for
+        // whatever test runs next (withBackupDir does the same in backup.test).
+        try { fs.rmSync(path.join(process.env.APPDATA, "Interests App", "accepted-baseline.json"), { force: true }); } catch (e) {}
       }
     });
 

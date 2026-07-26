@@ -697,6 +697,51 @@ t("accepting a baseline does not re-arm the image arm on a proportional drop", (
     db.close();
   });
 });
+t("an accept is consumed once a backup succeeds — it must not disarm the guards forever", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 200; i++) {
+      upsertCard(db, { id: "oc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:oc" + i });
+      images.putImg(store, "oc" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+    for (let i = 0; i < 195; i++) {
+      deleteCard(db, "oc" + i, Date.now());
+      fs.rmSync(path.join(store, "images", "oc" + i + ".jpg"), { force: true });
+    }
+    // Accept BELOW the guards' >=100 floor — the regime where a lingering
+    // accepted baseline is invisible, because pinning prevImages/prevCards to 5
+    // makes both arms skip on their floors rather than evaluate.
+    config.recordAcceptedBaseline({ cards: 5, saved: 0, images: 5 });
+    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5);
+    assert.strictEqual(config.getAcceptedBaseline(), null,
+      "the accept must be consumed once a backup has carried it into the derived baselines");
+
+    // A second backup in the same session must still pass — a fix that merely
+    // deletes the token but re-wedges on the next tick is not a fix.
+    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5,
+      "the derived baselines must carry the accepted size forward on their own");
+
+    // Library grows back...
+    for (let i = 0; i < 200; i++) {
+      upsertCard(db, { id: "og" + i, url: "https://y/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:og" + i });
+      images.putImg(store, "og" + i, TINY_JPG);
+    }
+    backup.updateMirror(db, store);
+    // ...and a REAL collapse months later must still be caught. With the token
+    // left in place both guards would still judge 205 against a frozen 5 and
+    // skip on their floors, silently wiping the mirror.
+    for (let i = 0; i < 200; i++) {
+      deleteCard(db, "og" + i, Date.now());
+      fs.rmSync(path.join(store, "images", "og" + i + ".jpg"), { force: true });
+    }
+    for (const n of fs.readdirSync(path.join(store, "images"))) fs.rmSync(path.join(store, "images", n), { force: true });
+    assert.throws(() => backup.updateMirror(db, store), /collapsed/,
+      "a genuine later collapse must still be refused");
+    db.close();
+  });
+});
 t("the guards stay armed after an accept — a NEW collapse is still refused", () => {
   withBackupDir(function () {
     const store = newStore();
