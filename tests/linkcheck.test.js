@@ -59,6 +59,24 @@ t("isPrivateAddr blocks IPv6 forms that can wrap a private IPv4", () => {
   assert.strictEqual(lc.isPrivateAddr("64:ff9b::7f00:1"), true, "NAT64 wrapping 127.0.0.1");
   assert.strictEqual(lc.isPrivateAddr("ff02::1"), true, "IPv6 multicast");
   assert.strictEqual(lc.isPrivateAddr("2606:4700:4700::1111"), false, "public IPv6 must stay allowed");
+  // "::" compression elides any all-zero hextet, including an embedded IPv4's high or low
+  // 16 bits -- these compressed forms must still decode and block, not fall through as
+  // "public" just because the regex no longer sees a full hextet to match against.
+  assert.strictEqual(lc.isPrivateAddr("2002:7f00::"), true, "6to4 wrapping 127.0.0.0 (compressed)");
+  assert.strictEqual(lc.isPrivateAddr("2002:a00::"), true, "6to4 wrapping 10.0.0.0 (compressed)");
+  assert.strictEqual(lc.isPrivateAddr("2002:c0a8::"), true, "6to4 wrapping 192.168.0.0 (compressed)");
+  assert.strictEqual(lc.isPrivateAddr("2002:6440::"), true, "6to4 wrapping 100.64.0.0 (compressed)");
+  // A 6to4/NAT64 wrapping a PUBLIC IPv4 must stay allowed -- this is what proves the code
+  // actually decodes the embedded address rather than blanket-blocking the whole prefix.
+  assert.strictEqual(lc.isPrivateAddr("2002:808:808::"), false, "6to4 wrapping public 8.8.8.8 must stay allowed");
+  assert.strictEqual(lc.isPrivateAddr("64:ff9b::808:808"), false, "NAT64 wrapping public 8.8.8.8 must stay allowed");
+  // A trailing dotted-quad is also legal IPv6 text for the embedded address (not just hex
+  // hextets) -- must decode the same way.
+  assert.strictEqual(lc.isPrivateAddr("64:ff9b::8.8.8.8"), false, "NAT64 dotted-quad wrapping public 8.8.8.8 must stay allowed");
+  assert.strictEqual(lc.isPrivateAddr("64:ff9b::192.168.1.1"), true, "NAT64 dotted-quad wrapping 192.168.1.1 must be blocked");
+  // Reachable through the real URL-parsing path (new URL() leaves this canonical form
+  // unchanged), not just the raw function.
+  assert.strictEqual(lc.isProbableHost("http://[2002:7f00::]/"), false, "isProbableHost must reject the compressed 6to4 form too");
 });
 
 console.log(passed + " passed, " + failed + " failed");
