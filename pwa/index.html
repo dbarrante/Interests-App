@@ -5392,7 +5392,7 @@ function renderHealthTitles(list){
           ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%">` : ""}
         </div>
         ${suggestion==null
-          ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel checked onchange="updateTitleSelCount()" style="width:auto"> include</label>`
+          ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel onchange="updateTitleSelCount()" style="width:auto"> include</label>`
           : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-apply checked onchange="updateTitleSelCount()" style="width:auto"> apply</label>`}
       </div>`;
     }).join("")}
@@ -5445,8 +5445,14 @@ function applyTitleSuggestions(){
     card.title=val.slice(0,250);
     applied++;
   });
+  // Bail BEFORE clearing _titleSuggestions. Clearing it unconditionally threw
+  // away an entire already-paid-for batch whenever nothing was checked — nearly
+  // unreachable while every row defaulted to checked, but one click away now
+  // that Deselect all exists and the suggest phase is opt-in. Returning early
+  // also leaves the DOM untouched, so edited text and checkboxes survive.
+  if(!applied){ toast("No titles checked — nothing applied. Your suggestions are still here; check the ones you want, then Apply.", 7000); return; }
   _titleSuggestions={};
-  if(applied){ persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s")); }
+  persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s"));
   if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
 }
 // Find duplicate groups across imported + saved. Two cards match on the same

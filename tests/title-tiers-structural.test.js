@@ -151,9 +151,33 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const start = src.indexOf("function renderHealthTitles(list){");
     const region = src.slice(start, start + 4000);
     // Every checked row is one paid AI call, so the count must never go stale.
-    assert.match(region, /data-title-sel checked onchange="updateTitleSelCount\(\)"/);
+    assert.match(region, /data-title-sel onchange="updateTitleSelCount\(\)"/);
     assert.match(region, /data-title-apply checked onchange="updateTitleSelCount\(\)"/);
     assert.match(src.slice(start, start + 6000), /updateTitleSelCount\(\);\s*\n\s*attachCardImages\(\);/, "must seed the count on initial render, not only on toggle");
+  });
+  t(label + ": the suggest phase is opt-in — rows start UNchecked so a stray click can't bill the whole backlog", () => {
+    const start = src.indexOf("function renderHealthTitles(list){");
+    assert.ok(start >= 0, "renderHealthTitles not found");
+    const region = src.slice(start, start + 4000);
+    assert.doesNotMatch(
+      region,
+      /data-title-sel checked/,
+      "data-title-sel must NOT carry `checked` — every checked row is one paid AI call, and this list runs to four figures"
+    );
+    assert.match(region, /data-title-sel onchange=/, "the suggest checkbox must still exist (just unchecked by default)");
+  });
+  t(label + ": applyTitleSuggestions never discards a paid batch when nothing is checked", () => {
+    const m = /function applyTitleSuggestions\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "applyTitleSuggestions not found");
+    const body = m[1];
+    const bail = body.search(/if\(!applied\)\{[^}]*return;/);
+    const clear = body.indexOf("_titleSuggestions={};");
+    assert.ok(bail >= 0, "must bail out when nothing was applied");
+    assert.ok(clear >= 0, "must still clear suggestions on a real apply");
+    assert.ok(
+      bail < clear,
+      "the zero-applied bail MUST come before _titleSuggestions={} — clearing first silently throws away an already-paid-for batch (reachable in one click via Deselect all)"
+    );
   });
 }
 
