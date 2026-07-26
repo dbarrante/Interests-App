@@ -117,6 +117,44 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "must reset _titleVisionModels/_titleVisionModel when a sync silently changes S.provider, guarded so unrelated syncs don't clobber an in-progress pick"
     );
   });
+  t(label + ": bulk selection helpers cover BOTH title-issue phases (data-title-sel and data-title-apply)", () => {
+    const m = /function _titleSelBoxes\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "_titleSelBoxes not found");
+    assert.match(m[1], /input\[data-title-sel\]/, "must match the suggest-phase checkboxes");
+    assert.match(m[1], /input\[data-title-apply\]/, "must match the apply-phase checkboxes");
+  });
+  t(label + ": titleSelectAll sets every box, titleSelectFirst(n) checks only the first n", () => {
+    const all = /function titleSelectAll\(on\)\{([\s\S]*?)\n/.exec(src);
+    assert.ok(all, "titleSelectAll not found");
+    assert.match(all[1], /cb\.checked\s*=\s*!!on/, "Select all / Deselect all is one function driven by its argument");
+    const first = /function titleSelectFirst\(n\)\{([\s\S]*?)\n/.exec(src);
+    assert.ok(first, "titleSelectFirst not found");
+    assert.match(first[1], /cb\.checked\s*=\s*i\s*<\s*n/, "must check exactly the first n rows and uncheck the rest");
+  });
+  t(label + ": renderHealthTitles renders Select all / Deselect all, and Select first 100 only when the list exceeds 100", () => {
+    const start = src.indexOf("function renderHealthTitles(list){");
+    assert.ok(start >= 0, "renderHealthTitles not found");
+    const region = src.slice(start, start + 4000);
+    assert.match(region, /onclick="titleSelectAll\(true\)">Select all</);
+    assert.match(region, /onclick="titleSelectAll\(false\)">Deselect all</);
+    assert.match(
+      region,
+      /flagged\.length>100\s*\?\s*`<button[^`]*onclick="titleSelectFirst\(100\)">Select first 100<\/button>`\s*:\s*""/,
+      "Select first 100 is pointless on a short list -- it must be gated on flagged.length>100"
+    );
+  });
+  t(label + ": the selected-count readout is present and refreshed on render and on every checkbox toggle", () => {
+    assert.match(src, /id="titleSelCount"/, "count element must exist for updateTitleSelCount to fill");
+    const m = /function updateTitleSelCount\(\)\{([\s\S]*?)\n\}/.exec(src);
+    assert.ok(m, "updateTitleSelCount not found");
+    assert.match(m[1], /n\+" of "\+boxes\.length\+" selected"/);
+    const start = src.indexOf("function renderHealthTitles(list){");
+    const region = src.slice(start, start + 4000);
+    // Every checked row is one paid AI call, so the count must never go stale.
+    assert.match(region, /data-title-sel checked onchange="updateTitleSelCount\(\)"/);
+    assert.match(region, /data-title-apply checked onchange="updateTitleSelCount\(\)"/);
+    assert.match(src.slice(start, start + 6000), /updateTitleSelCount\(\);\s*\n\s*attachCardImages\(\);/, "must seed the count on initial render, not only on toggle");
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

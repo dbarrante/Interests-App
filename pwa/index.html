@@ -5345,6 +5345,26 @@ function flaggedTitleCards(){
 // {scope:id -> suggested title string} for cards awaiting review after
 // "Suggest titles". Cleared on Apply, Cancel, or leaving the tab.
 let _titleSuggestions = {};
+// Bulk selection controls for the Title issues list. That list runs to four
+// figures on a real library (1,135 flagged cards here), every row starts
+// checked, and every checked row is one paid AI call — so "Suggest titles"
+// needs a cheap way to take a bite-sized batch instead of the whole backlog.
+// These mutate the live DOM and never re-render: suggestTitlesForFlagged and
+// applyTitleSuggestions both read checkbox state straight from the DOM at
+// click time, so the DOM is already the source of truth for the selection.
+// One selector covers both phases — data-title-sel (choose what to suggest)
+// and data-title-apply (choose which suggestions to keep).
+function _titleSelBoxes(){
+  return document.querySelectorAll('#healthBody .dupe-row[data-title-key] input[data-title-sel], #healthBody .dupe-row[data-title-key] input[data-title-apply]');
+}
+function updateTitleSelCount(){
+  const boxes=_titleSelBoxes();
+  let n=0; boxes.forEach(cb=>{ if(cb.checked) n++; });
+  const el=document.getElementById("titleSelCount");
+  if(el) el.textContent = n+" of "+boxes.length+" selected";
+}
+function titleSelectAll(on){ _titleSelBoxes().forEach(cb=>{ cb.checked=!!on; }); updateTitleSelCount(); }
+function titleSelectFirst(n){ _titleSelBoxes().forEach((cb,i)=>{ cb.checked = i<n; }); updateTitleSelCount(); }
 function renderHealthTitles(list){
   const flagged = flaggedTitleCards();
   if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; _titleSuggestions={}; return; }
@@ -5356,6 +5376,12 @@ function renderHealthTitles(list){
   list.innerHTML = `
     <div class="s" style="opacity:.75;padding:2px 4px 10px">${flagged.length} card${flagged.length>1?"s have":" has"} a missing, generic, or platform-only title.${hasSuggestions?" Review the suggested titles below, uncheck any you don't want, then Apply.":" Check the ones to fix, then Suggest titles."}</div>
     ${(S.provider==="openrouter"||S.provider==="gemini") ? visionPickerHTML(_titleVisionModels) : ""}
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 4px 10px">
+      <button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectAll(true)">Select all</button>
+      <button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectAll(false)">Deselect all</button>
+      ${flagged.length>100 ? `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectFirst(100)">Select first 100</button>` : ""}
+      <span class="s" id="titleSelCount" style="opacity:.75"></span>
+    </div>
     ${flagged.map(m=>{
       const it=m.card, dom=domain(it.url)||"";
       const key=m.scope+":"+it.id;
@@ -5366,8 +5392,8 @@ function renderHealthTitles(list){
           ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%">` : ""}
         </div>
         ${suggestion==null
-          ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel checked style="width:auto"> include</label>`
-          : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-apply checked style="width:auto"> apply</label>`}
+          ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel checked onchange="updateTitleSelCount()" style="width:auto"> include</label>`
+          : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-apply checked onchange="updateTitleSelCount()" style="width:auto"> apply</label>`}
       </div>`;
     }).join("")}
     <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px;gap:8px">
@@ -5375,6 +5401,7 @@ function renderHealthTitles(list){
         ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="_titleSuggestions={};renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
         : `<button class="btn btn-primary" onclick="suggestTitlesForFlagged()">Suggest titles</button>`}
     </div>`;
+  updateTitleSelCount();
   attachCardImages();
 }
 async function suggestTitlesForFlagged(){
