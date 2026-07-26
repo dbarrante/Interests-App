@@ -40,13 +40,15 @@ refresh does not help — same failed fetch.
 
 ### Fix
 
-Add `POST /api/fetch-image` to `core/server.js`. Body `{ url }`. It fetches the
-URL server-side (no CORS applies to a Node HTTP client) and returns the image
-bytes with their content type.
+Add `POST /api/fetch-card-image` to `core/server.js`. Body `{ id, scope }` — a
+card id, **not** a URL (see the SSRF section: this is the primary mitigation).
+The server looks the card up in its own database, reads that row's `img_url`,
+fetches it server-side (no CORS applies to a Node HTTP client), and returns the
+image bytes with their content type.
 
 `resolveCardImageForAI` changes only its `http(s)` branch: instead of
-`fetch(srcUrl)` it posts the URL to `/api/fetch-image` and uses the returned
-bytes. The `idb:` branch, the downscale-to-1024px step, the JPEG re-encode, and
+`fetch(srcUrl)` it posts the card's id to `/api/fetch-card-image` and uses the
+returned bytes. The `idb:` branch, the downscale-to-1024px step, the JPEG re-encode, and
 the `catch → null` contract are all unchanged.
 
 `core/capturemeta.js` already contains `_fetchImageDataUrl(url, opts)`, which
@@ -55,32 +57,88 @@ than adding a second fetcher.
 
 ### Security — SSRF
 
-An endpoint that fetches a caller-supplied URL is a server-side request forgery
-hole unless constrained. The local service is reachable from the app UI and the
-browser extension, so this must be guarded even though it only binds loopback.
+A server endpoint that fetches a URL is a server-side request forgery hole: the
+Node process can reach loopback, the LAN, and (on a cloud host) the metadata
+service, none of which the caller can reach directly. This must be guarded even
+though the service binds loopback only, because the browser extension and any
+page the UI renders are both callers.
 
-Required guards:
+#### Primary mitigation: don't accept a URL at all
 
-- **Scheme:** `https:` only. Reject `http:`, `file:`, `data:`, `blob:`, and
-  anything else.
-- **Destination:** resolve the hostname and reject loopback (`127.0.0.0/8`,
-  `::1`), private ranges (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`),
-  link-local (`169.254/16` — this covers the cloud metadata endpoint
-  `169.254.169.254`), and unspecified/reserved addresses.
-- **Redirects:** re-apply the destination check to every hop; never follow a
-  redirect to a blocked host. Cap redirect depth.
-- **Content type:** response must be `image/*`, else reject.
+**The endpoint takes a card id, not a URL.** `POST /api/fetch-card-image` with
+`{ id, scope }`; the server looks the card up in its own database and fetches
+`img_url` from the row it found. If the id is unknown, or that card has no
+remote image, it 404s without fetching anything.
+
+This is the load-bearing decision, not the IP filtering below. It means a caller
+cannot name a destination — it can only ask for a URL the library already
+contains, which arrived through the capture/import path. It converts SSRF from
+"point the server anywhere" into "cause a re-fetch of a URL already stored",
+which the app does routinely anyway.
+
+The filtering below is defense in depth, because a stored URL is not inherently
+trustworthy: imports and captures come from third-party pages.
+
+#### Destination checks
+
+- **Scheme:** `https:` only. Reject `http:`, `file:`, `data:`, `blob:`, `ftp:`,
+  and anything else.
+- **Resolve, then validate every address.** A hostname can return several A/AAAA
+  records; check **all** of them and reject if **any** is disallowed. Do not
+  validate only the first.
+- **Normalize before comparing.** IPv4-mapped IPv6 (`::ffff:127.0.0.1`) and
+  non-dotted-quad encodings (`2130706433`, `0x7f000001`, `017700000001`,
+  `127.1`) must resolve to their canonical form before the range test, or the
+  test is trivially bypassed.
+- **Blocked ranges.** IPv4: `0.0.0.0/8`, `10/8`, `100.64/10` (CGNAT),
+  `127/8`, `169.254/16` (link-local — this is the cloud metadata address
+  `169.254.169.254`), `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.168/16`,
+  `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4` (multicast), `240/4`
+  (reserved). IPv6: `::`, `::1`, `fc00::/7` (ULA), `fe80::/10` (link-local),
+  `ff00::/8` (multicast), plus `2002::/16` and `64:ff9b::/96` (6to4 / NAT64,
+  which can encapsulate a blocked IPv4).
+
+#### DNS rebinding — the gap this section originally had
+
+Resolving a hostname, validating the address, and then handing the **hostname**
+to the HTTP client is not safe: the client resolves again at connect time, and an
+attacker-controlled DNS server can answer with a public address for the first
+lookup and `127.0.0.1` for the second. The check passes and the connection still
+lands on loopback.
+
+**Required:** validate and **connect to the validated IP address**, not the
+hostname — pin the resolved address for the actual socket (a custom
+`lookup`/agent that returns only the already-validated address), preserving the
+original `Host` header and SNI so TLS still verifies against the real hostname.
+The address that was checked must be the address that is connected to.
+
+#### Redirects
+
+Follow at most **3** hops, and re-run the full destination check (resolve,
+normalize, range-test, pin) on **every** hop. A redirect target is a fresh
+untrusted URL; treat it exactly like the first one. Never follow a redirect to a
+blocked address.
+
+#### Response handling
+
+- **Content type** must be `image/*`. This is a weak signal — it is
+  attacker-controlled — so it is a filter, not a trust boundary.
 - **Size and time:** abort past **8 MB** or **15 s**. (8 MB comfortably exceeds
   any real card thumbnail — `resolveCardImageForAI` downscales to a 1024px edge
   anyway — while bounding a hostile or runaway response. 15 s matches the
   responsiveness budget of the surrounding capture code.)
-- **Response shape:** return only bytes plus content type. Never echo response
-  headers, the final URL, or error bodies back to the caller — those leak
-  information about the network the server can see.
+- **Return only bytes plus content type.** Never echo response headers, the
+  final URL after redirects, status text, or error bodies to the caller. Those
+  turn the endpoint into a network scanner: distinguishable errors and timings
+  reveal what the server can reach. Failures return one generic error.
 
-Per `.claude/skills/project-conventions/SKILL.md`, a change to `core/server.js`
-adding a new route goes through the **electron-security-reviewer** agent before
-merge.
+#### Verification
+
+These are requirements, not evidence. Nothing here is true until the code exists
+and is tested. The plan must include the SSRF cases as executable tests — the
+rebinding case especially, since it is the one that looks correct under casual
+review — and the change goes through the **electron-security-reviewer** agent per
+`.claude/skills/project-conventions/SKILL.md`.
 
 ### PWA
 
@@ -216,11 +274,22 @@ before merge.
 - Grouping: image pass ignores cards already grouped by URL/title; no transitive
   merging across the two passes; a dismissed group stays dismissed.
 - Cache invalidation: an entry whose `srcKey` no longer matches is recomputed.
-- SSRF guard predicate: rejects `http:`, `file:`, `data:`; rejects `localhost`,
-  `127.0.0.1`, `::1`, `10.x`, `192.168.x`, `172.16.x`, `169.254.169.254`;
-  rejects a redirect whose target resolves to a blocked address; rejects a
-  non-image content type; rejects an oversize body. Accepts an ordinary public
-  HTTPS image URL.
+- SSRF guard predicate: rejects `http:`, `file:`, `data:`, `ftp:`; rejects
+  `localhost`, `127.0.0.1`, `::1`, `::ffff:127.0.0.1`, `2130706433`,
+  `0x7f000001`, `127.1`, `10.x`, `192.168.x`, `172.16.x`, `100.64.x`,
+  `169.254.169.254`, `224.x`, `fe80::1`, `fc00::1`; rejects a hostname whose
+  record set contains *any* blocked address even when another is public; rejects
+  a redirect whose target resolves to a blocked address; rejects a non-image
+  content type; rejects an oversize body. Accepts an ordinary public HTTPS image
+  URL.
+- **DNS rebinding:** with a resolver stubbed to return a public address on the
+  first lookup and `127.0.0.1` on the second, the connection must go to the
+  first (validated, pinned) address or be refused — never to loopback. This is
+  the case that passes a naive implementation, so it is the one that most needs
+  to exist as a test.
+- Endpoint shape: an unknown card id 404s without performing any fetch; a card
+  with no remote image 404s; failures return one generic error that does not
+  vary with the underlying cause.
 
 **Structural tests** (regex against shipped source, existing convention): the
 `http(s)` branch of `resolveCardImageForAI` routes through the endpoint rather
