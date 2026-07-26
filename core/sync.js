@@ -283,7 +283,7 @@ function runSync(ctx, opts) {
   // snapshot once the newest has aged out. Same fail-closed contract: if it
   // throws, the merge is skipped.
   const backupFn = opts.backupFn || function () { backup.ensureBackupBeforeMerge(ctx.db, ctx.storeDir); };
-  let changed = false, conflicts = 0;
+  let changed = false, conflicts = 0, backupError = null;
   // Peer watermarks: last fully-merged publishedAt per peer (kv). Unreadable ⇒
   // absent ⇒ full read (safety bias: when in doubt, don't skip).
   const seenByDevice = {};
@@ -302,7 +302,18 @@ function runSync(ctx, opts) {
     const plan = mergeSnapshots(buildLocal(ctx), peers);
     if ((plan.upserts.length + plan.deletes.length + plan.imageCopies.length) > 0 || plan.settings) {
       let backedUp = true;
-      try { backupFn(); } catch (e) { backedUp = false; console.error("sync: safety backup failed, skipping merge this cycle:", e && e.message); }
+      try { backupFn(); }
+      catch (e) {
+        backedUp = false;
+        backupError = (e && e.message) || String(e);
+        console.error("sync: safety backup failed, skipping merge this cycle:", backupError);
+        // Recorded, not just logged. The pre-merge gate legitimately refuses
+        // (a collapsed image count, a store that went unreadable), and a
+        // refusal here silently stops ALL merging — on the 3-minute timer path
+        // there is no user in the loop to see a console line. Persisting it
+        // lets /api/sync-status surface "syncing is paused, and why".
+        try { db.setKV(ctx.db, "ia_sync_backup_error", JSON.stringify({ at: Date.now(), error: backupError })); } catch (e2) {}
+      }
       if (backedUp) {
         // Any-holder image fallback: our OWN sync folder first (the most
         // common holder), then every peer folder — see applyMerge.
@@ -354,7 +365,10 @@ function runSync(ctx, opts) {
       } catch (e) {}
     }
   }
-  return { changed: changed, conflicts: conflicts, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
+  // A successful merge clears the sticky flag, so the banner disappears on its
+  // own once the condition that caused the refusal is gone.
+  if (!backupError && mergeClean) { try { db.setKV(ctx.db, "ia_sync_backup_error", ""); } catch (e) {} }
+  return { changed: changed, conflicts: conflicts, backupError: backupError, skewSkipped: skewSkipped, peersSkipped: rp.peersSkipped, publishSkipped: publishSkipped, peers: peers.map(function (p) { return { deviceId: p.deviceId, deviceLabel: p.deviceLabel, publishedAt: p.publishedAt }; }), publishedAt: publishedAt };
 }
 
 module.exports = { defaultSyncDir, peerDirs, publishSnapshot, readSnapshot, readPeerSnapshots, buildLocal, applyMerge, runSync };

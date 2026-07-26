@@ -1612,11 +1612,19 @@ async function renderSyncStatus(){
       }
     } catch (e) {}
   }
+  // A pre-merge safety-backup refusal stops merging entirely and, on the
+  // 3-minute timer path, does so with no user in the loop — it used to be a
+  // console line only. Surface it as the loudest row here.
+  let backupErrLine = "";
+  if (st.backupError && st.backupError.error) {
+    backupErrLine = "<div style=\"color:var(--bad,#e5534b)\">⚠ Syncing is paused: the pre-merge safety backup failed — <b>"
+      + esc(st.backupError.error) + "</b> (" + esc(new Date(st.backupError.at).toLocaleString()) + ")</div>";
+  }
   el.innerHTML =
     "<div>Status: <b>" + (st.enabled ? "on" : "off") + "</b></div>" +
     "<div>This device: <b>" + esc(st.deviceLabel||"") + "</b></div>" +
     "<div>Other devices: <b>" + peers + "</b></div>" +
-    lastSyncLine;
+    lastSyncLine + backupErrLine;
 }
 async function chooseSyncFolder(){
   const pf = window.ia && window.ia.pickFolder;
@@ -1683,6 +1691,9 @@ async function syncNowClick(){
     if(r && r.ok === false){ toast("Sync failed: " + (r.reason || "unknown reason")); await renderSyncStatus(); return; }
     _authToastShown = false;
     _lastAutoSyncAt = Date.now();
+    // The cycle "succeeded" but the merge was skipped because the pre-merge
+    // safety backup refused — never report that as a clean sync.
+    if(r && r.backupError){ toast("Sync paused — safety backup failed: " + r.backupError, 9000); await renderSyncStatus(); return; }
     toast(r && r.changed ? "Synced — new items merged in" : "Synced — already up to date");
     await renderSyncStatus();
     if(r && r.changed){ await rehydrateAfterSync(); setTimeout(()=>location.reload(), 900); }

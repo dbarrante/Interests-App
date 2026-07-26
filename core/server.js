@@ -761,10 +761,17 @@ function createServer(ctx) {
     let peers = [];
     try { if (syncDir) peers = sync.readPeerSnapshots(syncDir, sc.deviceId).peers.map(function (p) { return { deviceLabel: p.deviceLabel, deviceId: p.deviceId, publishedAt: p.publishedAt }; }); } catch (e) {}
     let changedAt = 0; try { changedAt = +(dbm.getKV(ctx.db, "ia_sync_changed_at") || 0); } catch (e) {}
+    // Sticky record of a pre-merge backup refusal. The timer path has no user
+    // in the loop, so without this a merge that stops happening is invisible.
+    let backupError = null;
+    try {
+      const raw = dbm.getKV(ctx.db, "ia_sync_backup_error");
+      if (raw) backupError = JSON.parse(raw);
+    } catch (e) { backupError = null; }
     res.json({
       enabled: sc.enabled, folder: syncDir, dropboxFound: dropboxFound,
       deviceId: sc.deviceId, deviceLabel: sc.deviceLabel,
-      peers: peers, changedAt: changedAt,
+      peers: peers, changedAt: changedAt, backupError: backupError,
     });
   });
 
@@ -803,7 +810,7 @@ function createServer(ctx) {
       const r = await Promise.resolve(runner.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true }));
       if (r && r.ok === false) { console.error("sync now failed:", r.error); return res.status(500).json({ ok: false, error: "sync failed" }); }
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
-      res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, peers: r.peers });
+      res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
   });
 

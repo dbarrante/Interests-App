@@ -104,13 +104,21 @@ ok("UX-6: renderSyncStatus shows a succeeded/failed Last-sync line", /Last sync:
 // on an old failed entry until they navigated away from Settings and back.
 // Fix: call renderSyncStatus() on every exit path (success, non-auth
 // failure, AUTH_EXPIRED, and the outer catch) — 4 calls total, not 1.
+// Now 5: a cycle can also come back nominally OK but with backupError set,
+// meaning the pre-merge safety backup refused and the merge was SKIPPED. That
+// is its own exit path and must not be reported as a clean sync.
 {
   const webSyncBody = grab(src, "syncNowClick");
   const pwaSyncBody = grab(pwaSrc, "syncNowClick");
 
   for (const [label, body] of [["web", webSyncBody], ["pwa", pwaSyncBody]]) {
     const renderCount = (body.match(/renderSyncStatus\(\)/g) || []).length;
-    ok(`UX-8: ${label}/index.html syncNowClick calls renderSyncStatus() on all 4 exit paths (not just AUTH_EXPIRED)`, renderCount === 4);
+    ok(`UX-8: ${label}/index.html syncNowClick calls renderSyncStatus() on all 5 exit paths (not just AUTH_EXPIRED)`, renderCount === 5);
+
+    // Skipped-merge branch: a backup refusal stops merging entirely, so it must
+    // toast and re-render rather than fall through to the "Synced" toast.
+    ok(`UX-8: ${label} reports a skipped merge instead of claiming a clean sync`,
+      /r\.backupError\)\{ toast\("Sync paused[^"]*" \+ r\.backupError, 9000\); await renderSyncStatus\(\); return; \}/.test(body));
 
     // AUTH_EXPIRED branch: toast -> await renderSyncStatus() -> return, all in one statement group.
     ok(`UX-8: ${label} AUTH_EXPIRED branch toasts then re-renders sync status then returns`,
