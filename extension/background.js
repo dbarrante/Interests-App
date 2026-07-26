@@ -216,9 +216,37 @@ function log(msg) {
   console.log("[Interests Capture]", msg);
 }
 
+const CTX_STATUS_ID = "captureStatus";
+// Chrome reads a bare "&" in a context-menu title as an accelerator marker
+// ("&&" renders one literal ampersand). Captured page titles and URLs contain
+// them routinely, so every title built here goes through this.
+function ctxEscape(s) { return String(s).replace(/&/g, "&&"); }
+function ctxStatusTitle(st) {
+  if (!st || !st.message) return "Interests — no captures yet";
+  let when = "";
+  try { when = " · " + new Date(st.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch (e) {}
+  // Truncate BEFORE escaping: escaping first could bisect a "&&" pair and
+  // leave a dangling "&", which Chrome would read as an accelerator marker.
+  const msg = st.message.length > 70 ? (st.message.slice(0, 69) + "…") : st.message;
+  return ctxEscape("Interests — " + (st.ok ? "" : "⚠ ") + msg + when);
+}
+// Capture status is surfaced as a disabled label at the BOTTOM of the
+// right-click menu -- which Chrome shows both on a page and on the toolbar
+// icon, since they share these items. This replaces the old toolbar popup,
+// whose status line was lost on 2026-07-03 when default_popup was dropped in
+// favour of icon-click Stumble (the popup files were then deleted as dead code
+// on 2026-07-14). setStatus has been writing this the whole time; only the
+// display was missing. Chrome has no contextMenus.onShown hook, so the title
+// cannot be built lazily when the menu opens -- it is written on every change.
 async function setStatus(message, ok) {
+  const st = { message, ok: !!ok, ts: Date.now() };
   try {
-    await chrome.storage.local.set({ ia_last_status: { message, ok: !!ok, ts: Date.now() } });
+    await chrome.storage.local.set({ ia_last_status: st });
+  } catch (e) {}
+  // Fails harmlessly when the menu isn't built yet (service worker just woke);
+  // ensureContextMenu() rebuilds the label from storage on every spin-up.
+  try {
+    chrome.contextMenus.update(CTX_STATUS_ID, { title: ctxStatusTitle(st) }, () => { void chrome.runtime.lastError; });
   } catch (e) {}
 }
 
@@ -555,7 +583,12 @@ async function clipCurrentPage(tab, opts = {}) {
 // Interests" is always present.
 async function ensureContextMenu() {
   let saveEnabled = true;
-  try { const s = await chrome.storage.local.get("ia_ctx_save"); if (s.ia_ctx_save === false) saveEnabled = false; } catch (e) {}
+  let lastStatus = null;
+  try {
+    const s = await chrome.storage.local.get(["ia_ctx_save", "ia_last_status"]);
+    if (s.ia_ctx_save === false) saveEnabled = false;
+    lastStatus = s.ia_last_status || null;
+  } catch (e) {}
   try {
     chrome.contextMenus.removeAll(() => {
       void chrome.runtime.lastError;
@@ -570,6 +603,17 @@ async function ensureContextMenu() {
         id: "removeFromInterests",
         title: "Remove from Interests",
         contexts: ["action", "page", "link"],
+      }, () => { void chrome.runtime.lastError; });
+      // Created LAST so it lands at the bottom of the menu. enabled:false makes
+      // it a read-only label -- disabled items never fire onClicked.
+      chrome.contextMenus.create({
+        id: CTX_STATUS_ID,
+        title: ctxStatusTitle(lastStatus),
+        // Same contexts as removeFromInterests, which is created
+        // unconditionally -- so this label can never be the only item in the
+        // menu when the user has switched "Save to Interests" off.
+        contexts: ["action", "page", "link"],
+        enabled: false,
       }, () => { void chrome.runtime.lastError; });
     });
   } catch (e) { log("contextMenu setup failed: " + e.message); }

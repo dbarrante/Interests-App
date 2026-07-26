@@ -90,6 +90,38 @@ t("clipPage/removeCard removed (popup deleted); getStatus/clipSocialPost survive
   assert.ok(/msg\.action === "getStatus"/.test(bg), "getStatus handler kept (used elsewhere)");
   assert.ok(/msg\.action === "clipSocialPost"/.test(bg), "clipSocialPost handler kept (capture-core.js)");
 });
+// ---- capture status is visible again (regression: lost 2026-07-03) --------
+// The toolbar popup that showed capture success/failure was orphaned when
+// default_popup was dropped for icon-click Stumble, then deleted as dead code.
+// setStatus() kept writing the status the whole time; it is now rendered as a
+// disabled label at the bottom of the right-click menu.
+t("the context menu carries a capture-status label, created last so it sits at the bottom", () => {
+  assert.ok(bg.includes('const CTX_STATUS_ID = "captureStatus"'), "status item needs a stable id to update");
+  const start = bg.indexOf("async function ensureContextMenu()");
+  assert.ok(start >= 0, "ensureContextMenu not found");
+  const body = bg.slice(start, bg.indexOf("ensureContextMenu();", start));
+  assert.ok(body.includes("id: CTX_STATUS_ID"), "status item must be created in the menu builder");
+  assert.ok(body.includes("enabled: false"), "status item is a read-only label, not a clickable action");
+  assert.ok(body.indexOf("removeFromInterests") < body.indexOf("CTX_STATUS_ID"),
+    "status must be created AFTER the action items so Chrome renders it at the bottom");
+  assert.ok(body.includes("ia_last_status"), "the builder must seed the label from stored status on SW spin-up");
+});
+t("setStatus refreshes the menu label (Chrome has no contextMenus.onShown to do it lazily)", () => {
+  const start = bg.indexOf("async function setStatus(message, ok)");
+  assert.ok(start >= 0, "setStatus not found");
+  const body = bg.slice(start, start + 900);
+  assert.ok(body.includes("chrome.contextMenus.update(CTX_STATUS_ID"), "must push the new title into the menu item");
+  assert.ok(body.includes("ia_last_status"), "must still persist the status");
+});
+t("context-menu titles escape & (Chrome treats a bare & as an accelerator marker)", () => {
+  assert.ok(bg.includes("function ctxEscape(s)"), "an ampersand-escaping helper must exist");
+  assert.ok(bg.includes('"&&"'), "escaping must double the ampersand");
+  const start = bg.indexOf("function ctxStatusTitle(st)");
+  assert.ok(start >= 0, "ctxStatusTitle not found");
+  assert.ok(bg.slice(start, start + 700).includes("ctxEscape("),
+    "ctxStatusTitle must route its output through ctxEscape -- page titles and URLs contain & routinely");
+});
+
 t("captureOneTab remains as an internal SW function the pollers call", () => {
   assert.ok(/async function captureOneTab\(/.test(bg), "captureOneTab function must remain (poller primitive)");
   assert.ok(/await captureOneTab\(/.test(bg), "the pollers must still call captureOneTab");
