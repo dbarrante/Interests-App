@@ -215,60 +215,6 @@ function getLastCounts() {
   } catch (_) { return null; }
 }
 
-// An explicitly HUMAN-ACCEPTED library size: "yes, my library really is this
-// small now." Separate from lastcounts.json on purpose.
-//
-// The collapse guards derive their baseline from backup artifacts (the mirror's
-// marker, the newest dated snapshot, lastcounts.json), and they deliberately
-// never lower it on their own — a gutted store must not be able to erase the
-// evidence it was gutted. But every one of those baselines is written BY the
-// backups the guard gates, so once the guard starts refusing, none of them can
-// advance and the refusal latches forever: a user who legitimately clears their
-// imported items has all backups AND all syncing stopped permanently, with no
-// way out. (Proven, data-safety review 2026-07-26.)
-//
-// This record is the way out, so it must be honored UNCONDITIONALLY by the
-// guards rather than consulted only when the derived baselines are missing —
-// that ordering was exactly why the first attempt at an escape hatch was inert.
-// Same dedicated-sidecar reasoning as lastcounts.json above.
-function acceptedBaselinePath() {
-  return path.join(appDataDir(), "accepted-baseline.json");
-}
-function recordAcceptedBaseline(counts) {
-  fs.mkdirSync(appDataDir(), { recursive: true });
-  const target = acceptedBaselinePath();
-  const tmpFile = target + ".tmp." + process.pid + "." + Math.random().toString(36).slice(2, 8);
-  const rec = {
-    cards: (counts && counts.cards) | 0,
-    saved: (counts && counts.saved) | 0,
-    images: (counts && counts.images) | 0,
-    at: Date.now(),
-  };
-  fs.writeFileSync(tmpFile, JSON.stringify(rec), "utf8");
-  try { fs.renameSync(tmpFile, target); }
-  catch (e) { try { fs.unlinkSync(tmpFile); } catch (_) {} throw e; }
-  return rec;
-}
-function getAcceptedBaseline() {
-  try {
-    const rec = JSON.parse(fs.readFileSync(acceptedBaselinePath(), "utf8"));
-    return rec && typeof rec === "object" ? rec : null;
-  } catch (_) { return null; }
-}
-// The accept is a ONE-SHOT unwedge token, not a standing policy. It is consumed
-// as soon as a backup succeeds, because at that moment the derived baselines
-// (the mirror's marker, the newest dated snapshot, lastcounts.json) have all
-// been rewritten at the accepted size and carry the intent forward on their own.
-//
-// Left in place it would permanently lower the baseline: once the library grew
-// back, both guards would still judge it against the frozen accepted value,
-// and their >= 100 floors would keep them switched off — so a genuine later
-// collapse would overwrite the mirror and publish a dated snapshot of the empty
-// store with nothing objecting. (Proven, data-safety review 2026-07-26.)
-function clearAcceptedBaseline() {
-  try { fs.rmSync(acceptedBaselinePath(), { force: true }); } catch (_) {}
-}
-
 // Pure evaluation of boot-time store safety. Flags, never fixes: the caller
 // (main.js dialog / /api/health) surfaces the state and the HUMAN decides —
 // auto-"healing" either direction can freeze real data (the 07-16 incident's
@@ -320,8 +266,5 @@ module.exports = {
   isTempPath,
   recordLastCounts,
   getLastCounts,
-  recordAcceptedBaseline,
-  getAcceptedBaseline,
-  clearAcceptedBaseline,
   evaluateStoreSafety,
 };

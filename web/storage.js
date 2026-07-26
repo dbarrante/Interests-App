@@ -26,7 +26,6 @@
     restore: function () { return "/api/restore"; },
     storeLocation: function () { return "/api/store-location"; },
     storeMove: function () { return "/api/store-location/move"; },
-    storeRebaseline: function () { return "/api/store-safety/rebaseline"; },
     health: function () { return "/api/health"; },
     import: function () { return "/api/import"; },
     syncStatus: function () { return "/api/sync-status"; },
@@ -72,18 +71,7 @@
         headers: { "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body)
       }).then(function (r) {
-        if (!r.ok) {
-          // Keep the server's own explanation instead of collapsing every
-          // failure to a bare status code. Some refusals (a collapsed-store
-          // backup) are actionable by the user and carry flags the UI needs to
-          // offer the right override; discarding the body hid all of that.
-          return r.json().then(function (j) {
-            const err = new Error((j && j.error) || (method + " " + url + " -> " + r.status));
-            err.status = r.status;
-            if (j && typeof j === "object") Object.keys(j).forEach(function (k) { if (k !== "error") err[k] = j[k]; });
-            throw err;
-          }, function () { throw new Error(method + " " + url + " -> " + r.status); });
-        }
+        if (!r.ok) throw new Error(method + " " + url + " -> " + r.status);
         return r.json();
       });
     };
@@ -183,9 +171,6 @@
       setPairingRequired: function (required) { return jsend("POST", SE.pairingConfig(), { required: !!required }); },
       storeLocation: function () { return jget(SE.storeLocation()); },
       moveStore: function (target) { return jsend("POST", SE.storeMove(), { target: target }); },
-      // Explicit "the library really is this size now" — the only way to clear a
-      // collapse refusal, since the guards never lower the baseline on their own.
-      rebaselineStoreSafety: function () { return jsend("POST", SE.storeRebaseline(), {}); },
       health: function () { return jget(SE.health()); },
       runImport: function (srcDir) { return jsend("POST", SE.import(), { srcDir: srcDir }); },
 

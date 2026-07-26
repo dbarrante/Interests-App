@@ -667,14 +667,14 @@ function createServer(ctx) {
       res.json({ ok: true, verified, name: out.name, counts: out.counts });
     } catch (e) {
       console.error("backup failed:", e);
-      // A collapse refusal must reach the client verbatim, and be flagged. It is
-      // the ONE backup failure the user can actually resolve, and the only other
-      // place it surfaces is the sync banner — invisible to anyone with sync off
-      // or no peers, who would otherwise just watch backups stop with no reason
-      // given and no way to override.
+      // The store-sanity refusal is the one backup failure a user can act on
+      // (their images folder is incomplete — usually an undownloaded Dropbox
+      // placeholder), so it reaches the client verbatim instead of as a generic
+      // "backup failed". It clears itself once the images are back; there is
+      // nothing to override and nothing to reset.
       const msg = (e && e.message) || "";
-      if (/count collapsed|images dir is missing/.test(msg)) {
-        return res.status(409).json({ ok: false, error: msg, collapsed: true });
+      if (/images? (dir is missing|on disk)|expects \d+ images/.test(msg)) {
+        return res.status(409).json({ ok: false, error: msg });
       }
       res.status(500).json({ ok: false, error: "backup failed" });
     }
@@ -739,48 +739,6 @@ function createServer(ctx) {
       lastMirrorAt,
       safety
     });
-  });
-
-  // Accept the CURRENT library size as the new normal. The collapse guards
-  // (backup.assertStoreLooksSane, config.evaluateStoreSafety) compare against
-  // lastcounts.json and deliberately refuse to advance it downward on their own
-  // — otherwise a gutted store would erase the evidence it was gutted. That
-  // leaves a legitimate bulk deletion permanently refused, so there has to be an
-  // explicit human "yes, I meant to do that". Deliberately a POST with no
-  // client-supplied counts: the value written is always the live store's own.
-  app.post("/api/store-safety/rebaseline", (req, res) => {
-    try {
-      const c = counts(ctx.db);
-      const rec = {
-        cards: c.cards | 0, saved: c.saved | 0,
-        images: imageCount(ctx.storeDir) | 0,
-      };
-      // "Cards intact, zero images" is never a legitimate steady state for this
-      // app — it is an undownloaded Dropbox placeholder, a mid-move store, or an
-      // external tool having emptied the folder. The image-arm refusal message
-      // also says "collapsed", so the UI offers this override for it too;
-      // without this check the user would be accepting precisely the broken
-      // state the guard just refused, and permanently disarming the image arm.
-      // Enforced server-side so it holds for any client.
-      if (rec.images === 0 && (rec.cards + rec.saved) >= 100) {
-        return res.status(409).json({
-          ok: false,
-          error: "Refusing to accept a baseline with " + (rec.cards + rec.saved) +
-            " items but no images — the images folder looks unavailable rather than intentionally emptied. " +
-            "Check that your store folder is fully downloaded, then try again.",
-        });
-      }
-      // The accepted-baseline record is what the guards honor unconditionally.
-      // recordLastCounts alone is NOT enough: the guards read it only when their
-      // derived baselines are absent, which made the first version of this
-      // endpoint completely inert while still toasting "backups will resume".
-      config.recordAcceptedBaseline(rec);
-      config.recordLastCounts({ cards: rec.cards, saved: rec.saved });
-      res.json({ ok: true, counts: rec });
-    } catch (e) {
-      console.error("rebaseline failed:", e);
-      res.status(500).json({ ok: false, error: "rebaseline failed" });
-    }
   });
 
   // ---- data location ----

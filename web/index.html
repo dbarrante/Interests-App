@@ -896,10 +896,7 @@ async function persistCards(opts){
   try{ await Store.putCards(imported, (opts && opts.confirm) ? {confirm:true} : undefined); }
   catch(e){
     const msg = (e && e.message) || String(e);
-    // Match on e.status, not message text: jsend now surfaces the SERVER's own
-    // error string, so the old "-> 409" shape only appears when the response
-    // had no JSON body — i.e. almost never.
-    if((e && e.status === 409) || /-> 409/.test(msg)){
+    if(/-> 409/.test(msg)){
       toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data.", 10000);
     }else{
       toast("⚠ Saving failed — your last change may not be stored: " + msg, 8000);
@@ -1361,43 +1358,14 @@ async function doBackup(manual){
     }
     try{ await storageHealthCheck(); }catch(e){}
     return res;
-  }catch(e){
-    // A collapse refusal is the one backup failure the user can actually
-    // resolve, and for anyone with sync off it never reaches the sync banner --
-    // so surface the reason and the override right here, always (not just on a
-    // manual run), or backups just stop with no explanation.
-    if(e && e.collapsed){ showCollapseBanner(e.message||"The library looks much smaller than expected."); }
-    else if(manual) toast("Backup failed: "+(e&&e.message||e));
-    console.warn("backup failed", e);
-  }
-}
-// Persistent, dismissable-only-by-fixing banner for a refused backup. Deliberately
-// not a toast: this state stops ALL backups until a human resolves it.
-function showCollapseBanner(msg){
-  let b = document.getElementById("collapseBanner");
-  if(!b){
-    b = document.createElement("div");
-    b.className = "banner"; b.id = "collapseBanner";
-    const main = document.querySelector("main"); if(main) main.prepend(b); else return;
-  }
-  b.innerHTML = "<span>&#9888; Backups are paused: " + esc(msg) + "</span>";
-  if(typeof Store.rebaselineStoreSafety === "function"){
-    const btn = document.createElement("button");
-    btn.className = "btn btn-primary"; btn.style.padding = "6px 14px";
-    btn.textContent = "This was intentional — accept the current size";
-    btn.onclick = function(){ rebaselineStoreSafety(); };
-    b.appendChild(btn);
-  }
+  }catch(e){ if(manual) toast("Backup failed: "+(e&&e.message||e)); console.warn("backup failed", e); }
 }
 // Destructive operations must not continue on an unavailable or unverified
 // safety backup. The caller owns the user-facing cleanup (for example hiding
 // the restore overlay); returning null is the hard stop.
 async function verifiedSafetyBackup(action){
   try{
-    // safety:true — same reason as snapshotBeforeDestructive: this snapshot
-    // exists to precede a destructive action, so it must be able to capture a
-    // degraded store rather than being refused by the store-sanity gate.
-    const res = await Store.backupNow({keep: S.backupRetainCount||3, safety:true});
+    const res = await Store.backupNow({keep: S.backupRetainCount||3});
     if(res && res.ok!==false && res.verified===true) return res;
   }catch(e){ console.warn(action+" safety backup failed", e); }
   toast(action+" stopped: a verified safety backup could not be created. No data was changed.", 9000);
@@ -1651,31 +1619,12 @@ async function renderSyncStatus(){
   if (st.backupError && st.backupError.error) {
     backupErrLine = "<div style=\"color:var(--bad,#e5534b)\">⚠ Syncing is paused: the pre-merge safety backup failed — <b>"
       + esc(st.backupError.error) + "</b> (" + esc(new Date(st.backupError.at).toLocaleString()) + ")</div>";
-    // A collapse refusal is deliberately sticky: the guards never lower their
-    // own baseline, or a gutted store would erase the evidence it was gutted.
-    // So an intentional bulk deletion needs an explicit human override, or
-    // backups and syncing stay blocked forever.
-    if (/count collapsed/.test(st.backupError.error) && typeof Store.rebaselineStoreSafety === "function") {
-      backupErrLine += "<div style=\"margin-top:6px\"><button class=\"btn btn-ghost\" onclick=\"rebaselineStoreSafety()\">This was intentional — accept the current library size</button></div>";
-    }
   }
   el.innerHTML =
     "<div>Status: <b>" + (st.enabled ? "on" : "off") + "</b></div>" +
     "<div>This device: <b>" + esc(st.deviceLabel||"") + "</b></div>" +
     "<div>Other devices: <b>" + peers + "</b></div>" +
     lastSyncLine + backupErrLine;
-}
-async function rebaselineStoreSafety(){
-  if(!confirm("Confirm that your library really is this size now.\n\nThis clears the collapse warning and lets backups resume. Only do this if you deliberately removed a large number of items — if items went missing unexpectedly, restore from a backup instead.")) return;
-  try{
-    const r = await Store.rebaselineStoreSafety();
-    if(r && r.ok){
-      toast("Baseline accepted (" + ((r.counts&&r.counts.cards)|0) + " cards) — backups and syncing will resume");
-      const b = document.getElementById("collapseBanner"); if(b) b.remove();
-      await renderSyncStatus();
-    }
-    else toast("Could not update the baseline");
-  }catch(e){ toast("Could not update the baseline: " + (e&&e.message||e)); }
 }
 async function chooseSyncFolder(){
   const pf = window.ia && window.ia.pickFolder;
@@ -4740,11 +4689,7 @@ let _lastDestructiveSnapshotAt = 0;
 const DESTRUCTIVE_SNAPSHOT_THROTTLE_MS = 5*60*1000;
 function snapshotBeforeDestructive(){
   if(Date.now()-_lastDestructiveSnapshotAt < DESTRUCTIVE_SNAPSHOT_THROTTLE_MS) return;   // a recent verified backup already covers this
-  // safety:true — this IS a pre-destructive-op snapshot, so it must capture the
-  // store in whatever state it is in RIGHT NOW. Without the flag it goes through
-  // the store-sanity gate, which refuses a degraded store — removing the safety
-  // net at exactly the moment it matters, since the caller deletes regardless.
-  Store.backupNow({keep: S.backupRetainCount||3, safety:true}).then(res=>{
+  Store.backupNow({keep: S.backupRetainCount||3}).then(res=>{
     if(res && res.ok!==false && res.verified===true) _lastDestructiveSnapshotAt=Date.now();
   }).catch(()=>{});
 }
@@ -6416,17 +6361,11 @@ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ drainC
 // left unhandled that's a silent unhandledrejection. Surface a toast and swallow only recognized API-write
 // failures — everything else propagates untouched.
 window.addEventListener("unhandledrejection", (event)=>{
-  const reason = event && event.reason;
-  const msg = (reason && reason.message) || "";
-  const status = reason && reason.status;
-  // Status-first: jsend now throws the server's own error text, so the bare
-  // "PUT /api/cards -> 409" shape these patterns were written against no longer
-  // occurs for any response carrying a JSON body. Matching on text alone made
-  // every failed background write a silent unhandledrejection.
-  if(status === 409 || (/-> 409/.test(msg) && /cards|saved/.test(msg))){
+  const msg = (event && event.reason && event.reason.message) || "";
+  if(/-> 409/.test(msg) && /cards|saved/.test(msg)){
     toast("⚠ Blocked a save that would remove most of your library. Reload the app to pick up the latest data. If you meant to remove these items, use the flow's own confirm.", 10000);
     event.preventDefault();
-  }else if((typeof status === "number" && status >= 400) || (/^(PUT|PATCH|DELETE) /.test(msg) && /\/api\//.test(msg) && /-> \d\d\d/.test(msg))){
+  }else if(/^(PUT|PATCH|DELETE) /.test(msg) && /\/api\//.test(msg) && /-> \d\d\d/.test(msg)){
     toast("⚠ Saving failed — your last change may not be stored.", 8000);
     event.preventDefault();
   }

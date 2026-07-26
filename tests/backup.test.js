@@ -294,7 +294,7 @@ t("updateMirror refuses to run when the live image count collapses by more than 
     // botched store move: most images are just gone, but the db still
     // references them all.
     for (let i = 0; i < 60; i++) fs.rmSync(path.join(store, "images", "cc" + i + ".jpg"), { force: true });
-    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/);
+    assert.throws(() => backup.updateMirror(db, store), /expects 100 images but only 40 are on disk/);
     db.close();
   });
 });
@@ -312,7 +312,7 @@ t("updateMirror refuses when a large library's images dir is emptied in place bu
     // image is gone while all 100 cards remain — images vanishing out from
     // under a stable library, which must never be mirrored through.
     for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "ce" + i + ".jpg"), { force: true });
-    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/);
+    assert.throws(() => backup.updateMirror(db, store), /expects 100 images but only 0 are on disk/);
     db.close();
   });
 });
@@ -352,14 +352,14 @@ t("updateMirror still works normally on a genuinely small (<100 image) library �
   });
 });
 
-/* ---- third data-safety review (2026-07-26) ----
-   The collapse guard's card-count escape hatch read its baseline ONLY from
-   meta.json, which updateMirror deletes before mutating. With no baseline the
-   fallback made the comparison `imageRatio > imageRatio + 0.25` -- false for
-   every input -- so the guard was silently OFF for exactly the torn state it
-   most needed to cover. Reproduced end-to-end: the mirror's images were wiped,
-   updateMirror returned SUCCESS, and the result still passed verifyBackup. */
-t("the collapse guard still fires when the mirror was left torn (no meta.json)", () => {
+/* ---- the store-sanity gate is SELF-RELATIVE ----
+   It compares what the DB says should be on disk against what is on disk, both
+   from the current store. Earlier versions judged against counts recorded in
+   previous backups; since those are written BY the backups the gate guards, a
+   refusal meant no baseline could ever advance and the gate latched forever
+   (all backups AND all syncing stopped for a user who cleared imported items).
+   Six review rounds produced five data-loss regressions chasing that shape. */
+t("the gate does not depend on the mirror's own marker (nothing to go stale)", () => {
   withBackupDir(function (bdir) {
     const store = newStore();
     const db = openDb(store);
@@ -369,46 +369,54 @@ t("the collapse guard still fires when the mirror was left torn (no meta.json)",
     }
     backup.updateMirror(db, store);
 
-    // Exactly the state left by a run that threw after invalidating (WAL
-    // checkpoint / db copy / rename retry exhaustion / verification), which the
-    // pre-merge path now attempts ~480x a day rather than once.
+    // Wipe every marker the old implementation derived its baseline from, then
+    // break the store. The gate must still fire — its inputs are the live DB
+    // and the live images dir, neither of which these files affect.
     fs.rmSync(path.join(bdir, backup.MIRROR_NAME, "meta.json"), { force: true });
     fs.rmSync(path.join(bdir, backup.MIRROR_NAME, "meta.updating.json"), { force: true });
     for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "tr" + i + ".jpg"), { force: true });
 
-    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/,
-      "a torn mirror must not lose its collapse protection -- that is the moment it matters most");
+    assert.throws(() => backup.updateMirror(db, store), /expects 100 images but only 0 are on disk/);
     assert.strictEqual(
       fs.readdirSync(path.join(bdir, backup.MIRROR_NAME, "images")).filter(n => n.endsWith(".jpg")).length, 100,
       "the mirror's images must still be there");
     db.close();
   });
 });
-t("the collapse guard fails CLOSED when no card baseline exists anywhere", () => {
-  withBackupDir(function (bdir) {
+t("the gate CANNOT latch: a legitimate bulk delete clears it with no override", () => {
+  withBackupDir(function () {
     const store = newStore();
     const db = openDb(store);
-    for (let i = 0; i < 100; i++) {
-      upsertCard(db, { id: "nb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:nb" + i });
-      images.putImg(store, "nb" + i, TINY_JPG);
+    for (let i = 0; i < 200; i++) {
+      upsertCard(db, { id: "nl" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:nl" + i });
+      images.putImg(store, "nl" + i, TINY_JPG);
     }
     backup.updateMirror(db, store);
 
-    // Strip EVERY source of a card baseline: the mirror's marker, its set-aside
-    // sidecar, and the out-of-store lastcounts.json witness. The images on disk
-    // still give prevImageCount >= 100, so the guard is armed but has nothing
-    // to judge proportionality against. It must refuse rather than wave the
-    // collapse through -- the pre-fix fallback resolved to `imageRatio`, making
-    // the test `imageRatio > imageRatio + 0.25`, false for EVERY input, which
-    // silently disabled the guard completely.
-    const root = path.join(bdir, backup.MIRROR_NAME);
-    fs.rmSync(path.join(root, "meta.json"), { force: true });
-    fs.rmSync(path.join(root, "meta.updating.json"), { force: true });
-    fs.rmSync(path.join(process.env.APPDATA, "Interests App", "lastcounts.json"), { force: true });
-    for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "nb" + i + ".jpg"), { force: true });
-
-    assert.throws(() => backup.updateMirror(db, store), /image count collapsed/,
-      "with no baseline to judge against, a >50% collapse must fail closed");
+    // "Clear imported items": cards AND their images go together, so expected
+    // falls in the same operation as actual and the gate is silent by
+    // construction. This is the case that permanently wedged every previous
+    // implementation, and the reason this one needs no escape hatch.
+    for (let i = 0; i < 195; i++) {
+      deleteCard(db, "nl" + i, Date.now());
+      fs.rmSync(path.join(store, "images", "nl" + i + ".jpg"), { force: true });
+    }
+    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5);
+    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5, "and it stays clear on later runs");
+    db.close();
+  });
+});
+t("cards with http image URLs are not counted as expected local images", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    // 150 remote-thumbnail cards and no local images at all is a perfectly
+    // normal library — img_file is null for them, so nothing is expected on
+    // disk and the gate must stay silent.
+    for (let i = 0; i < 150; i++) {
+      upsertCard(db, { id: "ht" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "https://example.com/a.jpg" });
+    }
+    assert.strictEqual(backup.updateMirror(db, store).counts.images, 0);
     db.close();
   });
 });
@@ -502,7 +510,7 @@ t("ensureBackupBeforeMerge writes NO dated snapshot when the store itself is col
     for (let i = 0; i < 100; i++) fs.rmSync(path.join(store, "images", "wd" + i + ".jpg"), { force: true });
 
     assert.throws(() => backup.ensureBackupBeforeMerge(db, store, { fullSnapshotIntervalMs: 0 }),
-      /collapsed/, "the failure must still propagate — sync's fail-closed contract");
+      /only 0 are on disk/, "the failure must still propagate — sync's fail-closed contract");
     // The store is BROKEN here, so no dated snapshot may be written either. An
     // earlier version of this test asserted only that a snapshot EXISTED, which
     // passed just as happily on a 0-image one — and a 0-image dated snapshot is
@@ -559,51 +567,8 @@ t("runBackup itself refuses a collapsed store, so POST /api/backup cannot publis
     // client-driven POST /api/backup path reaches runBackup directly, never
     // through ensureBackupBeforeMerge, so guarding only the merge gate would
     // leave this hole wide open.
-    assert.throws(() => backup.runBackup(db, store), /collapsed/,
-      "a dated snapshot of a collapsed store verifies, unlocks rotation, and deletes a good backup");
-    db.close();
-  });
-});
-t("a TOTAL collapse is refused — the ratios alone cannot see it", () => {
-  withBackupDir(function (bdir) {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 150; i++) {
-      upsertCard(db, { id: "tc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:tc" + i });
-      images.putImg(store, "tc" + i, TINY_JPG);
-    }
-    const good = backup.runBackup(db, store);
-    assert.strictEqual(good.counts.images, 150);
-
-    // Store emptied in place (poisoned pointer, Dropbox rewind, selective
-    // sync). BOTH ratios are 0, and `0 > 0 + 0.25` is false — so the
-    // proportional arm waves through the single most destructive case while
-    // correctly refusing milder partial ones. Left unguarded, the resulting
-    // 0-image snapshot takes today's date-stamped name, DISPLACES the good
-    // same-day backup, verifies (0 files matches 0 expected), and then unlocks
-    // rotate() to age out older good ones.
-    for (let i = 0; i < 150; i++) deleteCard(db, "tc" + i, Date.now());
-    for (let i = 0; i < 150; i++) fs.rmSync(path.join(store, "images", "tc" + i + ".jpg"), { force: true });
-
-    assert.throws(() => backup.runBackup(db, store), /card count collapsed/);
-    const meta = JSON.parse(fs.readFileSync(path.join(bdir, good.name, "meta.json"), "utf8"));
-    assert.strictEqual(meta._counts.images, 150, "the good same-day backup must be untouched");
-    assert.strictEqual(backup.verifyBackup(good.name, meta._counts), true);
-    db.close();
-  });
-});
-t("a missing images dir is refused even with no image baseline (lastcounts carries cards only)", () => {
-  withBackupDir(function () {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 150; i++) upsertCard(db, { id: "nb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i });
-    backup.runBackup(db, store);           // seeds lastcounts.json (cards only, images 0)
-    fs.rmSync(path.join(store, "images"), { recursive: true, force: true });
-
-    // storeSanityBaseline's lastcounts branch has no image witness, so keying
-    // the missing-dir arm purely off prevImages let a vanished images dir under
-    // a large live card count sail straight through.
-    assert.throws(() => backup.runBackup(db, store), /images dir is missing/);
+    assert.throws(() => backup.runBackup(db, store), /only 0 are on disk/,
+      "a dated snapshot of an incomplete store verifies, unlocks rotation, and deletes a good backup");
     db.close();
   });
 });
@@ -641,134 +606,6 @@ t("freezeMirrorForRestore refuses an image corrupted in place at the same byte l
    absent, and updateMirror always supplies a derived one — so accepting did
    nothing while the UI toasted "backups will resume". These tests execute the
    real code path and assert the next call SUCCEEDS. */
-t("accepting the baseline actually un-wedges the mirror AND runBackup", () => {
-  withBackupDir(function () {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 200; i++) {
-      upsertCard(db, { id: "eh" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:eh" + i });
-      images.putImg(store, "eh" + i, TINY_JPG);
-    }
-    backup.updateMirror(db, store);
-    backup.runBackup(db, store);
-
-    // "Clear imported items" — a labeled button, not a hypothetical.
-    for (let i = 0; i < 195; i++) {
-      deleteCard(db, "eh" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "eh" + i + ".jpg"), { force: true });
-    }
-    assert.throws(() => backup.updateMirror(db, store), /collapsed/, "sanity: the guard fires");
-
-    config.recordAcceptedBaseline({ cards: 5, saved: 0, images: 5 });
-
-    // BOTH paths must clear. The mirror's own marker still says 200, and
-    // storeSanityBaseline also falls through to the dated snapshot's meta —
-    // an accepted baseline has to beat every derived source, not just fill in
-    // when they are missing, or the refusal latches forever.
-    const m = backup.updateMirror(db, store);
-    assert.strictEqual(m.counts.imported, 5, "the mirror must update after an accept");
-    const r = backup.runBackup(db, store);
-    assert.strictEqual(r.counts.imported, 5, "dated backups must resume after an accept");
-    db.close();
-  });
-});
-t("accepting a baseline does not re-arm the image arm on a proportional drop", () => {
-  withBackupDir(function () {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 200; i++) {
-      upsertCard(db, { id: "ra" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:ra" + i });
-      images.putImg(store, "ra" + i, TINY_JPG);
-    }
-    backup.updateMirror(db, store);
-    for (let i = 0; i < 190; i++) {
-      deleteCard(db, "ra" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "ra" + i + ".jpg"), { force: true });
-    }
-    config.recordAcceptedBaseline({ cards: 10, saved: 0, images: 10 });
-
-    // Pinning prevCards to the accepted (current) value would force
-    // cardRatio to 1.0, which exceeds imageRatio + 0.25 for any image drop --
-    // so the IMAGE arm would then fire on a store whose cards and images fell
-    // together, the exact case the proportional arm exists to permit. The
-    // accepted baseline must only ever RELAX the test.
-    const m = backup.updateMirror(db, store);
-    assert.strictEqual(m.counts.images, 10);
-    db.close();
-  });
-});
-t("an accept is consumed once a backup succeeds — it must not disarm the guards forever", () => {
-  withBackupDir(function () {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 200; i++) {
-      upsertCard(db, { id: "oc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:oc" + i });
-      images.putImg(store, "oc" + i, TINY_JPG);
-    }
-    backup.updateMirror(db, store);
-    for (let i = 0; i < 195; i++) {
-      deleteCard(db, "oc" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "oc" + i + ".jpg"), { force: true });
-    }
-    // Accept BELOW the guards' >=100 floor — the regime where a lingering
-    // accepted baseline is invisible, because pinning prevImages/prevCards to 5
-    // makes both arms skip on their floors rather than evaluate.
-    config.recordAcceptedBaseline({ cards: 5, saved: 0, images: 5 });
-    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5);
-    assert.strictEqual(config.getAcceptedBaseline(), null,
-      "the accept must be consumed once a backup has carried it into the derived baselines");
-
-    // A second backup in the same session must still pass — a fix that merely
-    // deletes the token but re-wedges on the next tick is not a fix.
-    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 5,
-      "the derived baselines must carry the accepted size forward on their own");
-
-    // Library grows back...
-    for (let i = 0; i < 200; i++) {
-      upsertCard(db, { id: "og" + i, url: "https://y/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:og" + i });
-      images.putImg(store, "og" + i, TINY_JPG);
-    }
-    backup.updateMirror(db, store);
-    // ...and a REAL collapse months later must still be caught. With the token
-    // left in place both guards would still judge 205 against a frozen 5 and
-    // skip on their floors, silently wiping the mirror.
-    for (let i = 0; i < 200; i++) {
-      deleteCard(db, "og" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "og" + i + ".jpg"), { force: true });
-    }
-    for (const n of fs.readdirSync(path.join(store, "images"))) fs.rmSync(path.join(store, "images", n), { force: true });
-    assert.throws(() => backup.updateMirror(db, store), /collapsed/,
-      "a genuine later collapse must still be refused");
-    db.close();
-  });
-});
-t("the guards stay armed after an accept — a NEW collapse is still refused", () => {
-  withBackupDir(function () {
-    const store = newStore();
-    const db = openDb(store);
-    for (let i = 0; i < 400; i++) {
-      upsertCard(db, { id: "na" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:na" + i });
-      images.putImg(store, "na" + i, TINY_JPG);
-    }
-    backup.updateMirror(db, store);
-    for (let i = 0; i < 200; i++) {
-      deleteCard(db, "na" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "na" + i + ".jpg"), { force: true });
-    }
-    config.recordAcceptedBaseline({ cards: 200, saved: 0, images: 200 });
-    assert.strictEqual(backup.updateMirror(db, store).counts.imported, 200, "the accepted drop goes through");
-
-    // Accepting must not disarm the guards permanently — it re-baselines them
-    // to the new, smaller size so a genuine future collapse is still caught.
-    for (let i = 200; i < 400; i++) {
-      deleteCard(db, "na" + i, Date.now());
-      fs.rmSync(path.join(store, "images", "na" + i + ".jpg"), { force: true });
-    }
-    assert.throws(() => backup.updateMirror(db, store), /collapsed/,
-      "a NEW collapse below the accepted baseline must still be refused");
-    db.close();
-  });
-});
 t("a collapsed store's safety snapshots do not evict good pre-collapse ones", () => {
   withBackupDir(function (bdir) {
     const store = newStore();
@@ -817,7 +654,7 @@ t("a pre-cleanup safety snapshot is still allowed on a collapsed store", () => {
     db.close();
   });
 });
-t("a routine backup does not overwrite the collapse witness with a collapsed count", () => {
+t("a routine backup does not overwrite the boot-time collapse witness", () => {
   withBackupDir(function () {
     const store = newStore();
     const db = openDb(store);
@@ -828,16 +665,17 @@ t("a routine backup does not overwrite the collapse witness with a collapsed cou
     backup.updateMirror(db, store);
     assert.strictEqual(config.getLastCounts().cards, 200, "sanity: the witness starts healthy");
 
-    // Cards gutted. The proportional (image-ratio) arm cannot see this, so the
-    // cards arm must catch it — a total collapse leaves BOTH ratios at 0, and
-    // `0 > 0 + 0.25` is false, which is how the single most destructive case
-    // used to sail through the guard that correctly refused milder ones.
-    for (let i = 0; i < 197; i++) deleteCard(db, "lw" + i, Date.now());
-    assert.throws(() => backup.updateMirror(db, store), /card count collapsed/,
-      "a gutted store must not overwrite the mirror");
-    // ...and the witness must survive it either way: lastcounts.json is the only
-    // thing config.evaluateStoreSafety has to detect a swapped/gutted store at
-    // boot, so a routine backup must never erase the evidence of the collapse.
+    // A gutted store. The store-sanity gate is deliberately SILENT here -- cards
+    // and their images fall together, which is indistinguishable from the user
+    // clearing their library, and refusing it is what latched every previous
+    // implementation. This case is covered instead by config.evaluateStoreSafety's
+    // boot-time prompt, which puts a human in the loop and cannot block a backup.
+    // For that prompt to fire, the witness must survive the collapse.
+    for (let i = 0; i < 197; i++) {
+      deleteCard(db, "lw" + i, Date.now());
+      fs.rmSync(path.join(store, "images", "lw" + i + ".jpg"), { force: true });
+    }
+    backup.updateMirror(db, store);   // must NOT throw
     assert.strictEqual(config.getLastCounts().cards, 200,
       "the witness must survive a collapse so the boot-time check still fires");
     const safety = config.evaluateStoreSafety({

@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
-const { loadConfig, isTempPath, recordLastCounts, getLastCounts, getAcceptedBaseline, clearAcceptedBaseline, appDataDir } = require("./config.js");
+const { loadConfig, isTempPath, recordLastCounts, getLastCounts, appDataDir } = require("./config.js");
 const { listImageIds, imagesDir, imageCount } = require("./images.js");
 const { counts, openDb, allCards, allSaved, allTombstones, getKV } = require("./db.js");
 const { setStorePath } = require("./config.js");
@@ -428,20 +428,15 @@ function runBackup(db, storeDir, opts) {
   opts = opts || {};
   const c = counts(db);
   const cnt = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(storeDir) | 0 };
-  // Refuse to capture a visibly-broken store. A dated snapshot of a collapsed
-  // store VERIFIES (0 images matches 0 expected), becomes the newest dated
-  // backup, and thereby unlocks rotate()'s "newest must verify" gate — deleting
-  // a genuinely good older backup — while also making newestDatedSnapshotTime()
-  // report today, suppressing the next real snapshot for a week. Skippable for
-  // the pre-cleanup safety snapshot, whose entire job is to preserve whatever
-  // state the store is in right now, sane or not, before a destructive op.
-  if (!opts.safety && opts.skipSanityCheck !== true) {
-    const base = storeSanityBaseline();
-    assertStoreLooksSane({
-      storeDir: storeDir, what: "backup",
-      curImages: cnt.images, curCards: cnt.imported + cnt.saved,
-      prevImages: base.images, prevCards: base.cards,
-    });
+  // Refuse to capture a visibly-incomplete store. A 0-image snapshot VERIFIES
+  // (0 files matches 0 expected), becomes the newest dated backup, and thereby
+  // unlocks rotate()'s "newest must verify" gate — deleting a genuinely good
+  // older backup — while also making newestDatedSnapshotTime() report today,
+  // suppressing the next real snapshot for a week. Skipped for the pre-cleanup
+  // safety snapshot, whose entire job is to preserve whatever state the store is
+  // in right now, sane or not, before a destructive op.
+  if (!opts.safety) {
+    assertStoreLooksSane({ db: db, storeDir: storeDir, what: "backup", curImages: cnt.images });
   }
   const name = opts.safety
     ? ("interests-backup-before-cleanup-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex"))
@@ -534,11 +529,6 @@ function runBackup(db, storeDir, opts) {
   // future boot can notice a collapsed/swapped store that can't vouch for
   // itself (2026-07-17 incident hardening; see config.evaluateStoreSafety).
   recordLastCountsIfNotACollapse(cnt);
-  // Consume the one-shot accept: this backup's own marker now records the
-  // accepted size, so the derived baselines carry the intent forward. Leaving
-  // the token would permanently pin both guards below their >= 100 floors, so a
-  // real collapse months later would pass unchallenged.
-  try { clearAcceptedBaseline(); } catch (e) {}
   // Rotate cleanup safety snapshots AFTER this call's own snapshot is live, so
   // the count this converges to is exactly `keep`, not keep+1. (Restore
   // snapshots are rotated from within restore() itself — a separate path that
@@ -552,118 +542,62 @@ function readMeta(folder) {
   catch (e) { return null; }
 }
 
-// Shared store-sanity gate for ANY path that copies the live store into a
-// backup. It lives here, rather than inside one caller, because the failure it
-// catches is a property of the STORE, not of a particular backup format: a
-// store whose images vanished out from under a stable card count is broken, and
-// capturing it is harmful whichever kind of backup does the capturing.
+// Store-sanity gate for any path that copies the live store into a backup.
 //
-// A dated snapshot of a collapsed store is in some ways WORSE than a bad mirror:
-// it verifies (0 images matches 0 expected), it becomes the newest dated backup,
-// which unlocks rotate()'s "newest must verify" gate and deletes a genuinely
-// good older backup, and it makes newestDatedSnapshotTime() report today, so the
-// next real snapshot is suppressed for a week even after the store heals.
+// SELF-RELATIVE by design: it compares what the DATABASE says should be on disk
+// against what IS on disk, both read from the store as it exists right now. It
+// keeps no historical baseline.
+//
+// That is the whole point. Earlier versions judged the store against the counts
+// recorded in previous backups (the mirror's marker, the newest dated snapshot,
+// lastcounts.json). Every one of those is written BY the backups this gate
+// guards, so the moment it started refusing, none of them could advance and the
+// refusal latched forever -- a user who clicked "Clear imported items" had all
+// backups AND all syncing stopped permanently. Six review rounds produced five
+// distinct data-loss regressions chasing that shape, including two attempts at
+// an escape hatch that were themselves defective. A check with no history to go
+// stale cannot latch, so it needs no escape hatch at all.
+//
+// What it catches: images vanishing out from under a library that still expects
+// them -- a poisoned store pointer, an undownloaded Dropbox placeholder, a
+// half-finished move. The mirror deletes destination images to match the source,
+// so mirroring that state through would destroy the freshest recovery point.
+//
+// What it deliberately does NOT catch: a store legitimately emptied by the user,
+// and a wholesale store swap. Both drop expected and actual together, so this
+// gate is silent by construction. They are covered, with a human in the loop, by
+// config.evaluateStoreSafety's boot check plus recordLastCountsIfNotACollapse
+// below -- neither of which can block a backup, so neither can wedge anything.
 //
 // Throws on refusal; returns silently when the store looks sane.
 function assertStoreLooksSane(o) {
   const what = o.what || "backup";
-  let prevImages = o.prevImages | 0;
-  const curImages = o.curImages | 0;
-  // An explicit human "yes, my library really is this size now" OVERRIDES every
-  // derived baseline — it does not merely fill in when they are absent.
-  //
-  // That ordering is the whole point. Every derived baseline (the mirror's
-  // marker, the newest dated snapshot, lastcounts.json) is written BY the
-  // backups these guards gate, so the moment a guard starts refusing, none of
-  // them can advance and the refusal latches forever — all backups AND all
-  // syncing stopped permanently for a user who did nothing but clear their
-  // imported items. The first attempt at an escape hatch was consulted only
-  // when the derived values were missing, which made it completely inert.
-  //
-  // Guards stay ARMED after an accept: they simply re-arm relative to the newly
-  // accepted, smaller size, so a genuine future collapse is still caught. And
-  // because a human can always accept again, no state is unrecoverable.
-  const accepted = getAcceptedBaseline();
-  if (accepted) {
-    const acceptedCards = (accepted.cards | 0) + (accepted.saved | 0);
-    const acceptedImages = accepted.images | 0;
-    // Only ever RELAXES: if the derived baseline is already at or below what the
-    // user accepted, keep the derived one (it is the more recent truth).
-    // Both arms use the same `> 0` floor. `>= 0` on the images side meant a
-    // record with images:0 (or the key missing entirely) silently disabled the
-    // image arm while leaving the card arm armed — a one-character asymmetry in
-    // a function whose whole job is to fail closed.
-    if (acceptedCards > 0 && acceptedCards < (o.prevCards | 0)) o = Object.assign({}, o, { prevCards: acceptedCards });
-    if (acceptedImages > 0 && acceptedImages < prevImages) prevImages = acceptedImages;
+  const expected = expectedLocalImageCount(o.db);
+  const actual = o.curImages | 0;
+  // A missing images dir is the same failure in its crispest form. Checked
+  // separately because listImageIds() reports [] for it, which is
+  // indistinguishable from an empty dir by count alone.
+  if (!fs.existsSync(imagesDir(o.storeDir)) && expected > 0) {
+    throw new Error(what + ": live images dir is missing but the library expects " + expected +
+      " images — refusing to write a backup");
   }
-  // A MISSING images dir is the crisp, unambiguous form of the failure (a
-  // poisoned store pointer, an undownloaded Dropbox placeholder, a botched
-  // move) and is refused outright. It is directly checkable rather than
-  // inferred, and clears itself the moment the dir exists again — so unlike a
-  // stale count baseline it cannot latch and wedge every future run.
-  const curCards = o.curCards | 0;
-  // `prevImages > 0 ||curCards > 0`: the lastcounts.json baseline carries no
-  // image witness (images: 0), so keying this solely off prevImages let a
-  // missing images dir under a large live card count sail straight through.
-  if (!fs.existsSync(imagesDir(o.storeDir)) && (prevImages > 0 || curCards > 0)) {
-    throw new Error(what + ": live images dir is missing (last known " + prevImages + " images, " + curCards + " live cards) — refusing to write a backup");
-  }
-  // TOTAL collapse, checked BEFORE the proportional arm because the ratios
-  // cannot see it: when a store is emptied in place both ratios are 0, and
-  // `0 > 0 + 0.25` is false, so the proportional test waves through the single
-  // most destructive case while correctly refusing the milder partial one.
-  // This is deliberately the same predicate config.evaluateStoreSafety uses for
-  // its boot-time warning — a backup must not be more permissive than the
-  // witness write that guards it (recordLastCountsIfNotACollapse).
-  let prevCardsForTotal = o.prevCards | 0;
-  if (prevCardsForTotal <= 0) {
-    const lc0 = getLastCounts();
-    if (lc0) prevCardsForTotal = (lc0.cards | 0) + (lc0.saved | 0);
-    if (accepted) {
-      const ac = (accepted.cards | 0) + (accepted.saved | 0);
-      if (ac > 0 && (prevCardsForTotal <= 0 || ac < prevCardsForTotal)) prevCardsForTotal = ac;
-    }
-  }
-  if (prevCardsForTotal >= 100 && curCards < prevCardsForTotal * 0.1) {
-    throw new Error(what + ": live card count collapsed " + prevCardsForTotal + " -> " + curCards +
-      " — refusing to write a backup (re-baseline in Settings if this was intentional)");
-  }
-  // Everything short of that — including an emptied-but-present dir — is judged
-  // proportionally, with an escape hatch: a real bulk dedup/cleanup drops the
-  // card count roughly in step with the image count, in the same operation.
-  // Images vanishing while cards stay put is the dangerous case. Without the
-  // escape hatch a single legitimate large cleanup would wedge this permanently,
-  // since the baseline can never advance past a state the guard keeps refusing.
-  //
-  // The >=100 floor keeps small libraries out entirely: at low counts the ratios
-  // are too coarse to mean anything (dropping the only image of a 1-image
-  // library is a 100% "collapse") and the blast radius is correspondingly small.
-  if (prevImages < 100 || curImages >= prevImages * 0.5) return;
-  // The card baseline must NEVER fall back to something derived from
-  // imageRatio: that makes the test below `x > x + 0.25`, false for every
-  // input, silently disabling this guard altogether (real defect, 2026-07-26).
-  let prevCards = o.prevCards | 0;
-  if (prevCards <= 0) {
-    const lc = getLastCounts();
-    if (lc) prevCards = (lc.cards | 0) + (lc.saved | 0);
-  }
-  // Accepting a baseline must not RE-ARM this arm: pinning prevCards to the
-  // accepted (current) value forces cardRatio to 1.0, which then exceeds
-  // imageRatio + 0.25 for any image drop — so the image arm would fire on a
-  // store whose cards and images fell together, the exact case this arm exists
-  // to permit. Clamp it so an accepted baseline can only ever relax the test.
-  if (accepted) {
-    const ac = (accepted.cards | 0) + (accepted.saved | 0);
-    if (ac > 0 && ac < prevCards) prevCards = ac;
-  }
-  const imageRatio = curImages / prevImages;
-  // No baseline at all ⇒ nothing to judge against ⇒ fail closed. Recoverable by
-  // hand; a silently-captured collapse is not.
-  const cardRatio = prevCards > 0 ? ((o.curCards | 0) / prevCards) : 1;
-  if (cardRatio > imageRatio + 0.25) {
-    throw new Error(what + ": live image count collapsed " + prevImages + " -> " + curImages +
-      " without a matching drop in card count (" + prevCards + " -> " + (o.curCards | 0) + ") — refusing to write a backup");
-  }
+  // The >=100 floor keeps small libraries out: at low counts the ratio is too
+  // coarse to mean anything, and the blast radius is correspondingly small.
+  if (expected < 100 || actual >= expected * 0.5) return;
+  throw new Error(what + ": the library expects " + expected + " images but only " + actual +
+    " are on disk — refusing to write a backup (the store looks incomplete rather than intentionally emptied)");
+}
+
+// How many cards/saved items carry a LOCAL image file. img_file is non-null
+// exactly when the item has one (core/db.js sets it from an "idb:" pointer), so
+// this is the store's own statement of what images/ should contain -- http-hosted
+// thumbnails correctly don't count.
+function expectedLocalImageCount(db) {
+  if (!db) return 0;
+  let n = 0;
+  try { n += db.prepare("SELECT COUNT(*) n FROM cards WHERE img_file IS NOT NULL").get().n | 0; } catch (e) {}
+  try { n += db.prepare("SELECT COUNT(*) n FROM saved WHERE img_file IS NOT NULL").get().n | 0; } catch (e) {}
+  return n;
 }
 
 // Refresh the out-of-store lastcounts.json witness, but NEVER let a routine
@@ -688,38 +622,6 @@ function recordLastCountsIfNotACollapse(cnt) {
     }
     recordLastCounts({ cards: nowCards, saved: cnt.saved | 0 });
   } catch (e) {}
-}
-
-// Best available "what did this store look like last time" witness, freshest
-// first: the rolling mirror's marker, then the newest dated snapshot, then the
-// out-of-store lastcounts.json. Used by runBackup, which — unlike updateMirror —
-// has no previous copy of its own to compare against on a given day.
-function storeSanityBaseline() {
-  const root = dropboxBackupDir();
-  const m = readMirrorBaseline(path.join(root, MIRROR_NAME));
-  if (m && m._counts) {
-    return { images: m._counts.images | 0, cards: (m._counts.imported | 0) + (m._counts.saved | 0) };
-  }
-  let names = [];
-  try { names = fs.readdirSync(root); } catch (e) { names = []; }
-  const dated = names.filter(function (n) { return DATED_BACKUP_NAME.test(n); }).sort();
-  for (let i = dated.length - 1; i >= 0; i--) {
-    const meta = readMeta(path.join(root, dated[i]));
-    if (meta && meta._counts) {
-      return { images: meta._counts.images | 0, cards: (meta._counts.imported | 0) + (meta._counts.saved | 0) };
-    }
-  }
-  // lastcounts.json records cards only, so on its own it leaves the image arms
-  // disarmed. Floor the image baseline on the mirror's OWN images dir — the
-  // same trick updateMirror uses (prevDiskCount) — so a marker that is missing
-  // or unparseable does not also take the image guard down with it.
-  let diskImages = 0;
-  try {
-    diskImages = fs.readdirSync(path.join(root, MIRROR_NAME, "images"))
-      .filter(function (n) { return n.endsWith(".jpg"); }).length;
-  } catch (e) {}
-  const lc = getLastCounts();
-  return { images: diskImages, cards: lc ? ((lc.cards | 0) + (lc.saved | 0)) : 0 };
 }
 
 // The mirror's completion marker, set aside (not deleted) while an update is in
@@ -839,17 +741,7 @@ function updateMirror(db, storeDir) {
   // the only one refused unconditionally. It is directly checkable rather than
   // inferred from a ratio, and — critically — it clears itself the moment the
   // dir exists again, so refusing here cannot wedge the mirror the way a stale
-  // count baseline can (the baseline can never advance while the guard throws,
-  // and since ensureBackupBeforeMerge gates every merge, a permanent throw
-  // here silently stops ALL syncing). An EMPTY-but-present dir is a real,
-  // observed state, not a broken pointer, so it falls through to the
-  // proportional guard below instead.
-  assertStoreLooksSane({
-    storeDir: storeDir, what: "mirror",
-    curImages: ids.length, curCards: (c.cards | 0) + (c.saved | 0),
-    prevImages: prevImageCount,
-    prevCards: prevMeta && prevMeta._counts ? ((prevMeta._counts.imported | 0) + (prevMeta._counts.saved | 0)) : 0,
-  });
+  assertStoreLooksSane({ db: db, storeDir: storeDir, what: "mirror", curImages: ids.length });
 
   fs.mkdirSync(destImages, { recursive: true });
   // Sweep tmp db copies left behind by earlier failed runs before adding
@@ -968,11 +860,6 @@ function updateMirror(db, storeDir) {
   // every write; the mirror must too, or the baseline goes stale for up to a
   // week under the new weekly-full-snapshot cadence.
   recordLastCountsIfNotACollapse(cnt);
-  // Consume the one-shot accept: this backup's own marker now records the
-  // accepted size, so the derived baselines carry the intent forward. Leaving
-  // the token would permanently pin both guards below their >= 100 floors, so a
-  // real collapse months later would pass unchallenged.
-  try { clearAcceptedBaseline(); } catch (e) {}
   return { name: MIRROR_NAME, counts: cnt, written: written, removed: removed, total: ids.length };
 }
 
