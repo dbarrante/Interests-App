@@ -8,6 +8,17 @@ const path = require("path");
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 const pwaHtml = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
 
+
+// The whole body of renderHealthTitles. Deliberately NOT a fixed-size window:
+// those quietly stop covering what they assert on the moment the function
+// grows, failing on correct code and teaching people to bump the number.
+function healthTitlesRegion(src) {
+  const start = src.indexOf("function renderHealthTitles(list){");
+  if (start < 0) return "";
+  const end = src.indexOf("\nfunction ", start + 1);
+  return end < 0 ? src.slice(start) : src.slice(start, end);
+}
+
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + e.message); } }
 
@@ -80,13 +91,13 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src, /_titleVisionModel\s*=\s*this\.value/);
     const start = src.indexOf("function renderHealthTitles(list){");
     assert.ok(start >= 0, "renderHealthTitles not found");
-    const region = src.slice(start, start + 4000);
+    const region = healthTitlesRegion(src);
     assert.match(region, /visionPickerHTML\(/);
   });
   t(label + ": renderHealthTitles gates the picker render on S.provider (openrouter/gemini only)", () => {
     const start = src.indexOf("function renderHealthTitles(list){");
     assert.ok(start >= 0, "renderHealthTitles not found");
-    const region = src.slice(start, start + 4000);
+    const region = healthTitlesRegion(src);
     assert.match(
       region,
       /\(S\.provider===["']openrouter["']\|\|S\.provider===["']gemini["']\)\s*\?\s*visionPickerHTML\(_titleVisionModels\)\s*:\s*""/,
@@ -134,7 +145,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": renderHealthTitles renders Select all / Deselect all, and Select first 100 only when the list exceeds 100", () => {
     const start = src.indexOf("function renderHealthTitles(list){");
     assert.ok(start >= 0, "renderHealthTitles not found");
-    const region = src.slice(start, start + 4000);
+    const region = healthTitlesRegion(src);
     assert.match(region, /onclick="titleSelectAll\(true\)">Select all</);
     assert.match(region, /onclick="titleSelectAll\(false\)">Deselect all</);
     assert.match(
@@ -149,16 +160,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(m, "updateTitleSelCount not found");
     assert.match(m[1], /n\+" of "\+boxes\.length\+" selected"/);
     const start = src.indexOf("function renderHealthTitles(list){");
-    const region = src.slice(start, start + 4000);
+    const region = healthTitlesRegion(src);
     // Every checked row is one paid AI call, so the count must never go stale.
     assert.match(region, /data-title-sel onchange="updateTitleSelCount\(\)"/);
     assert.match(region, /data-title-apply checked onchange="updateTitleSelCount\(\)"/);
-    assert.match(src.slice(start, start + 6000), /updateTitleSelCount\(\);\s*\n\s*attachCardImages\(\);/, "must seed the count on initial render, not only on toggle");
+    assert.match(healthTitlesRegion(src), /updateTitleSelCount\(\);\s*\n\s*attachCardImages\(\);/, "must seed the count on initial render, not only on toggle");
   });
   t(label + ": the suggest phase is opt-in — rows start UNchecked so a stray click can't bill the whole backlog", () => {
     const start = src.indexOf("function renderHealthTitles(list){");
     assert.ok(start >= 0, "renderHealthTitles not found");
-    const region = src.slice(start, start + 4000);
+    const region = healthTitlesRegion(src);
     assert.doesNotMatch(
       region,
       /data-title-sel checked/,

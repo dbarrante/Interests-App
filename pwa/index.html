@@ -3914,7 +3914,7 @@ function pasteImageToCard(idx, file){
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
     persistCards();
-    _impAnchorId=it.id||""; const el=document.querySelector('.imp-card[data-id="'+it.id+'"]'); _impAnchorTop=el?el.getBoundingClientRect().top:0;
+    anchorImpOnCard(it);
     renderImported(); restoreImpScrollSettle();
     toast("Image pasted to: "+(it.title||"card"));
   });
@@ -3935,14 +3935,28 @@ function impEditSave(){
   persistCards();
   closeGuide();
   // keep the edited card in place across the re-render (height may change)
-  _impScrollY=window.scrollY; _impAnchorId=it.id||"";
-  const el = _impAnchorId ? document.querySelector('.imp-card[data-id="'+_impAnchorId+'"]') : null;
-  _impAnchorTop = el ? el.getBoundingClientRect().top : 0;
+  anchorImpOnCard(it);
   renderImported();
   restoreImpScrollSettle();
   toast("Card updated");
 }
 let _impScrollY = 0, _impAnchorId = "", _impAnchorTop = 0;
+// Restore the imported list to where it was when an article was opened.
+// Anchors on the opened card (stable id) rather than a pixel offset, because
+// the masonry layout reflows and remote images load after render — a saved
+// scrollY would land on the wrong card.
+// Capture the anchor for a card that is about to be re-rendered. MUST be called
+// while the OLD DOM is still on screen — it measures the card's current
+// viewport position, and the whole point is to put it back at that position
+// afterwards. Sets all three fields together: restoreImpScroll falls back to
+// _impScrollY when the anchor element is gone, so a partial capture would
+// restore against a stale scroll position from some earlier interaction.
+function anchorImpOnCard(it){
+  _impScrollY = window.scrollY;
+  _impAnchorId = (it && it.id) || "";
+  const el = _impAnchorId ? document.querySelector('.imp-card[data-id="' + _impAnchorId + '"]') : null;
+  _impAnchorTop = el ? el.getBoundingClientRect().top : 0;
+}
 // Restore the imported list to where it was when an article was opened.
 // Anchors on the opened card (stable id) rather than a pixel offset, because
 // the masonry layout reflows and remote images load after render — a saved
@@ -3968,9 +3982,7 @@ function impOpen(idx){
   _impScrollY = window.scrollY;
   if(!it.id){ it.id=newId(); Store.putCards(imported); }
   // remember the opened card and its current viewport position as the anchor
-  _impAnchorId = it.id;
-  const _ael = document.querySelector('.imp-card[data-id="'+it.id+'"]');
-  _impAnchorTop = _ael ? _ael.getBoundingClientRect().top : 0;
+  anchorImpOnCard(it);
   persistAll();
   // remember which card we just opened, so a manual capture on the
   // (possibly redirected) page can still be matched back to it
@@ -4088,9 +4100,7 @@ function impRefresh(idx){
   if(isFb && batchUI.active){ toast("A capture run is going — try this refresh after it finishes, or Stop it first."); return; }
   if(!it.id){ it.id=newId(); }
   _refreshPins.add(it.id);   // keep this card in the current filter so its picture shows up in place instead of dropping off
-  _impScrollY = window.scrollY; _impAnchorId = it.id;
-  const _ael = document.querySelector('.imp-card[data-id="'+it.id+'"]');
-  _impAnchorTop = _ael ? _ael.getBoundingClientRect().top : 0;
+  anchorImpOnCard(it);
   setCardImage(it,"");                 // clear so enrichOnOpen can refill + the capture overwrites
   delete it.blocked;                   // give a blocked page a fresh chance
   it.lastUpdate=Date.now(); it.lastResult="pending";
@@ -5520,8 +5530,48 @@ async function impRefreshTitle(idx){
   it.title = out.slice(0,250);
   await persistCards();
   updateCounts();
-  if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+  // Anchor BEFORE the re-render, while the old DOM is still on screen — without
+  // this, restoreImpScrollSettle ran against whatever anchor some earlier
+  // interaction left behind and jumped away from the card being refreshed.
+  if(curTab==="imported"){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
   toast("New title: "+out, 7000);
+}
+// Resolve a Title-issues row key ("<scope>:<id>") back to its live card.
+function titleRowCard(key){
+  const i = String(key||"").indexOf(":");
+  if(i < 0) return null;
+  const scope = key.slice(0,i), id = key.slice(i+1);
+  const list = scope==="saved" ? saved : imported;
+  const card = (list||[]).find(c=>c && String(c.id)===String(id));
+  return card ? {card, scope, list} : null;
+}
+// Double-click a row's picture or title: open the page so the extension can
+// recapture it. Stamping ia_last_opened is what lets a manual capture on the
+// (possibly redirected) page be matched back to THIS card — same contract
+// impOpen relies on. A card that never got an id gets one first, or the stamp
+// would point at nothing.
+function titleOpenOriginal(el){
+  const hit = titleRowCard(el && el.getAttribute("data-title-open"));
+  if(!hit){ toast("That card is no longer in this list."); return; }
+  const it = hit.card;
+  if(!/^https?:\/\//i.test(it.url||"")){ toast("This card has no web page to open.", 4000); return; }
+  if(!it.id){ it.id = newId(); if(hit.scope==="saved") Store.putSaved(saved); else Store.putCards(imported); }
+  Store.kvSet("ia_last_opened", {id:it.id, ts:Date.now()});
+  openLink(it.url);
+  toast("Opened — capture it with the extension to refresh this card.", 6000);
+}
+// Write a title by hand for one row. Seeds the row's suggestion box with the
+// CURRENT title so it can be edited rather than retyped; from there the normal
+// Apply path writes it, so there is no second persistence path to keep correct.
+function editTitleManually(key){
+  const hit = titleRowCard(key);
+  if(!hit){ toast("That card is no longer in this list."); return; }
+  _titleSuggestions[key] = hit.card.title || "";
+  renderHealthTitles(document.getElementById("healthList"));
+  const row = document.querySelector('#healthBody .dupe-row[data-title-key="'+(window.CSS&&CSS.escape?CSS.escape(key):key)+'"]');
+  const input = row && row.querySelector("input.title-suggest-input");
+  if(input){ input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  toast("Type the title you want, then Apply.", 6000);
 }
 function renderHealthTitles(list){
   const flagged = flaggedTitleCards();
@@ -5548,11 +5598,17 @@ function renderHealthTitles(list){
       const it=m.card, dom=domain(it.url)||"";
       const key=m.scope+":"+it.id;
       const suggestion=_titleSuggestions[key];
-      return `<div class="dupe-row" data-title-key="${esc(key)}">${dupeThumb(m)}
-        <div class="meta"><div class="t">${esc(it.title||"(untitled)")}</div>
+      // Double-click the picture or the title to open the page — same gesture the
+      // Duplicates rows use. Opening also stamps ia_last_opened, so a manual
+      // extension capture on that page is matched back to THIS card and
+      // recaptures it (the whole point of opening it from here).
+      return `<div class="dupe-row" data-title-key="${esc(key)}">
+        <div class="dupe-row-photo" data-title-open="${esc(key)}" ondblclick="titleOpenOriginal(this)" title="Double-click to open the page (then capture it with the extension)">${dupeThumb(m)}</div>
+        <div class="meta"><div class="t" data-title-open="${esc(key)}" ondblclick="titleOpenOriginal(this)" title="Double-click to open the page (then capture it with the extension)" style="cursor:pointer">${esc(it.title||"(untitled)")}</div>
           <div class="s">${esc(dom||"no link")} · <span class="dupe-badge">${m.scope==="saved"?"Saved":"Imported"}</span></div>
-          ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%">` : ""}
+          ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%" ondblclick="event.stopPropagation()">` : ""}
         </div>
+        <button class="btn btn-ghost" style="padding:4px 9px;font-size:14px;line-height:1;flex-shrink:0" title="Write the title yourself" onclick="editTitleManually('${esc(key)}')">&#9998;</button>
         <button class="btn btn-ghost" style="padding:4px 9px;font-size:14px;line-height:1;flex-shrink:0" title="Suggest a new title for just this card" onclick="retryTitleSuggestion('${esc(key)}')">&#8635;</button>
         ${suggestion==null
           ? `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-title-sel onchange="updateTitleSelCount()" style="width:auto"> include</label>`
