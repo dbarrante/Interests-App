@@ -4910,6 +4910,40 @@ function imgHashSrcKey(card){
   // permanently hide a later .edited once .lastUpdate is set once.
   return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
 }
+// A hash that's just a short pattern repeated means the 9x8 sample had no
+// distinguishing horizontal structure -- a blank, a solid fill, a smooth
+// gradient, vertical stripes, or a checkerboard. Unrelated images of those
+// kinds collide at distance 0, and a match here becomes a delete prompt, so
+// refuse to hash them at all. Checks periods 1, 2, and 4 (hex characters,
+// all divisors of the 16-char hash): period 1 is "every row identical"
+// (solid fills, vertical stripes -- 0000.., ffff.., aaaa..); period 4 is
+// "rows alternate between two distinct patterns" (a checkerboard, or the
+// row-major array [100,101,100,101,...] -- aa55aa55.., 55aa55aa..). Verified
+// against the real dhashFromGrey, not assumed -- note a checkerboard is
+// period 4, NOT period 2 as it might look at a glance (a period-2-only check
+// misses it). IMPORTANT for anyone tempted to "simplify" this loop: period 4
+// alone already covers everything period 1 and period 2 catch (any 1- or
+// 2-char repeating unit is trivially also a 4-char repeating unit, since 1
+// and 2 both divide 4 -- exhaustively checked over all 256 two-char
+// combinations, zero counterexamples). p=1 and p=2 are listed anyway purely
+// for readability -- naming the small cases makes the intent obvious at a
+// glance -- not because they add coverage; do not read their presence as
+// meaning each period independently gates some case the others miss. A
+// rarer period-8 collision (two distinct row patterns repeating every 4
+// rows, e.g. a tight repeating band texture) is also reachable from
+// dhashFromGrey -- confirmed as a real distance-0 collision between two
+// different sine-gradient samples, not just theoretically reachable -- and
+// is a known, currently-uncovered gap left out deliberately rather than
+// silently folded in (period 3 is impossible: 3 does not divide 16, so no
+// exact tiling exists).
+function isDegenerateHash(h){
+  if(typeof h !== "string" || h.length !== 16) return true;
+  for(const p of [1,2,4]){
+    const unit = h.slice(0,p);
+    if(unit.repeat(16/p) === h) return true;
+  }
+  return false;
+}
 // A 64-bit dHash for one card, or "" when the image can't be read or hashed.
 // "" is a CACHED verdict, not an error: an unreachable or degenerate image
 // must not be re-processed on every scan of a multi-thousand-card library.
@@ -4935,29 +4969,27 @@ async function computeCardHash(card){
       if(g<lo) lo = g;
       if(g>hi) hi = g;
     }
-    // dhashFromGrey returns the SAME all-zero hash for any flat/near-flat
-    // sample (every neighbour pair reads "not brighter"), so two unrelated
-    // blank or solid-colour cards would otherwise hash identically and match
-    // at distance 0 -- and the duplicate scanner that consumes these hashes
-    // offers to DELETE the loser of a match. Treat a near-uniform sample as
-    // unhashable instead of hashing it. Threshold 8 (of 255, ~3%): comfortably
-    // above the rounding/recompression noise a genuinely flat source picks up
-    // from JPEG blocking and the 9x8 downscale, while well below the tonal
-    // range any real photo spans once resampled to greyscale -- even flat
-    // lighting (overcast sky, fog, a plain product shot on white) typically
-    // covers several dozen levels. This is a cheap pre-check on the INPUT and
-    // does not catch everything: dHash compares only ADJACENT pixels, so a
-    // smooth left-to-right gradient (sky, vignette, bokeh, gradient banner)
-    // has a wide greyscale range yet still hashes to all-identical bits. The
-    // output check below is what actually guarantees no degenerate hash escapes.
+    // Two independent guards test two different things, and neither is a
+    // subset of the other. This one checks the INPUT (pixel range) and is a
+    // cheap early exit that skips dhashFromGrey entirely for the common
+    // solid-colour/near-flat case -- it is NOT a correctness guarantee: many
+    // low-range samples still hash to a perfectly good non-degenerate value
+    // (verified empirically), and bailing out here is a deliberate choice to
+    // treat near-flat input as recompression noise rather than real signal.
+    // Threshold 8 (of 255, ~3%): comfortably above the rounding/
+    // recompression noise a genuinely flat source picks up from JPEG
+    // blocking and the 9x8 downscale, while well below the tonal range any
+    // real photo spans once resampled to greyscale -- even flat lighting
+    // (overcast sky, fog, a plain product shot on white) typically covers
+    // several dozen levels.
     if(hi - lo < 8) return "";
     const h = IA_IMGHASH.dhashFromGrey(grey, W, H);
-    // Every bit identical means the sampler found no horizontal structure at all --
-    // a blank, a solid fill, or a smooth gradient. dHash compares only adjacent
-    // pixels, so a full-range gradient reaches here despite a wide greyscale range.
-    // Two such images collide at distance 0, and a match here becomes a delete
-    // prompt, so refuse to hash them at all.
-    if(/^0{16}$/.test(h) || /^f{16}$/.test(h)) return "";
+    // This second guard is the actual correctness guarantee: dHash compares
+    // only ADJACENT pixels, so a smooth gradient, vertical stripes, or a
+    // checkerboard can have a wide greyscale range (sailing past the input
+    // check above) yet still collapse to a short repeating hash. See
+    // isDegenerateHash for what counts as degenerate and why.
+    if(isDegenerateHash(h)) return "";
     return h;
   }catch(e){ console.warn("computeCardHash failed", e); return ""; }
 }

@@ -20,6 +20,7 @@ module.exports = {
     "renderPwaRecoveryStatus",
     "recoverPwaMerge",
     "imgHashSrcKey",
+    "isDegenerateHash",
     "computeCardHash",
     "loadImgHashCache",
     "saveImgHashCache",

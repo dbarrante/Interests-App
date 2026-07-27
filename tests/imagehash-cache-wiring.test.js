@@ -71,7 +71,11 @@ function expectedGreyFromRGBA(data, w, h) {
 // scripted fakes for every browser global it touches, so the SHIPPED
 // decision logic executes rather than a reimplementation of it.
 function loadComputeCardHash(src, resolveMock, pixelDataFn) {
-  const fnSrc = fn(src, "computeCardHash");
+  // computeCardHash calls isDegenerateHash internally (IMPORTANT 1 widening),
+  // so both function declarations must share the sandbox scope — extracting
+  // computeCardHash alone would leave that call a ReferenceError, which the
+  // function's own try/catch would silently swallow into a false "" result.
+  const fnSrc = fn(src, "isDegenerateHash") + "\n" + fn(src, "computeCardHash");
   let fetchCalls = 0;
   const fetchMock = async (url) => { fetchCalls++; return { blob: async () => ({ __fakeBlob: true, url }) }; };
   const createImageBitmapMock = async () => ({ __fakeBitmap: true });
@@ -163,13 +167,23 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   await t(label + ": a sample with post-conversion grey range exactly 8 (at the boundary, not below it) IS hashed — the guard must not over-fire on real low-contrast photos", async () => {
-    // 103/111 verified to produce an EXACT grey range of 8 through the same
+    // 103..111 verified to produce an EXACT grey range of 8 through the same
     // luminance conversion (see the range-7 test above for why this can't
-    // just be "pick two RGB values 8 apart").
+    // just be "pick two RGB values 8 apart"). Deliberately NOT a simple
+    // `i % 2` alternation: that shape is exactly the row-major
+    // [100,101,100,101,...] pattern IMPORTANT 1's widened isDegenerateHash
+    // guard must reject (it hashes to 55aa55aa55aa55aa, period 4) — using it
+    // here would make this "must not over-fire" test collide with the very
+    // guard it's supposed to prove doesn't over-fire. This formula is
+    // verified (against the real dhashFromGrey) to stay non-degenerate.
     const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
     const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => {
       const d = new Uint8ClampedArray(w * h * 4);
-      for (let i = 0; i < w * h; i++) { const v = 103 + (i % 2 ? 8 : 0); d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const v = 103 + (x * 3 + y * 5 + ((x * y) % 3) * 2) % 9;
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
       return d;
     });
     const hash = await computeCardHash({ id: "c4", img: "idb:c4" });
@@ -204,6 +218,95 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const b = await hashB({ id: "gradB", img: "idb:gradB" });
     assert.strictEqual(a, "", "a smooth gradient must be refused, not hashed to the shared all-zero value");
     assert.strictEqual(b, "", "a smooth gradient must be refused, not hashed to the shared all-zero value");
+  });
+
+  await t(label + ": two DIFFERENT descending greyscale gradients both hash to \"\" instead of colliding at the shared all-f dHash (MINOR 3 — the all-f half of the guard, previously untested)", async () => {
+    // Mirror of the ascending-gradient test above, but for the DESCENDING
+    // (all-f) branch: a prior review deleted just the /^f{16}$/ half of the
+    // guard from both files and the suite still passed 45/45, because only
+    // the ascending/all-zero branch had a test. Both gradients below are
+    // strictly decreasing L-to-R, span a grey range far past the hi-lo>=8
+    // input guard, and are genuinely different pixel arrays (verified
+    // distinct), yet both collapse to "ffffffffffffffff" against the real
+    // IA_IMGHASH.dhashFromGrey.
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    function descPixels(w, h, start, step) {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x; const v = start + x * step;
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
+      return d;
+    }
+    const { computeCardHash: hashA } = loadComputeCardHash(src, resolveMock, (w, h) => descPixels(w, h, 245, -27));
+    const { computeCardHash: hashB } = loadComputeCardHash(src, resolveMock, (w, h) => descPixels(w, h, 225, -22));
+    const a = await hashA({ id: "gradDescA", img: "idb:gradDescA" });
+    const b = await hashB({ id: "gradDescB", img: "idb:gradDescB" });
+    assert.strictEqual(a, "", "a smooth descending gradient must be refused, not hashed to the shared all-f value");
+    assert.strictEqual(b, "", "a smooth descending gradient must be refused, not hashed to the shared all-f value");
+  });
+
+  await t(label + ": two DIFFERENT vertical-stripe images both hash to \"\" and cannot collide as a match (IMPORTANT 1 — repeating-pattern guard)", async () => {
+    // Reproduces the review's reported collision: period-2-column vertical
+    // stripes at two different value pairs both hash to
+    // "aaaaaaaaaaaaaaaa" against the real dhashFromGrey (verified), despite
+    // spanning a wide grey range that sails past the hi-lo input guard. The
+    // OLD guard (0000.../ffff... only) let both through unhashed-degenerate
+    // detection and they'd collide at Hamming distance 0 — a false duplicate
+    // match that becomes a delete prompt.
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    function stripePixels(w, h, valA, valB) {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x; const v = (x % 2 === 0) ? valA : valB;
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
+      return d;
+    }
+    const { computeCardHash: hashA } = loadComputeCardHash(src, resolveMock, (w, h) => stripePixels(w, h, 220, 30));
+    const { computeCardHash: hashB } = loadComputeCardHash(src, resolveMock, (w, h) => stripePixels(w, h, 255, 0));
+    const a = await hashA({ id: "stripeA", img: "idb:stripeA" });
+    const b = await hashB({ id: "stripeB", img: "idb:stripeB" });
+    assert.strictEqual(a, "", "vertical stripes must be refused, not hashed to the shared aaaa...a value");
+    assert.strictEqual(b, "", "vertical stripes must be refused, not hashed to the shared aaaa...a value");
+    // Belt-and-suspenders: even if a future change let a non-"" degenerate
+    // value through, confirm the scanner's own junk-safety still wouldn't
+    // treat two empty-string hashes as a distance-0 match.
+    assert.strictEqual(IA_IMGHASH.hamming(a, b), 64, "hamming() must not treat two unhashable cards as identical");
+  });
+
+  await t(label + ": a checkerboard image hashes to \"\" instead of the degenerate aa55aa55... dHash (IMPORTANT 1 — repeating-pattern guard, period 4)", async () => {
+    // A checkerboard is NOT caught by a period-1-only or period-2-only check
+    // (it's period 4 in hex characters: unit "aa55" repeated 4 times) —
+    // reproduces the review's second collision class.
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x; const v = ((x + y) % 2 === 0) ? 220 : 30;
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
+      return d;
+    });
+    const hash = await computeCardHash({ id: "checker1", img: "idb:checker1" });
+    assert.strictEqual(hash, "", "a checkerboard sample must be refused, not hashed to the shared aa55aa55... value");
+  });
+
+  await t(label + ": the row-major alternating-value pattern [100,101,100,101,...] hashes to \"\" instead of the degenerate 55aa55aa... dHash (IMPORTANT 1 — repeating-pattern guard)", async () => {
+    // Third collision class from the review: not a geometric stripe/checker
+    // pattern, just a plain alternating pixel VALUE with only 1 level of
+    // contrast (hi-lo=1, so the input guard alone already rejects it) —
+    // confirms the OUTPUT guard independently catches it too now, per
+    // IMPORTANT 2's corrected comment (the two guards are not a subset
+    // relationship; this case happens to be caught by both).
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0; i < w * h; i++) { const v = (i % 2 === 0) ? 100 : 101; d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+      return d;
+    });
+    const hash = await computeCardHash({ id: "altarr1", img: "idb:altarr1" });
+    assert.strictEqual(hash, "");
   });
 
   await t(label + ": a genuinely varied image (non-degenerate dHash) is still hashed — the gradient-collision guard must not over-reject real photos", async () => {
@@ -243,6 +346,43 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   await t(label + ": an unhashable card caches \"\" so it isn't retried every scan", () => {
     const b = fn(src, "computeCardHash");
     assert.match(b, /return "";/, "must return the empty-string sentinel rather than throwing");
+  });
+
+  await t(label + ": isDegenerateHash rejects period-1 hex-char repeats (solid fill / vertical-stripe shape)", () => {
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash("0000000000000000"), true);
+    assert.strictEqual(isDegenerateHash("ffffffffffffffff"), true);
+    assert.strictEqual(isDegenerateHash("aaaaaaaaaaaaaaaa"), true);   // two DIFFERENT vertical-stripe images both land here
+    assert.strictEqual(isDegenerateHash("5555555555555555"), true);
+  });
+
+  await t(label + ": isDegenerateHash rejects period-4 hex-char repeats (checkerboard / alternating-row shape) — NOT caught by a period-1-or-2-only check", () => {
+    // A checkerboard's hash ("aa55aa55...") repeats every 4 hex characters,
+    // not every 1 or 2 — a guard that only checked periods 1 and 2 would
+    // silently let it through. Verified against the real dhashFromGrey (see
+    // the checkerboard behavioral test above for the source pixel pattern).
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash("aa55aa55aa55aa55"), true, "checkerboard shape");
+    assert.strictEqual(isDegenerateHash("55aa55aa55aa55aa"), true, "row-major [100,101,100,101,...] shape");
+    // Confirm this ISN'T just "any hex string starting with a repeated
+    // 2-char prefix" — a period-4 pattern whose first 2 chars happen not to
+    // repeat at position 2 must not be caught by the period-1/2 checks alone
+    // (it's period 4 specifically that catches it).
+    assert.strictEqual("aa55".slice(0, 2).repeat(8) === "aa55aa55aa55aa55", false, "sanity: aa55... is genuinely NOT a period-2 hex-char repeat");
+  });
+
+  await t(label + ": isDegenerateHash does not reject a genuinely varied (non-repeating) hash", () => {
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash("0002122b5d7e8020"), false);
+    assert.strictEqual(isDegenerateHash("24b649926d9249db"), false);
+  });
+
+  await t(label + ": isDegenerateHash treats malformed input (wrong length, non-string) as degenerate rather than throwing", () => {
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash(""), true);
+    assert.strictEqual(isDegenerateHash("abc"), true);
+    assert.strictEqual(isDegenerateHash(undefined), true);
+    assert.strictEqual(isDegenerateHash(null), true);
   });
 
   await t(label + ": imgHashSrcKey ties an idb: image to the card id AND its lastUpdate stamp, so a re-capture invalidates the cached hash", () => {
