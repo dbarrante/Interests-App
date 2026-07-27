@@ -493,6 +493,46 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "a bulk 'Apply choices' must NOT dismiss an image group the user never touched");
   });
 
+  // ---- scanDuplicates precision: no transitive chaining, no over-broad link keys ----
+  await at(label + ": scanDuplicates does NOT chain unrelated cards through a shared intermediary", async () => {
+    // A shares a TITLE with B; B shares a LINK with C; A and C share nothing. The old
+    // union-find lumped {A,B,C}, so A and C -- totally unlike -- landed in one group.
+    const api = buildDupeHarness(src);
+    const A = { id: "A", url: "https://site-a.com/a-page", title: "Braided Pesto Bread Recipe" };
+    const B = { id: "B", url: "https://shared.com/p/xyz", title: "Braided Pesto Bread Recipe" };
+    const C = { id: "C", url: "https://shared.com/p/xyz", title: "Totally Different Article Text" };
+    api.set({ imported: [A, B, C], saved: [] });
+    for (const g of api.scan()) {
+      const ids = g.members.map(m => m.card.id);
+      assert.ok(!(ids.includes("A") && ids.includes("C")),
+        "A (title-match to B) and C (link-match to B) share nothing and must not be chained together");
+    }
+  });
+
+  await at(label + ": scanDuplicates ignores an over-broad bare-host link key (auto-import profile/home URL trap)", async () => {
+    // Three unrelated posts all captured with the same bare profile URL. dupeKey ->
+    // "instagram.com" (no path, no id) must not group them.
+    const api = buildDupeHarness(src);
+    const P1 = { id: "P1", url: "https://instagram.com/", title: "Sunset photography tips" };
+    const P2 = { id: "P2", url: "https://instagram.com/", title: "Best pasta in Rome guide" };
+    const P3 = { id: "P3", url: "https://instagram.com/", title: "How to fix a leaky faucet" };
+    api.set({ imported: [P1, P2, P3], saved: [] });
+    assert.strictEqual(api.scan().length, 0, "a bare-host link key must not group unrelated posts");
+  });
+
+  await at(label + ": scanDuplicates still groups a real shared link and a real shared title", async () => {
+    const api = buildDupeHarness(src);
+    const L1 = { id: "L1", url: "https://blog.com/article/123", title: "x" };
+    const L2 = { id: "L2", url: "https://blog.com/article/123", title: "y" };
+    const T1 = { id: "T1", url: "https://one.com/a", title: "Ten Great Camping Spots" };
+    const T2 = { id: "T2", url: "https://two.com/b", title: "Ten Great Camping Spots" };
+    api.set({ imported: [L1, L2, T1, T2], saved: [] });
+    const groups = api.scan();
+    const hasPair = (a, b) => groups.some(g => { const ids = g.members.map(m => m.card.id); return ids.includes(a) && ids.includes(b); });
+    assert.ok(hasPair("L1", "L2"), "cards sharing a real link must still group");
+    assert.ok(hasPair("T1", "T2"), "cards sharing a real long title must still group");
+  });
+
   // ---- F4: a thrown image scan must not leave the progress banner up forever
   await at(label + ": renderHealthDupes clears the progress banner, logs, and toasts if scanImageDuplicates throws — instead of leaving 'Checking pictures…' on screen forever (F4)", async () => {
     let rejectFn;

@@ -15,7 +15,7 @@ function featureSlice(source) {
 }
 
 for (const [name, source] of [["web", web], ["pwa", pwa]]) {
-  assert.match(source, /let _dupeReviewMode\s*=\s*"single"/, name + " defaults to focused review");
+  assert.match(source, /let _dupeReviewMode\s*=\s*"all"/, name + " defaults to showing every detected duplicate at once (all-groups)");
   assert.match(source, /let _dupeSafetyCache\s*=\s*\{\s*at:\s*0,\s*safety:\s*null\s*\};/, name + " declares the safety-snapshot reuse cache");
   assert.match(source, /const DUPE_SAFETY_REUSE_MS\s*=\s*5\*60\*1000;/, name + " throttles safety-snapshot reuse to 5 minutes");
   assert.match(source, /function dupeSetReviewMode\(mode\)/, name + " exposes the two review modes");

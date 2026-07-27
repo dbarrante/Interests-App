@@ -5476,7 +5476,7 @@ function renderHealth(){
   if(tab==="titles") return renderHealthTitles(list);
 }
 // ---- Duplicates tab ----
-let _dupeReviewMode = "single";
+let _dupeReviewMode = "all";
 let _dupeReviewIndex = 0;
 // Desktop-only safety-snapshot reuse (2026-07-24): applyDupeRemoval used to
 // take a full-library Store.backupNow({safety:true}) on every single
@@ -6011,8 +6011,12 @@ function groupByImageHash(entries, alreadyGrouped, hammingFn, maxDistance){
 async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
   const cache = await loadImgHashCache();
   const members = [];
-  imported.forEach(c=>{ if(c) members.push({key:"imported:"+c.id, scope:"imported", card:c}); });
-  saved.forEach(c=>{ if(c) members.push({key:"saved:"+c.id, scope:"saved", card:c}); });
+  // Skip placeholder thumbnails (favicon / screenshot-fallback / expiring CDN URL):
+  // they are NOT a real picture, and many unrelated cards share the SAME placeholder,
+  // so hashing them collapses those cards into false "Same picture" groups. isBadImg
+  // is the app's canonical placeholder test; a real captured image (idb:...) passes it.
+  imported.forEach(c=>{ if(c && !isBadImg(c.img||"")) members.push({key:"imported:"+c.id, scope:"imported", card:c}); });
+  saved.forEach(c=>{ if(c && !isBadImg((typeof c.img==="string"?c.img:c.image)||"")) members.push({key:"saved:"+c.id, scope:"saved", card:c}); });
   const todo = members.filter(m => !alreadyGroupedKeys.has(m.key));
   let done = 0, recomputed = 0;
   for(const m of todo){
@@ -6073,21 +6077,36 @@ function scanDuplicates(){
   const members = [];
   imported.forEach((c,idx)=>{ if(c) members.push({card:c, scope:"imported", idx}); });
   saved.forEach((c,idx)=>{ if(c) members.push({card:c, scope:"saved", idx}); });
-  // union-find over members keyed by url + title
-  const parent = members.map((_,i)=>i);
-  const find = (x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
-  const union = (a,b)=>{ const ra=find(a), rb=find(b); if(ra!==rb) parent[ra]=rb; };
-  const byUrl = {}, byTitle = {};
-  members.forEach((m,i)=>{
-    const it = m.card;
-    if (it.url){ const k="u:"+dupeKey(it.url); if(byUrl[k]!=null) union(byUrl[k], i); else byUrl[k]=i; }
-    const t = normTitle(it.title);
-    if (t){ const k="t:"+t; if(byTitle[k]!=null) union(byTitle[k], i); else byTitle[k]=i; }
-  });
-  const groups = {};
-  members.forEach((m,i)=>{ const r=find(i); (groups[r]=groups[r]||[]).push(m); });
+  // DIRECT (non-transitive) grouping. Cards group ONLY when they share the SAME
+  // specific key -- never chained A-B-C through different keys, which the old
+  // union-find over (link OR title) did, lumping cards that shared nothing (A
+  // title-matches B, B link-matches C, so A and C -- totally unlike -- ended up
+  // together). Link is the stronger signal, so a card grouped by link is not
+  // re-grouped by title; that also keeps every card in AT MOST ONE group (the
+  // invariant applyDupeRemoval's survivor filter relies on). An over-broad link
+  // key -- a BARE HOST with no path and no id (e.g. a root/home URL captured for
+  // many distinct posts) -- groups nothing. NOTE this only catches truly bare
+  // hosts; a profile-PATH URL (instagram.com/name) still has a path and can still
+  // group unrelated posts an auto-import mis-stamped with it.
+  const inGroup = new Set();
+  const raw = [];
+  const bucketBy = (keyOf, skipGrouped) => {
+    const by = new Map();
+    members.forEach((m,i)=>{
+      if(skipGrouped && inGroup.has(i)) return;
+      const k = keyOf(m.card); if(!k) return;
+      if(!by.has(k)) by.set(k, []);
+      by.get(k).push(i);
+    });
+    by.forEach(idxs=>{ if(idxs.length>=2){ idxs.forEach(i=>inGroup.add(i)); raw.push(idxs.map(i=>members[i])); } });
+  };
+  // Link pass first: dupeKey, but only when it carries a path or an id -- a bare
+  // host ("instagram.com") is too broad to mean "same page".
+  bucketBy(c=>{ if(!c.url) return ""; const k=dupeKey(c.url); return (k && (k.indexOf("/")>=0 || k.indexOf("?")>=0)) ? "u:"+k : ""; }, false);
+  // Title pass over cards not already claimed by a link group.
+  bucketBy(c=>{ const t=normTitle(c.title); return t ? "t:"+t : ""; }, true);
   const out = [];
-  Object.values(groups).forEach(mem=>{
+  raw.forEach(mem=>{
     if (mem.length < 2 || dupeGroupDismissed(mem)) return;
     out.push({ members: mem, keepKey: dupeMemberKey(dupePrimary(mem)) });
   });
