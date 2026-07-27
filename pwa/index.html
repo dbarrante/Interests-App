@@ -6346,6 +6346,13 @@ async function applyDupeRemoval(){
   const priorIndex=_dupeReviewIndex;
   const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  // An explicit per-group Apply in one-at-a-time mode IS a review of the group on
+  // screen, so treat it as touched: an image-match group here (which renders
+  // all-unchecked by default) then gets marked not-duplicate and advanced past
+  // instead of stalling on "Nothing to apply yet". The bulk 'All groups' apply is
+  // left alone, where an untouched image group may be off-screen and must keep
+  // being offered rather than silently dismissed.
+  if(_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]) _dupeImageTouched.add(dupeGroupKey(_dupeGroups[_dupeReviewIndex].members));
   const {applyGroups,untouchedImageGroups} = computeDupeApplyGroups(groupsToProcess, _dupeImageTouched, dupeGroupKey);
   const leftForReview = untouchedImageGroups ? " "+untouchedImageGroups+" picture match"+(untouchedImageGroups===1?"":"es")+" left for review." : "";
   if(!checked.size){
