@@ -24,6 +24,10 @@ function okFetch(buf, ct) {
              res: { headers: { get: (k) => (k.toLowerCase() === "content-type" ? ct : null) } } };
   };
 }
+// A resolver stub for tests whose hostname ("cdn.example.com" etc.) doesn't need to
+// resolve to anything specific — it just needs to resolve, to a public address, now that
+// the fail-closed DNS check runs unconditionally (see IMPORTANT 1 in the task brief).
+const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 
 (async function () {
   await t("an unknown id is refused without fetching anything", async () => {
@@ -49,7 +53,7 @@ function okFetch(buf, ct) {
   await t("a saved item's remote image is found too (not just cards)", async () => {
     const db = newDb();
     upsertSaved(db, { id: "s1", url: "https://x/s1", image: "https://cdn.example.com/a.png" });
-    const r = await cardimage.fetchCardImage(db, "s1", { fetchFn: okFetch(PNG, "image/png") });
+    const r = await cardimage.fetchCardImage(db, "s1", { lookup: publicLookup, fetchFn: okFetch(PNG, "image/png") });
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.contentType, "image/png");
     db.close();
@@ -110,7 +114,7 @@ function okFetch(buf, ct) {
   await t("a non-image content type is refused", async () => {
     const db = newDb();
     upsertCard(db, { id: "c7", url: "https://x/7", img: "https://cdn.example.com/a.png" });
-    const r = await cardimage.fetchCardImage(db, "c7", { fetchFn: okFetch(Buffer.from("<html>"), "text/html") });
+    const r = await cardimage.fetchCardImage(db, "c7", { lookup: publicLookup, fetchFn: okFetch(Buffer.from("<html>"), "text/html") });
     assert.strictEqual(r.reason, "not-an-image");
     db.close();
   });
@@ -118,23 +122,49 @@ function okFetch(buf, ct) {
   await t("an empty body is refused", async () => {
     const db = newDb();
     upsertCard(db, { id: "c8", url: "https://x/8", img: "https://cdn.example.com/a.png" });
-    const r = await cardimage.fetchCardImage(db, "c8", { fetchFn: okFetch(Buffer.alloc(0), "image/png") });
+    const r = await cardimage.fetchCardImage(db, "c8", { lookup: publicLookup, fetchFn: okFetch(Buffer.alloc(0), "image/png") });
     assert.strictEqual(r.reason, "fetch-failed");
     db.close();
   });
 
   await t("a redirect to a blocked address is not followed", async () => {
+    // Regression guard for a test that used to be unable to fail: the original version
+    // redirected to a literal "https://127.0.0.1/..." address, which isProbableHost()
+    // rejects on the STRING alone (no DNS involved) — so it passed whether or not
+    // followRedirects() actually re-validated each hop with safeToFetch's lookup. This
+    // version redirects to a DOMAIN NAME whose "privateness" is only knowable via the
+    // per-call lookup stub, so it can only pass if that stub is genuinely threaded
+    // through to the redirect-hop check, not just to the first-hop check.
     const db = newDb();
     upsertCard(db, { id: "c9", url: "https://x/9", img: "https://cdn.example.com/a.png" });
     let hops = 0;
+    const lookup = async (host) => {
+      // The redirect target resolves private; the initial host resolves public — so
+      // blocking only happens if the redirect hop's host is re-resolved and re-checked.
+      if (host === "redirect-target.invalid") return [{ address: "127.0.0.1", family: 4 }];
+      return [{ address: "93.184.216.34", family: 4 }];
+    };
     const r = await cardimage.fetchCardImage(db, "c9", {
+      lookup,
       fetchFn: async (target) => {
         hops++;
-        if (hops === 1) return { error: null, status: 302, location: "https://127.0.0.1/evil.png", buffer: null, res: null };
+        if (hops === 1) return { error: null, status: 302, location: "https://redirect-target.invalid/evil.png", buffer: null, res: null };
         throw new Error("must not fetch the redirect target");
       },
     });
     assert.strictEqual(r.ok, false, "a 30x into a blocked host must not produce bytes");
+    assert.strictEqual(r.reason, "blocked", "the redirect target's host must be re-validated, not just the initial host");
+    assert.strictEqual(hops, 1, "the redirect target must never actually be fetched once its host is blocked");
+    db.close();
+  });
+
+  await t("an unresolvable hostname is refused even when the caller passes no lookup stub", async () => {
+    const db = newDb();
+    upsertCard(db, { id: "cdns", url: "https://x/dns", img: "https://definitely-not-a-real-host.invalid/a.png" });
+    let called = false;
+    const r = await cardimage.fetchCardImage(db, "cdns", { fetchFn: async () => { called = true; } });
+    assert.strictEqual(r.reason, "blocked", "the fail-closed DNS check must not depend on the caller opting in");
+    assert.strictEqual(called, false, "nothing may be fetched when the destination can't be resolved");
     db.close();
   });
 

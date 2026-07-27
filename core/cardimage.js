@@ -21,6 +21,7 @@
 const linkcheck = require("./linkcheck");
 const gf = require("./guardedfetch");
 const dbm = require("./db");
+const dns = require("dns");
 
 const MAX_BYTES = 8 * 1024 * 1024;   // a card thumbnail is orders of magnitude smaller
 const TIMEOUT_MS = 15000;
@@ -47,32 +48,29 @@ async function fetchCardImage(db, id, opts) {
   // gate is enforced here, not inherited from safeToFetch.
   if (!/^https:\/\//i.test(url)) return { ok: false, reason: "blocked" };
 
-  // Fail CLOSED on an unresolvable name — but ONLY when the caller supplies its
-  // own opts.lookup. safeToFetch fails OPEN on a lookup error on purpose (so
-  // link-probing can surface ENOTFOUND as "dead"); this block exists to NOT
-  // inherit that for a byte fetch. KNOWN GAP: a caller that omits opts.lookup
-  // (e.g. an HTTP route that doesn't thread one through) gets NO fail-closed
-  // check at all here and inherits safeToFetch's fail-open behavior via the
-  // safeToFetch call below — the "must not fail open" property only holds when
-  // the caller passes opts.lookup (even just the real dns.promises.lookup).
-  // This isn't a style choice: this module's own tests (cardimage.test.js) use
-  // an unstubbed, non-resolving hostname ("cdn.example.com") in several cases
-  // and expect the fetch to PROCEED, which is only possible because the
-  // fail-closed check is conditional. Making it unconditional (tried during
-  // implementation) makes those cases block instead and breaks the test file
-  // as given. Whoever wires the HTTP route in front of this (Task 3) MUST pass
-  // opts.lookup explicitly to get the fail-closed behavior in production.
-  const lookup = opts.lookup || null;
-  const safeOpts = lookup ? { lookup } : {};
-  if (lookup) {
-    let host;
-    try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ""); }
+  // Fail CLOSED on an unresolvable name — unconditionally, by default. This is
+  // NOT opt-in: resolve with the real dns.promises.lookup unless the caller
+  // supplies opts.lookup, which is a test seam only — it changes WHICH
+  // resolver answers the question, never WHETHER the question gets asked.
+  // safeToFetch fails OPEN on a lookup error on purpose (so link-probing can
+  // surface ENOTFOUND as "dead"); a byte fetch has no such need, so this block
+  // does its own resolution first and refuses before any bytes move if the
+  // name doesn't resolve. The same resolver is then handed to safeToFetch (as
+  // opts.lookup below, via safeOpts) so the two checks — and the per-hop
+  // redirect re-validation in followRedirects further down — all agree on
+  // what the hostname resolves to. A security property that depends on a
+  // caller remembering an optional argument isn't one; making this the
+  // default is the fix for exactly that (a naive production HTTP route that
+  // omits opts.lookup must still get the fail-closed behavior).
+  const lookup = opts.lookup || dns.promises.lookup;
+  const safeOpts = { lookup };
+  let host;
+  try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ""); }
+  catch (e) { return { ok: false, reason: "blocked" }; }
+  const isLiteralAddr = host.indexOf(":") >= 0 || /^[0-9.]+$/.test(host);
+  if (!isLiteralAddr) {
+    try { await lookup(host, { all: true }); }
     catch (e) { return { ok: false, reason: "blocked" }; }
-    const isLiteralAddr = host.indexOf(":") >= 0 || /^[0-9.]+$/.test(host);
-    if (!isLiteralAddr) {
-      try { await lookup(host, { all: true }); }
-      catch (e) { return { ok: false, reason: "blocked" }; }
-    }
   }
   if (!(await linkcheck.safeToFetch(url, safeOpts))) return { ok: false, reason: "blocked" };
 
