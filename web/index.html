@@ -5794,6 +5794,75 @@ function applyTitleSuggestions(){
   persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s"));
   if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
 }
+// Group entries by image similarity. PURE (no globals) so it can be unit-tested.
+// `alreadyGrouped` holds the keys the url/title pass consumed -- skipped
+// explicitly here (not left to hamming() returning 64 for a blank hash),
+// which is what keeps the two passes from merging transitively.
+//
+// Deliberately NOT plain single-linkage union-find over "any pair within
+// maxDistance": hamming-distance closeness is not transitive. Two disjoint
+// 5-bit flips can each satisfy "within 5 of the anchor" while landing 10 bits
+// apart from EACH OTHER -- a union-find would chain A~B~C into one group even
+// though A and C were never actually close. Every group here becomes a
+// deletion prompt, so that chaining is unacceptable. Instead each group is
+// grown so every member stays within maxDistance of EVERY other member
+// already in it (a full pairwise clique, not just a connected component).
+// This is greedy and order-preserving, not a globally optimal clique cover,
+// but it can never merge two entries that are not actually close to each
+// other -- a smaller-but-correct group beats a bigger-but-wrong one here.
+function groupByImageHash(entries, alreadyGrouped, hammingFn, maxDistance){
+  const live = (entries||[]).filter(e => e && e.hash && !alreadyGrouped.has(e.key));
+  const close = (i,j) => hammingFn(live[i].hash, live[j].hash) <= maxDistance;
+  const used = new Array(live.length).fill(false);
+  const groups = [];
+  for(let i=0;i<live.length;i++){
+    if(used[i]) continue;
+    const idxs = [i];
+    for(let j=i+1;j<live.length;j++){
+      if(used[j]) continue;
+      if(idxs.every(k => close(k,j))) idxs.push(j);
+    }
+    if(idxs.length > 1){
+      idxs.forEach(k => { used[k] = true; });
+      groups.push(idxs.map(k => live[k]));
+    }
+  }
+  return groups;
+}
+// Hash-backed duplicate pass. Runs AFTER scanDuplicates and only over cards it
+// did not already group, so today's behavior is untouched and nothing merges
+// across the two passes. Returns groups shaped like scanDuplicates' output plus
+// `imageMatch:true`, which the UI uses to badge them and leave them unchecked.
+async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
+  const cache = await loadImgHashCache();
+  const members = [];
+  imported.forEach(c=>{ if(c) members.push({key:"imported:"+c.id, scope:"imported", card:c}); });
+  saved.forEach(c=>{ if(c) members.push({key:"saved:"+c.id, scope:"saved", card:c}); });
+  const todo = members.filter(m => !alreadyGroupedKeys.has(m.key));
+  let done = 0;
+  for(const m of todo){
+    const src = imgHashSrcKey(m.card);
+    const hit = cache[m.card.id];
+    if(hit && hit.src === src){ m.hash = hit.h; }
+    else {
+      m.hash = await computeCardHash(m.card);
+      cache[m.card.id] = { h: m.hash, src: src };
+      // Persist as we go: closing the modal half-way must RESUME next time, not
+      // restart. A multi-thousand-card first pass is too expensive to redo.
+      if(done % 25 === 0) saveImgHashCache(cache);
+    }
+    done++;
+    if(onProgress && done % 10 === 0) onProgress(done, todo.length);
+    if(_imgScanAbort) break;
+  }
+  saveImgHashCache(cache);
+  const groups = groupByImageHash(todo, alreadyGroupedKeys, IA_IMGHASH.hamming, IA_IMGHASH.MAX_DISTANCE);
+  return groups
+    .map(mem => ({ members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true }))
+    .filter(g => !dupeGroupDismissed(g.members))
+    .map(g => Object.assign(g, { keepKey: dupeMemberKey(dupePrimary(g.members)) }));
+}
+let _imgScanAbort = false;
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
 function scanDuplicates(){
