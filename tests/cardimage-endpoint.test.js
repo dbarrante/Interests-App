@@ -58,16 +58,41 @@ function newStore() { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ia-cie-st
   });
 
   await t("a missing id is rejected", async () => {
+    // Must be the route's explicit "id required" 400, not the generic catch-all 404 that
+    // a thrown error inside dbm.getCard would also produce on an unbound/undefined id —
+    // asserting "400 || 404" would pass either way and couldn't detect the guard being
+    // deleted (a review mutation proved exactly that: it also spams a stack trace to
+    // stderr on every bad request once the throw is what's doing the rejecting).
     const r = await post({});
-    assert.ok(r.status === 400 || r.status === 404, "got " + r.status);
+    assert.strictEqual(r.status, 400, "got " + r.status);
   });
 
-  await t("the route accepts no URL field at all", async () => {
+  await t("the route reads ONLY req.body.id — no other caller-supplied field", async () => {
+    // A fixed literal grep (req.body.url) only catches a caller-steered destination if
+    // the field is spelled exactly that way — a review mutation proved this by renaming
+    // the read to req.body.target and the old test still passed. The actual property
+    // being protected is that the caller may not steer the destination AT ALL, under any
+    // field name, so this extracts EVERY req.body.<field> reference inside the matched
+    // route body and asserts the set of names is exactly {"id"}. Any new caller-supplied
+    // field, whatever it is called, now fails this test.
     const src = fs.readFileSync(path.join(__dirname, "..", "core", "server.js"), "utf8");
     const m = /app\.post\("\/api\/fetch-card-image"[\s\S]*?\n  \}\);/.exec(src);
     assert.ok(m, "route not found");
-    assert.doesNotMatch(m[0], /req\.body\s*&&\s*req\.body\.url|req\.body\.url/,
-      "taking a URL from the caller would reintroduce the SSRF surface the card-id design removes");
+    const fields = new Set();
+    const fieldRe = /req\.body\.([A-Za-z_$][A-Za-z0-9_$]*)/g;
+    let fm;
+    while ((fm = fieldRe.exec(m[0]))) fields.add(fm[1]);
+    assert.deepStrictEqual(Array.from(fields).sort(), ["id"],
+      "the route may read only req.body.id; found: " + (Array.from(fields).sort().join(", ") || "(none)"));
+    // The dot-access scan above can't see a field read via bracket notation
+    // (req.body["target"]) or pulled out with destructuring (const {id, target} =
+    // req.body) — either would let a caller steer the destination under a new name
+    // while the dot-access set above stayed exactly {"id"}. Block both shapes outright
+    // rather than trying to enumerate their field names too.
+    assert.doesNotMatch(m[0], /req\.body\s*\[/,
+      "bracket access to req.body would bypass the dot-access field check above");
+    assert.doesNotMatch(m[0], /\{[^}]*\}\s*=\s*req\.body/,
+      "destructuring req.body would bypass the dot-access field check above");
   });
 
   await t("a card with a fetchable remote image returns 200 with the image bytes", async () => {

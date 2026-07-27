@@ -26,13 +26,26 @@ const MAX_BYTES = 8 * 1024 * 1024;   // a card thumbnail is orders of magnitude 
 const TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 3;
 
-// Raster-only allowlist (review finding 1). A broad `/^image\//i` test also matches
-// image/svg+xml, an active document format that can carry <script> — and this module's
-// bytes get served back verbatim, from the app's own origin, by POST /api/fetch-card-image.
-// The consumer (OCR, vision-model input, perceptual hashing) only ever decodes to a
-// bitmap, so nothing here needs a vector/document format. Case-insensitive; the caller
-// splits off any ";charset=..." parameter before comparing.
-const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+// Raster-only allowlist (review finding 1) — deliberately an allowlist of INERT RASTER
+// types, not a broad `/^image\//i` test. A broad test also matches image/svg+xml, an
+// active document format that can carry <script> — and this module's bytes get served
+// back verbatim, from the app's own origin, by POST /api/fetch-card-image. The consumer
+// (OCR, vision-model input, perceptual hashing) only ever decodes to a bitmap, so nothing
+// here needs a vector/document format; svg (and any other +xml type) stays excluded on
+// purpose.
+//
+// Includes nonstandard aliases real servers actually emit (image/jpg, image/x-png, etc.)
+// alongside the registered types, all still inert raster formats. This isn't cosmetic:
+// every failure in this route collapses to the same silent 404 (see server.js), so a
+// rejected alias is indistinguishable from a broken pipeline — it silently reproduces the
+// exact "AI title pipeline produces nothing" bug this whole feature exists to fix, with
+// zero observability. Case-insensitive; the caller splits off any ";charset=..."
+// parameter before comparing.
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/jpeg", "image/jpg", "image/png", "image/x-png", "image/apng",
+  "image/gif", "image/webp", "image/avif", "image/bmp",
+  "image/heic", "image/heif", "image/tiff", "image/x-icon", "image/vnd.microsoft.icon",
+]);
 
 function remoteImageUrlFor(db, id) {
   const card = dbm.getCard(db, id);

@@ -136,6 +136,26 @@ const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
     db.close();
   });
 
+  await t("image/jpg (nonstandard alias) is accepted, image/svg+xml is still refused", async () => {
+    // Review finding: the allowlist must include real-world nonstandard aliases a server
+    // can actually emit (image/jpg for jpeg being the classic one) — because every failure
+    // in this route collapses to the same silent 404, rejecting a legitimate alias is
+    // indistinguishable from a broken pipeline. This must NOT widen the gate to accept
+    // svg (or any other +xml/document type); it stays refused with the same reason.
+    const db = newDb();
+    upsertCard(db, { id: "cjpgalias", url: "https://x/jpgalias", img: "https://cdn.example.com/a.jpg" });
+    upsertCard(db, { id: "csvg2", url: "https://x/svg2", img: "https://cdn.example.com/b.svg" });
+    const jpgR = await cardimage.fetchCardImage(db, "cjpgalias", { lookup: publicLookup, fetchFn: okFetch(PNG, "image/jpg") });
+    assert.strictEqual(jpgR.ok, true, "image/jpg is a real alias servers emit for jpeg and must be accepted");
+    assert.strictEqual(jpgR.contentType, "image/jpg");
+    const svgR = await cardimage.fetchCardImage(db, "csvg2", {
+      lookup: publicLookup, fetchFn: okFetch(Buffer.from("<svg onload=\"alert(1)\"></svg>"), "image/svg+xml"),
+    });
+    assert.strictEqual(svgR.ok, false);
+    assert.strictEqual(svgR.reason, "not-an-image", "svg must never be let in by a widened alias list");
+    db.close();
+  });
+
   await t("a 404 with a non-empty body is refused as fetch-failed (not not-an-image)", async () => {
     // The empty-body variant of "fetch-failed" was already covered (below); this covers
     // the terminal non-2xx branch, which a non-empty body never exercised before.
