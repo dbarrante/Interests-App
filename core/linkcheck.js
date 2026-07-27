@@ -147,6 +147,7 @@ function isProbableHost(url) {
 // Production never calls setLookup, so it stays the real OS resolver.
 var moduleLookup = require("dns").promises.lookup;
 function setLookup(fn) { moduleLookup = fn || require("dns").promises.lookup; }
+function getLookup() { return moduleLookup; }
 
 // SSRF guard (async, resolution-level): isProbableHost PLUS a DNS check. For a domain host
 // it resolves all addresses and blocks if ANY is private/loopback/link-local (DNS rebinding —
@@ -236,4 +237,4 @@ async function checkChunk(items, opts) {
   });
 }
 
-module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, isPrivateAddr: isPrivateAddr, safeToFetch: safeToFetch, _setLookup: setLookup, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };
+module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, isPrivateAddr: isPrivateAddr, safeToFetch: safeToFetch, _setLookup: setLookup, _getLookup: getLookup, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };

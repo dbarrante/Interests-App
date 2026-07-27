@@ -21,7 +21,6 @@
 const linkcheck = require("./linkcheck");
 const gf = require("./guardedfetch");
 const dbm = require("./db");
-const dns = require("dns");
 
 const MAX_BYTES = 8 * 1024 * 1024;   // a card thumbnail is orders of magnitude smaller
 const TIMEOUT_MS = 15000;
@@ -49,7 +48,7 @@ async function fetchCardImage(db, id, opts) {
   if (!/^https:\/\//i.test(url)) return { ok: false, reason: "blocked" };
 
   // Fail CLOSED on an unresolvable name — unconditionally, by default. This is
-  // NOT opt-in: resolve with the real dns.promises.lookup unless the caller
+  // NOT opt-in: resolve with the shared default resolver unless the caller
   // supplies opts.lookup, which is a test seam only — it changes WHICH
   // resolver answers the question, never WHETHER the question gets asked.
   // safeToFetch fails OPEN on a lookup error on purpose (so link-probing can
@@ -61,8 +60,12 @@ async function fetchCardImage(db, id, opts) {
   // what the hostname resolves to. A security property that depends on a
   // caller remembering an optional argument isn't one; making this the
   // default is the fix for exactly that (a naive production HTTP route that
-  // omits opts.lookup must still get the fail-closed behavior).
-  const lookup = opts.lookup || dns.promises.lookup;
+  // omits opts.lookup must still get the fail-closed behavior). The default
+  // itself is linkcheck's shared module-level resolver (linkcheck._getLookup()),
+  // not a fresh require("dns") lookup — that resolver is swappable in-process
+  // via linkcheck._setLookup(), which is the seam HTTP endpoint tests rely on
+  // when they cannot thread opts.lookup through a real request.
+  const lookup = opts.lookup || linkcheck._getLookup();
   const safeOpts = { lookup };
   let host;
   try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ""); }

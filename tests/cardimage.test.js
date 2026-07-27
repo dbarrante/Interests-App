@@ -168,6 +168,24 @@ const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
     db.close();
   });
 
+  await t("_setLookup reaches fetchCardImage, so in-process endpoint tests can stub DNS", async () => {
+    const db = newDb();
+    upsertCard(db, { id: "cseam", url: "https://x/seam", img: "https://seam.invalid/a.png" });
+    const lc = require("../core/linkcheck.js");
+    // Polarity inverted vs. a "blocked" assertion on purpose: "seam.invalid" never resolves via
+    // real DNS (RFC 2606), so "blocked" can't distinguish a working seam from a plain lookup
+    // failure — the real resolver ALSO reports blocked for this host. Instead the module stub
+    // returns a PUBLIC address, which only lets the fetch through if fetchCardImage's default
+    // resolver really is linkcheck._getLookup() (this stub), not a fresh require("dns") lookup.
+    lc._setLookup(async () => [{ address: "93.184.216.34", family: 4 }]);   // module-wide stub, NO opts.lookup
+    try {
+      const r = await cardimage.fetchCardImage(db, "cseam", { fetchFn: okFetch(PNG, "image/png") });
+      assert.strictEqual(r.ok, true, "the module-wide resolver stub must be honoured, not bypassed for a fresh dns lookup");
+      assert.strictEqual(r.contentType, "image/png");
+    } finally { lc._setLookup(null); }
+    db.close();
+  });
+
   console.log(pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 })();
