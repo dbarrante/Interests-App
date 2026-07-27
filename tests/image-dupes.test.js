@@ -449,6 +449,37 @@ async function at(n, fn) {
         assert.deepStrictEqual(progressTicks, [10, 20]);
       });
     });
+
+    await at(label + ": scanImageDuplicates never caches a TRANSIENT computeCardHash failure (null) -- the same card is retried on the next scan and can succeed (F3)", async () => {
+      // Before this fix, computeCardHash returned "" for both a genuine
+      // unhashable verdict AND a plain fetch failure, and this loop cached
+      // whatever it got back keyed on the card's CURRENT image -- for a
+      // remote card that key never changes on its own, so one transient
+      // failure (e.g. a server restart mid-scan) would zero the card's
+      // duplicate detection forever; not a rescan, not closing/reopening the
+      // modal, nothing short of a code-level guard-version bump could clear
+      // it. `persisted` stands in for the real KV-backed cache and is reused
+      // across TWO separate scanImageDuplicates calls below, the same way
+      // the real cache survives between two runs of the health modal.
+      const persisted = {};
+      let calls = 0;
+      const computeCardHash = async () => (++calls === 1 ? null : "1111111111111111");   // fails once, then succeeds
+      const deps = Object.assign(baseDeps([{ id: "c0" }]), {
+        loadImgHashCache: async () => persisted,
+        saveImgHashCache: () => {},   // `persisted` IS the object scanImageDuplicates mutates in place -- nothing extra to persist here
+        computeCardHash,
+      });
+
+      const firstScan = loadScanImageDuplicates(src, deps);
+      await firstScan(new Set(), null);
+      assert.strictEqual(calls, 1, "computeCardHash must be attempted on the first scan");
+      assert.ok(!("c0" in persisted), "a transient (null) result must never be written to the cache -- caching it would make the failure permanent");
+
+      const secondScan = loadScanImageDuplicates(src, deps);
+      await secondScan(new Set(), null);
+      assert.strictEqual(calls, 2, "an uncached (previously-failed) card must be retried on the next scan, not silently skipped forever");
+      assert.ok(persisted.c0 && persisted.c0.h === "1111111111111111", "a successful retry must be cached normally, exactly like any other verdict");
+    });
   }
 
   console.log((pass) + " passed, " + fail + " failed (cumulative)");

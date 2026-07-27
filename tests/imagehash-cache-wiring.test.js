@@ -190,13 +190,42 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     // object with no .base64. A buggy `if(!image) return "";` never fires
     // here (the object IS truthy) and falls through to
     // atob(undefined) / createImageBitmap on garbage — this test proves the
-    // real guard checks .base64, not just truthiness.
-    const resolveMock = async () => ({ failReason: "fetch-blocked" });
+    // real guard checks .base64, not just truthiness. Uses "no-image" (a
+    // stable fact about the card, not a transient failure) so the expected
+    // "" verdict is unambiguous here — see the dedicated
+    // transient-vs-verdict tests below for why "fetch-blocked" specifically
+    // returns null instead.
+    const resolveMock = async () => ({ failReason: "no-image" });
     const { computeCardHash, fetchCalls, bitmapCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
     const hash = await computeCardHash({ id: "c1", img: "https://x.example/y.jpg" });
     assert.strictEqual(hash, "");
     assert.strictEqual(bitmapCalls(), 0, "must bail out on the failure object before decoding its missing .base64");
     assert.strictEqual(fetchCalls(), 0, "must never touch fetch at all — a data: URL fetch is CSP-blocked in the real app");
+  });
+
+  await t(label + ": a resolveCardImageForAI \"decode-failed\" reason is a stable verdict (\"\"), not a transient error", async () => {
+    const resolveMock = async () => ({ failReason: "decode-failed" });
+    const { computeCardHash, bitmapCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
+    const hash = await computeCardHash({ id: "c1c", img: "idb:c1c" });
+    assert.strictEqual(hash, "", "the fetched bytes themselves failing to decode is a stable fact about this image, not a transient condition — it must stay a cacheable verdict");
+    assert.strictEqual(bitmapCalls(), 0);
+  });
+
+  await t(label + ": a resolveCardImageForAI \"fetch-blocked\" reason is a TRANSIENT error (null), never a cacheable verdict (F3 — a server restart mid-scan must not permanently zero a card's duplicate detection)", async () => {
+    // Before this fix, computeCardHash returned "" for every failure reason
+    // alike, and scanImageDuplicates cached whatever it returned keyed on
+    // the card's CURRENT image — for a remote card that key never changes on
+    // its own. One unlucky fetch failure (server restart mid-scan, a
+    // momentary offline blip) would get cached as "" forever: not a rescan,
+    // not closing/reopening the modal, nothing short of a code-level
+    // IMGHASH_GUARD_VERSION bump could ever clear it. null is the signal
+    // scanImageDuplicates must NOT cache (see tests/image-dupes.test.js for
+    // the behavioral proof that a null result is retried on the next scan).
+    const resolveMock = async () => ({ failReason: "fetch-blocked" });
+    const { computeCardHash, bitmapCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
+    const hash = await computeCardHash({ id: "c1d", img: "https://x.example/y.jpg" });
+    assert.strictEqual(hash, null, "a fetch failure must be distinguishable from a genuine unhashable verdict");
+    assert.strictEqual(bitmapCalls(), 0);
   });
 
   await t(label + ": a resolveCardImageForAI success with NO base64 field is still treated as a failure", async () => {
@@ -498,6 +527,30 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     for (const p of [1, 2, 4]) {
       assert.strictEqual("66cc993366cc9933".slice(0, p).repeat(16 / p) === "66cc993366cc9933", false, "sanity: not a period-" + p + " hex-char repeat");
     }
+  });
+
+  await t(label + ": isDegenerateHash rejects a hash that is merely CLOSE to periodic, not just an EXACT repeat (F2 — exact matching let two near-periodic hashes collide with each other)", () => {
+    // The exact-match-only guard (v2) let two hashes that are each one bit
+    // off a perfectly periodic pattern straight through, because NEITHER is
+    // a perfect period-1/2/4/8 repeat on its own. But they are only 2 bits
+    // apart from EACH OTHER -- well inside MAX_DISTANCE (5) -- so two
+    // unrelated near-flat/near-repeating images landing on these two hashes
+    // would still be offered as a duplicate match, the exact failure mode
+    // this guard exists to prevent. Both must now be rejected.
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    const hA = "66cc993366cc9932", hB = "66cc993366cc9931";
+    assert.strictEqual(isDegenerateHash(hA), true, "1 bit off a period-8 pattern must still be rejected");
+    assert.strictEqual(isDegenerateHash(hB), true, "1 bit off a period-8 pattern must still be rejected");
+    // Positive control: prove this is exercising the NEW near-match check,
+    // not a coincidental exact match under the OLD guard.
+    for (const p of [1, 2, 4, 8]) {
+      assert.strictEqual(hA.slice(0, p).repeat(16 / p) === hA, false, "sanity: " + hA + " is not an EXACT period-" + p + " repeat");
+      assert.strictEqual(hB.slice(0, p).repeat(16 / p) === hB, false, "sanity: " + hB + " is not an EXACT period-" + p + " repeat");
+    }
+    // Positive control: the two hashes really do collide with EACH OTHER
+    // (2 bits apart, inside MAX_DISTANCE=5) -- confirming this isn't just
+    // two independently-rejected hashes with no real relationship.
+    assert.strictEqual(IA_IMGHASH.hamming(hA, hB), 2, "sanity: the two hashes must be within MAX_DISTANCE of each other, not just each individually near-periodic");
   });
 
   await t(label + ": isDegenerateHash does not reject a genuinely varied (non-repeating) hash", () => {

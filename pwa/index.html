@@ -4922,17 +4922,20 @@ function imgHashSrcKey(card){
   // permanently hide a later .edited once .lastUpdate is set once.
   return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
 }
-// Bumped whenever isDegenerateHash's rejection rules change SHAPE (which
-// periods it checks) -- most recently: periods 1,2,4 -> periods 1,2,4,8, in
-// this same commit. No user data has shipped under any prior guard, so this
-// is a forward marker, not a count of historical revisions. loadImgHashCache
+// Bumped whenever isDegenerateHash's rejection rules change SHAPE -- either
+// which periods it checks, or (v2->v3) how close to periodic counts as
+// degenerate: v2 rejected only an EXACT period-1/2/4/8 repeat; v3 also
+// rejects a hash within MAX_DISTANCE of one (see isDegenerateHash below for
+// why exact matching alone let real collisions through). No user data has
+// shipped under any prior guard, so this is a forward marker, not a count of
+// historical revisions. loadImgHashCache
 // drops any cache entry whose stamped .v doesn't match this exactly
 // (including an old entry with no .v at all -- pre-versioning or computed
 // under a since-widened guard), forcing a recompute under the CURRENT guard
 // rather than silently trusting a hash a looser guard once accepted. See the
 // asymmetry note below for why an unnecessary recompute is cheap and a
 // wrongly-trusted stale hash is not.
-const IMGHASH_GUARD_VERSION = 2;
+const IMGHASH_GUARD_VERSION = 3;
 // A hash that's just a short pattern repeated means the 9x8 sample had no
 // distinguishing horizontal structure -- a blank, a solid fill, a smooth
 // gradient, vertical stripes, a checkerboard, or a repeating band/ripple
@@ -4963,40 +4966,91 @@ const IMGHASH_GUARD_VERSION = 2;
 // that shape, assuming close to uniform hash bits -- a reasonable
 // approximation for real photos), so checking period 8 too is close to free.
 //
-// IMPORTANT for anyone tempted to "simplify" this loop: checked exhaustively
-// (all 16 period-1 units, all 256 period-2 units, and all 65536 period-4
-// units, zero counterexamples in any case), period 8 ALONE now subsumes
-// EVERYTHING periods 1, 2, and 4 catch -- not just what period 4 subsumes.
-// General reason: for a 16-char string, having period p implies having
-// period q whenever p divides q (the p-char unit tiles evenly into a q-char
-// block, which then tiles into the 16-char string), and 1|2, 2|4, 4|8 all
-// hold. p=1, p=2, and p=4 are listed anyway purely for readability -- naming
-// the small cases makes the intent obvious at a glance -- not because any of
-// them independently gates a case p=8 doesn't already catch. Do NOT extend
-// this list to 16: h.slice(0,16) trivially repeat(1)s to itself for EVERY
-// possible hash, so a p=16 check would reject everything, not just
-// degenerate ones. Period 3 is impossible for a different reason: 3 does not
-// divide 16, so no exact tiling of a 16-char string into an integer number
-// of 3-char units exists. That closes the divisor list at {1,2,4,8,16}, with
-// 16 itself excluded as above.
+// For a 16-char string, having period p implies having period q whenever p
+// divides q (the p-char unit tiles evenly into a q-char block, which then
+// tiles into the 16-char string), and 1|2, 2|4, 4|8 all hold -- so for an
+// EXACT match, period 8 alone subsumes everything periods 1, 2, and 4 catch
+// (checked exhaustively: all 16 period-1 units, all 256 period-2 units, and
+// all 65536 period-4 units, zero counterexamples). p=1, p=2, and p=4 are
+// listed anyway purely for readability. Do NOT extend this list to 16:
+// h.slice(0,16) trivially repeat(1)s to itself for EVERY possible hash, so a
+// p=16 check would reject everything, not just degenerate ones. Period 3 is
+// impossible for a different reason: 3 does not divide 16, so no exact
+// tiling of a 16-char string into an integer number of 3-char units exists.
+// That closes the divisor list at {1,2,4,8,16}, with 16 itself excluded as
+// above.
+//
+// EXACT matching is not enough, though: two hashes that are each merely
+// CLOSE to periodic -- not perfectly periodic -- can still land within
+// MAX_DISTANCE of EACH OTHER, and an exact-match-only guard waves both of
+// them through as "hashable". Demonstrated, not hypothetical:
+// "66cc993366cc9932" and "66cc993366cc9931" both pass a period-1/2/4/8
+// EXACT check (neither is a perfect repeat of any of those periods) yet are
+// only 2 bits apart -- comfortably inside MAX_DISTANCE (5) -- so two
+// unrelated near-flat/near-repeating images landing on these two hashes
+// would be offered as a duplicate match anyway, the exact scenario this
+// whole guard exists to prevent. So this checks DISTANCE to periodic, not
+// just EQUALITY with it: for each period p, build the idealized p-periodic
+// hash closest to h (fold h's 16 hex chars into p position-groups of 16/p
+// samples each, keep the most-common hex digit at each position -- a tie is
+// broken by keeping whichever occurrence came first, which for p=8's 2-way
+// split is provably distance-optimal by the triangle inequality: any unit's
+// total distance to both halves is >= the halves' distance to each other,
+// and using either half AS the unit hits that bound exactly), then reject h
+// if it's within MAX_DISTANCE of that ideal. An exact repeat is just the
+// distance-0 case of this same check, so this subsumes the old behavior
+// exactly. All four periods are still checked independently here -- unlike
+// the EXACT-match case above, the near-match subsumption claim (period 8
+// alone catching everything periods 1/2/4 catch) is NOT exhaustively
+// provable at this scale (2^64 hashes, not 2^16), so don't drop 1/2/4 as
+// "redundant" without re-deriving that proof.
 function isDegenerateHash(h){
-  if(typeof h !== "string" || h.length !== 16) return true;
+  if(typeof h !== "string" || h.length !== 16 || !/^[0-9a-f]{16}$/.test(h)) return true;
   for(const p of [1,2,4,8]){
-    const unit = h.slice(0,p);
-    if(unit.repeat(16/p) === h) return true;
+    const reps = 16/p;
+    let unit = "";
+    for(let i=0;i<p;i++){
+      const counts = {};
+      let bestCh = h[i], bestCount = 0;
+      for(let r=0;r<reps;r++){
+        const ch = h[i+r*p];
+        counts[ch] = (counts[ch]||0) + 1;
+        if(counts[ch] > bestCount){ bestCount = counts[ch]; bestCh = ch; }
+      }
+      unit += bestCh;
+    }
+    if(IA_IMGHASH.hamming(h, unit.repeat(reps)) <= IA_IMGHASH.MAX_DISTANCE) return true;
   }
   return false;
 }
-// A 64-bit dHash for one card, or "" when the image can't be read or hashed.
-// "" is a CACHED verdict, not an error: an unreachable or degenerate image
-// must not be re-processed on every scan of a multi-thousand-card library.
+// A 64-bit dHash for one card, "" when the image is genuinely unhashable, or
+// null when the attempt itself failed. "" is a CACHED VERDICT, not an error:
+// an unreachable-by-design or degenerate image must not be re-processed on
+// every scan of a multi-thousand-card library. null is the OPPOSITE -- a
+// TRANSIENT failure (right now: only resolveCardImageForAI's "fetch-blocked",
+// meaning the network/server call itself failed) that says nothing about the
+// picture and must NEVER be cached: scanImageDuplicates keys its cache on
+// this card's current image, which for a remote card never changes on its
+// own, so caching a null-turned-"" would zero that card's duplicate
+// detection permanently on the very next unlucky scan (a server restart or
+// offline blip mid-scan) -- no rescan, no close/reopen, nothing short of a
+// guard-version bump could ever clear it. See scanImageDuplicates, which
+// only writes a returned "" (or a real hash) into the cache and leaves null
+// uncached so the next scan simply retries.
 async function computeCardHash(card){
   try{
     const image = await resolveCardImageForAI(card);
     // resolveCardImageForAI returns a TRUTHY object on failure too -- a
     // { failReason } object has no .base64 -- so `if(!image)` alone never
     // fires on a failure. Must check .base64, matching ocrExtractText below.
-    if(!image || !image.base64) return "";
+    if(!image || !image.base64){
+      // Only "fetch-blocked" is a transient failure of the ATTEMPT itself
+      // (the network/server call failed, tells us nothing about the
+      // picture). "no-image" (the card has no image at all) and
+      // "decode-failed" (the fetched bytes themselves would not decode) are
+      // both stable facts about this card/image and stay a real verdict.
+      return (image && image.failReason === "fetch-blocked") ? null : "";
+    }
     // Do NOT wrap this base64 payload into a "data:" URL and hand it to fetch:
     // on the web/ surface (served by core/server.js), its CSP's connect-src
     // 'self' https: has no data: scheme, so fetching a data URL throws
@@ -5628,6 +5682,21 @@ function renderHealthDupes(list){
       // back to Duplicates shows stale (image-match-free) results forever.
       _dupeGroups = _dupeGroups.concat(imgGroups);
       if(_healthTab==="dupes") renderHealthDupes(document.getElementById("healthList"));
+    }).catch(e=>{
+      // scanImageDuplicates has no try/catch of its own -- a thrown failure
+      // (realistically: imagehash.js failed to load offline, or some awaited
+      // Store call rejected) must not leave "Checking pictures for
+      // duplicates… N%" on screen forever with no explanation, which is what
+      // happened before this .catch existed: _imgScanProgress was only ever
+      // cleared inside the success .then(), so a throw skipped that and the
+      // banner stuck around permanently, on top of whatever partial cache
+      // write the loop had already made before it threw.
+      console.warn("scanImageDuplicates failed", e);
+      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan; that one's own handlers own the UI now
+      _imgScanProgress = null;
+      if(_imgScanAbort) return;                                                // modal already closed -- nothing to show
+      toast("Couldn't check pictures for duplicates.", 6000);
+      if(_healthTab==="dupes" && document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
     });
   }
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
@@ -6024,16 +6093,25 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
     if(hit && hit.src === src){ m.hash = hit.h; }
     else {
       m.hash = await computeCardHash(m.card);
-      cache[m.card.id] = { h: m.hash, src: src };
-      // Persist as we go: closing the modal half-way must RESUME next time, not
-      // restart. A multi-thousand-card first pass is too expensive to redo.
-      // Checkpoint on a count of actual RECOMPUTES, not the mixed hit/miss
-      // `done` counter below -- on a mostly-cached library `done` can sail
-      // past many multiples of 25 between misses, so a hit/miss-based check
-      // lands irregularly (or not at all) instead of every 25 cards actually
-      // re-hashed.
-      recomputed++;
-      if(recomputed % 25 === 0) saveImgHashCache(cache);
+      // null is a TRANSIENT error (see computeCardHash), not a verdict --
+      // must NEVER be written to the cache, or a one-off fetch failure
+      // becomes a permanent "not a duplicate" for this card that nothing
+      // (not a rescan, not closing/reopening) can ever clear. Leaving it
+      // uncached means the next scan just tries this card again; groupBy
+      // ImageHash below already treats a falsy hash (null same as "") as
+      // ungroupable, so a not-yet-retried card still cannot match anything.
+      if(m.hash !== null){
+        cache[m.card.id] = { h: m.hash, src: src };
+        // Persist as we go: closing the modal half-way must RESUME next time, not
+        // restart. A multi-thousand-card first pass is too expensive to redo.
+        // Checkpoint on a count of actual RECOMPUTES, not the mixed hit/miss
+        // `done` counter below -- on a mostly-cached library `done` can sail
+        // past many multiples of 25 between misses, so a hit/miss-based check
+        // lands irregularly (or not at all) instead of every 25 cards actually
+        // re-hashed.
+        recomputed++;
+        if(recomputed % 25 === 0) saveImgHashCache(cache);
+      }
     }
     done++;
     // `|| done === todo.length` guarantees a final tick even when the total
@@ -6305,6 +6383,18 @@ async function applyDupeRemoval(){
   let removed=0,notDuplicateGroups=0;
   for(const g of applyGroups){
     const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
+    // Belt-and-braces: a card is supposed to belong to at most one group (see
+    // the freshMemberKeys filter below, which is the actual fix), but this
+    // loop mutates rmImported/rmSaved as it goes and never re-checks them
+    // against nextImportedById/nextSavedById -- so IF that invariant were
+    // ever violated again, an earlier group in this SAME apply could already
+    // have condemned this group's keeper. Without this guard the stale-but-
+    // still-present map entry would be treated as a valid keeper:
+    // mergeDupeMetadata would write this group's removed member's data into
+    // a card that's about to be filtered out (the merge silently vanishes),
+    // and the final survivor filter would drop it -- deleting a card the
+    // user never selected. Skip the whole group rather than risk that.
+    if((keep.scope==="saved"?rmSaved:rmImported).has(keep.card.id)) continue;
     const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
     for(const mem of g.members){
       if(mem===keep||!checked.has(mem.scope+":"+mem.card.id)) continue;
@@ -6366,8 +6456,27 @@ async function applyDupeRemoval(){
   // the async image scan's own .then() can append newly-found groups to
   // _dupeGroups while the awaits above were in flight, and those must not be
   // dropped just because they weren't part of this apply.
-  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !applyGroups.includes(g));
-  _dupeGroups = scanDuplicates().concat(survivingImageGroups);
+  const freshGroups = scanDuplicates();
+  // A survivor must not share ANY member with a group the fresh url/title
+  // rescan just produced. Union-find guarantees uniqueness WITHIN
+  // freshGroups, but says nothing about the UNION of freshGroups and the old
+  // image-match survivors -- two different old survivors could each fail to
+  // notice the other. Two concrete ways a card ends up in both: (1)
+  // mergeDupeMetadata above can fill an image-match keeper's previously-EMPTY
+  // title from a member just removed, so that keeper newly joins a title
+  // component on THIS scan even though it didn't join one before; (2)
+  // removing a member from a dismissed group changes that group's
+  // dupeGroupKey (computed from the full current member list), un-dismissing
+  // it. Either way, once a card is in two groups, a later apply would process
+  // both against a keeper-lookup map (nextImportedById/nextSavedById) built
+  // once and never refreshed mid-loop -- the second group's keeper lookup can
+  // return a card the first group already condemned, so mergeDupeMetadata
+  // writes into a card about to be deleted and that merge silently vanishes
+  // (see the belt-and-braces guard above for the second half of this fix).
+  const freshMemberKeys = new Set();
+  freshGroups.forEach(g => g.members.forEach(m => freshMemberKeys.add(dupeMemberKey(m))));
+  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !applyGroups.includes(g) && g.members.every(m => !freshMemberKeys.has(dupeMemberKey(m))));
+  _dupeGroups = freshGroups.concat(survivingImageGroups);
   if(_dupeReviewMode==="single"){
     const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
     _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);

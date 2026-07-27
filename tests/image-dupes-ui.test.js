@@ -286,32 +286,32 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 }
 
 // --- wiring: applyDupeRemoval must actually route through computeDupeApplyGroups
+// A BEHAVIORAL proof that applyDupeRemoval never lets a card end up a member
+// of two groups (F1) lives below, built on tests/_dupe-harness.js (the real
+// applyDupeRemoval/scanDuplicates/mergeDupeMetadata, extracted and run
+// against scripted Store/document stand-ins) -- an earlier version of this
+// comment claimed that kind of test was impractical; it isn't, it just needs
+// the same extraction technique the rest of this file already uses. What's
+// left here is a lighter structural check that the SHAPE of the fix is wired
+// up as described (derives from computeDupeApplyGroups, reads _dupeGroups
+// live, filters survivors against the fresh scan, and has the belt-and-braces
+// guard) -- the behavioral tests below are what actually prove it holds
+// under execution.
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": applyDupeRemoval derives its processing set from computeDupeApplyGroups and re-reads live _dupeGroups for survivors", () => {
-    // The "which groups get folded into the not-duplicate sweep" decision is
-    // proven behaviorally above against the real computeDupeApplyGroups.
-    // What's left to prove here is wiring: that applyDupeRemoval actually
-    // USES that decision (rather than re-deriving its own groupsToProcess-
-    // based filter, which is the exact regression this replaces), and that
-    // the final survivor line reads _dupeGroups LIVE rather than a
-    // groupsToProcess/applyGroups snapshot taken before this function's
-    // awaits -- the async image scan's own .then() can append newly-found
-    // groups to _dupeGroups while a removal is mid-flight (proven by the
-    // renderHealthDupes wiring tests above), and a snapshot taken before
-    // that append would silently drop them. Exercising that live-read
-    // property behaviorally would require mocking document.querySelectorAll,
-    // Store, and the busy-overlay calls end to end; that DOM/Store coupling
-    // makes a full behavioral test impractical, so this half stays a
-    // structural source check rather than a claimed behavioral proof.
     const body = fn(src, "applyDupeRemoval");
     assert.match(body, /computeDupeApplyGroups\(groupsToProcess,\s*_dupeImageTouched,\s*dupeGroupKey\)/,
       "must derive applyGroups from the real touched-group decision, not reimplement it inline");
     assert.match(body, /for\(const g of applyGroups\)/,
       "the removal/retain loop must use applyGroups (touched-filtered), not the raw groupsToProcess snapshot");
-    assert.match(body, /_dupeGroups\.filter\(g\s*=>\s*g\.imageMatch\s*&&\s*!applyGroups\.includes\(g\)\)/,
-      "must read the LIVE _dupeGroups (which may have grown during the awaits above), filtered by applyGroups");
-    assert.match(body, /_dupeGroups\s*=\s*scanDuplicates\(\)\.concat\(/,
-      "the fresh url/title scan must be concatenated with survivors, not used as a full replacement");
+    assert.match(body, /if\(\(keep\.scope===\"saved\"\?rmSaved:rmImported\)\.has\(keep\.card\.id\)\) continue;/,
+      "F1 belt-and-braces: a group whose keeper was already condemned by an earlier group in this SAME apply must be skipped, not processed against a stale map entry");
+    assert.match(body, /const freshGroups\s*=\s*scanDuplicates\(\);/,
+      "the fresh url/title rescan must be captured once, not inlined twice");
+    assert.match(body, /_dupeGroups\.filter\(g\s*=>\s*g\.imageMatch\s*&&\s*!applyGroups\.includes\(g\)\s*&&\s*g\.members\.every\(m\s*=>\s*!freshMemberKeys\.has\(dupeMemberKey\(m\)\)\)\)/,
+      "F1 fix: a surviving image group must not share ANY member with a group the fresh scan just produced, or a card can end up in two groups");
+    assert.match(body, /_dupeGroups\s*=\s*freshGroups\.concat\(survivingImageGroups\);/,
+      "the fresh url/title scan must be concatenated with the (now overlap-filtered) survivors, not used as a full replacement");
   });
 }
 
@@ -326,4 +326,159 @@ for (const name of ["renderHealthDupes", "dupeRowHTML", "dupeLargeCardHTML", "du
 }
 
 console.log(pass + " passed, " + fail + " failed");
+
+// --- behavioral (async): F1 double-membership, and F4 the .catch() on a
+// thrown image scan. Both need real awaits, so they run in a trailing IIFE
+// (same pattern tests/image-dupes.test.js uses for its own async section),
+// sharing the same pass/fail counters and reporting once at the end.
+const { build: buildDupeHarness } = require("./_dupe-harness");
+async function at(n, fn) {
+  try { await fn(); pass++; console.log("  ok  " + n); }
+  catch (e) { fail++; console.log("  FAIL " + n + " — " + (e && e.stack || e)); }
+}
+
+// Sandbox for the F4 test: renderHealthDupes plus its ONE hard dependency
+// for an empty-library scan (scanDuplicates), with scanImageDuplicates
+// injected as a controllable mock. Deliberately uses EMPTY imported/saved so
+// scanDuplicates() returns [] and the render body short-circuits at
+// `if(!_dupeGroups.length)` right after the scan kickoff -- this test only
+// needs to prove the async .then().catch() wiring around scanImageDuplicates,
+// which is unaffected by which/how many groups eventually render (that's
+// covered by the row/group-render tests elsewhere in this file already).
+function loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock) {
+  const body = fn(src, "scanDuplicates") + "\n" + fn(src, "renderHealthDupes") + `
+    return {
+      render: renderHealthDupes,
+      getProgress: () => _imgScanProgress,
+      getScanned: () => _healthScanned.dupes,
+    };`;
+  const toasts = [];
+  const warnCalls = [];
+  const document = {
+    getElementById: (id) => {
+      if (id === "healthModal") return { classList: { contains: () => true } };   // modal stays open throughout
+      return { textContent: "" };   // e.g. the #imgScanPct span; unused here
+    },
+  };
+  const consoleStub = { warn: (...a) => warnCalls.push(a), log: () => {}, error: () => {} };
+  const factory = new Function(
+    "document", "toast", "console", "scanImageDuplicates",
+    "let imported=[],saved=[],_dupeGroups=[],_dupeSpared=new Set(),_dupeImageChecked=new Set()," +
+    "_dupeImageTouched=new Set(),_healthScanned={},_imgScanAbort=false,_imgScanGen=0," +
+    "_imgScanProgress=null,_healthTab='dupes';\n" + body
+  );
+  const api = factory(document, (m) => toasts.push(m), consoleStub, scanImageDuplicatesMock);
+  api.toasts = toasts; api.warnCalls = warnCalls;
+  return api;
+}
+
+(async () => {
+
+for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+
+  // ---- F1: a card must never end up a member of two _dupeGroups entries ---
+  await at(label + ": applyDupeRemoval never lets a card end up in two groups, even when a merge fills a previously-empty title and re-joins it to an untouched image-match group's member (F1)", async () => {
+    // Reproduces the reported incident: an image-match group's keeper (K)
+    // has an EMPTY title; its non-keep member (M) gets removed and ticked,
+    // and mergeDupeMetadata fills K's title from M's. A SEPARATE card (L)
+    // already carries that exact title AND is independently the keeper of
+    // its own untouched image-match group (with member P). Titles must be
+    // >=10 chars / >=2 words to clear normTitle's grouping floor.
+    const memberKey = (scope, id) => scope + ":" + id;
+    const K = { id: "K", title: "", ts: 1 };                         // older tie-break winner once titled
+    const M = { id: "M", title: "Echo Cat Adventures" };
+    const L = { id: "L", title: "Echo Cat Adventures", ts: 1000 };
+    const P = { id: "P", desc: "P note aaaaaaaaaa" };
+
+    const api = buildDupeHarness(src);
+    const G1 = { imageMatch: true, keepKey: memberKey("imported", "K"), members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] };
+    const G3 = { imageMatch: true, keepKey: memberKey("imported", "L"), members: [{ scope: "imported", card: L }, { scope: "imported", card: P }] };
+    api.set({ imported: [K, M, L, P], saved: [], groups: [G1, G3], mode: "all", touched: [api.groupKey(G1.members)] });
+    api.checkedKeys.add("imported:M");
+
+    await api.run();   // apply #1: only ticks M, in G1
+    const st1 = api.get();
+
+    // The core F1 property: no card is a member of two groups after an apply.
+    const seen = new Map();
+    for (const g of st1._dupeGroups) {
+      for (const m of g.members) {
+        const k = m.scope + ":" + m.card.id;
+        assert.ok(!seen.has(k), "card " + k + " is a member of two _dupeGroups entries after one apply — the exact defect a later 'Apply choices' click would silently over-process");
+        seen.set(k, g);
+      }
+    }
+    assert.ok(!st1.imported.some(c => c.id === "M"), "M was ticked and must be removed");
+
+    // apply #2: the user reviews whatever _dupeGroups now shows. Tick the
+    // non-keep member of the fresh title group (K or L, whichever
+    // dupePrimary didn't pick) plus P in the still-surviving image group, if
+    // there is one — reproducing the "user reviews two groups that turned
+    // out to share a card" scenario from the report.
+    const titleGroup = st1._dupeGroups.find(g => !g.imageMatch);
+    assert.ok(titleGroup, "K and L must have joined a fresh title group once K's title was filled by the merge");
+    const nonKeep = titleGroup.members.find(m => memberKey(m.scope, m.card.id) !== titleGroup.keepKey);
+    const imgGroupNow = st1._dupeGroups.find(g => g.imageMatch);
+    api.checkedKeys.clear();
+    api.checkedKeys.add(memberKey(nonKeep.scope, nonKeep.card.id));
+    api.checkedKeys.add("imported:P");
+    if (imgGroupNow) api.set({ touched: [api.groupKey(imgGroupNow.members)] });
+
+    await api.run();   // apply #2
+    const st2 = api.get();
+
+    assert.ok(st2.imported.some(c => c.id === "K"), "K was never ticked in either apply and must survive");
+    const pSurvives = st2.imported.some(c => c.id === "P");
+    const pDataAbsorbed = st2.imported.some(c => c.desc && c.desc.indexOf("P note") >= 0);
+    assert.ok(pSurvives || pDataAbsorbed, "P's card or the data merged from it must survive somewhere — losing both means a merge target was deleted with P's data still inside it (the exact 'merge target vanishes' failure from the report)");
+  });
+
+  // ---- F1: the belt-and-braces guard, independent of the primary fix ------
+  await at(label + ": applyDupeRemoval skips a group whose keeper was already condemned by an earlier group in the SAME apply, rather than merging into a doomed card (F1 belt-and-braces)", async () => {
+    // Hand-crafts the double-membership directly (bypassing the merge/rescan
+    // mechanism the test above exercises) so this pins the LAST-RESORT guard
+    // on its own: B is simultaneously the REMOVED member of group X and the
+    // KEEP of group Y. X processes first and condemns B; Y's keeper lookup
+    // must then be skipped, not treated as valid.
+    const memberKey = (scope, id) => scope + ":" + id;
+    const A = { id: "A" };
+    const B = { id: "B" };
+    const D = { id: "D", desc: "D note zzzzzzzzzz" };
+    const api = buildDupeHarness(src);
+    const X = { imageMatch: false, keepKey: memberKey("imported", "A"), members: [{ scope: "imported", card: A }, { scope: "imported", card: B }] };
+    const Y = { imageMatch: false, keepKey: memberKey("imported", "B"), members: [{ scope: "imported", card: B }, { scope: "imported", card: D }] };
+    api.set({ imported: [A, B, D], saved: [], groups: [X, Y], mode: "all" });
+    api.checkedKeys.add("imported:B");   // remove B from X
+    api.checkedKeys.add("imported:D");   // remove D from Y, keeping B — which X is about to delete
+
+    await api.run();
+    const st = api.get();
+    const dSurvives = st.imported.some(c => c.id === "D");
+    const dDataAbsorbed = st.imported.some(c => c.desc && c.desc.indexOf("D note") >= 0);
+    assert.ok(dSurvives || dDataAbsorbed, "D's card or its merged data must survive — its merge target (B) was already condemned by group X earlier in the SAME apply");
+  });
+
+  // ---- F4: a thrown image scan must not leave the progress banner up forever
+  await at(label + ": renderHealthDupes clears the progress banner, logs, and toasts if scanImageDuplicates throws — instead of leaving 'Checking pictures…' on screen forever (F4)", async () => {
+    let rejectFn;
+    const scanImageDuplicatesMock = () => new Promise((resolve, reject) => { rejectFn = reject; });
+    const api = loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock);
+
+    api.render({});   // kicks off the scan synchronously
+    assert.deepStrictEqual(api.getProgress(), { done: 0, total: 0 }, "sanity: the scan must be marked in-progress immediately");
+    assert.strictEqual(api.getScanned(), true, "sanity: _healthScanned.dupes is set before the async scan even starts");
+
+    rejectFn(new Error("imagehash.js failed to load"));
+    await new Promise(r => setTimeout(r, 0));   // let the microtask queue drain so .catch() runs
+
+    assert.strictEqual(api.getProgress(), null, "a thrown scan must clear the progress banner — before this fix it stayed stuck at the last known percentage forever");
+    assert.strictEqual(api.toasts.length, 1, "the user must be told the check failed, not left staring at a frozen progress line with no explanation");
+    assert.match(api.toasts[0], /couldn.t check pictures/i);
+    assert.strictEqual(api.warnCalls.length, 1, "the failure must be logged");
+  });
+}
+
+console.log((pass) + " passed, " + fail + " failed (cumulative)");
 process.exit(fail ? 1 : 0);
+
+})();
