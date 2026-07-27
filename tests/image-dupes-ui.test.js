@@ -458,6 +458,41 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(dSurvives || dDataAbsorbed, "D's card or its merged data must survive — its merge target (B) was already condemned by group X earlier in the SAME apply");
   });
 
+  // ---- single-mode Apply with nothing checked marks the current group OK and moves on ----
+  await at(label + ": one-at-a-time Apply with NOTHING checked marks the current (untouched image) group not-duplicate", async () => {
+    // The reported gap: in single review an image-match group renders all-unchecked
+    // by default, so clicking Apply with nothing ticked used to hit "Nothing to
+    // apply yet" and leave the group in place. The explicit per-group Apply IS the
+    // review signal, so the current group is treated as touched -> marked
+    // not-duplicate -> advanced past, exact AND image groups alike.
+    const api = buildDupeHarness(src);
+    const K = { id: "K", title: "Sunset Over Water" };
+    const N = { id: "N", title: "Sunset Over Water" };
+    const G = { imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: N }] };
+    api.set({ imported: [K, N], saved: [], groups: [G], mode: "single", index: 0 });   // nothing touched, nothing checked
+    await api.run();
+    const marked = api.log.markNotDup.flat();
+    assert.ok(marked.includes("imported:K") && marked.includes("imported:N"),
+      "both members of the reviewed image group must be marked not-duplicate, got: " + JSON.stringify(api.log.markNotDup));
+    const st = api.get();
+    assert.ok(st.imported.some(c => c.id === "K") && st.imported.some(c => c.id === "N"),
+      "nothing was checked, so no card may be removed");
+  });
+
+  await at(label + ": all-groups Apply with nothing checked still leaves an UNTOUCHED image group alone (bulk safety unchanged)", async () => {
+    // The scope boundary: the single-mode change must NOT bleed into the bulk
+    // 'Apply choices' path, where an untouched image group may be off-screen and
+    // must keep being offered rather than silently dismissed.
+    const api = buildDupeHarness(src);
+    const K2 = { id: "K2", title: "Harbor At Dawn" };
+    const N2 = { id: "N2", title: "Harbor At Dawn" };
+    const G = { imageMatch: true, keepKey: "imported:K2", members: [{ scope: "imported", card: K2 }, { scope: "imported", card: N2 }] };
+    api.set({ imported: [K2, N2], saved: [], groups: [G], mode: "all" });   // nothing touched, nothing checked
+    await api.run();
+    assert.strictEqual(api.log.markNotDup.flat().length, 0,
+      "a bulk 'Apply choices' must NOT dismiss an image group the user never touched");
+  });
+
   // ---- F4: a thrown image scan must not leave the progress banner up forever
   await at(label + ": renderHealthDupes clears the progress banner, logs, and toasts if scanImageDuplicates throws — instead of leaving 'Checking pictures…' on screen forever (F4)", async () => {
     let rejectFn;

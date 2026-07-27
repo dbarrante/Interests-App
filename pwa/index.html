@@ -3817,7 +3817,7 @@ async function cardEditSave(){
   if(!title){ toast("Give the card a title first."); return; }
   const it = (saved||[]).find(x=>x && x.id===_edSavedId);
   if(!it){ toast("That card is no longer available."); closeGuide(); return; }
-  it.title = title.slice(0,250);
+  it.title = title.slice(0,250); it.titleSet = true;
   await Store.putSaved(saved);
   closeGuide();
   renderSaved();
@@ -3938,7 +3938,7 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  if(title) it.title=title;
+  if(title){ it.title=title; it.titleSet=true; }
   it.desc=desc;
   it.tags=tags;
   setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
@@ -5809,11 +5809,18 @@ function renderHealthNoLink(list){
   attachCardImages();
 }
 // ---- Title issues tab ----
-// Every card (imported OR saved) whose title is missing/generic/platform-only.
+// Every card (imported OR saved) whose title is missing/generic/platform-only
+// AND that the user hasn't already settled. titleSet marks a title the user
+// deliberately set (applied a suggestion or hand-edited it); this panel is a
+// to-do list, so a handled card must leave it and stay gone — even when the new
+// title is one isGenericTitle still flags (most often just under the 25-char
+// bar, e.g. "Braided Pesto Bread"). isGenericTitle only sees the string and
+// can't tell a user's title from an identical auto-captured one, so the flag
+// carries that provenance.
 function flaggedTitleCards(){
   const out=[];
-  imported.forEach(c=>{ if(c && isGenericTitle(c.title,c.url)) out.push({scope:"imported", card:c}); });
-  saved.forEach(c=>{ if(c && isGenericTitle(c.title,c.url)) out.push({scope:"saved", card:c}); });
+  imported.forEach(c=>{ if(c && !c.titleSet && isGenericTitle(c.title,c.url)) out.push({scope:"imported", card:c}); });
+  saved.forEach(c=>{ if(c && !c.titleSet && isGenericTitle(c.title,c.url)) out.push({scope:"saved", card:c}); });
   return out;
 }
 // {scope:id -> suggested title string} for cards awaiting review after
@@ -6023,7 +6030,7 @@ function applyTitleSuggestions(){
     const val=input.value.trim(); if(!val) return;
     const card=scope==="saved"?bySaved[id]:byImported[id];
     if(!card) return;
-    card.title=val.slice(0,250);
+    card.title=val.slice(0,250); card.titleSet=true;
     applied++;
   });
   // Bail BEFORE clearing _titleSuggestions. Clearing it unconditionally threw
@@ -6339,6 +6346,13 @@ async function applyDupeRemoval(){
   const priorIndex=_dupeReviewIndex;
   const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  // An explicit per-group Apply in one-at-a-time mode IS a review of the group on
+  // screen, so treat it as touched: an image-match group here (which renders
+  // all-unchecked by default) then gets marked not-duplicate and advanced past
+  // instead of stalling on "Nothing to apply yet". The bulk 'All groups' apply is
+  // left alone, where an untouched image group may be off-screen and must keep
+  // being offered rather than silently dismissed.
+  if(_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]) _dupeImageTouched.add(dupeGroupKey(_dupeGroups[_dupeReviewIndex].members));
   const {applyGroups,untouchedImageGroups} = computeDupeApplyGroups(groupsToProcess, _dupeImageTouched, dupeGroupKey);
   const leftForReview = untouchedImageGroups ? " "+untouchedImageGroups+" picture match"+(untouchedImageGroups===1?"":"es")+" left for review." : "";
   if(!checked.size){
