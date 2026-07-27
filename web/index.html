@@ -472,6 +472,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 </style>
 <script>try{if(localStorage.getItem("ia_theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
 <script src="ai.js"></script>
+<script src="imagehash.js"></script>
 <script src="storage.js"></script>
 <script src="route-capture.js"></script>
 <script src="lib/urlkey.js"></script>
@@ -4819,6 +4820,59 @@ function allTitleKeys(excludeId){
   saved.forEach(c=>{ if(c && c.id!==excludeId && c.title) keys.add(normalizeTitleKey(c.title)); });
   return keys;
 }
+// --- perceptual image hashing (duplicate detection) -------------------------
+// Identifies WHICH image a cached hash was computed from, so the entry
+// self-invalidates when the card's picture changes (re-capture, manual upload,
+// "Fix placeholders") instead of matching on a stale hash forever.
+function imgHashSrcKey(card){
+  const v = (card && (card.img || card.image)) || "";
+  return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+(card.lastUpdate||card.edited||0)) : String(v);
+}
+// A 64-bit dHash for one card, or "" when the image can't be read or hashed.
+// "" is a CACHED verdict, not an error: an unreachable or degenerate image
+// must not be re-processed on every scan of a multi-thousand-card library.
+async function computeCardHash(card){
+  try{
+    const image = await resolveCardImageForAI(card);
+    // resolveCardImageForAI returns a TRUTHY object on failure too -- a
+    // { failReason } object has no .base64 -- so `if(!image)` alone never
+    // fires on a failure. Must check .base64, matching ocrExtractText below.
+    if(!image || !image.base64) return "";
+    const blob = await (await fetch("data:"+image.mediaType+";base64,"+image.base64)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const W = IA_IMGHASH.HASH_W, H = IA_IMGHASH.HASH_H;
+    const c = new OffscreenCanvas(W, H);
+    const ctx = c.getContext("2d", {willReadFrequently:true});
+    ctx.drawImage(bitmap, 0, 0, W, H);
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const grey = new Uint8Array(W*H);
+    let lo = 255, hi = 0;
+    for(let i=0;i<W*H;i++){
+      const g = (px[i*4]*0.299 + px[i*4+1]*0.587 + px[i*4+2]*0.114) | 0;
+      grey[i] = g;
+      if(g<lo) lo = g;
+      if(g>hi) hi = g;
+    }
+    // dhashFromGrey returns the SAME all-zero hash for any flat/near-flat
+    // sample (every neighbour pair reads "not brighter"), so two unrelated
+    // blank or solid-colour cards would otherwise hash identically and match
+    // at distance 0 -- and the duplicate scanner that consumes these hashes
+    // offers to DELETE the loser of a match. Treat a near-uniform sample as
+    // unhashable instead of hashing it. Threshold 8 (of 255, ~3%): comfortably
+    // above the rounding/recompression noise a genuinely flat source picks up
+    // from JPEG blocking and the 9x8 downscale, while well below the tonal
+    // range any real photo spans once resampled to greyscale -- even flat
+    // lighting (overcast sky, fog, a plain product shot on white) typically
+    // covers several dozen levels.
+    if(hi - lo < 8) return "";
+    return IA_IMGHASH.dhashFromGrey(grey, W, H);
+  }catch(e){ console.warn("computeCardHash failed", e); return ""; }
+}
+async function loadImgHashCache(){
+  try{ const m = await Store.kvGet("ia_imghash"); return (m && typeof m==="object") ? m : {}; }
+  catch(e){ return {}; }
+}
+function saveImgHashCache(map){ try{ Store.kvSet("ia_imghash", map); }catch(e){} }
 // Resolves a card's image to downscaled JPEG bytes for an AI vision/OCR call
 // (spec: docs/superpowers/specs/2026-07-24-vision-title-generation-design.md
 // §3). Shared by the OCR tier and the vision tier — same downscale budget
