@@ -5394,6 +5394,8 @@ function closeHealth(){
   _dupeFullScreen = false;
   document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {}; _titleSuggestions = {};
+  _imgScanAbort = true;   // stop a running image scan; its .then() checks this before applying results
+  _imgScanProgress = null;
 }
 function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _titleSuggestions = {}; _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
@@ -5529,10 +5531,10 @@ function dupeModeBarHTML(){
       </div></div></div>`;
 }
 function dupeCompactGroupHTML(g,gi){
-  return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
-    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey)).join("")}</div>`;
+  return `<div class="dupe-group">${g.imageMatch ? `<div class="s" style="padding:0 0 6px"><span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span></div>` : ""}${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
+    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>`;
 }
-function dupeLargeCardHTML(mem,gi,keep){
+function dupeLargeCardHTML(mem,gi,keep,imageMatch){
   const it=mem.card;
   const dom=domain(it.url)||(mem.scope==="saved"?"saved":"");
   const date=it.sdate?new Date(it.sdate).toLocaleDateString():"";
@@ -5545,28 +5547,59 @@ function dupeLargeCardHTML(mem,gi,keep){
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
     <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
       ? `<span>Best copy</span>`
-      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${!imageMatch && !_dupeSpared.has(mem.scope+":"+it.id)?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
     </div></div>`;
 }
 function renderHealthDupes(list){
-  if(!_healthScanned.dupes){ _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _healthScanned.dupes = true; }
+  if(!_healthScanned.dupes){
+    _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _healthScanned.dupes = true;
+    // Second pass: image-similarity matches over whatever the url/title pass
+    // above did NOT already group. Runs async and can take a while on a large
+    // library, so it never blocks this render -- it re-renders the tab itself
+    // when done. `gen` guards a scan that finishes after the modal was
+    // closed/reopened or the tab switched away: only the newest scan's result
+    // is ever applied, even if an older one is still physically running.
+    const groupedKeys = new Set();
+    _dupeGroups.forEach(g => g.members.forEach(m => groupedKeys.add(m.scope + ":" + m.card.id)));
+    _imgScanAbort = false;
+    const gen = ++_imgScanGen;
+    _imgScanProgress = { done: 0, total: 0 };
+    scanImageDuplicates(groupedKeys, (done,total)=>{
+      if(gen !== _imgScanGen) return;
+      _imgScanProgress = { done, total };
+      const pct = document.getElementById("imgScanPct");
+      if(pct) pct.textContent = Math.round(done/Math.max(1,total)*100) + "%";
+    }).then(imgGroups=>{
+      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan
+      _imgScanProgress = null;
+      if(_imgScanAbort) return;                                                // modal closed mid-scan -- drop the result
+      if(!document.getElementById("healthModal").classList.contains("open")) return;
+      // Keep the result even if the user switched to another health tab --
+      // _healthScanned.dupes is already true, so nothing else will ever
+      // re-fetch these groups; discarding them here would mean switching
+      // back to Duplicates shows stale (image-match-free) results forever.
+      _dupeGroups = _dupeGroups.concat(imgGroups);
+      if(_healthTab==="dupes") renderHealthDupes(document.getElementById("healthList"));
+    });
+  }
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
-  if(!_dupeGroups.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found.</div>`; return; }
+  const scanBanner = _imgScanProgress ? `<div class="s" style="padding:8px 4px;opacity:.75">Checking pictures for duplicates… <span id="imgScanPct">${_imgScanProgress.total?Math.round(_imgScanProgress.done/_imgScanProgress.total*100):0}%</span></div>` : "";
+  if(!_dupeGroups.length){ list.innerHTML = scanBanner + `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found${_imgScanProgress?" yet — still checking pictures for visual duplicates.":"."}</div>`; return; }
   _dupeReviewIndex=Math.min(_dupeReviewIndex,_dupeGroups.length-1);
   const summary=`${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy is kept; uncheck any duplicate you want to spare.`;
   if(_dupeReviewMode==="all"){
-    list.innerHTML=`${dupeModeBarHTML()}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
+    list.innerHTML=`${dupeModeBarHTML()}${scanBanner}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
       ${_dupeGroups.map(dupeCompactGroupHTML).join("")}
       <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices</button></div>`;
   } else {
     const g=_dupeGroups[_dupeReviewIndex];
     const sorted=g.members.slice().sort((a,b)=>(dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1));
     const title=(g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0]).card.title||"Duplicate set";
-    list.innerHTML=`${dupeModeBarHTML()}
-      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
+    list.innerHTML=`${dupeModeBarHTML()}${scanBanner}
+      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}${g.imageMatch?` <span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span>`:""}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
-      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey)).join("")}</div>
+      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>
       <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
       <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
@@ -5898,6 +5931,18 @@ function applyTitleSuggestions(){
 // other -- a smaller-but-correct group beats a bigger-but-wrong one here.
 function groupByImageHash(entries, alreadyGrouped, hammingFn, maxDistance){
   const live = (entries||[]).filter(e => e && e.hash && !alreadyGrouped.has(e.key));
+  // Sort by each entry's stable content-derived key before the greedy pass.
+  // The clique construction below is order-sensitive -- which pair gets
+  // offered first depends on array order -- so leaving `live` in whatever
+  // order `entries` arrived in meant resolving an UNRELATED card between two
+  // scans (which shifts array positions) could change which pair gets
+  // grouped, and the list would shift under the user for no reason tied to
+  // their actual pictures. Sorting first makes traversal order a function of
+  // card identity, not incidental array position. This fixes REORDER
+  // instability only -- REMOVAL instability (dropping a card still changes
+  // what its neighbours do, since a neighbour may now clique with someone
+  // else entirely) is inherent to greedy-without-backtracking and accepted.
+  live.sort((a,b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const close = (i,j) => hammingFn(live[i].hash, live[j].hash) <= maxDistance;
   const used = new Array(live.length).fill(false);
   const groups = [];
@@ -5925,7 +5970,7 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
   imported.forEach(c=>{ if(c) members.push({key:"imported:"+c.id, scope:"imported", card:c}); });
   saved.forEach(c=>{ if(c) members.push({key:"saved:"+c.id, scope:"saved", card:c}); });
   const todo = members.filter(m => !alreadyGroupedKeys.has(m.key));
-  let done = 0;
+  let done = 0, recomputed = 0;
   for(const m of todo){
     const src = imgHashSrcKey(m.card);
     const hit = cache[m.card.id];
@@ -5935,10 +5980,19 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
       cache[m.card.id] = { h: m.hash, src: src };
       // Persist as we go: closing the modal half-way must RESUME next time, not
       // restart. A multi-thousand-card first pass is too expensive to redo.
-      if(done % 25 === 0) saveImgHashCache(cache);
+      // Checkpoint on a count of actual RECOMPUTES, not the mixed hit/miss
+      // `done` counter below -- on a mostly-cached library `done` can sail
+      // past many multiples of 25 between misses, so a hit/miss-based check
+      // lands irregularly (or not at all) instead of every 25 cards actually
+      // re-hashed.
+      recomputed++;
+      if(recomputed % 25 === 0) saveImgHashCache(cache);
     }
     done++;
-    if(onProgress && done % 10 === 0) onProgress(done, todo.length);
+    // `|| done === todo.length` guarantees a final tick even when the total
+    // isn't a multiple of 10 -- otherwise the UI could rest at "990 of 997"
+    // forever once the loop finishes.
+    if(onProgress && (done % 10 === 0 || done === todo.length)) onProgress(done, todo.length);
     if(_imgScanAbort) break;
   }
   saveImgHashCache(cache);
@@ -5949,6 +6003,17 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
     .map(g => Object.assign(g, { keepKey: dupeMemberKey(dupePrimary(g.members)) }));
 }
 let _imgScanAbort = false;
+// Bumped every time a NEW image scan starts; a scan's own `.then()` bails if
+// this no longer matches the value it captured at start. Closing the modal
+// sets _imgScanAbort, but a fast reopen resets that flag for the NEW scan --
+// the generation counter is what actually stops a still-running OLD scan
+// from writing its (now stale) results into a group list it no longer
+// belongs to.
+let _imgScanGen = 0;
+// {done,total} while an image scan is in flight, else null. Read at render
+// time by renderHealthDupes to show a progress line, and updated in place
+// (via the #imgScanPct span) on each onProgress tick without a full re-render.
+let _imgScanProgress = null;
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
 function scanDuplicates(){
@@ -6005,7 +6070,7 @@ function dupeThumb(mem){
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;
   return `<div class="ph"></div>`;
 }
-function dupeRowHTML(mem, gi, keep){
+function dupeRowHTML(mem, gi, keep, imageMatch){
   const it = mem.card;
   const dom = domain(it.url) || (mem.scope==="saved"?"saved":"");
   const date = it.sdate ? new Date(it.sdate).toLocaleDateString() : "";
@@ -6017,7 +6082,7 @@ function dupeRowHTML(mem, gi, keep){
     ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
-      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${!imageMatch && !_dupeSpared.has(mem.scope+":"+it.id)?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
   </div>`;
 }
@@ -6215,7 +6280,18 @@ async function applyDupeRemoval(){
     try{ const imageId=ref.imageId; await Store.imgDel(imageId); if(_fpMap[ref.cardId]){ delete _fpMap[ref.cardId]; await Store.fpDel(ref.cardId); } }catch(e){ console.warn("duplicate orphan image cleanup deferred",ref.imageId,e); }
   }
   rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
-  _dupeGroups=scanDuplicates();
+  // Re-run the (cheap, synchronous) url/title pass, but do NOT blindly
+  // discard the image-match groups scanImageDuplicates already found --
+  // scanDuplicates() only ever returns url/title matches, and this path
+  // never sets _healthScanned.dupes=false, so nothing would re-trigger the
+  // (expensive) image pass to regenerate them. Any image group that was
+  // fully processed just now (groupsToProcess) is done -- its members are
+  // either removed or freshly marked not-duplicate -- so only groups NOT in
+  // groupsToProcess survive forward untouched. (Every card belongs to at
+  // most one group -- proven by the clique/no-double-membership property
+  // test -- so a survivor can never contain a card that was just removed.)
+  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !groupsToProcess.includes(g));
+  _dupeGroups = scanDuplicates().concat(survivingImageGroups);
   if(_dupeReviewMode==="single"){
     const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
     _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);
