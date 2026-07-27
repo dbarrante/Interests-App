@@ -4904,8 +4904,13 @@ function allTitleKeys(excludeId){
 // (1024px longest edge, ~0.7 JPEG quality) keeps payload/cost bounded for
 // both. Returns null on ANY failure (no image, fetch/decode error) — callers
 // treat null as "this tier can't run," never as an error to surface.
+// Why the last image resolve failed: "" | "no-image" | "fetch-blocked" | "decode-failed".
+// Read by regenerateTitleFor so a card whose PICTURE was unreachable doesn't get
+// reported as "no usable text or image" — they need different fixes.
+let _lastImageFailReason = "";
 async function resolveCardImageForAI(card){
   try{
+    _lastImageFailReason = "";
     const img = card && (card.img || card.image);
     if(!img) return null;
     let srcUrl;
@@ -4914,11 +4919,33 @@ async function resolveCardImageForAI(card){
       await Store.ensureImage(id);
       srcUrl = Store.imgUrl(id);
     } else if(/^https?:\/\//i.test(img)){
-      srcUrl = img;
+      srcUrl = "";   // remote: fetched by card id below, never by URL from the browser
     } else {
+      _lastImageFailReason = "no-image";
       return null;
     }
-    const blob = await (await fetch(srcUrl)).blob();
+    // A cross-origin image renders in an <img> without CORS but REFUSES a
+    // fetch(), so fetching the URL here returned null and the whole title
+    // pipeline went quiet. Remote images are fetched server-side instead, by
+    // card id — the browser never names a destination. The PWA has no Core
+    // service (no server to ask), so it falls back to the allorigins CORS
+    // proxy instead; the /api/fetch-card-image arm below is a desktop-shape
+    // fallback the PWA build never actually takes (window.IA_IDB — set
+    // synchronously by idb.js, which only ships in this build — is always
+    // truthy here).
+    let blob;
+    if(srcUrl){
+      blob = await (await fetch(srcUrl)).blob();
+    } else {
+      const resp = window.IA_IDB
+        ? await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(img))
+        : await fetch("/api/fetch-card-image", {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({ id: card.id })
+          });
+      if(!resp.ok){ _lastImageFailReason = "fetch-blocked"; return null; }
+      blob = await resp.blob();
+    }
     const bitmap = await createImageBitmap(blob);
     const maxEdge = 1024;
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
@@ -4932,7 +4959,7 @@ async function resolveCardImageForAI(card){
     let binary = "";
     for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
     return { mediaType:"image/jpeg", base64: btoa(binary) };
-  }catch(e){ console.warn("resolveCardImageForAI failed", e); return null; }
+  }catch(e){ console.warn("resolveCardImageForAI failed", e); _lastImageFailReason = "decode-failed"; return null; }
 }
 // Tier 1 of tiered title generation (spec §1): OCR the card's image via
 // Tesseract.js, loaded on demand from a CDN the first time it's needed —
@@ -5502,10 +5529,24 @@ async function regenerateTitleFor(card, extraAvoid, busyLabel){
   showBusyOverlay(busyLabel||"Generating a new title…");
   await new Promise(r=>requestAnimationFrame(r));
   let out=null;
+  // Reset BEFORE calling generateUniqueTitle: some tiers (e.g. a real desc that
+  // fails at the AI call) return null without ever touching the image, and this
+  // is a module-level variable — without this reset, such a card would inherit
+  // a STALE reason left over from a PREVIOUS, unrelated card's failed attempt.
+  _lastImageFailReason = "";
   try{ out = await generateUniqueTitle(card, extraAvoid); }
   catch(e){ console.warn("title regeneration failed", e); }
   hideBusyOverlay();
-  if(!out) toast("Couldn't generate a title for that card — check your AI key/credits, or it may have no usable text or image.", 7000);
+  if(!out){
+    const why = _lastImageFailReason === "fetch-blocked"
+      ? "Couldn't load that card's picture — the site may be blocking it, or it may be gone."
+      : _lastImageFailReason === "decode-failed"
+      ? "That card's picture couldn't be read."
+      : _lastImageFailReason === "no-image"
+      ? "That card has no picture to read a title from."
+      : "Couldn't generate a title — check your AI key, credits, and rate limits.";
+    toast(why, 7000);
+  }
   return out;
 }
 // Title-issues row retry: stages a fresh suggestion for review rather than
