@@ -186,6 +186,63 @@ function loadComputeDupeApplyGroups(src) {
 function loadDupeGroupKeyFn(src) {
   return eval("(" + fn(src, "dupeGroupKey") + ")");
 }
+// The round-trip neither the computeDupeApplyGroups tests below nor the row-
+// render tests above actually prove: that dupeToggleRemoval -- the ONE place
+// a real checkbox click reaches -- writes the exact key shapes those two
+// consumers read. Both of those test groups hand computeDupeApplyGroups/the
+// row templates a Set they built by hand; if dupeToggleRemoval wrote the
+// wrong key, or its `_dupeGroups.find(...)` lookup missed, every other test
+// here would still pass while the MEDIUM fix stayed inert end to end. Loads
+// the real dupeToggleRemoval plus the real dupeGroupKey/dupeMemberKey it
+// calls internally (not stand-ins), against a scripted _dupeGroups.
+function loadDupeToggleRemoval(src) {
+  const groupKeyFn = eval("(" + fn(src, "dupeGroupKey") + ")");
+  const memberKeyFn = eval("(" + fn(src, "dupeMemberKey") + ")");
+  const factory = new Function(
+    "_dupeSpared", "_dupeImageChecked", "_dupeImageTouched", "_dupeGroups", "dupeMemberKey", "dupeGroupKey",
+    fn(src, "dupeToggleRemoval") + "\nreturn dupeToggleRemoval;"
+  );
+  return { groupKeyFn, memberKeyFn, factory };
+}
+
+for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+  t(label + ": dupeToggleRemoval (the real function a checkbox click calls) records the exact dupeGroupKey computeDupeApplyGroups looks up", () => {
+    const { groupKeyFn, memberKeyFn, factory } = loadDupeToggleRemoval(src);
+    const keepMember = { scope: "imported", card: { id: "keep1" } };
+    const nonKeepMember = { scope: "imported", card: { id: "rm1" } };
+    const group = { imageMatch: true, members: [keepMember, nonKeepMember] };
+    const dupeSpared = new Set(), dupeImageChecked = new Set(), dupeImageTouched = new Set();
+    const dupeGroups = [group];
+    const dupeToggleRemoval = factory(dupeSpared, dupeImageChecked, dupeImageTouched, dupeGroups, memberKeyFn, groupKeyFn);
+    // Same key shape the onchange handler emits: mem.scope+":"+it.id.
+    const key = nonKeepMember.scope + ":" + nonKeepMember.card.id;
+
+    dupeToggleRemoval(key, true);   // simulates the user checking the box
+    assert.ok(dupeImageChecked.has(key), "checking the box must record the member as explicitly checked");
+    assert.strictEqual(dupeImageTouched.size, 1, "toggling a checkbox in an image-match group must record it as touched");
+    assert.ok(dupeImageTouched.has(groupKeyFn(group.members)),
+      "the recorded key must be the EXACT value computeDupeApplyGroups derives via groupKeyFn(g.members) -- a mismatched key would make the touch invisible to it");
+
+    dupeToggleRemoval(key, false);   // user reconsiders and unchecks it again
+    assert.ok(!dupeImageChecked.has(key), "unchecking must remove the live explicit-checked flag (row must render unchecked again)");
+    assert.ok(dupeImageTouched.has(groupKeyFn(group.members)),
+      "touched must stay sticky even after reverting to unchecked -- that's still a reviewed decision, not the unreviewed default");
+  });
+  t(label + ": dupeToggleRemoval leaves _dupeImageTouched alone for a url/title (non-image) group -- only image-match groups use this bookkeeping", () => {
+    const { groupKeyFn, memberKeyFn, factory } = loadDupeToggleRemoval(src);
+    const keepMember = { scope: "imported", card: { id: "keep2" } };
+    const nonKeepMember = { scope: "imported", card: { id: "rm2" } };
+    const group = { imageMatch: false, members: [keepMember, nonKeepMember] };
+    const dupeSpared = new Set(), dupeImageChecked = new Set(), dupeImageTouched = new Set();
+    const dupeGroups = [group];
+    const dupeToggleRemoval = factory(dupeSpared, dupeImageChecked, dupeImageTouched, dupeGroups, memberKeyFn, groupKeyFn);
+    const key = nonKeepMember.scope + ":" + nonKeepMember.card.id;
+
+    dupeToggleRemoval(key, false);
+    assert.strictEqual(dupeImageTouched.size, 0, "a url/title group toggle must not touch the image bookkeeping");
+    assert.ok(dupeSpared.has(key), "existing url/title behavior is unchanged: unchecking spares the member");
+  });
+}
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   const computeDupeApplyGroups = loadComputeDupeApplyGroups(src);
