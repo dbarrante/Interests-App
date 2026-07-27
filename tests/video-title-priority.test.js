@@ -72,14 +72,18 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(m, "generateUniqueTitle not found");
     const body = m[1];
     const videoOcr = body.indexOf("if(looksLikeVideo(card)){");
-    const descTier = body.indexOf("if(description) return titleFromSignal");
+    // generateUniqueTitle returns { title, failReason } (Task 4 Finding B), so
+    // the description tier's return is now `return { title: await
+    // titleFromSignal(...), failReason: "" }` rather than a bare
+    // `return titleFromSignal(...)` -- same tier, same ordering, just wrapped.
+    const descTier = body.indexOf("if(description) return { title: await titleFromSignal");
     assert.ok(videoOcr >= 0, "the video branch is missing");
     assert.ok(descTier >= 0, "the description tier is missing");
     assert.ok(videoOcr < descTier,
       "the burned-in caption must be read BEFORE the description — that ordering is the whole feature");
   });
   t(label + ": the burned-in text is flagged as OCR, not passed off as a description", () => {
-    assert.match(src, /const burned = await ocrExtractText\(card\);\s*\r?\n\s*if\(burned\) return titleFromSignal\(card, \{description:burned, ocr:true,/,
+    assert.match(src, /const burned = await ocrExtractText\(card\);\s*\r?\n\s*if\(burned\) return \{ title: await titleFromSignal\(card, \{description:burned, ocr:true,/,
       "must set ocr:true so the prompt knows the text came from an image, not the page");
   });
   t(label + ": a video does not run OCR twice", () => {

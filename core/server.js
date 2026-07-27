@@ -22,6 +22,7 @@ const capturemeta = require("./capturemeta");
 const news = require("./news");
 const autoimport = require("./autoimport");
 const captureQueue = require("./capture-queue");
+const cardimage = require("./cardimage");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -409,6 +410,32 @@ function createServer(ctx) {
     // this only makes the contract honest for a future native client.
     res.type(images.sniffImageType(buf)).send(buf);
   });
+
+  // Fetch a card's REMOTE image server-side, so the browser's CORS rules don't
+  // block the AI title pipeline (Pinterest and friends serve images that render
+  // in an <img> but refuse a fetch()). Takes a CARD ID, never a URL: a caller
+  // cannot name a destination, only ask for a re-fetch of something already in
+  // the library. See core/cardimage.js for the guard composition.
+  app.post("/api/fetch-card-image", async (req, res) => {
+    const id = req.body && req.body.id;
+    if (!id || typeof id !== "string") return res.status(400).json({ ok: false, error: "id required" });
+    let out;
+    try { out = await cardimage.fetchCardImage(ctx.db, id); }
+    catch (e) { console.error("fetch-card-image failed:", e); out = { ok: false, reason: "fetch-failed" }; }
+    // ONE message for every failure reason. Distinguishable errors (or timings)
+    // would turn this into a network scanner for whatever the service can reach.
+    if (!out.ok) return res.status(404).json({ ok: false, error: "image unavailable" });
+    res.set("Content-Type", out.contentType);
+    res.set("Cache-Control", "no-store");
+    // Belt-and-suspenders even though the content-type gate (core/cardimage.js) is now a
+    // raster-only allowlist: nosniff stops the browser from re-sniffing these bytes into
+    // something active regardless of the declared type, and the sandboxed inert CSP makes
+    // the response harmless even if it is ever navigated to directly.
+    res.set("X-Content-Type-Options", "nosniff");
+    res.set("Content-Security-Policy", "default-src 'none'; sandbox");
+    res.send(out.buffer);
+  });
+
   app.put("/api/img/:id", (req, res) => {
     ctx.syncDirty = true;
     try {

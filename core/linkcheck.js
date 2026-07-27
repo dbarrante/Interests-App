@@ -48,18 +48,75 @@ function isPrivateAddr(ip) {
     if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;        // fc00::/7 unique-local
     if (/^fe[89ab][0-9a-f]:/.test(h)) return true;        // fe80::/10 link-local
     if (/^fec[0-9a-f]:/.test(h)) return true;             // fec0::/10 site-local (deprecated)
+    if (/^ff[0-9a-f]{2}:/.test(h)) return true;           // ff00::/8 multicast
+    // 6to4 (2002:AABB:CCDD::/48) and NAT64 (64:ff9b::/96) embed an IPv4 address in fixed
+    // hextet positions. "::" compression elides any all-zero hextet -- including an
+    // embedded octet-pair that happens to be zero (e.g. "2002:7f00::" wraps 127.0.0.0) --
+    // so expand to the full 8 hextets FIRST and read by position, rather than regex-matching
+    // the compressed text (which silently misses those all-zero cases and reports "public").
+    var hx = _v6Hextets(h);
+    if (hx) {
+      if (_hxNum(hx[0]) === 0x2002) return isPrivateAddr(_v4FromHextets(hx[1], hx[2]));
+      if (_hxNum(hx[0]) === 0x64 && _hxNum(hx[1]) === 0xff9b &&
+          _hxNum(hx[2]) === 0 && _hxNum(hx[3]) === 0 && _hxNum(hx[4]) === 0 && _hxNum(hx[5]) === 0) {
+        return isPrivateAddr(_v4FromHextets(hx[6], hx[7]));
+      }
+    }
     return false;
   }
   var m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
-    var a = +m[1], b = +m[2];
+    var a = +m[1], b = +m[2], c = +m[3];
     if (a === 0 || a === 127 || a === 10) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;    // 100.64/10 CGNAT
+    if (a === 192 && b === 0 && c === 0) return true;     // 192.0.0.0/24 IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 benchmarking
+    if (a >= 224) return true;                            // 224/4 multicast + 240/4 reserved + 255.255.255.255
     return false;
   }
   return false;
+}
+
+// "7f00","0001" -> "127.0.0.1". Used to unwrap 6to4 / NAT64 IPv6 forms.
+function _v4FromHextets(hi, lo) {
+  var a = parseInt(hi, 16) || 0, b = parseInt(lo, 16) || 0;
+  return [(a >> 8) & 255, a & 255, (b >> 8) & 255, b & 255].join(".");
+}
+
+// One hextet -> number, for positional 6to4/NAT64 prefix comparisons below. Garbage
+// (non-hex text) parses to 0 -- the guard's over-block bias is intentional here.
+function _hxNum(s) { return parseInt(s, 16) || 0; }
+
+// Expand an IPv6 address (already lowercased, no brackets) to its 8 hextets, resolving
+// any "::" compression positionally so a 6to4/NAT64 embedded IPv4 can be read by fixed
+// index regardless of where zeros were elided. Returns null for a malformed address
+// (more than one "::", too many hextets, or a fully-written address that isn't exactly
+// 8 hextets). The final tail hextet may be a dotted-quad (legal IPv6 text, e.g.
+// "64:ff9b::8.8.8.8") -- normalized to its two hex hextets before counting.
+function _v6Hextets(h) {
+  var parts = h.split("::");
+  if (parts.length > 2) return null;                // "a::b::c" -- more than one "::"
+  var head = parts[0] ? parts[0].split(":") : [];
+  var tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
+  // A dotted-quad can stand in for the last two hextets (legal IPv6 text, e.g.
+  // "64:ff9b::8.8.8.8" or a fully-written "...:0:8.8.8.8") -- it's always the final
+  // group of whichever side actually has one. Normalize it in place before counting.
+  var last = tail.length ? tail : head;
+  if (last.length && last[last.length - 1].indexOf(".") >= 0) {
+    var q = last[last.length - 1].match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!q || +q[1] > 255 || +q[2] > 255 || +q[3] > 255 || +q[4] > 255) return null;
+    var hi = ((+q[1] << 8) | +q[2]).toString(16), lo = ((+q[3] << 8) | +q[4]).toString(16);
+    last.splice(last.length - 1, 1, hi, lo);
+  }
+  if (parts.length === 1) return head.length === 8 ? head : null;  // no "::": must already be full
+  var zeros = 8 - head.length - tail.length;
+  if (zeros < 0) return null;                       // more hextets than fit -- invalid
+  var mid = [];
+  for (var i = 0; i < zeros; i++) mid.push("0");
+  return head.concat(mid, tail);
 }
 
 // SSRF guard (synchronous, string-level): only public http(s) hosts may be probed. Rejects
@@ -90,6 +147,7 @@ function isProbableHost(url) {
 // Production never calls setLookup, so it stays the real OS resolver.
 var moduleLookup = require("dns").promises.lookup;
 function setLookup(fn) { moduleLookup = fn || require("dns").promises.lookup; }
+function getLookup() { return moduleLookup; }
 
 // SSRF guard (async, resolution-level): isProbableHost PLUS a DNS check. For a domain host
 // it resolves all addresses and blocks if ANY is private/loopback/link-local (DNS rebinding —
@@ -179,4 +237,4 @@ async function checkChunk(items, opts) {
   });
 }
 
-module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, isPrivateAddr: isPrivateAddr, safeToFetch: safeToFetch, _setLookup: setLookup, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };
+module.exports = { classify: classify, isSkippedHost: isSkippedHost, isProbableHost: isProbableHost, isPrivateAddr: isPrivateAddr, safeToFetch: safeToFetch, _setLookup: setLookup, _getLookup: getLookup, SKIP_HOSTS: SKIP_HOSTS, probeUrl: probeUrl, checkChunk: checkChunk };
