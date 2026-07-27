@@ -427,6 +427,12 @@ function createServer(ctx) {
     if (!out.ok) return res.status(404).json({ ok: false, error: "image unavailable" });
     res.set("Content-Type", out.contentType);
     res.set("Cache-Control", "no-store");
+    // Belt-and-suspenders even though the content-type gate (core/cardimage.js) is now a
+    // raster-only allowlist: nosniff stops the browser from re-sniffing these bytes into
+    // something active regardless of the declared type, and the sandboxed inert CSP makes
+    // the response harmless even if it is ever navigated to directly.
+    res.set("X-Content-Type-Options", "nosniff");
+    res.set("Content-Security-Policy", "default-src 'none'; sandbox");
     res.send(out.buffer);
   });
 

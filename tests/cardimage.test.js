@@ -119,6 +119,64 @@ const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
     db.close();
   });
 
+  await t("image/svg+xml is refused (raster-only allowlist) while image/png is accepted", async () => {
+    // SVG is an active document format (can carry <script>), not a raster image the
+    // decode path (OCR / vision / phash) needs. The gate must be an allowlist of raster
+    // types, not a broad image/* test — pins the fix for review finding 1.
+    const db = newDb();
+    upsertCard(db, { id: "csvg", url: "https://x/svg", img: "https://cdn.example.com/a.svg" });
+    upsertCard(db, { id: "craster", url: "https://x/raster", img: "https://cdn.example.com/a.png" });
+    const svgR = await cardimage.fetchCardImage(db, "csvg", {
+      lookup: publicLookup, fetchFn: okFetch(Buffer.from("<svg onload=\"alert(1)\"></svg>"), "image/svg+xml"),
+    });
+    assert.strictEqual(svgR.reason, "not-an-image", "svg must be refused, and with the SAME reason as any other non-raster type");
+    const pngR = await cardimage.fetchCardImage(db, "craster", { lookup: publicLookup, fetchFn: okFetch(PNG, "image/png") });
+    assert.strictEqual(pngR.ok, true);
+    assert.strictEqual(pngR.contentType, "image/png");
+    db.close();
+  });
+
+  await t("a 404 with a non-empty body is refused as fetch-failed (not not-an-image)", async () => {
+    // The empty-body variant of "fetch-failed" was already covered (below); this covers
+    // the terminal non-2xx branch, which a non-empty body never exercised before.
+    const db = newDb();
+    upsertCard(db, { id: "c404", url: "https://x/404", img: "https://cdn.example.com/gone.png" });
+    const r = await cardimage.fetchCardImage(db, "c404", {
+      lookup: publicLookup,
+      fetchFn: async () => ({
+        error: null, status: 404, buffer: Buffer.from("not found"), location: null,
+        res: { headers: { get: (k) => (k.toLowerCase() === "content-type" ? "text/plain" : null) } },
+      }),
+    });
+    assert.strictEqual(r.reason, "fetch-failed");
+    db.close();
+  });
+
+  await t("a body over MAX_BYTES is refused as too-large (through the real default fetchFn, not a stub)", async () => {
+    // Regression guard for the "maxBytes: MAX_BYTES + 1" fix: drainCapped (guardedfetch.js)
+    // truncates the body to whatever cap it's given, so if fetchCardImage passed exactly
+    // MAX_BYTES, buf.length could never exceed MAX_BYTES and "too-large" would be
+    // unreachable. Deliberately does NOT pass opts.fetchFn — followRedirects calls
+    // fetchFn(target) with no opts, so an opts.fetchFn stub can never observe (or be
+    // sensitive to) the maxBytes value fetchCardImage decides to use. Only going through
+    // the real default fetchFn -> gf.fetchOnceGuarded -> drainCapped exercises that value.
+    const db = newDb();
+    upsertCard(db, { id: "ctoolarge", url: "https://x/big", img: "https://cdn.example.com/big.png" });
+    const realFetch = global.fetch;
+    global.fetch = async () => ({
+      status: 200, url: "https://cdn.example.com/big.png",
+      headers: { get: (k) => (k.toLowerCase() === "content-type" ? "image/png" : null) },
+      arrayBuffer: async () => new Uint8Array(cardimage.MAX_BYTES + 1000).buffer,
+    });
+    try {
+      const r = await cardimage.fetchCardImage(db, "ctoolarge", { lookup: publicLookup });
+      assert.strictEqual(r.reason, "too-large");
+    } finally {
+      global.fetch = realFetch;
+    }
+    db.close();
+  });
+
   await t("an empty body is refused", async () => {
     const db = newDb();
     upsertCard(db, { id: "c8", url: "https://x/8", img: "https://cdn.example.com/a.png" });

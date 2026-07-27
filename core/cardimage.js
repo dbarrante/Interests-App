@@ -26,6 +26,14 @@ const MAX_BYTES = 8 * 1024 * 1024;   // a card thumbnail is orders of magnitude 
 const TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 3;
 
+// Raster-only allowlist (review finding 1). A broad `/^image\//i` test also matches
+// image/svg+xml, an active document format that can carry <script> — and this module's
+// bytes get served back verbatim, from the app's own origin, by POST /api/fetch-card-image.
+// The consumer (OCR, vision-model input, perceptual hashing) only ever decodes to a
+// bitmap, so nothing here needs a vector/document format. Case-insensitive; the caller
+// splits off any ";charset=..." parameter before comparing.
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+
 function remoteImageUrlFor(db, id) {
   const card = dbm.getCard(db, id);
   if (card) return String(card.img || "");
@@ -101,7 +109,7 @@ async function fetchCardImage(db, id, opts) {
 
   const ct = (r.res && r.res.headers && typeof r.res.headers.get === "function")
     ? String(r.res.headers.get("content-type") || "") : "";
-  if (!/^image\//i.test(ct)) return { ok: false, reason: "not-an-image" };
+  if (!ALLOWED_IMAGE_TYPES.has(ct.split(";")[0].trim().toLowerCase())) return { ok: false, reason: "not-an-image" };
 
   const buf = r.buffer || Buffer.alloc(0);
   if (!buf.length) return { ok: false, reason: "fetch-failed" };
