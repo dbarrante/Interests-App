@@ -95,6 +95,14 @@ function loadCacheFns(src, storeMock) {
   return factory(storeMock);
 }
 
+// Loads the REAL setSavedImage alongside the REAL imgHashSrcKey, so a test
+// can exercise the actual Saved-card image-write path (not a reimplementation
+// of it) and observe whether it stamps what imgHashSrcKey actually reads.
+function loadSavedImageFns(src, storeMock) {
+  const factory = new Function("Store", fn(src, "setSavedImage") + "\n" + fn(src, "imgHashSrcKey") + "\nreturn { setSavedImage, imgHashSrcKey };");
+  return factory(storeMock);
+}
+
 (async () => {
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
@@ -169,6 +177,44 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(hash, /^[0-9a-f]{16}$/);
   });
 
+  await t(label + ": two DIFFERENT smooth greyscale gradients both hash to \"\" instead of colliding at the shared degenerate dHash (gradient-collision guard, IMPORTANT 3)", async () => {
+    // dHash only encodes "brighter than my right-hand neighbour?", not by how
+    // much — so ANY strictly-increasing left-to-right gradient (sky, vignette,
+    // bokeh, gradient banner) hashes to all-zero regardless of its actual pixel
+    // values. Both gradients below span a grey range of ~180-200 (far past the
+    // hi-lo>=8 input guard) and are genuinely different images (different
+    // start/slope, verified distinct pixel arrays), yet the OLD code hashes
+    // both to the identical "0000000000000000" -- a false duplicate match that
+    // becomes a delete prompt. The fix must reject the OUTPUT, not just judge
+    // the input's range.
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    function gradPixels(w, h, start, step) {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x; const v = start + x * step;
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
+      return d;
+    }
+    // Verified against the real IA_IMGHASH.dhashFromGrey: both are strictly
+    // increasing L-to-R and both collapse to "0000000000000000".
+    const { computeCardHash: hashA } = loadComputeCardHash(src, resolveMock, (w, h) => gradPixels(w, h, 10, 27));
+    const { computeCardHash: hashB } = loadComputeCardHash(src, resolveMock, (w, h) => gradPixels(w, h, 30, 22));
+    const a = await hashA({ id: "gradA", img: "idb:gradA" });
+    const b = await hashB({ id: "gradB", img: "idb:gradB" });
+    assert.strictEqual(a, "", "a smooth gradient must be refused, not hashed to the shared all-zero value");
+    assert.strictEqual(b, "", "a smooth gradient must be refused, not hashed to the shared all-zero value");
+  });
+
+  await t(label + ": a genuinely varied image (non-degenerate dHash) is still hashed — the gradient-collision guard must not over-reject real photos", async () => {
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => variedPixels(w, h));
+    const hash = await computeCardHash({ id: "gradV", img: "idb:gradV" });
+    assert.notStrictEqual(hash, "");
+    assert.doesNotMatch(hash, /^0{16}$/);
+    assert.doesNotMatch(hash, /^f{16}$/);
+  });
+
   await t(label + ": a real varied image hashes to the EXACT dHash IA_IMGHASH.dhashFromGrey computes for its greyscale sample", async () => {
     const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
     const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => variedPixels(w, h));
@@ -199,11 +245,41 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(b, /return "";/, "must return the empty-string sentinel rather than throwing");
   });
 
-  await t(label + ": imgHashSrcKey ties an idb: image to the card id AND its lastUpdate/edited stamp, so a re-capture invalidates the cached hash", () => {
+  await t(label + ": imgHashSrcKey ties an idb: image to the card id AND its lastUpdate stamp, so a re-capture invalidates the cached hash", () => {
     const imgHashSrcKey = loadPureFn(src, "imgHashSrcKey");
     const before = imgHashSrcKey({ id: "c7", img: "idb:c7", lastUpdate: 100 });
     const after = imgHashSrcKey({ id: "c7", img: "idb:c7", lastUpdate: 200 });
     assert.notStrictEqual(before, after, "bumping lastUpdate (a re-capture) must change the src key so the stale cached hash is not reused");
+  });
+
+  await t(label + ": imgHashSrcKey uses the MOST RECENT of lastUpdate/edited, not the first truthy one (CRITICAL 2 — OR-precedence bug)", () => {
+    // Reproduces the exact scenario from the review: a captured card already
+    // has .lastUpdate set (true for virtually every captured card). A LATER
+    // manual paste bumps only .edited. `lastUpdate||edited` short-circuits on
+    // the first truthy value, so once .lastUpdate is set once, a later .edited
+    // is permanently invisible to the src key -- the stale cached hash from
+    // BEFORE the manual paste keeps being reused for the picture AFTER it.
+    const imgHashSrcKey = loadPureFn(src, "imgHashSrcKey");
+    const beforeEdit = imgHashSrcKey({ id: "c9", img: "idb:c9", lastUpdate: 1000 });
+    const afterEdit = imgHashSrcKey({ id: "c9", img: "idb:c9", lastUpdate: 1000, edited: 5000 });
+    assert.notStrictEqual(beforeEdit, afterEdit, "a LATER .edited stamp (manual paste after a capture already set .lastUpdate) must change the src key");
+    assert.strictEqual(afterEdit, "idb:c9:5000", "the src key must reflect the MAX of lastUpdate/edited, not whichever is checked first");
+  });
+
+  await t(label + ": replacing a Saved card's image via setSavedImage stamps something imgHashSrcKey reads, so re-clipping the SAME id invalidates the cached hash (CRITICAL 1)", () => {
+    // Reproduces the exact scenario from the review: setSavedImage,
+    // setSavedImageDurably, and setClipImageInline all replace the image
+    // bytes at the SAME item.id and rewrite item.image to the identical
+    // "idb:"+item.id string. Without a stamp, imgHashSrcKey's srcKey is the
+    // same constant "idb:<id>:0" forever, and a cached hash for the OLD
+    // picture is silently reused as if it still describes the NEW one.
+    const store = { imgPut: () => {}, imgDel: () => {} };
+    const { setSavedImage, imgHashSrcKey } = loadSavedImageFns(src, store);
+    const item = { id: "sv1", image: "idb:sv1" };   // an existing Saved card with a previously-cached hash
+    const before = imgHashSrcKey(item);
+    setSavedImage(item, "data:image/jpeg;base64,AAAA");   // re-clip: NEW image bytes written to the SAME id
+    const after = imgHashSrcKey(item);
+    assert.notStrictEqual(before, after, "setSavedImage must stamp .edited (or equivalent) so a Saved card's srcKey changes when its image is replaced at the same id");
   });
 
   await t(label + ": imgHashSrcKey is the plain URL string for a remote image (identity is the URL itself)", () => {

@@ -4905,7 +4905,10 @@ function allTitleKeys(excludeId){
 // "Fix placeholders") instead of matching on a stale hash forever.
 function imgHashSrcKey(card){
   const v = (card && (card.img || card.image)) || "";
-  return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+(card.lastUpdate||card.edited||0)) : String(v);
+  // Most-recent-of-the-two, not first-truthy: capture paths bump only
+  // .lastUpdate, manual paste/edit paths bump only .edited, and `||` would
+  // permanently hide a later .edited once .lastUpdate is set once.
+  return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
 }
 // A 64-bit dHash for one card, or "" when the image can't be read or hashed.
 // "" is a CACHED verdict, not an error: an unreachable or degenerate image
@@ -4942,9 +4945,20 @@ async function computeCardHash(card){
     // from JPEG blocking and the 9x8 downscale, while well below the tonal
     // range any real photo spans once resampled to greyscale -- even flat
     // lighting (overcast sky, fog, a plain product shot on white) typically
-    // covers several dozen levels.
+    // covers several dozen levels. This is a cheap pre-check on the INPUT and
+    // does not catch everything: dHash compares only ADJACENT pixels, so a
+    // smooth left-to-right gradient (sky, vignette, bokeh, gradient banner)
+    // has a wide greyscale range yet still hashes to all-identical bits. The
+    // output check below is what actually guarantees no degenerate hash escapes.
     if(hi - lo < 8) return "";
-    return IA_IMGHASH.dhashFromGrey(grey, W, H);
+    const h = IA_IMGHASH.dhashFromGrey(grey, W, H);
+    // Every bit identical means the sampler found no horizontal structure at all --
+    // a blank, a solid fill, or a smooth gradient. dHash compares only adjacent
+    // pixels, so a full-range gradient reaches here despite a wide greyscale range.
+    // Two such images collide at distance 0, and a match here becomes a delete
+    // prompt, so refuse to hash them at all.
+    if(/^0{16}$/.test(h) || /^f{16}$/.test(h)) return "";
+    return h;
   }catch(e){ console.warn("computeCardHash failed", e); return ""; }
 }
 async function loadImgHashCache(){
@@ -6368,11 +6382,11 @@ async function drainCaptures(){
 // store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
-  if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
-  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); }
+  if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); item.edited=Date.now(); }
+  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); item.edited=Date.now(); }
 }
 async function setSavedImageDurably(item, src){
-  const oldImg=item.image;
+  const oldImg=item.image, oldEdited=item.edited;
   try{
     if(src && src.indexOf("data:")===0){ await Store.imgPut(item.id, src); item.image="idb:"+item.id; }
     else {
@@ -6380,7 +6394,8 @@ async function setSavedImageDurably(item, src){
       if(wasIdb) await Store.imgDel(item.id);
       item.image=src||"";
     }
-  }catch(e){ item.image=oldImg; throw e; }
+    item.edited=Date.now();
+  }catch(e){ item.image=oldImg; item.edited=oldEdited; throw e; }
 }
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
 // than in IndexedDB. Saved clips are a small, deliberate set, and inline data
@@ -6393,10 +6408,11 @@ async function setClipImageInline(item, dataUrl){
   // is what made Pinterest/Instagram clip thumbnails get dropped on save. So persist
   // the clip image as a FILE via setSavedImage. Shows full-res immediately, then swaps
   // in the downscaled file once ready. (Name kept for history; it now file-backs.)
-  item.image = dataUrl;   // immediate full-res render in memory
+  item.image = dataUrl;   // immediate full-res render in memory (not idb:-prefixed yet, so imgHashSrcKey
+                           // doesn't consult .edited for it -- the stamp that matters is the durable one below)
   let small = dataUrl;
   try{ small = await new Promise(resolve=>downscaleDataUrl(dataUrl, resolve)); }catch(e){}
-  await setSavedImageDurably(item, small || dataUrl);   // data: -> 'idb:'+id + Store.imgPut(file)
+  await setSavedImageDurably(item, small || dataUrl);   // data: -> 'idb:'+id + Store.imgPut(file); stamps .edited on success only
   if(curTab==="saved") renderSaved();
 }
 // clipKey moved to web/lib/urlkey.js (dedupe key for a clip; FB/YouTube id folded in).
