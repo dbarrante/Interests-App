@@ -76,20 +76,48 @@ function loadComputeCardHash(src, resolveMock, pixelDataFn) {
   // computeCardHash alone would leave that call a ReferenceError, which the
   // function's own try/catch would silently swallow into a false "" result.
   const fnSrc = fn(src, "isDegenerateHash") + "\n" + fn(src, "computeCardHash");
+  // fetch is mocked to THROW, mirroring the real failure mode: core/server.js's
+  // CSP sets connect-src 'self' https: with no "data:" scheme, so fetch() on a
+  // data: URL throws TypeError: Failed to fetch in the actual app. A prior
+  // version of this suite mocked fetch to SUCCEED, which is exactly why it
+  // couldn't catch computeCardHash's real bug (fetch("data:"+...) worked in
+  // the test sandbox and threw in the browser). If a regression reintroduces
+  // a fetch("data:"+...) call, this mock makes it fail here too, and every
+  // success-path assertion below (which expects a real 16-hex hash, not "")
+  // fails loudly instead of silently passing.
   let fetchCalls = 0;
-  const fetchMock = async (url) => { fetchCalls++; return { blob: async () => ({ __fakeBlob: true, url }) }; };
-  const createImageBitmapMock = async () => ({ __fakeBitmap: true });
+  const fetchMock = async () => { fetchCalls++; throw new TypeError("Failed to fetch"); };
+  let bitmapCalls = 0;
+  const createImageBitmapMock = async (blob) => {
+    bitmapCalls++;
+    // Proves computeCardHash hands createImageBitmap a real in-memory Blob
+    // decoded from base64 bytes — NOT a Response object (the old fetch(...).blob()
+    // shape) and not a data: URL string. This is the actual call shape the real
+    // browser sees; a mock that accepted anything shaped-like-a-blob would let a
+    // regression back to fetch(...).blob() slide through unnoticed.
+    assert.ok(blob instanceof Blob, "createImageBitmap must be called with a real Blob built from decoded base64 bytes");
+    // Every fixture in this file that reaches this point uses the SAME
+    // resolveMock shape ({ mediaType: "image/jpeg", base64: "Zm9v" } — "Zm9v"
+    // is the base64 encoding of "foo", 3 bytes). `blob instanceof Blob` alone
+    // proves the SHAPE but not the CONTENT — a broken atob/charCodeAt decode
+    // loop, or a header/mediaType mixup, would still produce a Blob and pass
+    // that check. Pinning size and type here proves the actual decode is
+    // correct, not just shaped-correctly.
+    assert.strictEqual(blob.size, 3, "decoded byte length must match the base64 fixture (\"Zm9v\" -> \"foo\", 3 bytes) — a decode-loop bug would still yield SOME Blob");
+    assert.strictEqual(blob.type, "image/jpeg", "Blob must carry the image's real mediaType, not a hardcoded or missing one");
+    return { __fakeBitmap: true };
+  };
   function FakeCtx() {}
   FakeCtx.prototype.drawImage = function () {};
   FakeCtx.prototype.getImageData = function (x, y, w, h) { return { data: pixelDataFn(w, h) }; };
   function FakeOffscreenCanvas(w, h) { this.w = w; this.h = h; }
   FakeOffscreenCanvas.prototype.getContext = function () { return new FakeCtx(); };
   const factory = new Function(
-    "resolveCardImageForAI", "IA_IMGHASH", "fetch", "createImageBitmap", "OffscreenCanvas", "console",
+    "resolveCardImageForAI", "IA_IMGHASH", "fetch", "createImageBitmap", "OffscreenCanvas", "console", "atob", "Blob",
     fnSrc + "\nreturn computeCardHash;"
   );
-  const computeCardHash = factory(resolveMock, IA_IMGHASH, fetchMock, createImageBitmapMock, FakeOffscreenCanvas, console);
-  return { computeCardHash, fetchCalls: () => fetchCalls };
+  const computeCardHash = factory(resolveMock, IA_IMGHASH, fetchMock, createImageBitmapMock, FakeOffscreenCanvas, console, atob, Blob);
+  return { computeCardHash, fetchCalls: () => fetchCalls, bitmapCalls: () => bitmapCalls };
 }
 
 function loadPureFn(src, name) { return eval("(" + fn(src, name) + ")"); }
@@ -140,24 +168,43 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(b, /IA_IMGHASH\.dhashFromGrey/);
   });
 
-  await t(label + ": a resolveCardImageForAI FAILURE (truthy {failReason} object, no .base64) never reaches fetch — `if(!image)` alone is not enough", async () => {
+  // STRUCTURAL GUARD, not behavioral: computeCardHash's real bug (fetch() on a
+  // data: URL, CSP-blocked by core/server.js's connect-src 'self' https: — no
+  // "data:" scheme — verified live to throw TypeError: Failed to fetch) was
+  // invisible to every test in this file because they all mock `fetch` to
+  // SUCCEED. A behavioral test can only prove what the mock lets it prove; it
+  // cannot prove the shipped code avoids a browser API call the mock silently
+  // tolerates. This test reads the actual source text so no mock is in the
+  // loop: it fails if the fetch("data:...")/fetch('data:...')/fetch(`data:...`)
+  // pattern is ever reintroduced, regardless of whether a future mock would
+  // hide it again.
+  await t(label + ": computeCardHash's source never calls fetch() on a data: URL again (CSP connect-src has no \"data:\" scheme) — decodes base64 directly instead", () => {
+    const b = fn(src, "computeCardHash");
+    assert.doesNotMatch(b, /fetch\(\s*["'`]data:/, "fetch(\"data:...\") is blocked by core/server.js's CSP connect-src and silently turns every card into the unhashable sentinel — decode base64 to bytes with atob() and build the Blob in memory instead");
+    assert.match(b, /atob\(/, "must decode the base64 payload directly via atob(), not round-trip it through a data: URL");
+    assert.match(b, /createImageBitmap\(new Blob\(/, "must hand createImageBitmap an in-memory Blob built from decoded bytes, not a fetch(...).blob() Response");
+  });
+
+  await t(label + ": a resolveCardImageForAI FAILURE (truthy {failReason} object, no .base64) never reaches atob/createImageBitmap — `if(!image)` alone is not enough", async () => {
     // resolveCardImageForAI's contract (Task 4): failure returns a TRUTHY
     // object with no .base64. A buggy `if(!image) return "";` never fires
     // here (the object IS truthy) and falls through to
-    // fetch("data:"+undefined+";base64,"+undefined) — this test proves the
+    // atob(undefined) / createImageBitmap on garbage — this test proves the
     // real guard checks .base64, not just truthiness.
     const resolveMock = async () => ({ failReason: "fetch-blocked" });
-    const { computeCardHash, fetchCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
+    const { computeCardHash, fetchCalls, bitmapCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
     const hash = await computeCardHash({ id: "c1", img: "https://x.example/y.jpg" });
     assert.strictEqual(hash, "");
-    assert.strictEqual(fetchCalls(), 0, "must bail out on the failure object before building a data: URL from its missing .base64");
+    assert.strictEqual(bitmapCalls(), 0, "must bail out on the failure object before decoding its missing .base64");
+    assert.strictEqual(fetchCalls(), 0, "must never touch fetch at all — a data: URL fetch is CSP-blocked in the real app");
   });
 
   await t(label + ": a resolveCardImageForAI success with NO base64 field is still treated as a failure", async () => {
     const resolveMock = async () => ({ mediaType: "image/jpeg" }); // malformed: no base64
-    const { computeCardHash, fetchCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
+    const { computeCardHash, fetchCalls, bitmapCalls } = loadComputeCardHash(src, resolveMock, () => flatPixels(9, 8, 128));
     const hash = await computeCardHash({ id: "c1b", img: "idb:c1b" });
     assert.strictEqual(hash, "");
+    assert.strictEqual(bitmapCalls(), 0);
     assert.strictEqual(fetchCalls(), 0);
   });
 
@@ -397,12 +444,11 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
     const fnSrc = fn(src, "computeCardHash");
     const factory = new Function(
-      "resolveCardImageForAI", "IA_IMGHASH", "fetch", "createImageBitmap", "OffscreenCanvas", "console",
+      "resolveCardImageForAI", "IA_IMGHASH", "createImageBitmap", "OffscreenCanvas", "console", "atob", "Blob",
       fnSrc + "\nreturn computeCardHash;"
     );
     const throwingCreateImageBitmap = async () => { throw new Error("corrupt image"); };
-    const fetchMock = async () => ({ blob: async () => ({}) });
-    const computeCardHash = factory(resolveMock, IA_IMGHASH, fetchMock, throwingCreateImageBitmap, function () {}, console);
+    const computeCardHash = factory(resolveMock, IA_IMGHASH, throwingCreateImageBitmap, function () {}, console, atob, Blob);
     await assert.doesNotReject(async () => {
       const hash = await computeCardHash({ id: "c6", img: "idb:c6" });
       assert.strictEqual(hash, "");

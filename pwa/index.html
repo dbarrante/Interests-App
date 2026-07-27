@@ -2734,7 +2734,19 @@ const JUNK_DHASH_MAX_DIST = 8;
 // capture over an unrelated canvas issue.
 async function dHashFromDataUrl(dataUrl){
   try{
-    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    // Do NOT hand this data: URL to fetch: same trap as computeCardHash above --
+    // on the web/ surface, core/server.js's CSP connect-src has no data: scheme,
+    // so fetching a data URL throws TypeError: Failed to fetch and the catch
+    // below silently turns every call into "". Decode the base64 payload
+    // straight to bytes instead; no network layer involved, and no dependency
+    // on fetch's inconsistent cross-browser data: URL support either.
+    const comma = dataUrl.indexOf(",");
+    const header = dataUrl.slice(5, comma);            // "image/jpeg;base64"
+    const mediaType = header.split(";")[0] || "image/jpeg";
+    const bin = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: mediaType }));
     const w=9, h=8;
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext("2d");
@@ -4985,8 +4997,21 @@ async function computeCardHash(card){
     // { failReason } object has no .base64 -- so `if(!image)` alone never
     // fires on a failure. Must check .base64, matching ocrExtractText below.
     if(!image || !image.base64) return "";
-    const blob = await (await fetch("data:"+image.mediaType+";base64,"+image.base64)).blob();
-    const bitmap = await createImageBitmap(blob);
+    // Do NOT wrap this base64 payload into a "data:" URL and hand it to fetch:
+    // on the web/ surface (served by core/server.js), its CSP's connect-src
+    // 'self' https: has no data: scheme, so fetching a data URL throws
+    // TypeError: Failed to fetch here (verified live) and the catch below
+    // silently turns EVERY card into "" -- image-duplicate detection goes
+    // inert with no visible error. pwa/index.html mirrors this file byte-
+    // for-byte (parity enforced by tests/imagehash-cache-wiring.test.js) and
+    // ships via GitHub Pages with no CSP of its own, but decoding directly
+    // here also sidesteps fetch's inconsistent cross-browser data: URL
+    // support -- build the Blob in memory from the decoded bytes instead; no
+    // network layer involved either way.
+    const bin = atob(image.base64);
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: image.mediaType }));
     const W = IA_IMGHASH.HASH_W, H = IA_IMGHASH.HASH_H;
     const c = new OffscreenCanvas(W, H);
     const ctx = c.getContext("2d", {willReadFrequently:true});
