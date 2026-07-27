@@ -34,12 +34,15 @@ function fn(src, name) {
 }
 
 // --- behavioral: the real dupeRowHTML/dupeLargeCardHTML, executed ---------
-function loadRowRenderers(src) {
+function loadRowRenderers(src, opts) {
   // Minimal stand-ins for the globals these two render functions reach for.
   // esc/domain/dupeThumb/dupeOpenButtonHTML/dupeMemberKey are trivial and
-  // safe to stub; _dupeSpared is the real mutable state shape (a Set).
+  // safe to stub; _dupeSpared and _dupeImageChecked are the real mutable
+  // state shapes (Sets) -- callers can seed them to prove state survives a
+  // re-render instead of only proving the fresh-render default.
+  opts = opts || {};
   const factory = new Function(
-    "esc", "domain", "dupeThumb", "dupeOpenButtonHTML", "dupeMemberKey", "_dupeSpared", "dupeToggleRemoval", "dupeSetKeep",
+    "esc", "domain", "dupeThumb", "dupeOpenButtonHTML", "dupeMemberKey", "_dupeSpared", "_dupeImageChecked", "dupeToggleRemoval", "dupeSetKeep",
     fn(src, "dupeRowHTML") + "\n" + fn(src, "dupeLargeCardHTML") + "\nreturn { dupeRowHTML, dupeLargeCardHTML };"
   );
   return factory(
@@ -48,7 +51,8 @@ function loadRowRenderers(src) {
     () => "<div class=ph></div>",
     () => "",
     (mem) => String(mem.scope) + ":" + String(mem.card.id),
-    new Set(),
+    opts.dupeSpared || new Set(),
+    opts.dupeImageChecked || new Set(),
     () => {},
     () => {}
   );
@@ -93,6 +97,24 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(!/data-rm/.test(dupeRowHTML(testMember, 0, true, true)));
     assert.ok(!/data-rm/.test(dupeLargeCardHTML(testMember, 0, true, true)));
   });
+  t(label + ": a manually-CHECKED image-match member (present in _dupeImageChecked) renders CHECKED, surviving a re-render (dupeRowHTML)", () => {
+    // Found in review: the row template used to gate the checked attribute on
+    // `!imageMatch && !_dupeSpared.has(...)`, so once imageMatch was true it
+    // ignored _dupeSpared (and any other per-member state) entirely -- a
+    // manual check made via dupeToggleRemoval was thrown away the next time
+    // renderHealthDupes ran (mode switch, "Keep this", dupeReviewMove, etc.),
+    // because nothing about that click was ever consulted at render time.
+    const key = testMember.scope + ":" + testMember.card.id;
+    const { dupeRowHTML: renderRow } = loadRowRenderers(src, { dupeImageChecked: new Set([key]) });
+    const tag = checkboxTag(renderRow(testMember, 0, false, true));
+    assert.ok(isChecked(tag), "a member the user explicitly checked must still render checked on re-render: " + tag);
+  });
+  t(label + ": a manually-CHECKED image-match member (present in _dupeImageChecked) renders CHECKED, surviving a re-render (dupeLargeCardHTML)", () => {
+    const key = testMember.scope + ":" + testMember.card.id;
+    const { dupeLargeCardHTML: renderCard } = loadRowRenderers(src, { dupeImageChecked: new Set([key]) });
+    const tag = checkboxTag(renderCard(testMember, 0, false, true));
+    assert.ok(isChecked(tag), "a member the user explicitly checked must still render checked on re-render: " + tag);
+  });
 }
 
 // --- structural: image-matched groups are visibly badged ------------------
@@ -116,9 +138,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(body, /_dupeGroups\s*=\s*_dupeGroups\.concat\(/, "image-match groups must be ADDED to the url/title groups, not replace them");
   });
   t(label + ": renderHealthDupes bails on a stale/aborted scan before applying its results (closing/reopening the modal mid-scan must not corrupt the list)", () => {
+    // A plain "does /_imgScanAbort/ and /_imgScanGen/ appear somewhere" check
+    // would pass even if the two guards were reordered, or if one of them
+    // didn't actually gate the _dupeGroups mutation below it. Pin the real
+    // ordering instead, the same way the neighbouring "kept even if switched
+    // tabs" test pins the concat-before-tab-check ordering: the newer-scan
+    // guard must run before the abort guard, and both must run before a
+    // (possibly stale) scan's groups are ever applied to _dupeGroups.
     const body = fn(src, "renderHealthDupes");
-    assert.match(body, /_imgScanAbort/, "must check the abort flag before applying a finished scan's results");
-    assert.match(body, /_imgScanGen/, "must guard against an OLDER scan's results landing after a newer one started");
+    assert.match(body, /gen !== _imgScanGen\) return;[\s\S]{0,250}if\(_imgScanAbort\) return;[\s\S]{0,650}_dupeGroups = _dupeGroups\.concat\(imgGroups\);/,
+      "the newer-scan guard must run before the abort guard, and both must run before a stale scan's groups are applied");
   });
   t(label + ": closeHealth sets _imgScanAbort so a scan in flight stops producing visible effects", () => {
     const body = fn(src, "closeHealth");
@@ -140,26 +169,97 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 }
 
-// --- regression: applyDupeRemoval must not drop pending image-match groups
+// --- behavioral: computeDupeApplyGroups -- the untouched-image-group guard.
+// Root cause (see review): image-match groups carry no record of whether the
+// user actually engaged with them, because their members are deliberately
+// UNCHECKED by default (perceptual matching has false positives). That makes
+// "all members retained" indistinguishable from "the user never looked at
+// this group" -- so applyDupeRemoval must not fold an image-match group into
+// the not-duplicate sweep unless dupeToggleRemoval actually recorded a
+// touch on it. groupKeyFn is loaded from the SAME source as the function
+// under test (not reimplemented here) so this exercises the real
+// dupeGroupKey derivation, the same precedent groupByImageHash's hammingFn
+// parameter sets in tests/image-dupes.test.js.
+function loadComputeDupeApplyGroups(src) {
+  return eval("(" + fn(src, "computeDupeApplyGroups") + ")");
+}
+function loadDupeGroupKeyFn(src) {
+  return eval("(" + fn(src, "dupeGroupKey") + ")");
+}
+
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": applyDupeRemoval preserves not-yet-processed image-match groups instead of silently dropping them", () => {
-    // Found in review: after an apply, the removal path rebuilds _dupeGroups
-    // from scanDuplicates() alone, which only ever returns url/title matches.
-    // This code path never sets _healthScanned.dupes=false, so nothing
-    // re-triggers scanImageDuplicates() to regenerate the lost groups -- in
-    // "single" review mode, applying group 1 would make every OTHER
-    // already-found image-match group vanish until the whole modal is closed
-    // and reopened.
+  const computeDupeApplyGroups = loadComputeDupeApplyGroups(src);
+  const groupKeyFn = loadDupeGroupKeyFn(src);
+
+  const keepMem = { scope: "imported", card: { id: "keep1" } };
+  const nonKeepMem = { scope: "imported", card: { id: "rm1" } };
+  const imageGroup = { imageMatch: true, keepKey: "imported:keep1", members: [keepMem, nonKeepMem] };
+  const urlGroup = {
+    imageMatch: false, keepKey: "imported:keep2",
+    members: [{ scope: "imported", card: { id: "keep2" } }, { scope: "imported", card: { id: "rm2" } }],
+  };
+
+  t(label + ": an UNTOUCHED image-match group is excluded from applyGroups -- left alone, not folded into the not-duplicate sweep", () => {
+    const { applyGroups, untouchedImageGroups } = computeDupeApplyGroups([imageGroup], new Set(), groupKeyFn);
+    assert.strictEqual(applyGroups.length, 0, "an image-match group the user never toggled a checkbox in must not be processed");
+    assert.strictEqual(untouchedImageGroups, 1);
+  });
+  t(label + ": a TOUCHED image-match group IS included in applyGroups, dismissed as before", () => {
+    const touched = new Set([groupKeyFn(imageGroup.members)]);
+    const { applyGroups, untouchedImageGroups } = computeDupeApplyGroups([imageGroup], touched, groupKeyFn);
+    assert.strictEqual(applyGroups.length, 1, "a group the user actually toggled a checkbox in must still be processed");
+    assert.strictEqual(applyGroups[0], imageGroup);
+    assert.strictEqual(untouchedImageGroups, 0);
+  });
+  t(label + ": a url/title (non-image) group is always included regardless of the touched set -- existing behavior is untouched", () => {
+    const { applyGroups, untouchedImageGroups } = computeDupeApplyGroups([urlGroup], new Set(), groupKeyFn);
+    assert.strictEqual(applyGroups.length, 1);
+    assert.strictEqual(untouchedImageGroups, 0);
+  });
+  t(label + ": a mix of touched-image, untouched-image, and url/title groups is filtered correctly", () => {
+    const untouchedImageGroup2 = {
+      imageMatch: true, keepKey: "imported:keep3",
+      members: [{ scope: "imported", card: { id: "keep3" } }, { scope: "imported", card: { id: "rm3" } }],
+    };
+    const touched = new Set([groupKeyFn(imageGroup.members)]);
+    const { applyGroups, untouchedImageGroups } = computeDupeApplyGroups([imageGroup, untouchedImageGroup2, urlGroup], touched, groupKeyFn);
+    assert.deepStrictEqual(applyGroups, [imageGroup, urlGroup]);
+    assert.strictEqual(untouchedImageGroups, 1);
+  });
+}
+
+// --- wiring: applyDupeRemoval must actually route through computeDupeApplyGroups
+for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+  t(label + ": applyDupeRemoval derives its processing set from computeDupeApplyGroups and re-reads live _dupeGroups for survivors", () => {
+    // The "which groups get folded into the not-duplicate sweep" decision is
+    // proven behaviorally above against the real computeDupeApplyGroups.
+    // What's left to prove here is wiring: that applyDupeRemoval actually
+    // USES that decision (rather than re-deriving its own groupsToProcess-
+    // based filter, which is the exact regression this replaces), and that
+    // the final survivor line reads _dupeGroups LIVE rather than a
+    // groupsToProcess/applyGroups snapshot taken before this function's
+    // awaits -- the async image scan's own .then() can append newly-found
+    // groups to _dupeGroups while a removal is mid-flight (proven by the
+    // renderHealthDupes wiring tests above), and a snapshot taken before
+    // that append would silently drop them. Exercising that live-read
+    // property behaviorally would require mocking document.querySelectorAll,
+    // Store, and the busy-overlay calls end to end; that DOM/Store coupling
+    // makes a full behavioral test impractical, so this half stays a
+    // structural source check rather than a claimed behavioral proof.
     const body = fn(src, "applyDupeRemoval");
-    assert.match(body, /g\.imageMatch\s*&&\s*!groupsToProcess\.includes\(g\)/,
-      "must carry forward image-match groups that were not part of THIS apply's groupsToProcess");
+    assert.match(body, /computeDupeApplyGroups\(groupsToProcess,\s*_dupeImageTouched,\s*dupeGroupKey\)/,
+      "must derive applyGroups from the real touched-group decision, not reimplement it inline");
+    assert.match(body, /for\(const g of applyGroups\)/,
+      "the removal/retain loop must use applyGroups (touched-filtered), not the raw groupsToProcess snapshot");
+    assert.match(body, /_dupeGroups\.filter\(g\s*=>\s*g\.imageMatch\s*&&\s*!applyGroups\.includes\(g\)\)/,
+      "must read the LIVE _dupeGroups (which may have grown during the awaits above), filtered by applyGroups");
     assert.match(body, /_dupeGroups\s*=\s*scanDuplicates\(\)\.concat\(/,
       "the fresh url/title scan must be concatenated with survivors, not used as a full replacement");
   });
 }
 
 // --- byte-identical between web and pwa for every function this task touched
-for (const name of ["renderHealthDupes", "dupeRowHTML", "dupeLargeCardHTML", "dupeCompactGroupHTML", "closeHealth", "applyDupeRemoval"]) {
+for (const name of ["renderHealthDupes", "dupeRowHTML", "dupeLargeCardHTML", "dupeCompactGroupHTML", "closeHealth", "applyDupeRemoval", "dupeToggleRemoval", "computeDupeApplyGroups"]) {
   t(name + " is byte-identical between web and pwa", () => {
     const a = extractFn(html, name);
     const b = extractFn(pwaHtml, name);

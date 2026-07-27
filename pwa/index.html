@@ -5502,6 +5502,19 @@ function shouldReuseDupeSafety(cache, now, isIdb, windowMs){
   return !isIdb && !!(cache && cache.safety) && (now - (cache ? cache.at : 0)) < windowMs;
 }
 let _dupeSpared = new Set();
+// Image-match groups carry no built-in signal that the user actually looked
+// at them -- their members render UNCHECKED by default (perceptual matching
+// has false positives), so "nothing checked" is indistinguishable from
+// "never reviewed." These two Sets close that gap: _dupeImageTouched is a
+// sticky per-GROUP flag (keyed by dupeGroupKey) recording that the user
+// toggled at least one checkbox in that group during this session, even if
+// they later toggled it back to unchecked -- that's still a reviewed
+// decision, not an unreviewed default. _dupeImageChecked is the live
+// per-MEMBER checked state (keyed like _dupeSpared) so a manual check
+// survives a re-render (mode switch, "Keep this", dupeReviewMove, etc.)
+// instead of being silently discarded by the row templates.
+let _dupeImageChecked = new Set();
+let _dupeImageTouched = new Set();
 let _dupeFullScreen = false;
 function dupeSetFullscreen(on){
   _dupeFullScreen = on==null ? !_dupeFullScreen : !!on;
@@ -5511,6 +5524,15 @@ function dupeSetFullscreen(on){
 }
 function dupeToggleRemoval(key,checked){
   if(checked) _dupeSpared.delete(key); else _dupeSpared.add(key);
+  // Look the member up by key rather than taking a group index parameter --
+  // keeps the call signature stable and works no matter which view (compact
+  // or large-card) fired the change. Only image-match groups get the extra
+  // bookkeeping; url/title groups keep relying on _dupeSpared alone as before.
+  const g=_dupeGroups.find(g=>g.imageMatch&&g.members.some(m=>dupeMemberKey(m)===key));
+  if(g){
+    if(checked) _dupeImageChecked.add(key); else _dupeImageChecked.delete(key);
+    _dupeImageTouched.add(dupeGroupKey(g.members));
+  }
 }
 function dupeSetReviewMode(mode){
   _dupeReviewMode = mode==="all" ? "all" : "single";
@@ -5547,13 +5569,13 @@ function dupeLargeCardHTML(mem,gi,keep,imageMatch){
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
     <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
       ? `<span>Best copy</span>`
-      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${!imageMatch && !_dupeSpared.has(mem.scope+":"+it.id)?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${(imageMatch?_dupeImageChecked.has(mem.scope+":"+it.id):!_dupeSpared.has(mem.scope+":"+it.id))?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
     </div></div>`;
 }
 function renderHealthDupes(list){
   if(!_healthScanned.dupes){
-    _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _healthScanned.dupes = true;
+    _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _dupeImageChecked.clear(); _dupeImageTouched.clear(); _healthScanned.dupes = true;
     // Second pass: image-similarity matches over whatever the url/title pass
     // above did NOT already group. Runs async and can take a while on a large
     // library, so it never blocks this render -- it re-renders the tab itself
@@ -6082,7 +6104,7 @@ function dupeRowHTML(mem, gi, keep, imageMatch){
     ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
-      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${!imageMatch && !_dupeSpared.has(mem.scope+":"+it.id)?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${(imageMatch?_dupeImageChecked.has(mem.scope+":"+it.id):!_dupeSpared.has(mem.scope+":"+it.id))?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
   </div>`;
 }
@@ -6187,17 +6209,38 @@ async function rollbackDupePersistence(safety){
   }catch(e){ console.error("duplicate cleanup rollback failed",e); }
   return false;
 }
+// Pure decision rule (no DOM/Store access) -- same shape as
+// shouldReuseDupeSafety above. Image-match groups carry no built-in signal
+// that the user actually looked at them (their members render UNCHECKED by
+// default -- see dupeRowHTML/dupeLargeCardHTML), so "nothing checked" for
+// one is NOT the same thing as "confirmed not a duplicate": it's just the
+// unreviewed default. Fold a group into the not-duplicate/removal sweep only
+// when the user demonstrably touched it (dupeToggleRemoval recorded its key
+// in imageTouched); every other image-match group is excluded here so it is
+// left completely alone by applyDupeRemoval and keeps being offered on the
+// next scan. groupKeyFn is injected, matching groupByImageHash's hammingFn
+// precedent, so tests exercise the real dupeGroupKey derivation.
+function computeDupeApplyGroups(groupsToProcess, imageTouched, groupKeyFn){
+  const applyGroups = (groupsToProcess||[]).filter(g => !g.imageMatch || imageTouched.has(groupKeyFn(g.members)));
+  return { applyGroups, untouchedImageGroups: (groupsToProcess||[]).length - applyGroups.length };
+}
 async function applyDupeRemoval(){
   const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
   const priorIndex=_dupeReviewIndex;
   const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  const {applyGroups,untouchedImageGroups} = computeDupeApplyGroups(groupsToProcess, _dupeImageTouched, dupeGroupKey);
+  const leftForReview = untouchedImageGroups ? " "+untouchedImageGroups+" picture match"+(untouchedImageGroups===1?"":"es")+" left for review." : "";
   if(!checked.size){
     const changes=[];
-    groupsToProcess.forEach(g=>{
+    applyGroups.forEach(g=>{
       const key=dupeGroupKey(g.members);
       g.members.forEach(mem=>changes.push({scope:mem.scope,id:mem.card.id,key}));
     });
+    if(!changes.length){
+      toast("Nothing to apply yet."+leftForReview,5000);
+      return;
+    }
     showBusyOverlay("Saving your keep choices…");
     await new Promise(resolve=>requestAnimationFrame(resolve));
     try{
@@ -6211,7 +6254,7 @@ async function applyDupeRemoval(){
       });
       _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
       _healthScanned.dupes=false; renderHealth();
-      toast("Kept the cards and marked them as not duplicates.",5000);
+      toast("Kept the cards and marked them as not duplicates."+leftForReview,5000);
     }catch(e){
       try{ imported=await Store.getCards(); saved=await Store.getSaved(); updateCounts(); }catch(_){}
       _healthScanned.dupes=false; renderHealth();
@@ -6235,7 +6278,7 @@ async function applyDupeRemoval(){
   const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
   const rmImported=new Set(),rmSaved=new Set(),orphanImages=[],imageCopies=[];
   let removed=0,notDuplicateGroups=0;
-  for(const g of groupsToProcess){
+  for(const g of applyGroups){
     const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
     const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
     for(const mem of g.members){
@@ -6280,17 +6323,25 @@ async function applyDupeRemoval(){
     try{ const imageId=ref.imageId; await Store.imgDel(imageId); if(_fpMap[ref.cardId]){ delete _fpMap[ref.cardId]; await Store.fpDel(ref.cardId); } }catch(e){ console.warn("duplicate orphan image cleanup deferred",ref.imageId,e); }
   }
   rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
+  rmImported.forEach(id=>_dupeImageChecked.delete("imported:"+id)); rmSaved.forEach(id=>_dupeImageChecked.delete("saved:"+id));
   // Re-run the (cheap, synchronous) url/title pass, but do NOT blindly
   // discard the image-match groups scanImageDuplicates already found --
   // scanDuplicates() only ever returns url/title matches, and this path
   // never sets _healthScanned.dupes=false, so nothing would re-trigger the
   // (expensive) image pass to regenerate them. Any image group that was
-  // fully processed just now (groupsToProcess) is done -- its members are
+  // fully processed just now (applyGroups) is done -- its members are
   // either removed or freshly marked not-duplicate -- so only groups NOT in
-  // groupsToProcess survive forward untouched. (Every card belongs to at
+  // applyGroups survive forward untouched. (Every card belongs to at
   // most one group -- proven by the clique/no-double-membership property
   // test -- so a survivor can never contain a card that was just removed.)
-  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !groupsToProcess.includes(g));
+  // An untouched image-match group is excluded from applyGroups too (see
+  // computeDupeApplyGroups), so it naturally lands in this "survives
+  // forward" set instead of being silently marked not-duplicate.
+  // Read _dupeGroups LIVE here, not a groupsToProcess/applyGroups snapshot --
+  // the async image scan's own .then() can append newly-found groups to
+  // _dupeGroups while the awaits above were in flight, and those must not be
+  // dropped just because they weren't part of this apply.
+  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !applyGroups.includes(g));
   _dupeGroups = scanDuplicates().concat(survivingImageGroups);
   if(_dupeReviewMode==="single"){
     const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
@@ -6301,7 +6352,7 @@ async function applyDupeRemoval(){
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   hideBusyOverlay();
   const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
-  toast(removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.",6000);
+  toast((removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.")+leftForReview,6000);
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
