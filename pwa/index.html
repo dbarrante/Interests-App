@@ -4172,7 +4172,7 @@ async function enrichOnOpen(it, idx){
     if(isGenericTitle(it.title, it.url)){
       try{
         const suggested = await generateUniqueTitle(it, undefined, false);
-        if(suggested){ it.title=suggested; changed=true; }
+        if(suggested && suggested.title){ it.title=suggested.title; changed=true; }
       }catch(e){ console.warn("AI title generation failed",e); }
     }
     if(changed){
@@ -4902,17 +4902,18 @@ function allTitleKeys(excludeId){
 // (spec: docs/superpowers/specs/2026-07-24-vision-title-generation-design.md
 // §3). Shared by the OCR tier and the vision tier — same downscale budget
 // (1024px longest edge, ~0.7 JPEG quality) keeps payload/cost bounded for
-// both. Returns null on ANY failure (no image, fetch/decode error) — callers
-// treat null as "this tier can't run," never as an error to surface.
-// Why the last image resolve failed: "" | "no-image" | "fetch-blocked" | "decode-failed".
-// Read by regenerateTitleFor so a card whose PICTURE was unreachable doesn't get
-// reported as "no usable text or image" — they need different fixes.
-let _lastImageFailReason = "";
+// both. On success returns { mediaType, base64 }. On ANY failure (no image,
+// fetch/decode error) returns { failReason } instead of a bare null -- an
+// object with no .base64, so every caller must check for .base64, not just
+// truthiness. The reason travels in the return value rather than shared
+// module state: enrichOnOpen fires generateUniqueTitle fire-and-forget when a
+// card is opened, so a module-level variable could get overwritten by that
+// unrelated background call before the original caller read it.
+// failReason values: "no-image" | "fetch-blocked" | "decode-failed".
 async function resolveCardImageForAI(card){
   try{
-    _lastImageFailReason = "";
     const img = card && (card.img || card.image);
-    if(!img) return null;
+    if(!img) return { failReason: "no-image" };
     let srcUrl;
     if(String(img).indexOf("idb:")===0){
       const id = String(img).slice(4);
@@ -4921,8 +4922,7 @@ async function resolveCardImageForAI(card){
     } else if(/^https?:\/\//i.test(img)){
       srcUrl = "";   // remote: fetched by card id below, never by URL from the browser
     } else {
-      _lastImageFailReason = "no-image";
-      return null;
+      return { failReason: "no-image" };
     }
     // A cross-origin image renders in an <img> without CORS but REFUSES a
     // fetch(), so fetching the URL here returned null and the whole title
@@ -4934,18 +4934,20 @@ async function resolveCardImageForAI(card){
     // synchronously by idb.js, which only ships in this build — is always
     // truthy here).
     let blob;
-    if(srcUrl){
-      blob = await (await fetch(srcUrl)).blob();
-    } else {
-      const resp = window.IA_IDB
-        ? await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(img))
-        : await fetch("/api/fetch-card-image", {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({ id: card.id })
-          });
-      if(!resp.ok){ _lastImageFailReason = "fetch-blocked"; return null; }
-      blob = await resp.blob();
-    }
+    try{
+      if(srcUrl){
+        blob = await (await fetch(srcUrl)).blob();
+      } else {
+        const resp = window.IA_IDB
+          ? await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(img))
+          : await fetch("/api/fetch-card-image", {
+              method:"POST", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify({ id: card.id })
+            });
+        if(!resp.ok) return { failReason: "fetch-blocked" };
+        blob = await resp.blob();
+      }
+    }catch(e){ console.warn("resolveCardImageForAI fetch failed", e); return { failReason: "fetch-blocked" }; }
     const bitmap = await createImageBitmap(blob);
     const maxEdge = 1024;
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
@@ -4959,7 +4961,7 @@ async function resolveCardImageForAI(card){
     let binary = "";
     for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
     return { mediaType:"image/jpeg", base64: btoa(binary) };
-  }catch(e){ console.warn("resolveCardImageForAI failed", e); _lastImageFailReason = "decode-failed"; return null; }
+  }catch(e){ console.warn("resolveCardImageForAI failed", e); return { failReason: "decode-failed" }; }
 }
 // Tier 1 of tiered title generation (spec §1): OCR the card's image via
 // Tesseract.js, loaded on demand from a CDN the first time it's needed —
@@ -4983,7 +4985,7 @@ function loadTesseract(){
 async function ocrExtractText(card){
   try{
     const image = await resolveCardImageForAI(card);
-    if(!image) return null;
+    if(!image || !image.base64) return null;
     const Tesseract = await loadTesseract();
     const dataUrl = "data:"+image.mediaType+";base64,"+image.base64;
     // workerPath/corePath must point at the vendored, same-origin copies --
@@ -5140,14 +5142,21 @@ function looksLikeVideo(card){
   const t = String((card && card.title) || "") + " " + String((card && card.desc) || "");
   return /\b(video|reel|short|clip|watch)\b/i.test(t);
 }
+// Returns { title, failReason }, never a bare string/null: title is the
+// generated title (or null on failure); failReason is only ever set from a
+// failed DIRECT resolveCardImageForAI call below (the vision tier) so
+// regenerateTitleFor can toast the exact reason -- without reading any shared
+// module state, since this is a fresh object tied to THIS call alone (see
+// resolveCardImageForAI for why that matters).
 async function generateUniqueTitle(card, extraAvoid, allowVision=true){
-  if(!IA_AI.hasAIKey()) return null;
+  if(!IA_AI.hasAIKey()) return { title: null, failReason: "" };
   const rawDesc = card.desc || card.benefit || "";
   // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
   // time (see enrichOnOpen), not real content — treat it as no description, same as
   // the "is this a real description" check elsewhere in this file.
   const description = (rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "";
   const weak = extractWeakContext(card);
+  let imgFailReason = "";
 
   // VIDEOS: read the caption burned into the frame FIRST, ahead of the
   // description. A social video's own text ("Junkyard 1970s Ford F600 Uhaul
@@ -5159,24 +5168,26 @@ async function generateUniqueTitle(card, extraAvoid, allowVision=true){
   // rarely carry a title.
   if(looksLikeVideo(card)){
     const burned = await ocrExtractText(card);
-    if(burned) return titleFromSignal(card, {description:burned, ocr:true, extraAvoid, collection:weak.collection});
+    if(burned) return { title: await titleFromSignal(card, {description:burned, ocr:true, extraAvoid, collection:weak.collection}), failReason: "" };
   }
 
-  if(description) return titleFromSignal(card, {description, extraAvoid, collection:weak.collection});
+  if(description) return { title: await titleFromSignal(card, {description, extraAvoid, collection:weak.collection}), failReason: "" };
 
   const ocrText = looksLikeVideo(card) ? null : await ocrExtractText(card);   // videos already tried above
-  if(ocrText) return titleFromSignal(card, {description:ocrText, ocr:true, extraAvoid, collection:weak.collection});
+  if(ocrText) return { title: await titleFromSignal(card, {description:ocrText, ocr:true, extraAvoid, collection:weak.collection}), failReason: "" };
 
   if(allowVision){
     const image = await resolveCardImageForAI(card);
-    if(image){
+    if(image && image.base64){
       const title = await titleFromSignal(card, {image, extraAvoid, collection:weak.collection, model:_titleVisionModel||undefined});
-      if(title) return title;
+      if(title) return { title, failReason: "" };
+    } else {
+      imgFailReason = (image && image.failReason) || "";
     }
   }
 
-  if(weak.collection) return fallbackCollectionTitle(card, weak.collection, extraAvoid);
-  return null;
+  if(weak.collection) return { title: await fallbackCollectionTitle(card, weak.collection, extraAvoid), failReason: imgFailReason };
+  return { title: null, failReason: imgFailReason };
 }
 // Pick the member to KEEP from a duplicate group. Higher score wins.
 function dupePrimary(members){
@@ -5528,21 +5539,24 @@ async function regenerateTitleFor(card, extraAvoid, busyLabel){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return null; }
   showBusyOverlay(busyLabel||"Generating a new title…");
   await new Promise(r=>requestAnimationFrame(r));
-  let out=null;
-  // Reset BEFORE calling generateUniqueTitle: some tiers (e.g. a real desc that
-  // fails at the AI call) return null without ever touching the image, and this
-  // is a module-level variable — without this reset, such a card would inherit
-  // a STALE reason left over from a PREVIOUS, unrelated card's failed attempt.
-  _lastImageFailReason = "";
-  try{ out = await generateUniqueTitle(card, extraAvoid); }
+  let out=null, failReason="";
+  // generateUniqueTitle returns { title, failReason } for THIS call alone —
+  // no shared module state to reset, so a concurrent fire-and-forget call
+  // (e.g. enrichOnOpen, triggered just by opening a different card) can never
+  // leak its reason into this card's toast.
+  try{
+    const result = await generateUniqueTitle(card, extraAvoid);
+    out = (result && result.title) || null;
+    failReason = (result && result.failReason) || "";
+  }
   catch(e){ console.warn("title regeneration failed", e); }
   hideBusyOverlay();
   if(!out){
-    const why = _lastImageFailReason === "fetch-blocked"
+    const why = failReason === "fetch-blocked"
       ? "Couldn't load that card's picture — the site may be blocking it, or it may be gone."
-      : _lastImageFailReason === "decode-failed"
+      : failReason === "decode-failed"
       ? "That card's picture couldn't be read."
-      : _lastImageFailReason === "no-image"
+      : failReason === "no-image"
       ? "That card has no picture to read a title from."
       : "Couldn't generate a title — check your AI key, credits, and rate limits.";
     toast(why, 7000);
@@ -5673,7 +5687,8 @@ async function suggestTitlesForFlagged(){
   for(const m of flagged){
     updateBusyOverlay("Suggesting titles… "+done+"/"+flagged.length);
     try{
-      const suggestion = await generateUniqueTitle(m.card, acceptedThisBatch);
+      const result = await generateUniqueTitle(m.card, acceptedThisBatch);
+      const suggestion = result && result.title;
       if(suggestion){ _titleSuggestions[m.scope+":"+m.card.id]=suggestion; acceptedThisBatch.push(suggestion); }
     }catch(e){ console.warn("title suggestion failed", e); }
     done++;

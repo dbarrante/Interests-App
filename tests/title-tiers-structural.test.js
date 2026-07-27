@@ -41,9 +41,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "must fall back to card.image for saved-scope cards, matching the card.desc || card.benefit convention used elsewhere"
     );
   });
-  t(label + ": resolveCardImageForAI returns null on failure, never throws to its caller", () => {
+  t(label + ": resolveCardImageForAI reports failure via its return value (a { failReason } object), never throws to its caller", () => {
     const m = /async function resolveCardImageForAI\(card\)\{([\s\S]*?)\n\}/.exec(src);
-    assert.match(m[1], /catch\s*\(e\)\{[^}]*return null;/);
+    assert.ok(m, "resolveCardImageForAI not found");
+    assert.match(m[1], /catch\s*\(e\)\{[^}]*return\s*\{\s*failReason:/, "the outer catch must swallow the error and return a { failReason } object, not throw or return a bare null");
   });
   t(label + ": ocrExtractText loads Tesseract.js on demand and applies a confidence/length bar", () => {
     const m = /async function ocrExtractText\(card\)\{([\s\S]*?)\n\}/.exec(src);
