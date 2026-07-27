@@ -529,28 +529,55 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     }
   });
 
-  await t(label + ": isDegenerateHash rejects a hash that is merely CLOSE to periodic, not just an EXACT repeat (F2 — exact matching let two near-periodic hashes collide with each other)", () => {
-    // The exact-match-only guard (v2) let two hashes that are each one bit
-    // off a perfectly periodic pattern straight through, because NEITHER is
-    // a perfect period-1/2/4/8 repeat on its own. But they are only 2 bits
-    // apart from EACH OTHER -- well inside MAX_DISTANCE (5) -- so two
-    // unrelated near-flat/near-repeating images landing on these two hashes
-    // would still be offered as a duplicate match, the exact failure mode
-    // this guard exists to prevent. Both must now be rejected.
+  await t(label + ": isDegenerateHash ACCEPTS a hash that is merely CLOSE to periodic, not an EXACT repeat (F2's widening reverted — the residual is accepted deliberately, not a regression)", () => {
+    // v3 rejected any hash within MAX_DISTANCE of a periodic pattern, using
+    // exactly this fixture: "66cc993366cc9932" and "66cc993366cc9931" are
+    // each one bit off the period-8 pattern above, yet only 2 bits apart
+    // from EACH OTHER -- comfortably inside MAX_DISTANCE (5). That widening
+    // was reverted: MAX_DISTANCE is the "these two images MATCH" threshold,
+    // not a measure of how close to featureless a SINGLE hash is, and
+    // reusing it here rejected real, structured images (see the
+    // "0000000800808000" regression test below — the measured case that
+    // broke the feature). Reverting reopens the residual risk that these two
+    // hashes could still match EACH OTHER and produce a false image-duplicate
+    // group. That residual is accepted deliberately: a false image match
+    // surfaces as a REVIEW PROMPT, not a deletion (image-match group members
+    // render unchecked; nothing is removed without an explicit click),
+    // whereas a wrongly-rejected real hash is SILENT (the card is simply
+    // never offered as a duplicate, with no indication to the user at all).
+    // Between a visible false positive and an invisible false negative, the
+    // guard now errs toward the visible one, so both hashes below must be
+    // ACCEPTED (not degenerate).
     const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
     const hA = "66cc993366cc9932", hB = "66cc993366cc9931";
-    assert.strictEqual(isDegenerateHash(hA), true, "1 bit off a period-8 pattern must still be rejected");
-    assert.strictEqual(isDegenerateHash(hB), true, "1 bit off a period-8 pattern must still be rejected");
-    // Positive control: prove this is exercising the NEW near-match check,
-    // not a coincidental exact match under the OLD guard.
+    assert.strictEqual(isDegenerateHash(hA), false, "1 bit off a period-8 pattern is not an EXACT repeat and must be accepted");
+    assert.strictEqual(isDegenerateHash(hB), false, "1 bit off a period-8 pattern is not an EXACT repeat and must be accepted");
+    // Positive control: confirm neither is an EXACT period-1/2/4/8 repeat
+    // either -- if it were, it SHOULD still be rejected, and asserting
+    // "false" above would be testing the wrong thing.
     for (const p of [1, 2, 4, 8]) {
       assert.strictEqual(hA.slice(0, p).repeat(16 / p) === hA, false, "sanity: " + hA + " is not an EXACT period-" + p + " repeat");
       assert.strictEqual(hB.slice(0, p).repeat(16 / p) === hB, false, "sanity: " + hB + " is not an EXACT period-" + p + " repeat");
     }
     // Positive control: the two hashes really do collide with EACH OTHER
-    // (2 bits apart, inside MAX_DISTANCE=5) -- confirming this isn't just
-    // two independently-rejected hashes with no real relationship.
+    // (2 bits apart, inside MAX_DISTANCE=5) -- confirming the residual risk
+    // being accepted here is real, not hypothetical.
     assert.strictEqual(IA_IMGHASH.hamming(hA, hB), 2, "sanity: the two hashes must be within MAX_DISTANCE of each other, not just each individually near-periodic");
+  });
+
+  await t(label + ": isDegenerateHash accepts the exact measured hash whose wrongful rejection broke the feature (\"0000000800808000\" — regression pin, do not re-widen)", () => {
+    // Measured live in a real browser on this branch, before this fix: a
+    // genuine, clearly-structured test image (a green block, black text, and
+    // a red bar) hashed to "0000000800808000" -- only 3 of 64 bits set, so 3
+    // away from all-zeros -- which the v3 near-match guard rejected as
+    // degenerate, along with its own true duplicate (the same picture
+    // re-encoded at lower JPEG quality). The feature's own demonstration
+    // case found nothing under v3. Sparse-but-real hashes like this are
+    // common: any image with one dominant region produces one. Pinned here
+    // so a future "close the residual" fix can't silently swallow this exact
+    // value again the same way.
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash("0000000800808000"), false, "the measured real-image hash that broke the feature must be accepted");
   });
 
   await t(label + ": isDegenerateHash does not reject a genuinely varied (non-repeating) hash", () => {

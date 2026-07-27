@@ -4923,48 +4923,88 @@ function imgHashSrcKey(card){
   return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
 }
 // Bumped whenever isDegenerateHash's rejection rules change SHAPE -- either
-// which periods it checks, or (v2->v3) how close to periodic counts as
-// degenerate: v2 rejected only an EXACT period-1/2/4/8 repeat; v3 also
-// rejects a hash within MAX_DISTANCE of one (see isDegenerateHash below for
-// why exact matching alone let real collisions through). No user data has
-// shipped under any prior guard, so this is a forward marker, not a count of
-// historical revisions. loadImgHashCache
+// which periods it checks, or how close to periodic counts as degenerate.
+// v2->v3 widened exact-only period-1/2/4/8 rejection to also reject any hash
+// within MAX_DISTANCE of one; v3->v4 REVERTED that widening back to
+// exact-only (see isDegenerateHash below for the full reasoning -- in short,
+// MAX_DISTANCE is the "these two images MATCH" threshold, not a measure of
+// how close to featureless a SINGLE hash is, and the widened check silently
+// swallowed real, structured images). No user data has shipped under any
+// prior guard, so this is a forward marker, not a count of historical
+// revisions. loadImgHashCache
 // drops any cache entry whose stamped .v doesn't match this exactly
 // (including an old entry with no .v at all -- pre-versioning or computed
-// under a since-widened guard), forcing a recompute under the CURRENT guard
-// rather than silently trusting a hash a looser guard once accepted. See the
-// asymmetry note below for why an unnecessary recompute is cheap and a
-// wrongly-trusted stale hash is not.
-const IMGHASH_GUARD_VERSION = 3;
+// under a different guard), forcing a recompute under the CURRENT guard
+// rather than silently trusting a verdict a different guard reached. A
+// different guard can disagree in EITHER direction -- v2->v3 widened
+// rejection, so a v2 entry could be a real hash the current guard would
+// refuse; v3->v4 narrowed it back, so a v3 entry could be a wrongly-rejected
+// "" for a hash the current guard would now accept and compute for real
+// (exactly the bug that broke the feature). An unnecessary recompute costs
+// only some CPU time; keeping a mistaken verdict cached, in whichever
+// direction, silently locks it in until the next version bump.
+const IMGHASH_GUARD_VERSION = 4;
 // A hash that's just a short pattern repeated means the 9x8 sample had no
 // distinguishing horizontal structure -- a blank, a solid fill, a smooth
 // gradient, vertical stripes, a checkerboard, or a repeating band/ripple
 // texture. Unrelated images of those kinds collide at distance 0, and a
-// match here becomes a delete prompt, so refuse to hash them at all. Checks
-// periods 1, 2, 4, and 8 (hex characters, all divisors of the 16-char hash):
-// period 1 is "every row identical" (solid fills, vertical stripes --
-// 0000.., ffff.., aaaa..); period 4 is "rows alternate between two distinct
-// patterns" (a checkerboard, or the row-major array [100,101,100,101,...] --
-// aa55aa55.., 55aa55aa..); period 8 is "the bottom half of the 8-row sample
-// repeats the top half's row pattern exactly" (a texture that repeats every
-// 4 of the 8 sampled rows -- a tight band/ripple/wave). Verified against the
-// real dhashFromGrey, not assumed -- note a checkerboard is period 4, NOT
-// period 2 as it might look at a glance (a period-2-only check misses it),
-// and period 8 is confirmed REAL and REACHABLE for a plausible image, not
-// just theoretically: two genuinely different sine-gradient pixel samples
-// (same 9x8 sample size, verified distinct pixel data) both hash to
-// "66cc993366cc9933" against the real dhashFromGrey -- a demonstrated
-// distance-0 collision the period-1/2/4-only guard let straight through.
+// match here becomes a duplicate-review prompt, so refuse to hash them at
+// all. Checks periods 1, 2, 4, and 8 (hex characters, all divisors of the
+// 16-char hash): period 1 is "every row identical" (solid fills, vertical
+// stripes -- 0000.., ffff.., aaaa..); period 4 is "rows alternate between two
+// distinct patterns" (a checkerboard, or the row-major array
+// [100,101,100,101,...] -- aa55aa55.., 55aa55aa..); period 8 is "the bottom
+// half of the 8-row sample repeats the top half's row pattern exactly" (a
+// texture that repeats every 4 of the 8 sampled rows -- a tight
+// band/ripple/wave). Verified against the real dhashFromGrey, not assumed --
+// note a checkerboard is period 4, NOT period 2 as it might look at a glance
+// (a period-2-only check misses it), and period 8 is confirmed REAL and
+// REACHABLE for a plausible image, not just theoretically: two genuinely
+// different sine-gradient pixel samples (same 9x8 sample size, verified
+// distinct pixel data) both hash to "66cc993366cc9933" against the real
+// dhashFromGrey -- a demonstrated distance-0 collision the period-1/2/4-only
+// guard let straight through. A real, varied photo hashing to two identical
+// 8-character halves by pure coincidence is itself a ~1-in-4-billion event
+// (2^32 of the 2^64 possible 64-bit hash values have that shape, assuming
+// close to uniform hash bits -- a reasonable approximation for real photos),
+// so checking period 8 too is close to free.
 //
-// The asymmetry above is the whole reason this keeps widening: rejecting a
-// hash (returning "" for a real, varied photo) costs a MISSED duplicate --
-// silent and harmless, the card is simply never flagged. Accepting a
-// degenerate hash costs a WRONGLY-OFFERED DELETION -- two unrelated cards
-// presented as a match, one of which the user might delete. A real, varied
-// photo hashing to two identical 8-character halves by pure coincidence is a
-// ~1-in-4-billion event (2^32 of the 2^64 possible 64-bit hash values have
-// that shape, assuming close to uniform hash bits -- a reasonable
-// approximation for real photos), so checking period 8 too is close to free.
+// This checks EXACT periodicity -- h equal to its own period-p unit repeated
+// -- not closeness to periodic. A prior version (v3) widened it to reject
+// any hash within MAX_DISTANCE of a periodic pattern, reasoning that two
+// hashes each merely CLOSE to periodic could still land within MAX_DISTANCE
+// of EACH OTHER and slip through an exact-only guard as a false match:
+// demonstrated with "66cc993366cc9932" and "66cc993366cc9931", each one bit
+// off the period-8 pattern above, yet only 2 bits apart from each other --
+// comfortably inside MAX_DISTANCE (5). That widening was reverted: measured
+// live in the browser, a genuine, clearly-structured test image (a green
+// block, black text, a red bar) hashed to "0000000800808000" -- only 3 of 64
+// bits set, so 3 away from all-zeros -- and the widened check rejected it,
+// along with its own true duplicate (the same picture re-encoded at lower
+// JPEG quality). MAX_DISTANCE is the "these two images MATCH" threshold, not
+// a measure of how close to featureless a SINGLE hash is; reusing it here
+// swallowed real, structured images -- sparse-but-real hashes like that one
+// are common, since any image with one dominant region produces one. The
+// feature's own demonstration case found nothing under v3.
+//
+// Reverting to exact-only reopens that residual: two hashes that are each
+// only a bit or two off the SAME periodic pattern -- like the 66cc9932 /
+// 66cc9931 pair above -- can still match EACH OTHER and pass this guard
+// unrejected, the exact case v3 tried to close. That residual is accepted
+// deliberately, on the asymmetry between the two failure modes this guard
+// can cause. Accepting a degenerate-adjacent hash risks, at worst, a FALSE
+// IMAGE MATCH -- which surfaces as a review prompt, not a deletion: an
+// image-match group's members render unchecked, and nothing is removed
+// without the user explicitly clicking to do so. Rejecting a real hash is
+// SILENT -- the card is simply never offered as a duplicate of anything, and
+// nothing in the UI tells the user a comparison was skipped or why. Between
+// a visible false positive and an invisible false negative, this guard errs
+// toward the visible one. If the residual above ever proves to matter
+// against the real library, the proportional fix is a small, dedicated
+// tolerance -- a distance of 1, or a minimum-set-bits floor tuned against
+// real data -- NOT reusing MAX_DISTANCE, which answers a different question
+// ("do these two hashes match each other?") than the one this guard asks
+// ("is this one hash too featureless to trust at all?").
 //
 // For a 16-char string, having period p implies having period q whenever p
 // divides q (the p-char unit tiles evenly into a q-char block, which then
@@ -4979,47 +5019,11 @@ const IMGHASH_GUARD_VERSION = 3;
 // tiling of a 16-char string into an integer number of 3-char units exists.
 // That closes the divisor list at {1,2,4,8,16}, with 16 itself excluded as
 // above.
-//
-// EXACT matching is not enough, though: two hashes that are each merely
-// CLOSE to periodic -- not perfectly periodic -- can still land within
-// MAX_DISTANCE of EACH OTHER, and an exact-match-only guard waves both of
-// them through as "hashable". Demonstrated, not hypothetical:
-// "66cc993366cc9932" and "66cc993366cc9931" both pass a period-1/2/4/8
-// EXACT check (neither is a perfect repeat of any of those periods) yet are
-// only 2 bits apart -- comfortably inside MAX_DISTANCE (5) -- so two
-// unrelated near-flat/near-repeating images landing on these two hashes
-// would be offered as a duplicate match anyway, the exact scenario this
-// whole guard exists to prevent. So this checks DISTANCE to periodic, not
-// just EQUALITY with it: for each period p, build the idealized p-periodic
-// hash closest to h (fold h's 16 hex chars into p position-groups of 16/p
-// samples each, keep the most-common hex digit at each position -- a tie is
-// broken by keeping whichever occurrence came first, which for p=8's 2-way
-// split is provably distance-optimal by the triangle inequality: any unit's
-// total distance to both halves is >= the halves' distance to each other,
-// and using either half AS the unit hits that bound exactly), then reject h
-// if it's within MAX_DISTANCE of that ideal. An exact repeat is just the
-// distance-0 case of this same check, so this subsumes the old behavior
-// exactly. All four periods are still checked independently here -- unlike
-// the EXACT-match case above, the near-match subsumption claim (period 8
-// alone catching everything periods 1/2/4 catch) is NOT exhaustively
-// provable at this scale (2^64 hashes, not 2^16), so don't drop 1/2/4 as
-// "redundant" without re-deriving that proof.
 function isDegenerateHash(h){
   if(typeof h !== "string" || h.length !== 16 || !/^[0-9a-f]{16}$/.test(h)) return true;
   for(const p of [1,2,4,8]){
-    const reps = 16/p;
-    let unit = "";
-    for(let i=0;i<p;i++){
-      const counts = {};
-      let bestCh = h[i], bestCount = 0;
-      for(let r=0;r<reps;r++){
-        const ch = h[i+r*p];
-        counts[ch] = (counts[ch]||0) + 1;
-        if(counts[ch] > bestCount){ bestCount = counts[ch]; bestCh = ch; }
-      }
-      unit += bestCh;
-    }
-    if(IA_IMGHASH.hamming(h, unit.repeat(reps)) <= IA_IMGHASH.MAX_DISTANCE) return true;
+    const unit = h.slice(0,p);
+    if(unit.repeat(16/p) === h) return true;
   }
   return false;
 }
@@ -5110,12 +5114,15 @@ async function loadImgHashCache(){
     const out = {};
     for(const id in m){
       const entry = m[id];
-      // An entry not stamped with the CURRENT IMGHASH_GUARD_VERSION --
-      // including an old-format entry with no .v field at all -- may have
-      // been accepted by a looser guard that the current one would reject.
-      // Per the asymmetry documented above isDegenerateHash, dropping it
-      // here just costs a recompute (silent, harmless); keeping it risks
-      // reusing a wrongly-accepted hash as a false duplicate match.
+      // An entry not stamped with the CURRENT IMGHASH_GUARD_VERSION was
+      // judged by a DIFFERENT guard, which may disagree with the current one
+      // in EITHER direction (see the version-history note above
+      // IMGHASH_GUARD_VERSION): a v2 entry could be a real hash the
+      // widened v3 guard would have refused; a v3 entry could be a
+      // wrongly-rejected "" for a hash the reverted v4 guard now accepts and
+      // computes for real. Dropping it costs only a cheap recompute; keeping
+      // a verdict from a different guard risks locking in whichever mistake
+      // that guard made, in whichever direction, until the next bump.
       if(entry && entry.v === IMGHASH_GUARD_VERSION) out[id] = entry;
     }
     return out;
