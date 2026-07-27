@@ -59,7 +59,7 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(block, /function mergeDupeMetadata\(/, name + " defines the keeper metadata merge policy");
   assert.match(block, /await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
     name + " fails closed when the safety snapshot cannot be verified");
-  assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("for(const g of groupsToProcess)"),
+  assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("for(const g of applyGroups)"),
     name + " verifies the safety snapshot before processing removals");
   assert.match(block, /shouldReuseDupeSafety\(_dupeSafetyCache, ?Date\.now\(\), ?!!window\.IA_IDB\)/,
     name + " reuses a recently-verified desktop safety snapshot instead of taking a fresh one on every card");

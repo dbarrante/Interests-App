@@ -11,6 +11,7 @@ module.exports = {
     ["web/route-capture.js", "pwa/route-capture.js"],
     ["web/profile-analyze.js", "pwa/profile-analyze.js"],
     ["web/title-ai.js", "pwa/title-ai.js"],
+    ["web/imagehash.js", "pwa/imagehash.js"],
   ],
   indexContracts: [
     "setCardImageDurably",
@@ -18,5 +19,10 @@ module.exports = {
     "drainCaptures",
     "renderPwaRecoveryStatus",
     "recoverPwaMerge",
+    "imgHashSrcKey",
+    "isDegenerateHash",
+    "computeCardHash",
+    "loadImgHashCache",
+    "saveImgHashCache",
   ],
 };

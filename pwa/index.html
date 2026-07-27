@@ -512,6 +512,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <script src="dropbox-connect.js"></script>
 <script src="restore-from-backup.js"></script>
 <script src="ai.js"></script>
+<script src="imagehash.js"></script>
 <script src="route-capture.js"></script>
 <script src="lib/urlkey.js"></script>
 <script src="lib/import-parsers.js"></script>
@@ -2733,7 +2734,19 @@ const JUNK_DHASH_MAX_DIST = 8;
 // capture over an unrelated canvas issue.
 async function dHashFromDataUrl(dataUrl){
   try{
-    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    // Do NOT hand this data: URL to fetch: same trap as computeCardHash above --
+    // on the web/ surface, core/server.js's CSP connect-src has no data: scheme,
+    // so fetching a data URL throws TypeError: Failed to fetch and the catch
+    // below silently turns every call into "". Decode the base64 payload
+    // straight to bytes instead; no network layer involved, and no dependency
+    // on fetch's inconsistent cross-browser data: URL support either.
+    const comma = dataUrl.indexOf(",");
+    const header = dataUrl.slice(5, comma);            // "image/jpeg;base64"
+    const mediaType = header.split(";")[0] || "image/jpeg";
+    const bin = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: mediaType }));
     const w=9, h=8;
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext("2d");
@@ -4898,6 +4911,234 @@ function allTitleKeys(excludeId){
   saved.forEach(c=>{ if(c && c.id!==excludeId && c.title) keys.add(normalizeTitleKey(c.title)); });
   return keys;
 }
+// --- perceptual image hashing (duplicate detection) -------------------------
+// Identifies WHICH image a cached hash was computed from, so the entry
+// self-invalidates when the card's picture changes (re-capture, manual upload,
+// "Fix placeholders") instead of matching on a stale hash forever.
+function imgHashSrcKey(card){
+  const v = (card && (card.img || card.image)) || "";
+  // Most-recent-of-the-two, not first-truthy: capture paths bump only
+  // .lastUpdate, manual paste/edit paths bump only .edited, and `||` would
+  // permanently hide a later .edited once .lastUpdate is set once.
+  return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
+}
+// Bumped whenever isDegenerateHash's rejection rules change SHAPE -- either
+// which periods it checks, or how close to periodic counts as degenerate.
+// v2->v3 widened exact-only period-1/2/4/8 rejection to also reject any hash
+// within MAX_DISTANCE of one; v3->v4 REVERTED that widening back to
+// exact-only (see isDegenerateHash below for the full reasoning -- in short,
+// MAX_DISTANCE is the "these two images MATCH" threshold, not a measure of
+// how close to featureless a SINGLE hash is, and the widened check silently
+// swallowed real, structured images). No user data has shipped under any
+// prior guard, so this is a forward marker, not a count of historical
+// revisions. loadImgHashCache
+// drops any cache entry whose stamped .v doesn't match this exactly
+// (including an old entry with no .v at all -- pre-versioning or computed
+// under a different guard), forcing a recompute under the CURRENT guard
+// rather than silently trusting a verdict a different guard reached. A
+// different guard can disagree in EITHER direction -- v2->v3 widened
+// rejection, so a v2 entry could be a real hash the current guard would
+// refuse; v3->v4 narrowed it back, so a v3 entry could be a wrongly-rejected
+// "" for a hash the current guard would now accept and compute for real
+// (exactly the bug that broke the feature). An unnecessary recompute costs
+// only some CPU time; keeping a mistaken verdict cached, in whichever
+// direction, silently locks it in until the next version bump.
+const IMGHASH_GUARD_VERSION = 4;
+// A hash that's just a short pattern repeated means the 9x8 sample had no
+// distinguishing horizontal structure -- a blank, a solid fill, a smooth
+// gradient, vertical stripes, a checkerboard, or a repeating band/ripple
+// texture. Unrelated images of those kinds collide at distance 0, and a
+// match here becomes a duplicate-review prompt, so refuse to hash them at
+// all. Checks periods 1, 2, 4, and 8 (hex characters, all divisors of the
+// 16-char hash): period 1 is "every row identical" (solid fills, vertical
+// stripes -- 0000.., ffff.., aaaa..); period 4 is "rows alternate between two
+// distinct patterns" (a checkerboard, or the row-major array
+// [100,101,100,101,...] -- aa55aa55.., 55aa55aa..); period 8 is "the bottom
+// half of the 8-row sample repeats the top half's row pattern exactly" (a
+// texture that repeats every 4 of the 8 sampled rows -- a tight
+// band/ripple/wave). Verified against the real dhashFromGrey, not assumed --
+// note a checkerboard is period 4, NOT period 2 as it might look at a glance
+// (a period-2-only check misses it), and period 8 is confirmed REAL and
+// REACHABLE for a plausible image, not just theoretically: two genuinely
+// different sine-gradient pixel samples (same 9x8 sample size, verified
+// distinct pixel data) both hash to "66cc993366cc9933" against the real
+// dhashFromGrey -- a demonstrated distance-0 collision the period-1/2/4-only
+// guard let straight through. A real, varied photo hashing to two identical
+// 8-character halves by pure coincidence is itself a ~1-in-4-billion event
+// (2^32 of the 2^64 possible 64-bit hash values have that shape, assuming
+// close to uniform hash bits -- a reasonable approximation for real photos),
+// so checking period 8 too is close to free.
+//
+// This checks EXACT periodicity -- h equal to its own period-p unit repeated
+// -- not closeness to periodic. A prior version (v3) widened it to reject
+// any hash within MAX_DISTANCE of a periodic pattern, reasoning that two
+// hashes each merely CLOSE to periodic could still land within MAX_DISTANCE
+// of EACH OTHER and slip through an exact-only guard as a false match:
+// demonstrated with "66cc993366cc9932" and "66cc993366cc9931", each one bit
+// off the period-8 pattern above, yet only 2 bits apart from each other --
+// comfortably inside MAX_DISTANCE (5). That widening was reverted: measured
+// live in the browser, a genuine, clearly-structured test image (a green
+// block, black text, a red bar) hashed to "0000000800808000" -- only 3 of 64
+// bits set, so 3 away from all-zeros -- and the widened check rejected it,
+// along with its own true duplicate (the same picture re-encoded at lower
+// JPEG quality). MAX_DISTANCE is the "these two images MATCH" threshold, not
+// a measure of how close to featureless a SINGLE hash is; reusing it here
+// swallowed real, structured images -- sparse-but-real hashes like that one
+// are common, since any image with one dominant region produces one. The
+// feature's own demonstration case found nothing under v3.
+//
+// Reverting to exact-only reopens that residual: two hashes that are each
+// only a bit or two off the SAME periodic pattern -- like the 66cc9932 /
+// 66cc9931 pair above -- can still match EACH OTHER and pass this guard
+// unrejected, the exact case v3 tried to close. That residual is accepted
+// deliberately, on the asymmetry between the two failure modes this guard
+// can cause. Accepting a degenerate-adjacent hash risks, at worst, a FALSE
+// IMAGE MATCH -- which surfaces as a review prompt, not a deletion: an
+// image-match group's members render unchecked, and nothing is removed
+// without the user explicitly clicking to do so. Rejecting a real hash is
+// SILENT -- the card is simply never offered as a duplicate of anything, and
+// nothing in the UI tells the user a comparison was skipped or why. Between
+// a visible false positive and an invisible false negative, this guard errs
+// toward the visible one. If the residual above ever proves to matter
+// against the real library, the proportional fix is a small, dedicated
+// tolerance -- a distance of 1, or a minimum-set-bits floor tuned against
+// real data -- NOT reusing MAX_DISTANCE, which answers a different question
+// ("do these two hashes match each other?") than the one this guard asks
+// ("is this one hash too featureless to trust at all?").
+//
+// For a 16-char string, having period p implies having period q whenever p
+// divides q (the p-char unit tiles evenly into a q-char block, which then
+// tiles into the 16-char string), and 1|2, 2|4, 4|8 all hold -- so for an
+// EXACT match, period 8 alone subsumes everything periods 1, 2, and 4 catch
+// (checked exhaustively: all 16 period-1 units, all 256 period-2 units, and
+// all 65536 period-4 units, zero counterexamples). p=1, p=2, and p=4 are
+// listed anyway purely for readability. Do NOT extend this list to 16:
+// h.slice(0,16) trivially repeat(1)s to itself for EVERY possible hash, so a
+// p=16 check would reject everything, not just degenerate ones. Period 3 is
+// impossible for a different reason: 3 does not divide 16, so no exact
+// tiling of a 16-char string into an integer number of 3-char units exists.
+// That closes the divisor list at {1,2,4,8,16}, with 16 itself excluded as
+// above.
+function isDegenerateHash(h){
+  if(typeof h !== "string" || h.length !== 16 || !/^[0-9a-f]{16}$/.test(h)) return true;
+  for(const p of [1,2,4,8]){
+    const unit = h.slice(0,p);
+    if(unit.repeat(16/p) === h) return true;
+  }
+  return false;
+}
+// A 64-bit dHash for one card, "" when the image is genuinely unhashable, or
+// null when the attempt itself failed. "" is a CACHED VERDICT, not an error:
+// an unreachable-by-design or degenerate image must not be re-processed on
+// every scan of a multi-thousand-card library. null is the OPPOSITE -- a
+// TRANSIENT failure (right now: only resolveCardImageForAI's "fetch-blocked",
+// meaning the network/server call itself failed) that says nothing about the
+// picture and must NEVER be cached: scanImageDuplicates keys its cache on
+// this card's current image, which for a remote card never changes on its
+// own, so caching a null-turned-"" would zero that card's duplicate
+// detection permanently on the very next unlucky scan (a server restart or
+// offline blip mid-scan) -- no rescan, no close/reopen, nothing short of a
+// guard-version bump could ever clear it. See scanImageDuplicates, which
+// only writes a returned "" (or a real hash) into the cache and leaves null
+// uncached so the next scan simply retries.
+async function computeCardHash(card){
+  try{
+    const image = await resolveCardImageForAI(card);
+    // resolveCardImageForAI returns a TRUTHY object on failure too -- a
+    // { failReason } object has no .base64 -- so `if(!image)` alone never
+    // fires on a failure. Must check .base64, matching ocrExtractText below.
+    if(!image || !image.base64){
+      // Only "fetch-blocked" is a transient failure of the ATTEMPT itself
+      // (the network/server call failed, tells us nothing about the
+      // picture). "no-image" (the card has no image at all) and
+      // "decode-failed" (the fetched bytes themselves would not decode) are
+      // both stable facts about this card/image and stay a real verdict.
+      return (image && image.failReason === "fetch-blocked") ? null : "";
+    }
+    // Do NOT wrap this base64 payload into a "data:" URL and hand it to fetch:
+    // on the web/ surface (served by core/server.js), its CSP's connect-src
+    // 'self' https: has no data: scheme, so fetching a data URL throws
+    // TypeError: Failed to fetch here (verified live) and the catch below
+    // silently turns EVERY card into "" -- image-duplicate detection goes
+    // inert with no visible error. pwa/index.html mirrors this file byte-
+    // for-byte (parity enforced by tests/imagehash-cache-wiring.test.js) and
+    // ships via GitHub Pages with no CSP of its own, but decoding directly
+    // here also sidesteps fetch's inconsistent cross-browser data: URL
+    // support -- build the Blob in memory from the decoded bytes instead; no
+    // network layer involved either way.
+    const bin = atob(image.base64);
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: image.mediaType }));
+    const W = IA_IMGHASH.HASH_W, H = IA_IMGHASH.HASH_H;
+    const c = new OffscreenCanvas(W, H);
+    const ctx = c.getContext("2d", {willReadFrequently:true});
+    ctx.drawImage(bitmap, 0, 0, W, H);
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const grey = new Uint8Array(W*H);
+    let lo = 255, hi = 0;
+    for(let i=0;i<W*H;i++){
+      const g = (px[i*4]*0.299 + px[i*4+1]*0.587 + px[i*4+2]*0.114) | 0;
+      grey[i] = g;
+      if(g<lo) lo = g;
+      if(g>hi) hi = g;
+    }
+    // Two independent guards test two different things, and neither is a
+    // subset of the other. This one checks the INPUT (pixel range) and is a
+    // cheap early exit that skips dhashFromGrey entirely for the common
+    // solid-colour/near-flat case -- it is NOT a correctness guarantee: many
+    // low-range samples still hash to a perfectly good non-degenerate value
+    // (verified empirically), and bailing out here is a deliberate choice to
+    // treat near-flat input as recompression noise rather than real signal.
+    // Threshold 8 (of 255, ~3%): comfortably above the rounding/
+    // recompression noise a genuinely flat source picks up from JPEG
+    // blocking and the 9x8 downscale, while well below the tonal range any
+    // real photo spans once resampled to greyscale -- even flat lighting
+    // (overcast sky, fog, a plain product shot on white) typically covers
+    // several dozen levels.
+    if(hi - lo < 8) return "";
+    const h = IA_IMGHASH.dhashFromGrey(grey, W, H);
+    // This second guard is the actual correctness guarantee: dHash compares
+    // only ADJACENT pixels, so a smooth gradient, vertical stripes, or a
+    // checkerboard can have a wide greyscale range (sailing past the input
+    // check above) yet still collapse to a short repeating hash. See
+    // isDegenerateHash for what counts as degenerate and why.
+    if(isDegenerateHash(h)) return "";
+    return h;
+  }catch(e){ console.warn("computeCardHash failed", e); return ""; }
+}
+async function loadImgHashCache(){
+  try{
+    const m = await Store.kvGet("ia_imghash");
+    if(!m || typeof m !== "object") return {};
+    const out = {};
+    for(const id in m){
+      const entry = m[id];
+      // An entry not stamped with the CURRENT IMGHASH_GUARD_VERSION was
+      // judged by a DIFFERENT guard, which may disagree with the current one
+      // in EITHER direction (see the version-history note above
+      // IMGHASH_GUARD_VERSION): a v2 entry could be a real hash the
+      // widened v3 guard would have refused; a v3 entry could be a
+      // wrongly-rejected "" for a hash the reverted v4 guard now accepts and
+      // computes for real. Dropping it costs only a cheap recompute; keeping
+      // a verdict from a different guard risks locking in whichever mistake
+      // that guard made, in whichever direction, until the next bump.
+      if(entry && entry.v === IMGHASH_GUARD_VERSION) out[id] = entry;
+    }
+    return out;
+  }catch(e){ return {}; }
+}
+function saveImgHashCache(map){
+  try{
+    // Stamp every entry with the CURRENT guard version here, not left to
+    // each caller to remember -- load and save must stay a matched pair so
+    // no future caller can desync them and end up with a cache that never
+    // round-trips (see the read side's version check above).
+    const stamped = {};
+    for(const id in map) stamped[id] = Object.assign({}, map[id], {v: IMGHASH_GUARD_VERSION});
+    Store.kvSet("ia_imghash", stamped);
+  }catch(e){}
+}
 // Resolves a card's image to downscaled JPEG bytes for an AI vision/OCR call
 // (spec: docs/superpowers/specs/2026-07-24-vision-title-generation-design.md
 // §3). Shared by the OCR tier and the vision tier — same downscale budget
@@ -5239,6 +5480,8 @@ function closeHealth(){
   _dupeFullScreen = false;
   document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
   _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {}; _titleSuggestions = {};
+  _imgScanAbort = true;   // stop a running image scan; its .then() checks this before applying results
+  _imgScanProgress = null;
 }
 function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _titleSuggestions = {}; _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
@@ -5345,6 +5588,19 @@ function shouldReuseDupeSafety(cache, now, isIdb, windowMs){
   return !isIdb && !!(cache && cache.safety) && (now - (cache ? cache.at : 0)) < windowMs;
 }
 let _dupeSpared = new Set();
+// Image-match groups carry no built-in signal that the user actually looked
+// at them -- their members render UNCHECKED by default (perceptual matching
+// has false positives), so "nothing checked" is indistinguishable from
+// "never reviewed." These two Sets close that gap: _dupeImageTouched is a
+// sticky per-GROUP flag (keyed by dupeGroupKey) recording that the user
+// toggled at least one checkbox in that group during this session, even if
+// they later toggled it back to unchecked -- that's still a reviewed
+// decision, not an unreviewed default. _dupeImageChecked is the live
+// per-MEMBER checked state (keyed like _dupeSpared) so a manual check
+// survives a re-render (mode switch, "Keep this", dupeReviewMove, etc.)
+// instead of being silently discarded by the row templates.
+let _dupeImageChecked = new Set();
+let _dupeImageTouched = new Set();
 let _dupeFullScreen = false;
 function dupeSetFullscreen(on){
   _dupeFullScreen = on==null ? !_dupeFullScreen : !!on;
@@ -5354,6 +5610,15 @@ function dupeSetFullscreen(on){
 }
 function dupeToggleRemoval(key,checked){
   if(checked) _dupeSpared.delete(key); else _dupeSpared.add(key);
+  // Look the member up by key rather than taking a group index parameter --
+  // keeps the call signature stable and works no matter which view (compact
+  // or large-card) fired the change. Only image-match groups get the extra
+  // bookkeeping; url/title groups keep relying on _dupeSpared alone as before.
+  const g=_dupeGroups.find(g=>g.imageMatch&&g.members.some(m=>dupeMemberKey(m)===key));
+  if(g){
+    if(checked) _dupeImageChecked.add(key); else _dupeImageChecked.delete(key);
+    _dupeImageTouched.add(dupeGroupKey(g.members));
+  }
 }
 function dupeSetReviewMode(mode){
   _dupeReviewMode = mode==="all" ? "all" : "single";
@@ -5374,10 +5639,10 @@ function dupeModeBarHTML(){
       </div></div></div>`;
 }
 function dupeCompactGroupHTML(g,gi){
-  return `<div class="dupe-group">${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
-    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey)).join("")}</div>`;
+  return `<div class="dupe-group">${g.imageMatch ? `<div class="s" style="padding:0 0 6px"><span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span></div>` : ""}${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
+    .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>`;
 }
-function dupeLargeCardHTML(mem,gi,keep){
+function dupeLargeCardHTML(mem,gi,keep,imageMatch){
   const it=mem.card;
   const dom=domain(it.url)||(mem.scope==="saved"?"saved":"");
   const date=it.sdate?new Date(it.sdate).toLocaleDateString():"";
@@ -5390,28 +5655,74 @@ function dupeLargeCardHTML(mem,gi,keep){
       <div class="s">${esc(dom)} · <span class="dupe-badge">${tag}</span>${date?` · ${esc(date)}`:""}</div></div>
     <div class="dupe-card-actions">${dupeOpenButtonHTML(mem)}${keep
       ? `<span>Best copy</span>`
-      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${(imageMatch?_dupeImageChecked.has(mem.scope+":"+it.id):!_dupeSpared.has(mem.scope+":"+it.id))?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
     </div></div>`;
 }
 function renderHealthDupes(list){
-  if(!_healthScanned.dupes){ _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _healthScanned.dupes = true; }
+  if(!_healthScanned.dupes){
+    _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _dupeImageChecked.clear(); _dupeImageTouched.clear(); _healthScanned.dupes = true;
+    // Second pass: image-similarity matches over whatever the url/title pass
+    // above did NOT already group. Runs async and can take a while on a large
+    // library, so it never blocks this render -- it re-renders the tab itself
+    // when done. `gen` guards a scan that finishes after the modal was
+    // closed/reopened or the tab switched away: only the newest scan's result
+    // is ever applied, even if an older one is still physically running.
+    const groupedKeys = new Set();
+    _dupeGroups.forEach(g => g.members.forEach(m => groupedKeys.add(m.scope + ":" + m.card.id)));
+    _imgScanAbort = false;
+    const gen = ++_imgScanGen;
+    _imgScanProgress = { done: 0, total: 0 };
+    scanImageDuplicates(groupedKeys, (done,total)=>{
+      if(gen !== _imgScanGen) return;
+      _imgScanProgress = { done, total };
+      const pct = document.getElementById("imgScanPct");
+      if(pct) pct.textContent = Math.round(done/Math.max(1,total)*100) + "%";
+    }).then(imgGroups=>{
+      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan
+      _imgScanProgress = null;
+      if(_imgScanAbort) return;                                                // modal closed mid-scan -- drop the result
+      if(!document.getElementById("healthModal").classList.contains("open")) return;
+      // Keep the result even if the user switched to another health tab --
+      // _healthScanned.dupes is already true, so nothing else will ever
+      // re-fetch these groups; discarding them here would mean switching
+      // back to Duplicates shows stale (image-match-free) results forever.
+      _dupeGroups = _dupeGroups.concat(imgGroups);
+      if(_healthTab==="dupes") renderHealthDupes(document.getElementById("healthList"));
+    }).catch(e=>{
+      // scanImageDuplicates has no try/catch of its own -- a thrown failure
+      // (realistically: imagehash.js failed to load offline, or some awaited
+      // Store call rejected) must not leave "Checking pictures for
+      // duplicates… N%" on screen forever with no explanation, which is what
+      // happened before this .catch existed: _imgScanProgress was only ever
+      // cleared inside the success .then(), so a throw skipped that and the
+      // banner stuck around permanently, on top of whatever partial cache
+      // write the loop had already made before it threw.
+      console.warn("scanImageDuplicates failed", e);
+      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan; that one's own handlers own the UI now
+      _imgScanProgress = null;
+      if(_imgScanAbort) return;                                                // modal already closed -- nothing to show
+      toast("Couldn't check pictures for duplicates.", 6000);
+      if(_healthTab==="dupes" && document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+    });
+  }
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
-  if(!_dupeGroups.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found.</div>`; return; }
+  const scanBanner = _imgScanProgress ? `<div class="s" style="padding:8px 4px;opacity:.75">Checking pictures for duplicates… <span id="imgScanPct">${_imgScanProgress.total?Math.round(_imgScanProgress.done/_imgScanProgress.total*100):0}%</span></div>` : "";
+  if(!_dupeGroups.length){ list.innerHTML = scanBanner + `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found${_imgScanProgress?" yet — still checking pictures for visual duplicates.":"."}</div>`; return; }
   _dupeReviewIndex=Math.min(_dupeReviewIndex,_dupeGroups.length-1);
   const summary=`${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy is kept; uncheck any duplicate you want to spare.`;
   if(_dupeReviewMode==="all"){
-    list.innerHTML=`${dupeModeBarHTML()}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
+    list.innerHTML=`${dupeModeBarHTML()}${scanBanner}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
       ${_dupeGroups.map(dupeCompactGroupHTML).join("")}
       <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices</button></div>`;
   } else {
     const g=_dupeGroups[_dupeReviewIndex];
     const sorted=g.members.slice().sort((a,b)=>(dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1));
     const title=(g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0]).card.title||"Duplicate set";
-    list.innerHTML=`${dupeModeBarHTML()}
-      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
+    list.innerHTML=`${dupeModeBarHTML()}${scanBanner}
+      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}${g.imageMatch?` <span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span>`:""}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
-      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey)).join("")}</div>
+      <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>
       <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
       <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
@@ -5725,6 +6036,116 @@ function applyTitleSuggestions(){
   persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s"));
   if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
 }
+// Group entries by image similarity. PURE (no globals) so it can be unit-tested.
+// `alreadyGrouped` holds the keys the url/title pass consumed -- skipped
+// explicitly here (not left to hamming() returning 64 for a blank hash),
+// which is what keeps the two passes from merging transitively.
+//
+// Deliberately NOT plain single-linkage union-find over "any pair within
+// maxDistance": hamming-distance closeness is not transitive. Two disjoint
+// 5-bit flips can each satisfy "within 5 of the anchor" while landing 10 bits
+// apart from EACH OTHER -- a union-find would chain A~B~C into one group even
+// though A and C were never actually close. Every group here becomes a
+// deletion prompt, so that chaining is unacceptable. Instead each group is
+// grown so every member stays within maxDistance of EVERY other member
+// already in it (a full pairwise clique, not just a connected component).
+// This is greedy and order-preserving, not a globally optimal clique cover,
+// but it can never merge two entries that are not actually close to each
+// other -- a smaller-but-correct group beats a bigger-but-wrong one here.
+function groupByImageHash(entries, alreadyGrouped, hammingFn, maxDistance){
+  const live = (entries||[]).filter(e => e && e.hash && !alreadyGrouped.has(e.key));
+  // Sort by each entry's stable content-derived key before the greedy pass.
+  // The clique construction below is order-sensitive -- which pair gets
+  // offered first depends on array order -- so leaving `live` in whatever
+  // order `entries` arrived in meant resolving an UNRELATED card between two
+  // scans (which shifts array positions) could change which pair gets
+  // grouped, and the list would shift under the user for no reason tied to
+  // their actual pictures. Sorting first makes traversal order a function of
+  // card identity, not incidental array position. This fixes REORDER
+  // instability only -- REMOVAL instability (dropping a card still changes
+  // what its neighbours do, since a neighbour may now clique with someone
+  // else entirely) is inherent to greedy-without-backtracking and accepted.
+  live.sort((a,b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const close = (i,j) => hammingFn(live[i].hash, live[j].hash) <= maxDistance;
+  const used = new Array(live.length).fill(false);
+  const groups = [];
+  for(let i=0;i<live.length;i++){
+    if(used[i]) continue;
+    const idxs = [i];
+    for(let j=i+1;j<live.length;j++){
+      if(used[j]) continue;
+      if(idxs.every(k => close(k,j))) idxs.push(j);
+    }
+    if(idxs.length > 1){
+      idxs.forEach(k => { used[k] = true; });
+      groups.push(idxs.map(k => live[k]));
+    }
+  }
+  return groups;
+}
+// Hash-backed duplicate pass. Runs AFTER scanDuplicates and only over cards it
+// did not already group, so today's behavior is untouched and nothing merges
+// across the two passes. Returns groups shaped like scanDuplicates' output plus
+// `imageMatch:true`, which the UI uses to badge them and leave them unchecked.
+async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
+  const cache = await loadImgHashCache();
+  const members = [];
+  imported.forEach(c=>{ if(c) members.push({key:"imported:"+c.id, scope:"imported", card:c}); });
+  saved.forEach(c=>{ if(c) members.push({key:"saved:"+c.id, scope:"saved", card:c}); });
+  const todo = members.filter(m => !alreadyGroupedKeys.has(m.key));
+  let done = 0, recomputed = 0;
+  for(const m of todo){
+    const src = imgHashSrcKey(m.card);
+    const hit = cache[m.card.id];
+    if(hit && hit.src === src){ m.hash = hit.h; }
+    else {
+      m.hash = await computeCardHash(m.card);
+      // null is a TRANSIENT error (see computeCardHash), not a verdict --
+      // must NEVER be written to the cache, or a one-off fetch failure
+      // becomes a permanent "not a duplicate" for this card that nothing
+      // (not a rescan, not closing/reopening) can ever clear. Leaving it
+      // uncached means the next scan just tries this card again; groupBy
+      // ImageHash below already treats a falsy hash (null same as "") as
+      // ungroupable, so a not-yet-retried card still cannot match anything.
+      if(m.hash !== null){
+        cache[m.card.id] = { h: m.hash, src: src };
+        // Persist as we go: closing the modal half-way must RESUME next time, not
+        // restart. A multi-thousand-card first pass is too expensive to redo.
+        // Checkpoint on a count of actual RECOMPUTES, not the mixed hit/miss
+        // `done` counter below -- on a mostly-cached library `done` can sail
+        // past many multiples of 25 between misses, so a hit/miss-based check
+        // lands irregularly (or not at all) instead of every 25 cards actually
+        // re-hashed.
+        recomputed++;
+        if(recomputed % 25 === 0) saveImgHashCache(cache);
+      }
+    }
+    done++;
+    // `|| done === todo.length` guarantees a final tick even when the total
+    // isn't a multiple of 10 -- otherwise the UI could rest at "990 of 997"
+    // forever once the loop finishes.
+    if(onProgress && (done % 10 === 0 || done === todo.length)) onProgress(done, todo.length);
+    if(_imgScanAbort) break;
+  }
+  saveImgHashCache(cache);
+  const groups = groupByImageHash(todo, alreadyGroupedKeys, IA_IMGHASH.hamming, IA_IMGHASH.MAX_DISTANCE);
+  return groups
+    .map(mem => ({ members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true }))
+    .filter(g => !dupeGroupDismissed(g.members))
+    .map(g => Object.assign(g, { keepKey: dupeMemberKey(dupePrimary(g.members)) }));
+}
+let _imgScanAbort = false;
+// Bumped every time a NEW image scan starts; a scan's own `.then()` bails if
+// this no longer matches the value it captured at start. Closing the modal
+// sets _imgScanAbort, but a fast reopen resets that flag for the NEW scan --
+// the generation counter is what actually stops a still-running OLD scan
+// from writing its (now stale) results into a group list it no longer
+// belongs to.
+let _imgScanGen = 0;
+// {done,total} while an image scan is in flight, else null. Read at render
+// time by renderHealthDupes to show a progress line, and updated in place
+// (via the #imgScanPct span) on each onProgress tick without a full re-render.
+let _imgScanProgress = null;
 // Find duplicate groups across imported + saved. Two cards match on the same
 // normalized link OR the same fuzzy normTitle (empty normTitle never matches).
 function scanDuplicates(){
@@ -5781,7 +6202,7 @@ function dupeThumb(mem){
   if (src && !isBadImg(src)) return `<img src="${esc(src)}" loading="lazy" onerror="this.outerHTML='<div class=ph></div>'">`;
   return `<div class="ph"></div>`;
 }
-function dupeRowHTML(mem, gi, keep){
+function dupeRowHTML(mem, gi, keep, imageMatch){
   const it = mem.card;
   const dom = domain(it.url) || (mem.scope==="saved"?"saved":"");
   const date = it.sdate ? new Date(it.sdate).toLocaleDateString() : "";
@@ -5793,7 +6214,7 @@ function dupeRowHTML(mem, gi, keep){
     ${dupeOpenButtonHTML(mem)}
     ${keep
       ? `<span class="dupe-badge" style="background:rgba(34,139,69,.25)">Keep</span>`
-      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${_dupeSpared.has(mem.scope+":"+it.id)?"":"checked"} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
+      : `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-rm="${esc(mem.scope+":"+it.id)}" ${(imageMatch?_dupeImageChecked.has(mem.scope+":"+it.id):!_dupeSpared.has(mem.scope+":"+it.id))?"checked":""} onchange="dupeToggleRemoval('${esc(mem.scope+":"+it.id)}',this.checked)" style="width:auto"> remove</label>
          <button class="btn btn-ghost" style="padding:4px 9px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
   </div>`;
 }
@@ -5898,17 +6319,38 @@ async function rollbackDupePersistence(safety){
   }catch(e){ console.error("duplicate cleanup rollback failed",e); }
   return false;
 }
+// Pure decision rule (no DOM/Store access) -- same shape as
+// shouldReuseDupeSafety above. Image-match groups carry no built-in signal
+// that the user actually looked at them (their members render UNCHECKED by
+// default -- see dupeRowHTML/dupeLargeCardHTML), so "nothing checked" for
+// one is NOT the same thing as "confirmed not a duplicate": it's just the
+// unreviewed default. Fold a group into the not-duplicate/removal sweep only
+// when the user demonstrably touched it (dupeToggleRemoval recorded its key
+// in imageTouched); every other image-match group is excluded here so it is
+// left completely alone by applyDupeRemoval and keeps being offered on the
+// next scan. groupKeyFn is injected, matching groupByImageHash's hammingFn
+// precedent, so tests exercise the real dupeGroupKey derivation.
+function computeDupeApplyGroups(groupsToProcess, imageTouched, groupKeyFn){
+  const applyGroups = (groupsToProcess||[]).filter(g => !g.imageMatch || imageTouched.has(groupKeyFn(g.members)));
+  return { applyGroups, untouchedImageGroups: (groupsToProcess||[]).length - applyGroups.length };
+}
 async function applyDupeRemoval(){
   const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
   const priorIndex=_dupeReviewIndex;
   const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
+  const {applyGroups,untouchedImageGroups} = computeDupeApplyGroups(groupsToProcess, _dupeImageTouched, dupeGroupKey);
+  const leftForReview = untouchedImageGroups ? " "+untouchedImageGroups+" picture match"+(untouchedImageGroups===1?"":"es")+" left for review." : "";
   if(!checked.size){
     const changes=[];
-    groupsToProcess.forEach(g=>{
+    applyGroups.forEach(g=>{
       const key=dupeGroupKey(g.members);
       g.members.forEach(mem=>changes.push({scope:mem.scope,id:mem.card.id,key}));
     });
+    if(!changes.length){
+      toast("Nothing to apply yet."+leftForReview,5000);
+      return;
+    }
     showBusyOverlay("Saving your keep choices…");
     await new Promise(resolve=>requestAnimationFrame(resolve));
     try{
@@ -5922,7 +6364,7 @@ async function applyDupeRemoval(){
       });
       _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
       _healthScanned.dupes=false; renderHealth();
-      toast("Kept the cards and marked them as not duplicates.",5000);
+      toast("Kept the cards and marked them as not duplicates."+leftForReview,5000);
     }catch(e){
       try{ imported=await Store.getCards(); saved=await Store.getSaved(); updateCounts(); }catch(_){}
       _healthScanned.dupes=false; renderHealth();
@@ -5946,8 +6388,20 @@ async function applyDupeRemoval(){
   const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
   const rmImported=new Set(),rmSaved=new Set(),orphanImages=[],imageCopies=[];
   let removed=0,notDuplicateGroups=0;
-  for(const g of groupsToProcess){
+  for(const g of applyGroups){
     const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
+    // Belt-and-braces: a card is supposed to belong to at most one group (see
+    // the freshMemberKeys filter below, which is the actual fix), but this
+    // loop mutates rmImported/rmSaved as it goes and never re-checks them
+    // against nextImportedById/nextSavedById -- so IF that invariant were
+    // ever violated again, an earlier group in this SAME apply could already
+    // have condemned this group's keeper. Without this guard the stale-but-
+    // still-present map entry would be treated as a valid keeper:
+    // mergeDupeMetadata would write this group's removed member's data into
+    // a card that's about to be filtered out (the merge silently vanishes),
+    // and the final survivor filter would drop it -- deleting a card the
+    // user never selected. Skip the whole group rather than risk that.
+    if((keep.scope==="saved"?rmSaved:rmImported).has(keep.card.id)) continue;
     const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
     for(const mem of g.members){
       if(mem===keep||!checked.has(mem.scope+":"+mem.card.id)) continue;
@@ -5991,7 +6445,45 @@ async function applyDupeRemoval(){
     try{ const imageId=ref.imageId; await Store.imgDel(imageId); if(_fpMap[ref.cardId]){ delete _fpMap[ref.cardId]; await Store.fpDel(ref.cardId); } }catch(e){ console.warn("duplicate orphan image cleanup deferred",ref.imageId,e); }
   }
   rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
-  _dupeGroups=scanDuplicates();
+  rmImported.forEach(id=>_dupeImageChecked.delete("imported:"+id)); rmSaved.forEach(id=>_dupeImageChecked.delete("saved:"+id));
+  // Re-run the (cheap, synchronous) url/title pass, but do NOT blindly
+  // discard the image-match groups scanImageDuplicates already found --
+  // scanDuplicates() only ever returns url/title matches, and this path
+  // never sets _healthScanned.dupes=false, so nothing would re-trigger the
+  // (expensive) image pass to regenerate them. Any image group that was
+  // fully processed just now (applyGroups) is done -- its members are
+  // either removed or freshly marked not-duplicate -- so only groups NOT in
+  // applyGroups survive forward untouched. (Every card belongs to at
+  // most one group -- proven by the clique/no-double-membership property
+  // test -- so a survivor can never contain a card that was just removed.)
+  // An untouched image-match group is excluded from applyGroups too (see
+  // computeDupeApplyGroups), so it naturally lands in this "survives
+  // forward" set instead of being silently marked not-duplicate.
+  // Read _dupeGroups LIVE here, not a groupsToProcess/applyGroups snapshot --
+  // the async image scan's own .then() can append newly-found groups to
+  // _dupeGroups while the awaits above were in flight, and those must not be
+  // dropped just because they weren't part of this apply.
+  const freshGroups = scanDuplicates();
+  // A survivor must not share ANY member with a group the fresh url/title
+  // rescan just produced. Union-find guarantees uniqueness WITHIN
+  // freshGroups, but says nothing about the UNION of freshGroups and the old
+  // image-match survivors -- two different old survivors could each fail to
+  // notice the other. Two concrete ways a card ends up in both: (1)
+  // mergeDupeMetadata above can fill an image-match keeper's previously-EMPTY
+  // title from a member just removed, so that keeper newly joins a title
+  // component on THIS scan even though it didn't join one before; (2)
+  // removing a member from a dismissed group changes that group's
+  // dupeGroupKey (computed from the full current member list), un-dismissing
+  // it. Either way, once a card is in two groups, a later apply would process
+  // both against a keeper-lookup map (nextImportedById/nextSavedById) built
+  // once and never refreshed mid-loop -- the second group's keeper lookup can
+  // return a card the first group already condemned, so mergeDupeMetadata
+  // writes into a card about to be deleted and that merge silently vanishes
+  // (see the belt-and-braces guard above for the second half of this fix).
+  const freshMemberKeys = new Set();
+  freshGroups.forEach(g => g.members.forEach(m => freshMemberKeys.add(dupeMemberKey(m))));
+  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !applyGroups.includes(g) && g.members.every(m => !freshMemberKeys.has(dupeMemberKey(m))));
+  _dupeGroups = freshGroups.concat(survivingImageGroups);
   if(_dupeReviewMode==="single"){
     const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
     _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);
@@ -6001,7 +6493,7 @@ async function applyDupeRemoval(){
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   hideBusyOverlay();
   const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
-  toast(removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.",6000);
+  toast((removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.")+leftForReview,6000);
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
@@ -6314,11 +6806,11 @@ async function drainCaptures(){
 // store an image for a Saved card: data URLs go to IndexedDB (keeps localStorage
 // under quota), http(s) URLs stay inline. Mirrors setCardImage but for .image.
 function setSavedImage(item, src){
-  if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); }
-  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); }
+  if(src && src.indexOf("data:")===0){ item.image="idb:"+item.id; Store.imgPut(item.id, src); item.edited=Date.now(); }
+  else { const oldId=item.image&&(""+item.image).indexOf("idb:")===0?(""+item.image).slice(4):""; item.image=src||""; if(oldId===String(item.id)) Store.imgDel(oldId); item.edited=Date.now(); }
 }
 async function setSavedImageDurably(item, src){
-  const oldImg=item.image;
+  const oldImg=item.image, oldEdited=item.edited;
   try{
     if(src && src.indexOf("data:")===0){ await Store.imgPut(item.id, src); item.image="idb:"+item.id; }
     else {
@@ -6326,7 +6818,8 @@ async function setSavedImageDurably(item, src){
       if(wasIdb) await Store.imgDel(item.id);
       item.image=src||"";
     }
-  }catch(e){ item.image=oldImg; throw e; }
+    item.edited=Date.now();
+  }catch(e){ item.image=oldImg; item.edited=oldEdited; throw e; }
 }
 // A clip's screenshot is stored INLINE in the saved card (downscaled) rather
 // than in IndexedDB. Saved clips are a small, deliberate set, and inline data
@@ -6339,10 +6832,11 @@ async function setClipImageInline(item, dataUrl){
   // is what made Pinterest/Instagram clip thumbnails get dropped on save. So persist
   // the clip image as a FILE via setSavedImage. Shows full-res immediately, then swaps
   // in the downscaled file once ready. (Name kept for history; it now file-backs.)
-  item.image = dataUrl;   // immediate full-res render in memory
+  item.image = dataUrl;   // immediate full-res render in memory (not idb:-prefixed yet, so imgHashSrcKey
+                           // doesn't consult .edited for it -- the stamp that matters is the durable one below)
   let small = dataUrl;
   try{ small = await new Promise(resolve=>downscaleDataUrl(dataUrl, resolve)); }catch(e){}
-  await setSavedImageDurably(item, small || dataUrl);   // data: -> 'idb:'+id + Store.imgPut(file)
+  await setSavedImageDurably(item, small || dataUrl);   // data: -> 'idb:'+id + Store.imgPut(file); stamps .edited on success only
   if(curTab==="saved") renderSaved();
 }
 // clipKey moved to web/lib/urlkey.js (dedupe key for a clip; FB/YouTube id folded in).
