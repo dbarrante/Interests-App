@@ -12,6 +12,9 @@
 //                            a resolve-ALL-records DNS check.
 //   guardedfetch           — timeout, byte cap, per-hop redirect re-validation.
 //
+// The response TYPE is decided by sniffing the bytes (sniffStrict below), not by the
+// upstream's Content-Type header; the header allowlist is only a cheap early reject.
+//
 // KNOWN, UNFIXED (app-wide, pre-existing — do not let a review think it is
 // handled here): safeToFetch validates by HOSTNAME and the HTTP client then
 // re-resolves at connect time, so a resolver that flips between the two lookups
@@ -41,11 +44,73 @@ const MAX_REDIRECTS = 3;
 // exact "AI title pipeline produces nothing" bug this whole feature exists to fix, with
 // zero observability. Case-insensitive; the caller splits off any ";charset=..."
 // parameter before comparing.
+//
+// This allowlist is only a CHEAP EARLY REJECT on the header. It does not decide the
+// answer — sniffStrict (below) reads the bytes and is authoritative. The two are kept
+// deliberately in agreement: every canonical type sniffStrict can return is in this set,
+// and every raster type in this set is one sniffStrict can positively identify, so the
+// header stage never lets through a type the byte stage then silently 404s.
 const ALLOWED_IMAGE_TYPES = new Set([
   "image/jpeg", "image/jpg", "image/png", "image/x-png", "image/apng",
   "image/gif", "image/webp", "image/avif", "image/bmp",
   "image/heic", "image/heif", "image/tiff", "image/x-icon", "image/vnd.microsoft.icon",
 ]);
+
+// Decide the image type from the BYTES, never from the upstream's Content-Type header.
+// Returns a single canonical type literal chosen HERE, or null for anything outside the
+// raster set — and the caller refuses on null.
+//
+// Why sniff at all when the header is already allowlisted: the header is written by the
+// origin server, which is attacker-influenced (cards come from captures/imports of
+// arbitrary pages). An allowlist applied to the header still lets that server send SVG
+// (or any document) bytes under an allowlisted Content-Type like image/png, which
+// POST /api/fetch-card-image would otherwise echo back from our own origin. Sniffing
+// makes the served type one WE derived from the bytes, and refuses a body that is not a
+// recognised raster image regardless of what the header claimed.
+//
+// Deliberately NOT images.sniffImageType: that one defaults unknown bytes to "image/jpeg"
+// (correct where it lives — typing a file the store already accepted — but wrong here,
+// where it would relabel an SVG as a JPEG and launder it through as ok:true).
+//
+// The recognised set mirrors ALLOWED_IMAGE_TYPES' raster types exactly (see the invariant
+// note above). APNG shares the PNG signature; the jpg/x-png/vnd.microsoft.icon header
+// aliases normalise to their canonical sniffed type.
+function sniffStrict(buf) {
+  if (!buf || buf.length < 2) return null;
+  // JPEG: FF D8 FF
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  // PNG (and APNG, same signature): 89 50 4E 47 0D 0A 1A 0A
+  if (buf.length >= 8 &&
+      buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return "image/png";
+  // GIF: "GIF87a" / "GIF89a"
+  if (buf.length >= 6 &&
+      buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38 &&
+      (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) return "image/gif";
+  // WEBP: "RIFF"????"WEBP"
+  if (buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+  // BMP: "BM"
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return "image/bmp";
+  // TIFF: "II*\0" (little-endian) or "MM\0*" (big-endian)
+  if (buf.length >= 4 &&
+      ((buf[0] === 0x49 && buf[1] === 0x49 && buf[2] === 0x2a && buf[3] === 0x00) ||
+       (buf[0] === 0x4d && buf[1] === 0x4d && buf[2] === 0x00 && buf[3] === 0x2a))) return "image/tiff";
+  // ICO: 00 00 01 00 (CUR's 00 00 02 00 is deliberately excluded)
+  if (buf.length >= 4 && buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01 && buf[3] === 0x00) return "image/x-icon";
+  // ISO-BMFF container (avif/heic/heif): bytes 4..7 = "ftyp", major brand at 8..11.
+  // Any other ftyp brand (mp4/mov/…) is not an image we serve and returns null.
+  if (buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) {
+    const brand = buf.toString("latin1", 8, 12);
+    if (brand === "avif" || brand === "avis") return "image/avif";
+    if (brand === "heic" || brand === "heix" || brand === "heim" ||
+        brand === "heis" || brand === "hevc" || brand === "hevx") return "image/heic";
+    if (brand === "mif1" || brand === "msf1") return "image/heif";
+    return null;
+  }
+  return null;
+}
 
 function remoteImageUrlFor(db, id) {
   const card = dbm.getCard(db, id);
@@ -122,13 +187,22 @@ async function fetchCardImage(db, id, opts) {
 
   const ct = (r.res && r.res.headers && typeof r.res.headers.get === "function")
     ? String(r.res.headers.get("content-type") || "") : "";
+  // Cheap early reject on the header — excludes image/svg+xml and non-image types
+  // before we buffer or sniff. It does NOT decide the answer; the bytes below do.
   if (!ALLOWED_IMAGE_TYPES.has(ct.split(";")[0].trim().toLowerCase())) return { ok: false, reason: "not-an-image" };
 
   const buf = r.buffer || Buffer.alloc(0);
   if (!buf.length) return { ok: false, reason: "fetch-failed" };
   if (buf.length > MAX_BYTES) return { ok: false, reason: "too-large" };
 
-  return { ok: true, contentType: ct.split(";")[0].trim(), buffer: buf };
+  // Authoritative type from the bytes, never the header — sniff AFTER the length gates so
+  // it never reads an empty or over-cap buffer. An upstream that declares image/png and
+  // sends SVG is refused here rather than echoed back with a type of its choosing; same
+  // "not-an-image" reason as a bad header, so the route's single generic 404 stays uniform.
+  const sniffed = sniffStrict(buf);
+  if (!sniffed) return { ok: false, reason: "not-an-image" };
+
+  return { ok: true, contentType: sniffed, buffer: buf };
 }
 
-module.exports = { fetchCardImage, remoteImageUrlFor, MAX_BYTES, TIMEOUT_MS, MAX_REDIRECTS };
+module.exports = { fetchCardImage, remoteImageUrlFor, sniffStrict, MAX_BYTES, TIMEOUT_MS, MAX_REDIRECTS };

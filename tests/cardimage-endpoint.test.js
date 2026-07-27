@@ -27,6 +27,10 @@ function newStore() { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ia-cie-st
   // returns the generic 404 (never actually calling cardimage.fetchCardImage)
   // would pass every other test in this file.
   upsertCard(db, { id: "remote", url: "https://x/3", img: "https://img.test/pic.png" });
+  // Serves an SVG upstream. image/svg+xml satisfies a naive image/* header test, so
+  // without byte sniffing this card's scriptable bytes would come back 200 from the
+  // app's own origin — under a CSP that allows 'unsafe-inline'.
+  upsertCard(db, { id: "svg", url: "https://x/4", img: "https://img.test/pic.svg" });
   const ctx = { db, storeDir: store, reopen: () => openDb(store) };
   const { s, base } = await listen(createServer(ctx));
 
@@ -109,7 +113,11 @@ function newStore() { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ia-cie-st
         return {
           ok: true, status: 200, url: u,
           headers: { get: (k) => (/content-type/i.test(k) ? "image/png" : null) },
-          arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer,
+          // The FULL 8-byte PNG signature. This stub used to be the first four bytes only
+          // ("\x89PNG"), which is not a valid signature — once the type gate started
+          // reading the bytes instead of the header, that shortened form was correctly
+          // rejected and this test went red. A fixture has to clear the gates it is meant to.
+          arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer,
         };
       }
       return { ok: false, status: 404, url: u, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0) };
@@ -118,8 +126,42 @@ function newStore() { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ia-cie-st
       const r = await post({ id: "remote" });
       assert.strictEqual(r.status, 200, "expected a successful fetch to return 200, got " + r.status + " " + r.text);
       assert.match(r.ct, /^image\/png/, "expected Content-Type image/png, got " + r.ct);
+      assert.strictEqual(r.raw.headers.get("x-content-type-options"), "nosniff",
+        "the bytes are third-party — a browser must not sniff its way past the type we set");
       const buf = Buffer.from(await r.raw.arrayBuffer());
-      assert.deepStrictEqual(buf, Buffer.from([137, 80, 78, 71]), "response body should be the fetched image bytes");
+      assert.deepStrictEqual(buf, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), "response body should be the fetched image bytes");
+    } finally {
+      global.fetch = realFetch;
+      linkcheck._setLookup(null);
+    }
+  });
+
+  await t("an SVG upstream returns the SAME generic 404 — never served from our origin", async () => {
+    const realFetch = global.fetch;
+    linkcheck._setLookup(async () => [{ address: "93.184.216.34", family: 4 }]);
+    global.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.indexOf(base) === 0) return realFetch(url, opts);
+      if (/\.svg/.test(u)) {
+        const svg = Buffer.from(
+          '<?xml version="1.0" encoding="UTF-8"?>\n' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
+          '<script type="text/javascript">fetch("/api/settings")</script></svg>'
+        );
+        return {
+          ok: true, status: 200, url: u,
+          headers: { get: (k) => (/content-type/i.test(k) ? "image/svg+xml" : null) },
+          arrayBuffer: async () => svg.buffer.slice(svg.byteOffset, svg.byteOffset + svg.length),
+        };
+      }
+      return { ok: false, status: 404, url: u, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    try {
+      const r = await post({ id: "svg" });
+      assert.strictEqual(r.status, 404,
+        "image/svg+xml is an image/* type but a scriptable document — it must not come back 200");
+      assert.match(r.text, /image unavailable/, "and it must fail with the same generic message as everything else");
+      assert.doesNotMatch(r.ct, /svg/, "no svg content type may be echoed from this origin");
     } finally {
       global.fetch = realFetch;
       linkcheck._setLookup(null);

@@ -425,12 +425,15 @@ function createServer(ctx) {
     // ONE message for every failure reason. Distinguishable errors (or timings)
     // would turn this into a network scanner for whatever the service can reach.
     if (!out.ok) return res.status(404).json({ ok: false, error: "image unavailable" });
+    // out.contentType is sniffed from the bytes by cardimage.js, never taken from the
+    // upstream header — so it is one of a fixed set of literals we chose, not a string a
+    // third-party server picked.
     res.set("Content-Type", out.contentType);
     res.set("Cache-Control", "no-store");
-    // Belt-and-suspenders even though the content-type gate (core/cardimage.js) is now a
-    // raster-only allowlist: nosniff stops the browser from re-sniffing these bytes into
-    // something active regardless of the declared type, and the sandboxed inert CSP makes
-    // the response harmless even if it is ever navigated to directly.
+    // Belt-and-suspenders even though the type is now byte-sniffed (core/cardimage.js):
+    // nosniff stops the browser from re-sniffing these bytes into something active
+    // regardless of the declared type, and the sandboxed inert CSP makes the response
+    // harmless even if it is ever navigated to directly.
     res.set("X-Content-Type-Options", "nosniff");
     res.set("Content-Security-Policy", "default-src 'none'; sandbox");
     res.send(out.buffer);

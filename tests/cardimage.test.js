@@ -17,7 +17,33 @@ function newDb() {
   fs.mkdirSync(path.join(dir, "images"), { recursive: true });
   return openDb(dir);
 }
+// Signature stubs — invented, not captured. Only the leading magic bytes matter to the
+// gate under test; none of these is a decodable image and none needs to be.
 const PNG = Buffer.from("89504e470d0a1a0a", "hex");
+const JPEG = Buffer.from("ffd8ffe000104a46494600", "hex");
+const GIF = Buffer.from("GIF89a");
+// One byte past the sniffer's 12-byte minimum on purpose: a fixture sized exactly at a
+// gate's edge passes for a reason nobody can see, and flips silently if the threshold
+// ever moves by one (see the 4-byte PNG stub this change had to fix in the endpoint test).
+const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([0, 0, 0, 0]), Buffer.from("WEBP"), Buffer.from([0x56])]);
+// The extra raster types the header allowlist permits — the sniffer must recognise the
+// SAME set, or an allowlisted header would be silently 404'd at the byte stage.
+const BMP = Buffer.concat([Buffer.from("BM"), Buffer.alloc(12)]);
+const TIFF = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]);
+const ICO = Buffer.from([0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00]);
+// ISO-BMFF: 4-byte box size, then "ftyp", then the major brand at bytes 8..11.
+const AVIF = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftyp"), Buffer.from("avif"), Buffer.from("mif1")]);
+const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftyp"), Buffer.from("heic"), Buffer.from("mif1")]);
+const HEIF = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftyp"), Buffer.from("mif1"), Buffer.from("mif1")]);
+// The payload the type gate exists to keep out: well-formed SVG, long enough to clear
+// every length guard, carrying the inline script the service's own CSP ('unsafe-inline')
+// would run if these bytes were ever rendered as a document from the app's origin.
+const SVG = Buffer.from(
+  '<?xml version="1.0" encoding="UTF-8"?>\n' +
+  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
+  '<script type="text/javascript">fetch("/api/settings")</script>' +
+  '<rect width="64" height="64" fill="#fff"/></svg>'
+);
 function okFetch(buf, ct) {
   return async function () {
     return { error: null, status: 200, buffer: buf, location: null,
@@ -136,24 +162,129 @@ const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
     db.close();
   });
 
-  await t("image/jpg (nonstandard alias) is accepted, image/svg+xml is still refused", async () => {
-    // Review finding: the allowlist must include real-world nonstandard aliases a server
-    // can actually emit (image/jpg for jpeg being the classic one) — because every failure
-    // in this route collapses to the same silent 404, rejecting a legitimate alias is
-    // indistinguishable from a broken pipeline. This must NOT widen the gate to accept
-    // svg (or any other +xml/document type); it stays refused with the same reason.
+  await t("a nonstandard alias header (image/jpg) is accepted; the returned type is normalised from the bytes", async () => {
+    // The allowlist still accepts real-world alias headers (image/jpg for jpeg is the
+    // classic one) as a cheap early pass — rejecting a legitimate alias would collapse to
+    // the same silent 404 as a broken pipeline. But the RETURNED type comes from the
+    // bytes, not the header string: jpeg bytes normalise to canonical image/jpeg, never
+    // the alias the server sent. image/svg+xml is still refused (off the allowlist, and
+    // its bytes are not a raster image either).
     const db = newDb();
     upsertCard(db, { id: "cjpgalias", url: "https://x/jpgalias", img: "https://cdn.example.com/a.jpg" });
     upsertCard(db, { id: "csvg2", url: "https://x/svg2", img: "https://cdn.example.com/b.svg" });
-    const jpgR = await cardimage.fetchCardImage(db, "cjpgalias", { lookup: publicLookup, fetchFn: okFetch(PNG, "image/jpg") });
+    const jpgR = await cardimage.fetchCardImage(db, "cjpgalias", { lookup: publicLookup, fetchFn: okFetch(JPEG, "image/jpg") });
     assert.strictEqual(jpgR.ok, true, "image/jpg is a real alias servers emit for jpeg and must be accepted");
-    assert.strictEqual(jpgR.contentType, "image/jpg");
+    assert.strictEqual(jpgR.contentType, "image/jpeg", "the type we echo is derived from the bytes and canonicalised, never the alias string");
     const svgR = await cardimage.fetchCardImage(db, "csvg2", {
-      lookup: publicLookup, fetchFn: okFetch(Buffer.from("<svg onload=\"alert(1)\"></svg>"), "image/svg+xml"),
+      lookup: publicLookup, fetchFn: okFetch(SVG, "image/svg+xml"),
     });
     assert.strictEqual(svgR.ok, false);
-    assert.strictEqual(svgR.reason, "not-an-image", "svg must never be let in by a widened alias list");
+    assert.strictEqual(svgR.reason, "not-an-image", "svg must never be let in");
     db.close();
+  });
+
+  // --- the type gate is decided by the BYTES, not the upstream's header ---------------
+  await t("SVG bytes behind an image/png header are refused — the header is not trusted", async () => {
+    // The case a header ALLOWLIST alone would miss: the declared type is squarely on the
+    // allowlist and the body is still a scriptable document. This is what justifies
+    // sniffing on top of the header allowlist rather than trusting the header string.
+    const db = newDb();
+    upsertCard(db, { id: "clie", url: "https://x/lie", img: "https://cdn.example.com/a.png" });
+    const r = await cardimage.fetchCardImage(db, "clie", {
+      lookup: publicLookup, fetchFn: okFetch(SVG, "image/png"),
+    });
+    assert.strictEqual(r.ok, false, "a lying Content-Type must not launder SVG bytes through as a png");
+    assert.strictEqual(r.reason, "not-an-image");
+    db.close();
+  });
+
+  await t("unrecognised bytes are refused, not defaulted to image/jpeg", async () => {
+    // core/images.js's sniffer returns "image/jpeg" for unknown bytes by design; reusing
+    // it here would have turned this case into ok:true with a wrong label.
+    const db = newDb();
+    upsertCard(db, { id: "cjunk", url: "https://x/junk", img: "https://cdn.example.com/a.png" });
+    const r = await cardimage.fetchCardImage(db, "cjunk", {
+      lookup: publicLookup, fetchFn: okFetch(Buffer.from("not an image at all, just bytes"), "image/jpeg"),
+    });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, "not-an-image");
+    db.close();
+  });
+
+  await t("the returned contentType comes from the bytes, not the header", async () => {
+    const db = newDb();
+    upsertCard(db, { id: "cmis", url: "https://x/mis", img: "https://cdn.example.com/a.png" });
+    const r = await cardimage.fetchCardImage(db, "cmis", {
+      lookup: publicLookup, fetchFn: okFetch(PNG, "image/gif"),   // header lies about a REAL image
+    });
+    assert.strictEqual(r.ok, true, "real png bytes are still a real image");
+    assert.strictEqual(r.contentType, "image/png",
+      "the type we echo must be one we derived, never the string the upstream sent");
+    db.close();
+  });
+
+  await t("a truncated PNG signature is refused (half a signature is not a PNG)", async () => {
+    const db = newDb();
+    upsertCard(db, { id: "ctrunc", url: "https://x/trunc", img: "https://cdn.example.com/a.png" });
+    const r = await cardimage.fetchCardImage(db, "ctrunc", {
+      lookup: publicLookup, fetchFn: okFetch(Buffer.from([137, 80, 78, 71]), "image/png"),
+    });
+    assert.strictEqual(r.ok, false, "half a PNG signature is not a PNG");
+    assert.strictEqual(r.reason, "not-an-image");
+    db.close();
+  });
+
+  await t("jpeg, gif and webp are accepted with their canonical sniffed types", async () => {
+    const cases = [["cjpeg", JPEG, "image/jpeg"], ["cgif", GIF, "image/gif"], ["cwebp", WEBP, "image/webp"]];
+    const db = newDb();
+    for (const [id, bytes, want] of cases) {
+      upsertCard(db, { id, url: "https://x/" + id, img: "https://cdn.example.com/" + id });
+      const r = await cardimage.fetchCardImage(db, id, { lookup: publicLookup, fetchFn: okFetch(bytes, want) });
+      assert.strictEqual(r.ok, true, want + " must survive the gate");
+      assert.strictEqual(r.contentType, want);
+    }
+    db.close();
+  });
+
+  await t("the allowlist's extra raster types (bmp/tiff/ico/avif/heic/heif) are sniffed, not silently 404'd", async () => {
+    // The invariant that keeps the header allowlist and the byte sniffer coherent: every
+    // raster type the header stage permits, the byte stage can positively identify. If
+    // this test fails, an allowlisted image would pass the header check and then be
+    // rejected by sniffStrict — reintroducing the exact silent-404 the allowlist exists
+    // to avoid. Pairs each with a plausible header alias to prove the byte type wins.
+    const cases = [
+      ["cbmp", BMP, "image/bmp", "image/bmp"],
+      ["ctiff", TIFF, "image/tiff", "image/tiff"],
+      ["cico", ICO, "image/vnd.microsoft.icon", "image/x-icon"],   // header alias -> canonical sniffed type
+      ["cavif", AVIF, "image/avif", "image/avif"],
+      ["cheic", HEIC, "image/heic", "image/heic"],
+      ["cheif", HEIF, "image/heif", "image/heif"],
+    ];
+    const db = newDb();
+    for (const [id, bytes, header, want] of cases) {
+      upsertCard(db, { id, url: "https://x/" + id, img: "https://cdn.example.com/" + id });
+      const r = await cardimage.fetchCardImage(db, id, { lookup: publicLookup, fetchFn: okFetch(bytes, header) });
+      assert.strictEqual(r.ok, true, want + " is on the allowlist and must survive the byte gate too");
+      assert.strictEqual(r.contentType, want, "returned type is the canonical sniffed literal");
+    }
+    db.close();
+  });
+
+  await t("sniffStrict is exported and maps signatures to the same set the allowlist permits", async () => {
+    // Direct unit check of the sniffer, independent of the fetch pipeline.
+    assert.strictEqual(cardimage.sniffStrict(JPEG), "image/jpeg");
+    assert.strictEqual(cardimage.sniffStrict(PNG), "image/png");
+    assert.strictEqual(cardimage.sniffStrict(GIF), "image/gif");
+    assert.strictEqual(cardimage.sniffStrict(WEBP), "image/webp");
+    assert.strictEqual(cardimage.sniffStrict(BMP), "image/bmp");
+    assert.strictEqual(cardimage.sniffStrict(TIFF), "image/tiff");
+    assert.strictEqual(cardimage.sniffStrict(ICO), "image/x-icon");
+    assert.strictEqual(cardimage.sniffStrict(AVIF), "image/avif");
+    assert.strictEqual(cardimage.sniffStrict(HEIC), "image/heic");
+    assert.strictEqual(cardimage.sniffStrict(HEIF), "image/heif");
+    assert.strictEqual(cardimage.sniffStrict(SVG), null, "svg is not a raster image");
+    assert.strictEqual(cardimage.sniffStrict(Buffer.from([137, 80, 78, 71])), null, "a truncated signature is null");
+    assert.strictEqual(cardimage.sniffStrict(Buffer.alloc(0)), null);
   });
 
   await t("a 404 with a non-empty body is refused as fetch-failed (not not-an-image)", async () => {
