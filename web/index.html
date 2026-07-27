@@ -4831,35 +4831,66 @@ function imgHashSrcKey(card){
   // permanently hide a later .edited once .lastUpdate is set once.
   return String(v).indexOf("idb:")===0 ? ("idb:"+card.id+":"+Math.max(Number(card.lastUpdate)||0, Number(card.edited)||0)) : String(v);
 }
+// Bumped whenever isDegenerateHash's rejection rules change SHAPE (which
+// periods it checks) -- most recently: periods 1,2,4 -> periods 1,2,4,8, in
+// this same commit. No user data has shipped under any prior guard, so this
+// is a forward marker, not a count of historical revisions. loadImgHashCache
+// drops any cache entry whose stamped .v doesn't match this exactly
+// (including an old entry with no .v at all -- pre-versioning or computed
+// under a since-widened guard), forcing a recompute under the CURRENT guard
+// rather than silently trusting a hash a looser guard once accepted. See the
+// asymmetry note below for why an unnecessary recompute is cheap and a
+// wrongly-trusted stale hash is not.
+const IMGHASH_GUARD_VERSION = 2;
 // A hash that's just a short pattern repeated means the 9x8 sample had no
 // distinguishing horizontal structure -- a blank, a solid fill, a smooth
-// gradient, vertical stripes, or a checkerboard. Unrelated images of those
-// kinds collide at distance 0, and a match here becomes a delete prompt, so
-// refuse to hash them at all. Checks periods 1, 2, and 4 (hex characters,
-// all divisors of the 16-char hash): period 1 is "every row identical"
-// (solid fills, vertical stripes -- 0000.., ffff.., aaaa..); period 4 is
-// "rows alternate between two distinct patterns" (a checkerboard, or the
-// row-major array [100,101,100,101,...] -- aa55aa55.., 55aa55aa..). Verified
-// against the real dhashFromGrey, not assumed -- note a checkerboard is
-// period 4, NOT period 2 as it might look at a glance (a period-2-only check
-// misses it). IMPORTANT for anyone tempted to "simplify" this loop: period 4
-// alone already covers everything period 1 and period 2 catch (any 1- or
-// 2-char repeating unit is trivially also a 4-char repeating unit, since 1
-// and 2 both divide 4 -- exhaustively checked over all 256 two-char
-// combinations, zero counterexamples). p=1 and p=2 are listed anyway purely
-// for readability -- naming the small cases makes the intent obvious at a
-// glance -- not because they add coverage; do not read their presence as
-// meaning each period independently gates some case the others miss. A
-// rarer period-8 collision (two distinct row patterns repeating every 4
-// rows, e.g. a tight repeating band texture) is also reachable from
-// dhashFromGrey -- confirmed as a real distance-0 collision between two
-// different sine-gradient samples, not just theoretically reachable -- and
-// is a known, currently-uncovered gap left out deliberately rather than
-// silently folded in (period 3 is impossible: 3 does not divide 16, so no
-// exact tiling exists).
+// gradient, vertical stripes, a checkerboard, or a repeating band/ripple
+// texture. Unrelated images of those kinds collide at distance 0, and a
+// match here becomes a delete prompt, so refuse to hash them at all. Checks
+// periods 1, 2, 4, and 8 (hex characters, all divisors of the 16-char hash):
+// period 1 is "every row identical" (solid fills, vertical stripes --
+// 0000.., ffff.., aaaa..); period 4 is "rows alternate between two distinct
+// patterns" (a checkerboard, or the row-major array [100,101,100,101,...] --
+// aa55aa55.., 55aa55aa..); period 8 is "the bottom half of the 8-row sample
+// repeats the top half's row pattern exactly" (a texture that repeats every
+// 4 of the 8 sampled rows -- a tight band/ripple/wave). Verified against the
+// real dhashFromGrey, not assumed -- note a checkerboard is period 4, NOT
+// period 2 as it might look at a glance (a period-2-only check misses it),
+// and period 8 is confirmed REAL and REACHABLE for a plausible image, not
+// just theoretically: two genuinely different sine-gradient pixel samples
+// (same 9x8 sample size, verified distinct pixel data) both hash to
+// "66cc993366cc9933" against the real dhashFromGrey -- a demonstrated
+// distance-0 collision the period-1/2/4-only guard let straight through.
+//
+// The asymmetry above is the whole reason this keeps widening: rejecting a
+// hash (returning "" for a real, varied photo) costs a MISSED duplicate --
+// silent and harmless, the card is simply never flagged. Accepting a
+// degenerate hash costs a WRONGLY-OFFERED DELETION -- two unrelated cards
+// presented as a match, one of which the user might delete. A real, varied
+// photo hashing to two identical 8-character halves by pure coincidence is a
+// ~1-in-4-billion event (2^32 of the 2^64 possible 64-bit hash values have
+// that shape, assuming close to uniform hash bits -- a reasonable
+// approximation for real photos), so checking period 8 too is close to free.
+//
+// IMPORTANT for anyone tempted to "simplify" this loop: checked exhaustively
+// (all 16 period-1 units, all 256 period-2 units, and all 65536 period-4
+// units, zero counterexamples in any case), period 8 ALONE now subsumes
+// EVERYTHING periods 1, 2, and 4 catch -- not just what period 4 subsumes.
+// General reason: for a 16-char string, having period p implies having
+// period q whenever p divides q (the p-char unit tiles evenly into a q-char
+// block, which then tiles into the 16-char string), and 1|2, 2|4, 4|8 all
+// hold. p=1, p=2, and p=4 are listed anyway purely for readability -- naming
+// the small cases makes the intent obvious at a glance -- not because any of
+// them independently gates a case p=8 doesn't already catch. Do NOT extend
+// this list to 16: h.slice(0,16) trivially repeat(1)s to itself for EVERY
+// possible hash, so a p=16 check would reject everything, not just
+// degenerate ones. Period 3 is impossible for a different reason: 3 does not
+// divide 16, so no exact tiling of a 16-char string into an integer number
+// of 3-char units exists. That closes the divisor list at {1,2,4,8,16}, with
+// 16 itself excluded as above.
 function isDegenerateHash(h){
   if(typeof h !== "string" || h.length !== 16) return true;
-  for(const p of [1,2,4]){
+  for(const p of [1,2,4,8]){
     const unit = h.slice(0,p);
     if(unit.repeat(16/p) === h) return true;
   }
@@ -4915,10 +4946,34 @@ async function computeCardHash(card){
   }catch(e){ console.warn("computeCardHash failed", e); return ""; }
 }
 async function loadImgHashCache(){
-  try{ const m = await Store.kvGet("ia_imghash"); return (m && typeof m==="object") ? m : {}; }
-  catch(e){ return {}; }
+  try{
+    const m = await Store.kvGet("ia_imghash");
+    if(!m || typeof m !== "object") return {};
+    const out = {};
+    for(const id in m){
+      const entry = m[id];
+      // An entry not stamped with the CURRENT IMGHASH_GUARD_VERSION --
+      // including an old-format entry with no .v field at all -- may have
+      // been accepted by a looser guard that the current one would reject.
+      // Per the asymmetry documented above isDegenerateHash, dropping it
+      // here just costs a recompute (silent, harmless); keeping it risks
+      // reusing a wrongly-accepted hash as a false duplicate match.
+      if(entry && entry.v === IMGHASH_GUARD_VERSION) out[id] = entry;
+    }
+    return out;
+  }catch(e){ return {}; }
 }
-function saveImgHashCache(map){ try{ Store.kvSet("ia_imghash", map); }catch(e){} }
+function saveImgHashCache(map){
+  try{
+    // Stamp every entry with the CURRENT guard version here, not left to
+    // each caller to remember -- load and save must stay a matched pair so
+    // no future caller can desync them and end up with a cache that never
+    // round-trips (see the read side's version check above).
+    const stamped = {};
+    for(const id in map) stamped[id] = Object.assign({}, map[id], {v: IMGHASH_GUARD_VERSION});
+    Store.kvSet("ia_imghash", stamped);
+  }catch(e){}
+}
 // Resolves a card's image to downscaled JPEG bytes for an AI vision/OCR call
 // (spec: docs/superpowers/specs/2026-07-24-vision-title-generation-design.md
 // §3). Shared by the OCR tier and the vision tier — same downscale budget

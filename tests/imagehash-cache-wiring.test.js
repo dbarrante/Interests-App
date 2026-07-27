@@ -94,9 +94,27 @@ function loadComputeCardHash(src, resolveMock, pixelDataFn) {
 
 function loadPureFn(src, name) { return eval("(" + fn(src, name) + ")"); }
 
+// Pulls the REAL `const IMGHASH_GUARD_VERSION = N;` statement out of the HTML
+// source (not a number typed into the test) so a fixture built from it can
+// never silently drift from what the shipped guard actually uses.
+function extractGuardVersionDecl(src) {
+  const m = /const\s+IMGHASH_GUARD_VERSION\s*=\s*(\d+)\s*;/.exec(src);
+  assert.ok(m, "IMGHASH_GUARD_VERSION declaration not found in source");
+  return { stmt: m[0], value: Number(m[1]) };
+}
+
 function loadCacheFns(src, storeMock) {
-  const factory = new Function("Store", fn(src, "loadImgHashCache") + "\n" + fn(src, "saveImgHashCache") + "\nreturn { loadImgHashCache, saveImgHashCache };");
-  return factory(storeMock);
+  // loadImgHashCache/saveImgHashCache both reference IMGHASH_GUARD_VERSION,
+  // so it must share the sandbox scope -- omitting it makes both functions
+  // throw a ReferenceError that their own try/catch silently swallows into
+  // "{}" / a no-op kvSet call, which would make every cache test pass for
+  // the wrong reason (the exact trap IMPORTANT 1's isDegenerateHash
+  // extraction bug already burned this suite on once).
+  const { stmt: guardVersionStmt, value: guardVersion } = extractGuardVersionDecl(src);
+  const factory = new Function("Store", guardVersionStmt + "\n" + fn(src, "loadImgHashCache") + "\n" + fn(src, "saveImgHashCache") + "\nreturn { loadImgHashCache, saveImgHashCache };");
+  const out = factory(storeMock);
+  out.IMGHASH_GUARD_VERSION = guardVersion;
+  return out;
 }
 
 // Loads the REAL setSavedImage alongside the REAL imgHashSrcKey, so a test
@@ -309,6 +327,54 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(hash, "");
   });
 
+  await t(label + ": two DIFFERENT sine-gradient images both hash to \"\" instead of colliding at the shared period-8 dHash \"66cc993366cc9933\" (period-8 repeating-pattern guard)", async () => {
+    // A repeating band/ripple texture: the bottom half of the 8-row sample
+    // repeats the top half's row-by-row comparison pattern exactly, so the
+    // resulting hash repeats every 8 hex characters -- not every 1, 2, or 4,
+    // so the OLD (period-1/2/4-only) guard let this straight through. Two
+    // genuinely different sine-gradient images (different amplitude/
+    // brightness, verified distinct pixel data, grey range far past the
+    // hi-lo>=8 input guard) both collapse to the IDENTICAL
+    // "66cc993366cc9933" against the real dhashFromGrey -- a demonstrated
+    // distance-0 collision.
+    function sineGradPixels(w, h, ampl, base) {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const v = Math.max(0, Math.min(255, Math.round(base + ampl * Math.sin(2 * Math.PI * (2 * x / w + 2 * y / h) + Math.PI / 4))));
+        d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+      }
+      return d;
+    }
+    // Positive control, independent of the sandboxed computeCardHash: prove
+    // the fixture itself really reaches the claimed collision by running the
+    // SAME RGB->grey conversion computeCardHash uses (expectedGreyFromRGBA,
+    // not an assumed identity) through the real IA_IMGHASH.dhashFromGrey.
+    // Without this, a sandbox-extraction failure that silently produces ""
+    // (e.g. a missing isDegenerateHash binding) would be indistinguishable
+    // from the guard genuinely rejecting this fixture -- the exact trap a
+    // prior review already burned this suite on once for computeCardHash
+    // itself.
+    const W = IA_IMGHASH.HASH_W, H = IA_IMGHASH.HASH_H;
+    const expectedA = IA_IMGHASH.dhashFromGrey(expectedGreyFromRGBA(sineGradPixels(W, H, 100, 128), W, H), W, H);
+    const expectedB = IA_IMGHASH.dhashFromGrey(expectedGreyFromRGBA(sineGradPixels(W, H, 80, 150), W, H), W, H);
+    assert.strictEqual(expectedA, "66cc993366cc9933", "fixture A must reach the documented collision value");
+    assert.strictEqual(expectedB, "66cc993366cc9933", "fixture B must reach the SAME value from DIFFERENT pixel data");
+    // Sanity: not caught by the OLD period-1/2/4-only guard, so this is
+    // genuinely a NEW collision class, not a duplicate of an existing test.
+    for (const p of [1, 2, 4]) {
+      assert.strictEqual(expectedA.slice(0, p).repeat(16 / p) === expectedA, false, "sanity: not a period-" + p + " hex-char repeat");
+    }
+
+    const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
+    const { computeCardHash: hashA } = loadComputeCardHash(src, resolveMock, (w, h) => sineGradPixels(w, h, 100, 128));
+    const { computeCardHash: hashB } = loadComputeCardHash(src, resolveMock, (w, h) => sineGradPixels(w, h, 80, 150));
+    const a = await hashA({ id: "sineA", img: "idb:sineA" });
+    const b = await hashB({ id: "sineB", img: "idb:sineB" });
+    assert.strictEqual(a, "", "a repeating band/ripple sample must be refused, not hashed to the shared 66cc9933... value");
+    assert.strictEqual(b, "", "a repeating band/ripple sample must be refused, not hashed to the shared 66cc9933... value");
+  });
+
   await t(label + ": a genuinely varied image (non-degenerate dHash) is still hashed — the gradient-collision guard must not over-reject real photos", async () => {
     const resolveMock = async () => ({ mediaType: "image/jpeg", base64: "Zm9v" });
     const { computeCardHash } = loadComputeCardHash(src, resolveMock, (w, h) => variedPixels(w, h));
@@ -369,6 +435,23 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     // repeat at position 2 must not be caught by the period-1/2 checks alone
     // (it's period 4 specifically that catches it).
     assert.strictEqual("aa55".slice(0, 2).repeat(8) === "aa55aa55aa55aa55", false, "sanity: aa55... is genuinely NOT a period-2 hex-char repeat");
+  });
+
+  await t(label + ": isDegenerateHash rejects period-8 hex-char repeats (repeating band/ripple shape) — NOT caught by a period-1/2/4-only check", () => {
+    // "66cc993366cc9933" repeats every 8 hex characters (bottom half of the
+    // 8-row sample repeats the top half's row pattern), not every 1, 2, or 4
+    // — a guard that only checked periods 1/2/4 would silently let it
+    // through. This exact value is a REAL collision, not a made-up string:
+    // see the two-sine-gradient behavioral test below, which reaches this
+    // identical hash via the real dhashFromGrey from two distinct images.
+    const isDegenerateHash = loadPureFn(src, "isDegenerateHash");
+    assert.strictEqual(isDegenerateHash("66cc993366cc9933"), true, "repeating band/ripple shape");
+    // Positive control proving this test actually exercises the NEW check,
+    // not a coincidence: the same string must NOT be caught by periods 1, 2,
+    // or 4 alone (only by explicitly checking period 8).
+    for (const p of [1, 2, 4]) {
+      assert.strictEqual("66cc993366cc9933".slice(0, p).repeat(16 / p) === "66cc993366cc9933", false, "sanity: not a period-" + p + " hex-char repeat");
+    }
   });
 
   await t(label + ": isDegenerateHash does not reject a genuinely varied (non-repeating) hash", () => {
@@ -443,10 +526,49 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(calls, ["ia_imghash"]);
   });
 
-  await t(label + ": loadImgHashCache returns the stored map untouched", async () => {
+  await t(label + ": loadImgHashCache returns an entry stamped with the CURRENT guard version untouched", async () => {
+    const { IMGHASH_GUARD_VERSION } = loadCacheFns(src, { kvGet: async () => null });
+    const store = { kvGet: async () => ({ card1: { h: "abc", src: "x", v: IMGHASH_GUARD_VERSION } }) };
+    const { loadImgHashCache } = loadCacheFns(src, store);
+    assert.deepStrictEqual(await loadImgHashCache(), { card1: { h: "abc", src: "x", v: IMGHASH_GUARD_VERSION } });
+  });
+
+  await t(label + ": loadImgHashCache drops an old-format entry with no .v field at all, treating it as stale rather than crashing", async () => {
+    // Pre-versioning entries (written before IMGHASH_GUARD_VERSION existed)
+    // have no .v field whatsoever. Reusing one would mean trusting a hash
+    // computed under an unknown, possibly looser guard — must be dropped,
+    // not kept "because it's there" and not thrown on.
     const store = { kvGet: async () => ({ card1: { h: "abc", src: "x" } }) };
     const { loadImgHashCache } = loadCacheFns(src, store);
-    assert.deepStrictEqual(await loadImgHashCache(), { card1: { h: "abc", src: "x" } });
+    await assert.doesNotReject(async () => {
+      const out = await loadImgHashCache();
+      assert.deepStrictEqual(out, {}, "an unstamped (old-format) entry must be treated as a miss, not returned");
+    });
+  });
+
+  await t(label + ": loadImgHashCache drops an entry stamped with an OLDER guard version, forcing a recompute under the current guard (version-bump invalidates)", async () => {
+    const { IMGHASH_GUARD_VERSION } = loadCacheFns(src, { kvGet: async () => null });
+    const store = { kvGet: async () => ({ card1: { h: "abc", src: "x", v: IMGHASH_GUARD_VERSION - 1 } }) };
+    const { loadImgHashCache } = loadCacheFns(src, store);
+    assert.deepStrictEqual(await loadImgHashCache(), {}, "a hash cached under an older guard version must not be reused as-is");
+  });
+
+  await t(label + ": loadImgHashCache keeps ONLY the entries stamped with the CURRENT version out of a mixed map (fresh survives; stale and old-format entries are dropped individually)", async () => {
+    // This is the single strongest proof of the chosen per-entry shape
+    // (rather than whole-map {v, entries}): a version bump does not have to
+    // wipe every already-cached hash, only the ones actually computed under
+    // an older guard. It is also the sandbox canary for this whole section —
+    // if IMGHASH_GUARD_VERSION isn't correctly injected into the sandbox
+    // scope, loadImgHashCache throws a ReferenceError that its own
+    // try/catch swallows into "{}", and "fresh" silently disappears too.
+    const { IMGHASH_GUARD_VERSION } = loadCacheFns(src, { kvGet: async () => null });
+    const store = { kvGet: async () => ({
+      fresh: { h: "aaa", src: "x", v: IMGHASH_GUARD_VERSION },
+      stale: { h: "bbb", src: "y", v: IMGHASH_GUARD_VERSION - 1 },
+      ancient: { h: "ccc", src: "z" },   // old-format: no .v field at all
+    }) };
+    const { loadImgHashCache } = loadCacheFns(src, store);
+    assert.deepStrictEqual(await loadImgHashCache(), { fresh: { h: "aaa", src: "x", v: IMGHASH_GUARD_VERSION } });
   });
 
   await t(label + ": loadImgHashCache tolerates a kvGet rejection and returns {} rather than throwing", async () => {
@@ -455,15 +577,26 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     await assert.doesNotReject(async () => assert.deepStrictEqual(await loadImgHashCache(), {}));
   });
 
-  await t(label + ": saveImgHashCache writes the whole map to ia_imghash via Store.kvSet", () => {
+  await t(label + ": saveImgHashCache stamps every entry with the CURRENT guard version before writing to ia_imghash via Store.kvSet", () => {
     const calls = [];
     const store = { kvSet: (k, v) => { calls.push([k, v]); } };
-    const { saveImgHashCache } = loadCacheFns(src, store);
-    const payload = { c1: { h: "abc", src: "x" } };
+    const { saveImgHashCache, IMGHASH_GUARD_VERSION } = loadCacheFns(src, store);
+    const payload = { c1: { h: "abc", src: "x" } };   // caller does NOT set .v itself
     saveImgHashCache(payload);
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0][0], "ia_imghash");
-    assert.deepStrictEqual(calls[0][1], payload);
+    assert.deepStrictEqual(calls[0][1], { c1: { h: "abc", src: "x", v: IMGHASH_GUARD_VERSION } }, "saveImgHashCache must stamp .v itself — the caller must not have to remember to");
+  });
+
+  await t(label + ": an entry written by saveImgHashCache round-trips through loadImgHashCache and survives (load and save agree on the stamp)", async () => {
+    let written = null;
+    const store = {
+      kvSet: (k, v) => { written = v; },
+      kvGet: async () => written,
+    };
+    const { saveImgHashCache, loadImgHashCache } = loadCacheFns(src, store);
+    saveImgHashCache({ c1: { h: "abc", src: "x" } });
+    assert.deepStrictEqual(await loadImgHashCache(), written, "what saveImgHashCache writes must be exactly what loadImgHashCache accepts back — a caller stamping wrong or load/save disagreeing on the field name would silently 100%-miss forever");
   });
 
   await t(label + ": the cache lives in ia_imghash, not the fp table", () => {
