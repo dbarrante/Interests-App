@@ -75,6 +75,15 @@ const ALLOWED_IMAGE_TYPES = new Set([
 // The recognised set mirrors ALLOWED_IMAGE_TYPES' raster types exactly (see the invariant
 // note above). APNG shares the PNG signature; the jpg/x-png/vnd.microsoft.icon header
 // aliases normalise to their canonical sniffed type.
+//
+// DELIBERATELY NARROWER than a header-trusting gate for two rare byte-variants, both
+// availability-only (they 404 instead of serving), both accepted knowingly: (1) BigTIFF
+// ("II\x2b\0" / "MM\0\x2b") — a >4GB format, so any real one is already refused by the
+// MAX_BYTES cap before this runs; (2) ISO-BMFF files whose major brand is outside the
+// enumerated HEIF/AVIF set below. A survey of the library found zero of any of these
+// formats, so the trade (a positive raster allowlist over a document-format denylist) is
+// worth the lost breadth. If a real one ever shows up, widen here — never fall back to the
+// header for a null sniff, which would re-admit an SVG body wearing an image/tiff header.
 function sniffStrict(buf) {
   if (!buf || buf.length < 2) return null;
   // JPEG: FF D8 FF
