@@ -18,7 +18,7 @@ const { dupeKey } = require(path.join(__dirname, "..", "web", "lib", "urlkey.js"
 const isBadImg = capState.isBadImg;
 
 const NAMES = [
-  "applyDupeRemoval", "computeDupeApplyGroups", "shouldReuseDupeSafety",
+  "applyDupeRemoval", "applyDupeRemoveGroup", "computeDupeApplyGroups", "shouldReuseDupeSafety",
   "scanDuplicates", "dupeGroupKey", "dupeGroupDismissed", "dupePeerTagsFor",
   "markDupeGroupNotDuplicate", "dupeMemberKey", "dupePrimary",
   "dupeImageRefs", "mergeDupeMetadata", "itemImg", "setItemImg",
@@ -32,17 +32,19 @@ function build(src, opts) {
     if (!s) throw new Error("could not extract " + n + " from source");
     return s;
   });
-  const log = { imgDel: [], putCards: [], putSaved: [], toasts: [], markNotDup: [], imgCopy: [] };
+  const log = { imgDel: [], putCards: [], putSaved: [], toasts: [], markNotDup: [], imgCopy: [], confirms: [], fpDel: [] };
+  let confirmAnswer = true;
   const imgStore = new Set(opts.images || []);
+  const fpMap = Object.assign({}, opts.fpMap || {});
   const Store = {
     imgUrl: id => "blob:img/" + id,
     imgPut: (id) => { imgStore.add(String(id)); },
     imgDel: async id => { log.imgDel.push(String(id)); imgStore.delete(String(id)); },
     imgHas: async id => imgStore.has(String(id)),
     imgCopy: async (a, b) => { log.imgCopy.push(a + "->" + b); imgStore.add(String(b)); },
-    fpSet: () => {}, fpDel: async () => {},
-    putCards: async rows => { log.putCards.push(rows.map(c => c.id)); return {}; },
-    putSaved: async rows => { log.putSaved.push(rows.map(c => c.id)); return {}; },
+    fpSet: () => {}, fpDel: async id => { log.fpDel.push(String(id)); },
+    putCards: async rows => { if (opts.failPutCards) throw new Error("putCards failed"); log.putCards.push(rows.map(c => c.id)); return {}; },
+    putSaved: async rows => { if (opts.failPutSaved) throw new Error("putSaved failed"); log.putSaved.push(rows.map(c => c.id)); return {}; },
     markNotDuplicates: async batch => { log.markNotDup.push(batch.map(b => b.scope + ":" + b.id)); },
   };
   const checkedKeys = new Set();
@@ -53,13 +55,14 @@ function build(src, opts) {
   const body = srcs.join("\n") + `
     return {
       run: applyDupeRemoval,
+      runRemoveGroup: applyDupeRemoveGroup,
       scan: scanDuplicates,
       groupKey: dupeGroupKey,
       dismissed: dupeGroupDismissed,
       markNotDup: markDupeGroupNotDuplicate,
       primary: dupePrimary,
       memberKey: dupeMemberKey,
-      get: () => ({ imported, saved, _dupeGroups, _dupeImageTouched, _dupeImageChecked }),
+      get: () => ({ imported, saved, _dupeGroups, _dupeImageTouched, _dupeImageChecked, _dupeReviewIndex }),
       set: (o) => {
         if (o.imported) imported = o.imported;
         if (o.saved) saved = o.saved;
@@ -75,22 +78,24 @@ function build(src, opts) {
     "updateBusyOverlay", "requestAnimationFrame", "createDupeSafetySnapshot",
     "rollbackDupePersistence", "updateCounts", "_reconcileById", "renderHealth",
     "renderHealthDupes", "renderImported", "renderSaved", "isBadImg", "dupeKey",
-    "DUPE_SAFETY_REUSE_MS", "imgFp", "_fpMap", "console", "__log",
+    "DUPE_SAFETY_REUSE_MS", "imgFp", "_fpMap", "console", "__log", "confirm",
     "let imported=[],saved=[],_dupeGroups=[],_dupeSpared=new Set(),_dupeImageChecked=new Set()," +
     "_dupeImageTouched=new Set(),_dupeReviewMode='all',_dupeReviewIndex=0,_dupeSafetyCache=null," +
     "_healthScanned={},curTab='none';\n" + body
   );
   const api = factory(
-    document, {}, Store,
+    document, opts.window || {}, Store,
     (m) => log.toasts.push(m),
     () => {}, () => {}, () => {},
     (cb) => cb(),
-    async () => ({ kind: "desktop", name: "safety-backup" }),   // snapshot always succeeds
-    async () => false,
+    opts.createSnapshot || (async () => ({ kind: "desktop", name: "safety-backup" })),   // snapshot always succeeds unless overridden
+    opts.rollback || (async () => false),
     () => {}, () => {}, () => {}, () => {}, () => {}, () => {},
-    isBadImg, dupeKey, 5 * 60 * 1000, () => "fp", {}, console, log
+    isBadImg, dupeKey, 5 * 60 * 1000, () => "fp", fpMap, console, log,
+    (msg) => { log.confirms.push(msg); return confirmAnswer; }
   );
-  api.log = log; api.checkedKeys = checkedKeys; api.imgStore = imgStore;
+  api.log = log; api.checkedKeys = checkedKeys; api.imgStore = imgStore; api.fpMap = fpMap;
+  api.setConfirm = (v) => { confirmAnswer = v; };
   return api;
 }
 module.exports = { build };

@@ -135,6 +135,35 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 }
 
+// --- behavioral: dupeWhyHTML distinguishes a fake-capture group from a
+// normal image-match duplicate (fake/blocked-capture detection -- "use OCR to
+// scan and look for sites that appear to be fake, or have a warning"). ------
+function loadDupeWhyHTML(src) {
+  const factory = new Function("esc", fn(src, "dupeWhyHTML") + "\nreturn dupeWhyHTML;");
+  return factory((s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c])));
+}
+for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+  const dupeWhyHTML = loadDupeWhyHTML(src);
+
+  t(label + ": dupeWhyHTML badges a fakeCapture group distinctly from a normal image-match duplicate, including the matched phrase", () => {
+    const out = dupeWhyHTML({ reason: "fakeCapture", imageMatch: true, fakeCaptureText: "website is blocked" });
+    assert.match(out, /blocked\/fake-site capture/i, "must use a label distinct from 'Same picture'");
+    assert.doesNotMatch(out, /Same picture/i, "must NOT reuse the normal duplicate wording -- this is not a 'keep the best copy' situation");
+    assert.match(out, /website is blocked/, "must surface the matched phrase so the user can see WHY it was flagged");
+  });
+
+  t(label + ": dupeWhyHTML still badges a normal image-match group \"Same picture\", unaffected by the new fakeCapture branch", () => {
+    const out = dupeWhyHTML({ reason: "image", imageMatch: true, imageDistance: 2 });
+    assert.match(out, /Same picture/i);
+    assert.doesNotMatch(out, /blocked\/fake-site capture/i);
+  });
+
+  t(label + ": dupeWhyHTML HTML-escapes the matched fake-capture phrase (OCR output is untrusted content)", () => {
+    const out = dupeWhyHTML({ reason: "fakeCapture", imageMatch: true, fakeCaptureText: "<script>alert(1)</script>" });
+    assert.doesNotMatch(out, /<script>/);
+  });
+}
+
 // --- structural: the scan is wired in with progress + abort guards --------
 // Duplicates is manual-scan-only: the scan itself lives in runDupeScan, fired
 // ONLY by dupeScanClick (the "Scan for duplicates" button) -- never by
@@ -614,6 +643,153 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(api.toasts.length, 1, "the user must be told the check failed, not left staring at a frozen progress line with no explanation");
     assert.match(api.toasts[0], /couldn.t check pictures/i);
     assert.strictEqual(api.warnCalls.length, 1, "the failure must be logged");
+  });
+
+  // ---- "Remove all in this group" (whole-group deletion, incl. the keeper) --
+  // Only ever offered in the one-at-a-time review view -- a structural check
+  // that the button/onclick lives in renderHealthDupes's single-mode branch,
+  // not the "All groups" branch, where a bulk "delete everything" action next
+  // to dozens of collapsed groups would be an accident waiting to happen.
+  t(label + ": the 'Remove all in this group' action is wired only into the one-at-a-time view, not the All-groups view", () => {
+    const body = fn(src, "renderHealthDupes");
+    const splitPoint = body.indexOf("} else {");
+    assert.ok(splitPoint > 0, "sanity: renderHealthDupes must still have an all/single if-else split");
+    const allBranch = body.slice(0, splitPoint);
+    const singleBranch = body.slice(splitPoint);
+    assert.ok(!/applyDupeRemoveGroup/.test(allBranch), "the whole-group removal action must NOT appear in the All-groups branch");
+    assert.match(singleBranch, /onclick="applyDupeRemoveGroup\(\)"/, "the whole-group removal action must appear in the one-at-a-time branch");
+  });
+
+  await at(label + ": applyDupeRemoveGroup removes EVERY member of the current group, including the kept card, and leaves other groups untouched", async () => {
+    const K = { id: "K", img: "idb:imgK", title: "Blocked by NordVPN" };
+    const M = { id: "M", img: "idb:imgM", title: "Blocked by NordVPN" };
+    const other = { id: "X", title: "Unrelated card" };
+    const untouchedGroup = { imageMatch: true, keepKey: "imported:other-keep", members: [{ scope: "imported", card: { id: "other-keep" } }, { scope: "imported", card: { id: "other-member" } }] };
+    const api = buildDupeHarness(src, { images: ["imgK", "imgM"] });
+    const G = { imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] };
+    api.set({ imported: [K, M, other], saved: [], groups: [G, untouchedGroup], mode: "single", index: 0 });
+
+    await api.runRemoveGroup(true);   // skipConfirm -- this test proves the removal logic, not the confirm gate
+    const st = api.get();
+
+    assert.deepStrictEqual(st.imported.map(c => c.id).sort(), ["X"], "both K (the keeper) and M must be gone -- the whole group, no survivor");
+    assert.strictEqual(st._dupeGroups.length, 1, "the removed group must be dropped from _dupeGroups");
+    assert.strictEqual(st._dupeGroups[0], untouchedGroup, "the untouched second group must survive completely unchanged (same reference)");
+    assert.ok(api.imgStore.has("imgK") === false && api.imgStore.has("imgM") === false, "both K's and M's images must be deleted -- neither is referenced by any surviving card");
+    assert.ok(api.log.putCards.length >= 1, "the removal must persist via putCards");
+  });
+
+  await at(label + ": applyDupeRemoveGroup spares an image still referenced by a card OUTSIDE the removed group", async () => {
+    const K = { id: "K", img: "idb:shared", title: "Blocked by NordVPN" };
+    const M = { id: "M", img: "idb:imgM", title: "Blocked by NordVPN" };
+    const survivor = { id: "S", img: "idb:shared", title: "Some other card that happens to share the image id" };
+    const api = buildDupeHarness(src, { images: ["shared", "imgM"] });
+    const G = { imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] };
+    api.set({ imported: [K, M, survivor], saved: [], groups: [G], mode: "single", index: 0 });
+
+    await api.runRemoveGroup(true);
+
+    assert.ok(api.imgStore.has("shared"), "the shared image id must survive -- a still-living card (S) references it");
+    assert.ok(!api.imgStore.has("imgM"), "M's own image must still be deleted -- nothing else references it");
+  });
+
+  await at(label + ": applyDupeRemoveGroup declines to remove anything when the user does not confirm", async () => {
+    const K = { id: "K", title: "Blocked by NordVPN" };
+    const M = { id: "M", title: "Blocked by NordVPN" };
+    const api = buildDupeHarness(src);
+    const G = { imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] };
+    api.set({ imported: [K, M], saved: [], groups: [G], mode: "single", index: 0 });
+    api.setConfirm(false);
+
+    await api.runRemoveGroup();   // no skipConfirm -- must hit the confirm() gate and bail
+
+    const st = api.get();
+    assert.deepStrictEqual(st.imported.map(c => c.id).sort(), ["K", "M"], "declining the confirmation must leave every card exactly as it was");
+    assert.strictEqual(st._dupeGroups.length, 1, "the group must still be present -- nothing was processed");
+    assert.strictEqual(api.log.putCards.length, 0, "no persistence call may happen when the user declines");
+    assert.strictEqual(api.log.confirms.length, 1, "the confirm() gate must actually have been consulted");
+  });
+
+  // F1 regression (data-safety review): in PWA/IDB mode there is no SEPARATE
+  // image backup -- the safety snapshot's imageIds ARE the live IDB blobs
+  // (see createDupeSafetySnapshot). Deleting them here would destroy the very
+  // recovery journal this action's own confirm prompt promises to fall back
+  // on. Desktop mode's snapshot is a real, separate Store.backupNow() copy,
+  // so ITS orphan cleanup is safe and must still run.
+  await at(label + ": applyDupeRemoveGroup does NOT delete images in PWA/IDB mode (the snapshot IS the live blob), but DOES in desktop mode", async () => {
+    const K = { id: "K", img: "idb:imgK", title: "Blocked by NordVPN" };
+    const M = { id: "M", img: "idb:imgM", title: "Blocked by NordVPN" };
+
+    const pwaApi = buildDupeHarness(src, { window: { IA_IDB: true }, images: ["imgK", "imgM"] });
+    pwaApi.set({ imported: [K, M], saved: [], groups: [{ imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] }], mode: "single", index: 0 });
+    await pwaApi.runRemoveGroup(true);
+    assert.ok(pwaApi.imgStore.has("imgK") && pwaApi.imgStore.has("imgM"), "PWA mode must leave both images in place -- deleting them would destroy the undo path");
+    assert.strictEqual(pwaApi.log.imgDel.length, 0, "PWA mode must never call Store.imgDel from this path");
+
+    const desktopApi = buildDupeHarness(src, { images: ["imgK", "imgM"] });   // opts.window omitted -> desktop
+    desktopApi.set({ imported: [K, M], saved: [], groups: [{ imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] }], mode: "single", index: 0 });
+    await desktopApi.runRemoveGroup(true);
+    assert.ok(!desktopApi.imgStore.has("imgK") && !desktopApi.imgStore.has("imgM"), "desktop mode's real, separate backup makes it safe to delete both orphaned images");
+  });
+
+  await at(label + ": applyDupeRemoveGroup clears _fpMap/fpDel for every removed member", async () => {
+    const K = { id: "K", title: "Blocked by NordVPN" };
+    const M = { id: "M", title: "Blocked by NordVPN" };
+    const api = buildDupeHarness(src, { fpMap: { K: "fpK", M: "fpM" } });
+    api.set({ imported: [K, M], saved: [], groups: [{ imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] }], mode: "single", index: 0 });
+
+    await api.runRemoveGroup(true);
+
+    assert.deepStrictEqual(api.fpMap, {}, "both removed cards' fingerprints must be cleared from _fpMap");
+    assert.deepStrictEqual(api.log.fpDel.sort(), ["K", "M"], "Store.fpDel must be called for both removed cards");
+  });
+
+  await at(label + ": applyDupeRemoveGroup rolls back and changes nothing if persistence fails partway", async () => {
+    const K = { id: "K", title: "Blocked by NordVPN" };
+    const M = { id: "M", title: "Blocked by NordVPN" };
+    let rollbackCalled = false;
+    const api = buildDupeHarness(src, { failPutCards: true, rollback: async () => { rollbackCalled = true; return true; } });
+    api.set({ imported: [K, M], saved: [], groups: [{ imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] }], mode: "single", index: 0 });
+
+    await api.runRemoveGroup(true);
+
+    assert.ok(rollbackCalled, "a persistence failure must trigger rollbackDupePersistence");
+    assert.strictEqual(api.log.imgDel.length, 0, "image cleanup must never run if persistence failed");
+    assert.ok(api.log.toasts.some(m => /restored/i.test(m)), "the user must be told the previous library was restored");
+    const st = api.get();
+    assert.strictEqual(st._dupeGroups.length, 1, "the group must still be present -- the failed apply must not prune it");
+  });
+
+  await at(label + ": applyDupeRemoveGroup removes the group at the CURRENT review index, not always index 0", async () => {
+    const A = { id: "A", title: "Group A member 1" }, A2 = { id: "A2", title: "Group A member 2" };
+    const B = { id: "B", title: "Group B member 1" }, B2 = { id: "B2", title: "Group B member 2" };
+    const groupA = { imageMatch: true, keepKey: "imported:A", members: [{ scope: "imported", card: A }, { scope: "imported", card: A2 }] };
+    const groupB = { imageMatch: true, keepKey: "imported:B", members: [{ scope: "imported", card: B }, { scope: "imported", card: B2 }] };
+    const api = buildDupeHarness(src);
+    api.set({ imported: [A, A2, B, B2], saved: [], groups: [groupA, groupB], mode: "single", index: 1 });
+
+    await api.runRemoveGroup(true);
+
+    const st = api.get();
+    assert.deepStrictEqual(st.imported.map(c => c.id).sort(), ["A", "A2"], "group B (index 1, the one being reviewed) must be removed, not group A");
+    assert.strictEqual(st._dupeGroups.length, 1, "only the reviewed group is dropped");
+    assert.strictEqual(st._dupeGroups[0], groupA, "group A must survive untouched, as the same reference");
+  });
+
+  await at(label + ": applyDupeRemoveGroup changes nothing if the safety snapshot cannot be verified", async () => {
+    const K = { id: "K", title: "Blocked by NordVPN" };
+    const M = { id: "M", title: "Blocked by NordVPN" };
+    const api = buildDupeHarness(src, { createSnapshot: async () => null });
+    const G = { imageMatch: true, keepKey: "imported:K", members: [{ scope: "imported", card: K }, { scope: "imported", card: M }] };
+    api.set({ imported: [K, M], saved: [], groups: [G], mode: "single", index: 0 });
+
+    await api.runRemoveGroup(true);
+
+    const st = api.get();
+    assert.deepStrictEqual(st.imported.map(c => c.id).sort(), ["K", "M"], "an unverifiable safety snapshot must stop the removal cold -- no cards gone");
+    assert.strictEqual(st._dupeGroups.length, 1, "the group must still be present -- nothing was processed");
+    assert.strictEqual(api.log.putCards.length, 0, "no persistence call may happen without a verified snapshot");
+    assert.ok(api.log.toasts.some(m => /safety snapshot/i.test(m)), "the user must be told why nothing happened");
   });
 
   // The "Confirming close matches…" label only ever showed up as a ternary in

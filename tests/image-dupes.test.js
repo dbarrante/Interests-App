@@ -228,6 +228,68 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
   t(label + ": OCR_TEXT_CONFLICT_THRESHOLD is declared as exactly 0.35", () => {
     assert.match(src, /const OCR_TEXT_CONFLICT_THRESHOLD = 0\.35;/);
   });
+  t(label + ": FAKE_CAPTURE_OCR_TRIES is declared as exactly 3", () => {
+    assert.match(src, /const FAKE_CAPTURE_OCR_TRIES = 3;/);
+  });
+}
+
+// --- detectFakeCaptureText pure function (fake/blocked-capture detection --
+// "use OCR to scan and look for sites that appear to be fake, or have a
+// warning, similar to the 404 detection"). Deliberately narrow: only
+// multi-word, high-precision phrases match, so a real article that happens to
+// use a word like "blocked" or "denied" in passing must never trip this. ---
+function loadDetectFakeCaptureText(src) {
+  return new Function(extractFn(src, "detectFakeCaptureText") + "\nreturn detectFakeCaptureText;")();
+}
+for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
+  const detectFakeCaptureText = loadDetectFakeCaptureText(src);
+
+  t(label + ": recognizes a VPN/network 'website blocked' interstitial", () => {
+    assert.ok(detectFakeCaptureText("Website Blocked\nThis website has been blocked by your network administrator."));
+  });
+
+  t(label + ": recognizes a browser connection-privacy warning", () => {
+    assert.ok(detectFakeCaptureText("Your connection is not private\nAttackers might be trying to steal your information"));
+  });
+
+  t(label + ": recognizes a bot/human verification interstitial", () => {
+    assert.ok(detectFakeCaptureText("Please verify you are a human to continue. Checking your browser before accessing the site."));
+  });
+
+  t(label + ": recognizes a 404/dead-page capture", () => {
+    assert.ok(detectFakeCaptureText("404 Not Found\nThe page you requested could not be found."));
+  });
+
+  t(label + ": returns the MATCHED phrase text, not just a boolean, for use as a UI label", () => {
+    const m = detectFakeCaptureText("Sorry, this video is unavailable in your country.");
+    assert.strictEqual(typeof m, "string");
+    assert.match(m, /this video is unavailable/i);
+  });
+
+  t(label + ": does NOT match ordinary real-content text that happens to use a generic word in passing", () => {
+    assert.strictEqual(detectFakeCaptureText("My account was suspended from that gym for missing three sessions in a row, ugh."), null);
+    assert.strictEqual(detectFakeCaptureText("This recipe uses a blocked-off tray to keep the layers separate while baking."), null);
+    assert.strictEqual(detectFakeCaptureText("Homemade Sourdough Starter Guide"), null);
+  });
+
+  // Data-safety review: the first version of this list was measured against a
+  // corpus of plausible real content and found to false-positive on several
+  // short, unanchored phrases -- these are those exact false positives, kept
+  // as a permanent regression guard.
+  t(label + ": does NOT match real content that merely CONTAINS a bare interstitial-adjacent phrase without the full interstitial wording (data-safety review false positives)", () => {
+    assert.strictEqual(detectFakeCaptureText("Instagram account suspended? Here are 7 steps to get it back"), null);
+    assert.strictEqual(detectFakeCaptureText("Video unavailable offline - tap to download"), null);
+    assert.strictEqual(detectFakeCaptureText("Page not found? Build a better 404 for your Shopify store"), null);
+    assert.strictEqual(detectFakeCaptureText("Access Denied (1994) - full movie retrospective"), null);
+    assert.strictEqual(detectFakeCaptureText("How this website blocked 4 million scraper bots in one weekend"), null);
+    assert.strictEqual(detectFakeCaptureText("403 Forbidden explained: a beginner's guide to HTTP status codes"), null);
+  });
+
+  t(label + ": tolerates empty/missing input", () => {
+    assert.strictEqual(detectFakeCaptureText(""), null);
+    assert.strictEqual(detectFakeCaptureText(null), null);
+    assert.strictEqual(detectFakeCaptureText(undefined), null);
+  });
 }
 
 // --- OCR-text-conflict pure functions (Task: "look at the text in the
@@ -602,7 +664,7 @@ function loadScanImageDuplicates(src, deps) {
   // throw a ReferenceError deep inside the call, which is NOT swallowed
   // (scanImageDuplicates has no try/catch of its own around these calls), so
   // this is a load-bearing inclusion list, not decoration.
-  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "normTitle", "postByAuthor", "scanImageDuplicates"]
+  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "normTitle", "postByAuthor", "detectFakeCaptureText", "scanImageDuplicates"]
     .map(n => extractFn(src, n)).join("\n");
   assert.ok(fnSrc, "scanImageDuplicates (or one of its dependencies) not found");
   // _imgScanAbort is shadowed by an inner `let` seeded from the factory
@@ -615,7 +677,7 @@ function loadScanImageDuplicates(src, deps) {
   const factory = new Function(
     "imported", "saved", "loadImgHashCache", "saveImgHashCache", "imgHashSrcKey", "computeCardHash",
     "IA_IMGHASH", "dupeGroupDismissed", "dupeMemberKey", "dupePrimary", "isBadImg", "_imgScanAbortInit",
-    "IMAGE_GROUP_SIZE_CAP", "OCR_TEXT_CONFLICT_THRESHOLD", "loadImgOcrCache", "saveImgOcrCache", "ocrExtractText",
+    "IMAGE_GROUP_SIZE_CAP", "OCR_TEXT_CONFLICT_THRESHOLD", "FAKE_CAPTURE_OCR_TRIES", "loadImgOcrCache", "saveImgOcrCache", "ocrExtractText",
     "let _imgScanAbort = _imgScanAbortInit;\n" + fnSrc +
     "\nreturn Object.assign(scanImageDuplicates, { setAbort: (v) => { _imgScanAbort = v; } });"
   );
@@ -623,7 +685,7 @@ function loadScanImageDuplicates(src, deps) {
     deps.imported, deps.saved, deps.loadImgHashCache, deps.saveImgHashCache, deps.imgHashSrcKey,
     deps.computeCardHash, deps.IA_IMGHASH, deps.dupeGroupDismissed, deps.dupeMemberKey, deps.dupePrimary,
     deps.isBadImg, deps._imgScanAbort, deps.IMAGE_GROUP_SIZE_CAP, deps.OCR_TEXT_CONFLICT_THRESHOLD,
-    deps.loadImgOcrCache, deps.saveImgOcrCache, deps.ocrExtractText
+    deps.FAKE_CAPTURE_OCR_TRIES, deps.loadImgOcrCache, deps.saveImgOcrCache, deps.ocrExtractText
   );
 }
 function baseDeps(cards) {
@@ -641,6 +703,7 @@ function baseDeps(cards) {
     _imgScanAbort: false,
     IMAGE_GROUP_SIZE_CAP: 8,
     OCR_TEXT_CONFLICT_THRESHOLD: 0.35,
+    FAKE_CAPTURE_OCR_TRIES: 3,
     loadImgOcrCache: async () => ({}),
     saveImgOcrCache: () => {},
     ocrExtractText: async () => null,   // by default no card yields OCR text; conflict tests override this
@@ -760,12 +823,16 @@ async function at(n, fn) {
         "two real images with matching hashes must still group");
     });
 
-    await at(label + ": scanImageDuplicates excludes a clique larger than IMAGE_GROUP_SIZE_CAP entirely, and spends NO OCR calls confirming it (placeholder-cluster guard)", async () => {
+    await at(label + ": scanImageDuplicates excludes a clique larger than IMAGE_GROUP_SIZE_CAP from NORMAL duplicate results, spending at most FAKE_CAPTURE_OCR_TRIES OCR calls checking it for a fake-capture pattern (not one per member)", async () => {
       // Modeled on this app's own real library: a shared placeholder/broken-
       // capture image (a VPN block page, a site's generic "no thumbnail" logo)
       // independently produced 30-100 member cliques -- offering that as a
       // one-click bulk-removal prompt is a real deletion hazard regardless of
-      // cause. A normal 2-3 member duplicate cluster must be unaffected.
+      // cause. A normal 2-3 member duplicate cluster must be unaffected. The
+      // clique IS now OCR-checked (bounded, see detectFakeCaptureText) for a
+      // fake-capture pattern -- this fixture returns no text on any card, so
+      // no phrase can ever match and the clique must still never surface as a
+      // duplicate OR a fake-capture group.
       const bigCards = Array.from({ length: 12 }, (_, i) => ({ id: "big" + i }));
       const smallCards = [{ id: "s1" }, { id: "s2" }];
       const ocrCalledFor = [];
@@ -777,9 +844,10 @@ async function at(n, fn) {
       const scanImageDuplicates = loadScanImageDuplicates(src, deps);
       const groups = await scanImageDuplicates(new Set(), null);
       const allIds = groups.flatMap(g => g.members.map(m => m.card.id));
-      assert.ok(!bigCards.some(c => allIds.includes(c.id)), "the 12-member clique must be excluded entirely, not offered as a duplicate group");
+      assert.ok(!bigCards.some(c => allIds.includes(c.id)), "the 12-member clique must be excluded entirely (no phrase matched) -- not offered as a duplicate OR fake-capture group");
       assert.ok(allIds.includes("s1") && allIds.includes("s2"), "an ordinary 2-member cluster must still group normally");
-      assert.ok(!ocrCalledFor.some(id => id.startsWith("big")), "OCR must never be spent on a clique the size cap already excluded -- that's the whole point of checking size first");
+      const bigOcrCalls = ocrCalledFor.filter(id => id.startsWith("big")).length;
+      assert.ok(bigOcrCalls <= 3, "OCR spend on the oversized clique must be BOUNDED (at most FAKE_CAPTURE_OCR_TRIES), not one call per member -- got " + bigOcrCalls);
     });
 
     await at(label + ": scanImageDuplicates splits a hash-matched group whose members' OCR text clearly conflicts", async () => {
@@ -1070,6 +1138,104 @@ async function at(n, fn) {
       const groups = await scanRef(new Set(), null);
       assert.strictEqual(ocrCalls, 0, "Tesseract load+recognize is real, non-trivial work -- an already-aborted scan must not spend even one OCR call, even though a real group WAS found by the hash phase");
       assert.deepStrictEqual(groups, [], "an aborted scan must return no groups");
+    });
+
+    // --- fake/blocked-capture detection ("use OCR to scan and look for sites
+    // that appear to be fake, or have a warning, similar to the 404
+    // detection") -- an oversized clique (normally silently excluded, see
+    // IMAGE_GROUP_SIZE_CAP) that OCR confirms is a blocked/warning screen must
+    // be surfaced as its OWN group, distinct from a normal duplicate. -------
+    await at(label + ": scanImageDuplicates surfaces an oversized clique as a fakeCapture group when its sampled representatives AGREE and one confirms a blocked/warning phrase", async () => {
+      const bigCards = Array.from({ length: 10 }, (_, i) => ({ id: "blocked" + i }));
+      const deps = Object.assign(baseDeps(bigCards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => "Website Blocked\nThis website has been blocked by your network administrator.",
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "exactly one fake-capture group expected");
+      assert.strictEqual(groups[0].reason, "fakeCapture", "must be tagged distinctly from a normal image-match duplicate");
+      assert.ok(groups[0].imageMatch, "must still carry imageMatch:true so the existing review/removal UI works on it unchanged");
+      assert.match(groups[0].fakeCaptureText, /website (has been|is) blocked/i, "must carry the matched phrase for the UI label");
+      const ids = groups[0].members.map(m => m.card.id).sort();
+      assert.deepStrictEqual(ids, bigCards.map(c => c.id).sort(), "EVERY member of the oversized clique must be included, not just the OCR'd representative(s)");
+    });
+
+    // Data-safety review: the FIRST version of this pass trusted a single
+    // representative's phrase match alone, which reproduced a real failure --
+    // 20 different Instagram Reels screenshots sharing only UI chrome (see
+    // OCR_TEXT_CONFLICT_THRESHOLD's own comment on this exact real-library
+    // case), each with a genuinely distinct caption, would be flagged and
+    // offered for bulk removal if even ONE representative's caption happened
+    // to contain a listed phrase. Requiring every sampled representative to
+    // AGREE (no ocrTextConflicts pair) closes this: a real blocked/broken
+    // capture is the literal SAME image on every member, so its reads
+    // overlap heavily and pass easily; genuinely different real content does
+    // not.
+    await at(label + ": scanImageDuplicates does NOT flag an oversized clique when its sampled representatives' OCR text genuinely CONFLICTS, even though one phrase-matches (data-safety review: Instagram Reels false positive)", async () => {
+      const bigCards = Array.from({ length: 10 }, (_, i) => ({ id: "reel" + i }));
+      const TEXTS = {
+        reel0: "Happy New Year from all of us! Wishing you health and joy in 2026",
+        reel1: "Security experts warn your connection is not private on public airport wifi",
+      };
+      const deps = Object.assign(baseDeps(bigCards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => (card.id in TEXTS ? TEXTS[card.id] : null),
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.deepStrictEqual(groups, [], "genuinely conflicting representative texts must block the flag entirely, even though reel1's caption matches a known phrase");
+    });
+
+    await at(label + ": scanImageDuplicates leaves an oversized clique excluded when OCR finds text that matches NO known phrase (a real, if oddly popular, shared image)", async () => {
+      const bigCards = Array.from({ length: 10 }, (_, i) => ({ id: "meme" + i }));
+      const deps = Object.assign(baseDeps(bigCards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => "Live Laugh Love",
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.deepStrictEqual(groups, [], "readable-but-unmatched text must not be flagged as a fake capture, nor offered as a normal duplicate (still oversized)");
+    });
+
+    await at(label + ": scanImageDuplicates always tries exactly min(FAKE_CAPTURE_OCR_TRIES, clique size) OCR calls per oversized clique, regardless of when/whether a match is found", async () => {
+      const bigCards = Array.from({ length: 10 }, (_, i) => ({ id: "blocked" + i }));
+      let ocrCalls = 0;
+      const deps = Object.assign(baseDeps(bigCards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        // Only the 3rd member's capture happens to be OCR-readable AND confirm a match.
+        ocrExtractText: async (card) => { ocrCalls++; return card.id === "blocked2" ? "Access to this page has been denied." : null; },
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "the 3rd-member match must still confirm the whole clique as fakeCapture (it's the only text collected, so it trivially has no conflict)");
+      assert.strictEqual(ocrCalls, 3, "must try exactly min(FAKE_CAPTURE_OCR_TRIES, clique size) members -- never one per member of a possibly 100-member clique");
+    });
+
+    await at(label + ": scanImageDuplicates discards an already-confirmed fakeCapture group entirely if the scan is aborted partway through this pass", async () => {
+      const clique1 = Array.from({ length: 10 }, (_, i) => ({ id: "c1-" + i }));
+      const clique2 = Array.from({ length: 10 }, (_, i) => ({ id: "c2-" + i }));
+      const HASHES = {};
+      clique1.forEach(c => { HASHES[c.id] = "1111111111111111"; });
+      clique2.forEach(c => { HASHES[c.id] = "2222222222222222"; });
+      let ocrCalls = 0, scanRef;
+      const deps = Object.assign(baseDeps(clique1.concat(clique2)), {
+        computeCardHash: async (card) => HASHES[card.id],
+        IA_IMGHASH: { hamming: (a, b) => (a === b ? 0 : 64), MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => {
+          ocrCalls++;
+          if (card.id === "c1-0") return "Website Blocked\nThis website has been blocked by your network administrator.";
+          if (card.id === "c2-0") scanRef.setAbort(true);   // abort while confirming the SECOND clique
+          return null;
+        },
+      });
+      scanRef = loadScanImageDuplicates(src, deps);
+      const groups = await scanRef(new Set(), null);
+      assert.deepStrictEqual(groups, [], "an abort partway through the fake-capture pass must discard EVERY group from this run, including one already confirmed before the abort fired");
     });
   }
 

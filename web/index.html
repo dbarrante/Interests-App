@@ -5674,6 +5674,7 @@ function dupeModeBarHTML(){
 // shared Facebook-group fallback title, or a group URL stamped on many posts) is
 // visible at a glance instead of having to guess.
 function dupeWhyHTML(g){
+  if(g && g.reason==="fakeCapture") return `<span class="dupe-badge" style="background:#c0392b;color:#fff">Possible blocked/fake-site capture${g.fakeCaptureText?` — "${esc(g.fakeCaptureText)}"`:""} — review before removing</span>`;
   if(g && g.imageMatch) return `<span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture${g.imageDistance!=null?" · distance "+g.imageDistance:""} — review before removing</span>`;
   if(g && g.reason==="link") return `<span class="dupe-badge dupe-why">matched: same link</span>`;
   if(g && g.reason==="title") return `<span class="dupe-badge dupe-why">matched: same title</span>`;
@@ -5801,7 +5802,8 @@ function renderHealthDupes(list){
       <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)} ${dupeWhyHTML(g)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
       <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>
-      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
+      <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}
+        <button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px;color:#c0392b" onclick="applyDupeRemoveGroup()" title="Delete every card in this group, including the kept copy — for junk or fake/blocked-site screenshots">Remove all in this group</button></div>
       <div class="dupe-foot" style="justify-content:space-between;border-top:0;padding:12px 0 4px;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="dupeReviewMove(-1)" ${_dupeReviewIndex===0?"disabled":""}>&#8592; Previous</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="dupeReviewMove(1)" ${_dupeReviewIndex===_dupeGroups.length-1?"disabled":""}>Skip for now</button>
@@ -6296,6 +6298,59 @@ function splitGroupsOnTextConflict(groups, textByKey, conflictFn){
   }
   return out;
 }
+// Fake/blocked-capture detection: an oversized image-hash clique (see
+// IMAGE_GROUP_SIZE_CAP above) is EXCLUDED from normal duplicate review
+// entirely, on the theory that a picture shared by that many unrelated cards
+// is a capture-pipeline artifact, not a real duplicate. That's exactly the
+// pattern the user asked to detect directly -- "similar to the 404
+// detection" in the Dead & unsafe tab -- so a confirmed match here reuses the
+// SAME group shape as a normal image-match duplicate (imageMatch:true) but
+// tags reason:"fakeCapture" instead of "image", so the UI can label it
+// correctly and the existing per-card review/removal machinery (including
+// applyDupeRemoveGroup) works on it unchanged.
+//
+// Deliberately only a FEW curated, multi-word phrases requiring the FULL
+// interstitial-page wording ("website HAS BEEN blocked", not bare "blocked"
+// near "website") -- not single generic words/short phrases a real
+// article/caption could plausibly use in passing. Data-safety review measured
+// the first version of this list against a corpus of plausible real content
+// and found several false positives from under-anchored phrases (e.g. bare
+// "blocked"/"denied"/"suspended"/"403 forbidden" matching real tutorial and
+// review text, not just interstitial pages) -- this list is the tightened
+// result. Not tuned against a labeled set (there isn't one); revisit if real
+// usage shows further false positives or misses, same as
+// IMAGE_GROUP_SIZE_CAP/OCR_TEXT_CONFLICT_THRESHOLD's own comments. See
+// scanImageDuplicates' fake-capture pass for the OTHER half of this defense:
+// a single representative's phrase match is never trusted alone -- multiple
+// sampled representatives must also AGREE (no ocrTextConflicts), which is
+// what actually stops a real, diverse oversized clique (verified against
+// this app's real library: 20 different Instagram Reels screenshots sharing
+// only UI chrome, each with a genuinely distinct caption) from being flagged
+// on one loosely-matching representative's text alone.
+function detectFakeCaptureText(text){
+  const PHRASES = [
+    /website (has been|is) blocked/i,
+    /access (to this (site|page|website) )?(has been|is) denied/i,
+    /this (site|page|content) (can.t be reached|isn.t available|is not available)/i,
+    /your connection is not private/i,
+    /this connection is not (secure|private)/i,
+    /this video is (currently )?unavailable/i,
+    /this content (isn.t|is not) available( right now| at this time)?/i,
+    /your account has been suspended/i,
+    /this domain is for sale/i,
+    /verify you are( a)? human( to continue)?/i,
+    /checking your browser before accessing/i,
+    /error 403[:.]?\s*forbidden/i,
+    /404[:.]?\s*(page )?not found/i,
+  ];
+  const t = String(text||"");
+  for(const re of PHRASES){ const m = re.exec(t); if(m) return m[0]; }
+  return null;
+}
+// Bounds OCR spend per oversized clique: a 100-member clique (the real NordVPN
+// "Website blocked" case this session found) needs at most a couple of
+// readable samples to confirm, never one call per member.
+const FAKE_CAPTURE_OCR_TRIES = 3;
 async function loadImgOcrCache(){
   try{
     const m = await Store.kvGet("ia_imgocr");
@@ -6359,6 +6414,13 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
 
   // Oversized-clique guard -- see IMAGE_GROUP_SIZE_CAP above. Checked before
   // any OCR is spent: excluding a group by member count alone costs nothing.
+  // The excluded cliques aren't simply thrown away any more -- see the
+  // fake-capture pass further down, which OCR-checks a few representatives
+  // from each one for signs the shared image is a blocked/warning/error
+  // screen. dupeGroupDismissed is applied here too, for the same reason it's
+  // applied to the surviving groups just below: no OCR spent confirming a
+  // clique the user already reviewed and dismissed.
+  const oversizedGroups = groups.filter(mem => mem.length > IMAGE_GROUP_SIZE_CAP && !dupeGroupDismissed(mem));
   groups = groups.filter(mem => mem.length <= IMAGE_GROUP_SIZE_CAP);
 
   // Drop already-dismissed groups BEFORE spending any OCR on them too. This
@@ -6450,14 +6512,73 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
   // manufacture a result that looks more confident than the work actually done.
   groups = ocrAborted ? [] : splitGroupsOnTextConflict(groups, textByKey, ocrTextConflicts);
 
-  return groups
-    .map(mem => {
-      // Widest pairwise hamming inside the group -- shown in the "why matched"
-      // label ("Same picture · distance N") so a loose match is visible.
-      let maxD = 0;
-      for(let i=0;i<mem.length;i++) for(let j=i+1;j<mem.length;j++){ const d=IA_IMGHASH.hamming(mem[i].hash, mem[j].hash); if(d>maxD) maxD=d; }
-      return { members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true, reason: "image", imageDistance: maxD };
-    })
+  // Fake-capture confirmation pass: OCR up to FAKE_CAPTURE_OCR_TRIES
+  // representatives of each excluded oversized clique -- bounded cost, a
+  // 100-member clique costs at most a few calls, never one per member. A
+  // phrase match on a SINGLE representative is never trusted alone: every
+  // representative that yields text must AGREE with every other (no
+  // ocrTextConflicts pair) before a match is even considered. A genuinely
+  // blocked/broken capture is the literal SAME image on every member, so its
+  // OCR reads overlap heavily and pass this easily; this is what actually
+  // stops a real, diverse oversized clique from being flagged on one loosely-
+  // matching representative's text alone (data-safety review: reproduced
+  // against this app's own real library pattern -- 20 different Instagram
+  // Reels screenshots sharing only UI chrome, each with a genuinely distinct
+  // caption, where one representative's caption happened to contain a listed
+  // phrase). Skipped entirely if the main OCR pass above already aborted,
+  // same as the title-fallback block just above -- a partial/rushed check
+  // here would be no better than the guess this whole feature exists to
+  // avoid making. If the scan is aborted PARTWAY through this pass, any
+  // already-confirmed groups from this run are discarded too (not just
+  // skipped going forward) -- same "no partial/less-confirmed result"
+  // discipline as the OCR-conflict split above.
+  const fakeCaptureGroups = [];
+  if(!ocrAborted){
+    outer: for(const mem of oversizedGroups){
+      if(_imgScanAbort) break;
+      const texts = [];
+      for(let i=0;i<Math.min(FAKE_CAPTURE_OCR_TRIES, mem.length);i++){
+        if(_imgScanAbort) break outer;
+        const e = mem[i];
+        const src = imgHashSrcKey(e.card);
+        const hit = ocrCache[e.card.id];
+        let text;
+        if(hit && hit.src === src){ text = hit.text; }
+        else {
+          text = await ocrExtractText(e.card);
+          if(text){ ocrCache[e.card.id] = { text, src }; ocrRecomputed++; if(ocrRecomputed % 10 === 0) saveImgOcrCache(ocrCache); }
+        }
+        if(text) texts.push(text);
+      }
+      if(_imgScanAbort) break;
+      let conflict = false;
+      for(let i=0;i<texts.length && !conflict;i++) for(let j=i+1;j<texts.length && !conflict;j++){ if(ocrTextConflicts(texts[i],texts[j])) conflict = true; }
+      if(!conflict){
+        let matched = null;
+        for(const t of texts){ matched = detectFakeCaptureText(t); if(matched) break; }
+        if(matched) fakeCaptureGroups.push({ mem, matched });
+      }
+    }
+    // A successful OCR extraction is always safe to cache regardless of abort
+    // (same as the main OCR pass above) -- only the GROUPING decision is
+    // discarded on abort, wiping out even an already-confirmed group from
+    // EARLIER in this same run: a partial pass must never look more
+    // confident than the work actually done.
+    saveImgOcrCache(ocrCache);
+    if(_imgScanAbort) fakeCaptureGroups.length = 0;
+  }
+
+  const imageGroups = groups.map(mem => {
+    // Widest pairwise hamming inside the group -- shown in the "why matched"
+    // label ("Same picture · distance N") so a loose match is visible.
+    let maxD = 0;
+    for(let i=0;i<mem.length;i++) for(let j=i+1;j<mem.length;j++){ const d=IA_IMGHASH.hamming(mem[i].hash, mem[j].hash); if(d>maxD) maxD=d; }
+    return { members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true, reason: "image", imageDistance: maxD };
+  });
+  const capturedGroups = fakeCaptureGroups.map(fc => ({
+    members: fc.mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true, reason: "fakeCapture", fakeCaptureText: fc.matched,
+  }));
+  return imageGroups.concat(capturedGroups)
     .filter(g => !dupeGroupDismissed(g.members))
     .map(g => Object.assign(g, { keepKey: dupeMemberKey(dupePrimary(g.members)) }));
 }
@@ -6869,6 +6990,86 @@ async function applyDupeRemoval(){
   hideBusyOverlay();
   const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
   toast((removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.")+leftForReview,6000);
+}
+// "Remove all in this group": deletes EVERY member of the current one-at-a-time
+// group, including the kept card -- for groups where the shared picture isn't
+// real content worth keeping any copy of (e.g. a blocked-site/warning
+// screenshot several captures happened to share). Unlike applyDupeRemoval there
+// is no keeper to merge into, so this skips mergeDupeMetadata/markDupeGroupNotDuplicate
+// entirely and just removes every member -- but it reuses the SAME verified
+// safety-snapshot system (createDupeSafetySnapshot/_dupeSafetyCache/
+// rollbackDupePersistence) applyDupeRemoval uses, rather than the weaker
+// fire-and-forget snapshotBeforeDestructive the other health tabs use, because
+// there is no surviving copy left in the library for the user to fall back on.
+// Only ever offered in one-at-a-time mode (see renderHealthDupes) -- a "delete
+// everything" button next to dozens of collapsed groups in the "All groups"
+// view is the shape of an accident. skipConfirm exists only for tests/silent
+// callers, mirroring restoreDupeSafetySnapshot(silent).
+async function applyDupeRemoveGroup(skipConfirm){
+  const g = _dupeGroups[_dupeReviewIndex];
+  if(!g) return;
+  if(skipConfirm!==true && !confirm(`Remove all ${g.members.length} cards in this group, including the kept copy? This cannot be undone except via the safety snapshot.`)) return;
+  const priorIndex=_dupeReviewIndex;
+  showBusyOverlay("Creating a verified safety snapshot…");
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  let safety;
+  if(shouldReuseDupeSafety(_dupeSafetyCache, Date.now(), !!window.IA_IDB)){
+    safety = _dupeSafetyCache.safety;
+  } else {
+    safety = await createDupeSafetySnapshot();
+    if(!window.IA_IDB && safety) _dupeSafetyCache = {at:Date.now(), safety};
+  }
+  if(!safety){ hideBusyOverlay(); toast("Group removal stopped: a safety snapshot could not be verified. No data was changed.",8000); return; }
+  const rmImported=new Set(), rmSaved=new Set();
+  g.members.forEach(mem=>{ (mem.scope==="saved"?rmSaved:rmImported).add(mem.card.id); });
+  const nextImported = imported.filter(c=>!c||!rmImported.has(c.id));
+  const nextSaved = saved.filter(c=>!c||!rmSaved.has(c.id));
+  try{
+    updateBusyOverlay("Removing this group…");
+    const cardsResult=await Store.putCards(nextImported,{confirm:true});
+    if(cardsResult&&cardsResult.preserved) _reconcileById(nextImported,cardsResult.preserved);
+    const savedResult=await Store.putSaved(nextSaved,{confirm:true});
+    if(savedResult&&savedResult.preserved) _reconcileById(nextSaved,savedResult.preserved);
+  }catch(e){
+    const recovered=await rollbackDupePersistence(safety);
+    hideBusyOverlay();
+    toast(recovered?"Group removal stopped safely; the previous library was restored.":"Group removal failed. Use the verified safety backup to restore before continuing.",9000);
+    return;
+  }
+  imported=nextImported; saved=nextSaved; updateCounts();
+  updateBusyOverlay("Cleaning up images…");
+  const liveImageRefs=dupeImageRefs(nextImported,nextSaved);
+  for(const mem of g.members){
+    const src=itemImg(mem.card,mem.scope);
+    // PWA/IDB mode has no separate image backup -- the safety snapshot's
+    // imageIds ARE the live blobs (see createDupeSafetySnapshot), so deleting
+    // them here would destroy the very recovery journal this action's own
+    // confirm prompt promises. Desktop mode's snapshot is a real, separate
+    // Store.backupNow() copy, so its orphan cleanup is safe -- exactly the
+    // same asymmetry applyDupeRemoval's own orphan-image push already relies
+    // on (see the "!window.IA_IDB" guard a few dozen lines up).
+    if(!window.IA_IDB && typeof src==="string" && src.indexOf("idb:")===0){
+      const imageId=src.slice(4);
+      if(!liveImageRefs.has(imageId)){
+        try{ await Store.imgDel(imageId); }catch(e){ console.warn("group removal image cleanup deferred",imageId,e); }
+      }
+    }
+    if(_fpMap[mem.card.id]){ delete _fpMap[mem.card.id]; try{ await Store.fpDel(mem.card.id); }catch(e){} }
+  }
+  const removedIds=new Set([...rmImported,...rmSaved]);
+  _dupeGroups = _dupeGroups
+    .filter(x=>x!==g)
+    .map(x=>{
+      const members=x.members.filter(m=>!removedIds.has(m.card.id));
+      return members.length===x.members.length ? x : Object.assign({},x,{members});
+    })
+    .filter(x=>x.members.length>=2);
+  removedIds.forEach(id=>{ _dupeSpared.delete("imported:"+id); _dupeSpared.delete("saved:"+id); _dupeImageChecked.delete("imported:"+id); _dupeImageChecked.delete("saved:"+id); });
+  _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
+  if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+  if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+  hideBusyOverlay();
+  toast(`Removed all ${g.members.length} cards in this group.`,5000);
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
