@@ -41,6 +41,30 @@ for (const [label, src] of [["web", web], ["pwa", pwa]]) {
   });
 }
 
+// --- the FB fallback title "<page> post by <author>" must not group ---------
+for (const [label, src] of [["web", web], ["pwa", pwa]]) {
+  t(label + ": two DIFFERENT posts sharing the '<page> post by <author>' fallback title do NOT group", () => {
+    // The reported false positive: caption-less FB-export posts get an invented
+    // "<page> post by <author>" title that many distinct posts share verbatim.
+    // Different URLs (so the link pass doesn't group them) + same fallback title.
+    const api = build(src);
+    api.set({ imported: [
+      { id: "P1", url: "https://facebook.com/p/aaa", title: "Old Made New post by Luis Chambers" },
+      { id: "P2", url: "https://facebook.com/p/bbb", title: "Old Made New post by Luis Chambers" },
+    ], saved: [] });
+    assert.strictEqual(api.scan().length, 0, "a shared 'post by' fallback title must not form a duplicate group");
+  });
+
+  t(label + ": a real shared title still groups (the fix is scoped to the 'post by' fallback)", () => {
+    const api = build(src);
+    api.set({ imported: [
+      { id: "R1", url: "https://a.com/1", title: "Braided Pesto Bread Recipe" },
+      { id: "R2", url: "https://b.com/2", title: "Braided Pesto Bread Recipe" },
+    ], saved: [] });
+    assert.strictEqual(api.scan().length, 1, "a genuine shared content title must still group");
+  });
+}
+
 t("dupeWhyHTML + the scan/render functions it feeds are byte-identical between web and pwa", () => {
   for (const n of ["dupeWhyHTML", "scanDuplicates", "scanImageDuplicates", "dupeCompactGroupHTML"]) {
     assert.strictEqual(extractFn(web, n), extractFn(pwa, n), n + " has drifted between web/ and pwa/");

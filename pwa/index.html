@@ -4966,6 +4966,13 @@ function normTitle(t){
   s = s.replace(/\s+/g, " ").trim();
   // generic platform titles ("facebook post", "saved video", "reel", …) must NOT group
   if (/^(facebook|fb|instagram|ig|pinterest|saved)?\s?(post|video|reel|photo|photos|story|link|watch|pin|item)s?$/.test(s)) return "";
+  // A Facebook-export fallback title for a caption-less post is "<page> post by
+  // <author>" (import-parsers.js). DISTINCT posts by the same author share it
+  // verbatim, so it says nothing about content and must never be a grouping key
+  // (the "Old Made New post by Luis Chambers" false-group report). Genuine
+  // same-post duplicates still match by LINK; real titles containing "post by"
+  // ("guest post by X") are rare, and NOT grouping them is the safe direction.
+  if (/\bpost by\b/.test(s)) return "";
   if (s.length < 10 || s.split(" ").length < 2) return "";       // too short to group on safely
   return s;
 }
