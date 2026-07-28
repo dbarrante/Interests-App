@@ -815,6 +815,10 @@ function createServer(ctx) {
       enabled: sc.enabled, folder: syncDir, dropboxFound: dropboxFound,
       deviceId: sc.deviceId, deviceLabel: sc.deviceLabel,
       peers: peers, changedAt: changedAt, backupError: backupError,
+      // Advisory UI-only flag: true while a merge cycle (timer or /api/sync/now)
+      // is in flight, so the renderer's header indicator can spin during a
+      // BACKGROUND sync the UI didn't itself trigger. In-memory, not persisted.
+      running: !!ctx.syncRunning,
     });
   });
 
@@ -845,6 +849,7 @@ function createServer(ctx) {
     let defaultDir = null; try { defaultDir = sync.defaultSyncDir(); } catch (e) {}
     const syncDir = sc.dir || defaultDir;
     if (!sc.enabled || !syncDir) return res.status(400).json({ ok: false, error: "sync not enabled / no Dropbox" });
+    ctx.syncRunning = true;   // advisory UI flag; cleared in finally so an error can't leave it stuck on
     try {
       // Prefer the worker-thread runner (ctx.syncRunner, set by main.js) so a
       // manual sync can't freeze the main process either; tests and headless
@@ -855,6 +860,7 @@ function createServer(ctx) {
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }
       res.json({ ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers });
     } catch (e) { console.error("sync now failed:", e); res.status(500).json({ ok: false, error: "sync failed" }); }
+    finally { ctx.syncRunning = false; }
   });
 
   // ---- browser bookmarks (read-only; reads ONLY the fixed Bookmarks file for a

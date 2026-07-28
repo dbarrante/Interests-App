@@ -203,6 +203,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #toast.show{opacity:1}
 .spin{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
 @keyframes sp{to{transform:rotate(360deg)}}
+.sync-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 11px;border-radius:16px;border:1px solid var(--line,#e2ddd3);background:transparent;color:var(--ink,#3a352f);cursor:pointer;white-space:nowrap;line-height:1}
+.sync-chip .sync-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.6;display:inline-block}
+.sync-chip .sync-spin{width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent}
+.sync-chip.sync-ok{color:var(--good,#3a7d44)}
+.sync-chip.sync-syncing{color:var(--accent,#c2643c)}
+.sync-chip.sync-fail{color:var(--bad,#e5534b)}
+.sync-chip.sync-off,.sync-chip.sync-idle{color:var(--muted,#9a9488);opacity:.85}
+@media(max-width:640px){.sync-chip-text{display:none}.sync-chip{padding:5px 8px}}
 
 /* ============ misc components ============ */
 .note{background:var(--accent-soft);border:1px solid #f5d0b5;border-radius:11px;padding:12px 16px;font-size:13.5px;line-height:1.55;margin-bottom:18px}
@@ -495,6 +503,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" data-cnt="imported"></span></button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
+    <button class="sync-chip sync-idle" id="syncIndicator" onclick="syncChipClick()" title="Sync status"><span class="sync-dot"></span> sync</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help &amp; About — version, data location, and a quick tour">?</button>
     <button class="btn" id="browserBtn" onclick="openInBrowser()" title="Open the Interests app in your default web browser (same live data — it talks to the same local service)">&#127760; Open in browser</button>
   </div>
@@ -1615,9 +1624,10 @@ async function renderSyncStatus(){
       const last = await Store.lastSyncResult();
       if (last) {
         const when = new Date(last.at).toLocaleString();
+        const rel = relTime(last.at) || esc(when);
         lastSyncLine = last.ok
-          ? "<div>Last sync: <b>succeeded</b> " + esc(when) + "</div>"
-          : "<div>Last sync: <b>failed</b> — " + esc(last.reason || "unknown reason") + " " + esc(when) + "</div>";
+          ? "<div>Last sync: <b>succeeded</b> <span title=\"" + esc(when) + "\">" + esc(rel) + "</span></div>"
+          : "<div>Last sync: <b>failed</b> — " + esc(last.reason || "unknown reason") + " <span title=\"" + esc(when) + "\">" + esc(rel) + "</span></div>";
       }
     } catch (e) {}
   }
@@ -1686,6 +1696,62 @@ async function rehydrateAfterSync(){
   rebuildCats();
   updateCounts();
 }
+// ---- header sync indicator ---------------------------------------------------
+// One always-visible chip: "synced 2m ago" when idle, a spinner while a sync
+// runs — manual, PWA auto-sync, OR a desktop background timer sync (via the Core
+// service's `running` flag). relTime + syncIndicatorView are PURE so they
+// unit-test without a DOM (tests/sync-indicator.test.js). The loop re-renders the
+// relative time every 30s (free, cached) and polls `running`/last-sync every 5s
+// while the tab is visible.
+let _syncProgress = null;       // latest {phase,done,total} onProgress tick; cleared when a cycle ends
+let _syncIndicatorState = null; // cached {enabled,connected,running,last} so the 30s relative-time tick costs nothing
+function relTime(ms){
+  if(!ms || !isFinite(ms)) return "";
+  const s = Math.max(0, Math.floor((Date.now()-Number(ms))/1000));
+  if(s < 45) return "just now";
+  if(s < 90) return "1 min ago";
+  const m = Math.round(s/60);
+  if(m < 60) return m+" min ago";
+  const h = Math.round(m/60);
+  if(h < 24) return h+(h===1?" hour ago":" hours ago");
+  const d = Math.round(h/24);
+  if(d < 7) return d+(d===1?" day ago":" days ago");
+  return new Date(Number(ms)).toLocaleDateString();
+}
+// Pure state -> presentation. st = {enabled, connected, running, inFlight, progress, last}.
+function syncIndicatorView(st){
+  st = st || {};
+  if(!st.enabled) return { cls:"off", spin:false, text:"sync off", title:"Sync is off — tap to set it up in Settings" };
+  if(st.inFlight || st.running){
+    const p = st.progress;
+    const detail = (p && p.total) ? (" "+p.phase+" "+p.done+"/"+p.total) : "…";
+    return { cls:"syncing", spin:true, text:"syncing"+detail, title:"A sync is in progress" };
+  }
+  if(st.last && st.last.ok===false) return { cls:"fail", spin:false, text:"sync failed", title:"Last sync failed — "+((st.last&&st.last.reason)||"unknown reason")+" — tap for details" };
+  if(st.last && st.last.at) return { cls:"ok", spin:false, text:"synced "+relTime(st.last.at), title:"Last sync: "+new Date(st.last.at).toLocaleString() };
+  return { cls:"idle", spin:false, text:"sync on", title:"Sync is on — no sync yet this session" };
+}
+function renderSyncIndicator(){
+  const el = document.getElementById("syncIndicator"); if(!el) return;
+  const s = _syncIndicatorState || {};
+  const v = syncIndicatorView({ enabled:s.enabled, connected:s.connected, running:s.running, inFlight:!!_syncInFlight, progress:_syncProgress, last:s.last });
+  el.className = "sync-chip sync-"+v.cls;
+  el.title = v.title;
+  el.innerHTML = (v.spin?'<span class="spin sync-spin"></span>':'<span class="sync-dot"></span>')+'<span class="sync-chip-text"> '+esc(v.text)+'</span>';
+}
+async function refreshSyncIndicatorState(){
+  let st=null, last=null;
+  try{ st = await Store.syncStatus(); }catch(e){}
+  if(typeof Store.lastSyncResult==="function"){ try{ last = await Store.lastSyncResult(); }catch(e){} }
+  _syncIndicatorState = st ? { enabled: !!st.enabled, connected: st.connected!==false, running: !!st.running, last: last } : { enabled:false };
+  renderSyncIndicator();
+}
+function syncChipClick(){ showTab("settings"); const el=document.getElementById("syncStatus"); if(el&&el.scrollIntoView) setTimeout(()=>{ try{ el.scrollIntoView({behavior:"smooth",block:"center"}); }catch(e){} }, 60); }
+function startSyncIndicatorLoop(){
+  refreshSyncIndicatorState();
+  setInterval(()=>{ if(!document.hidden) renderSyncIndicator(); }, 30000);       // advance "2m ago" with no network hit
+  setInterval(()=>{ if(!document.hidden) refreshSyncIndicatorState(); }, 5000);   // pick up a background sync's running flag + fresh last-sync
+}
 async function syncNowClick(){
   if(_syncInFlight){ toast("Sync already running…"); return; }
   toast("Syncing…");
@@ -1693,7 +1759,8 @@ async function syncNowClick(){
     // Live progress for the manual button: sync-pwa reports every ~25 items, so a
     // multi-thousand-image catch-up shows movement instead of a silent minutes-long
     // "Syncing…" (indistinguishable from a hang — live complaint 2026-07-16).
-    _syncInFlight = Store.syncNow(p=>{ if(p && p.total){ toast("Sync: "+p.phase+" "+p.done+"/"+p.total, 4000); } });
+    _syncInFlight = Store.syncNow(p=>{ if(p){ _syncProgress = p; renderSyncIndicator(); if(p.total) toast("Sync: "+p.phase+" "+p.done+"/"+p.total, 4000); } });
+    renderSyncIndicator();   // spin the header chip immediately, before the first progress tick
     acquireSyncWakeLock();
     const r = await _syncInFlight;
     if(r && r.code === "AUTH_EXPIRED"){ toast("Dropbox connection expired — reconnect in Settings"); await renderSyncStatus(); return; }
@@ -1713,7 +1780,9 @@ async function syncNowClick(){
   }
   finally{
     _syncInFlight = null;
+    _syncProgress = null;
     releaseSyncWakeLock();
+    refreshSyncIndicatorState();   // clear the spinner and pick up the fresh last-sync time
   }
 }
 
@@ -6962,6 +7031,7 @@ async function bootData(){
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
   _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
   maybeAutoBackup();
+  try{ startSyncIndicatorLoop(); }catch(e){ console.warn("sync indicator init failed", e); }
 }
 // UX-4: if boot can't reach the local app service (Core down / network), don't fail
 // silently into an empty screen — show a dismissible banner with a Retry (LOOP-06 node 4).
