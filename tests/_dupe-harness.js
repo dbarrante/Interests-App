@@ -19,7 +19,7 @@ const isBadImg = capState.isBadImg;
 
 const NAMES = [
   "applyDupeRemoval", "computeDupeApplyGroups", "shouldReuseDupeSafety",
-  "scanDuplicates", "dupeGroupKey", "dupeGroupDismissed",
+  "scanDuplicates", "dupeGroupKey", "dupeGroupDismissed", "dupePeerTagsFor",
   "markDupeGroupNotDuplicate", "dupeMemberKey", "dupePrimary",
   "dupeImageRefs", "mergeDupeMetadata", "itemImg", "setItemImg",
   "setCardImage", "setSavedImage", "resolveImg", "normTitle",
@@ -55,6 +55,8 @@ function build(src, opts) {
       run: applyDupeRemoval,
       scan: scanDuplicates,
       groupKey: dupeGroupKey,
+      dismissed: dupeGroupDismissed,
+      markNotDup: markDupeGroupNotDuplicate,
       primary: dupePrimary,
       memberKey: dupeMemberKey,
       get: () => ({ imported, saved, _dupeGroups, _dupeImageTouched, _dupeImageChecked }),

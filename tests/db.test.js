@@ -438,5 +438,22 @@ t("db's cardSig path and merge.js's exported _stable agree on scrambled key orde
   d.close();
 });
 
+t("addNotDuplicateMarker caps dupeNotDuplicateGroups at 200, matching the web/pwa client cap (data-safety review F-2)", () => {
+  // Pairwise dismissal tags accumulate faster than the old one-key-per-group
+  // scheme (an N-member group writes N-1 tags to EACH member). The client
+  // caps its in-memory array at 200; if this persisted cap were lower, the
+  // UI would report a decision saved while the store silently evicted it --
+  // a reload would then resurface (and let one click re-delete) a card the
+  // user already spared.
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "a", url: "https://example.test/a", platform: "fb", cat: "Saved", ts: 1, title: "T" });
+  for (let i = 0; i < 205; i++) db.addNotDuplicateMarker(d, "imported", "a", "p:imported:peer" + i);
+  const card = db.getCard(d, "a");
+  assert.strictEqual(card.dupeNotDuplicateGroups.length, 200, "must cap at 200, not the old 49");
+  assert.ok(card.dupeNotDuplicateGroups.includes("p:imported:peer204"), "the most recent tag must survive");
+  assert.ok(!card.dupeNotDuplicateGroups.includes("p:imported:peer0"), "the oldest tags are the ones evicted, not the newest");
+  d.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

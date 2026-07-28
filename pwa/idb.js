@@ -116,7 +116,12 @@ const idb = {
           if (!item) { failure = new Error("A duplicate card changed before the choice could be saved."); transaction.abort(); return; }
           const prior = Array.isArray(item.dupeNotDuplicateGroups) ? item.dupeNotDuplicateGroups.filter((v) => typeof v === "string") : [];
           if (prior.indexOf(entry.key) >= 0) return;
-          item.dupeNotDuplicateGroups = prior.slice(-49).concat([entry.key]);
+          // Cap matches web/pwa index.html's markDupeGroupNotDuplicate (200, not
+          // the old 49): pairwise tags accumulate faster than the old
+          // one-key-per-group scheme, and a lower persisted cap than the
+          // client's in-memory one would silently evict a decision the UI
+          // still thinks is saved.
+          item.dupeNotDuplicateGroups = prior.concat([entry.key]).slice(-200);
           item.updatedAt = Date.now(); changed++;
           store.put(item);
         };

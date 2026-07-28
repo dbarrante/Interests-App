@@ -274,58 +274,35 @@ function createServer(ctx) {
   // Additive duplicate-review decision. This deliberately updates only the
   // marker on the server's CURRENT row instead of round-tripping the renderer's
   // whole library (or a potentially stale copy of the card).
+  //
+  // `key` is an opaque per-relationship tag (web/pwa index.html's
+  // dupePeerTagsFor: "p:<scope>:<id>" of the OTHER card in a dismissed pair) --
+  // stable (scope,id) identity only, never url/title. There is deliberately no
+  // compare-and-swap against the row's current content here anymore: an
+  // earlier version embedded the whole group's [scope,id,url,title] tuples in
+  // the key and rejected a write if the row's current title/url didn't match
+  // that snapshot (400 invalid_key / 409 row_changed). That existed only to
+  // protect a key that was itself a function of mutable content -- once the
+  // key carries no content, "the row changed" can no longer mean "the decision
+  // is stale": marking A and B not-duplicates-of-each-other is an idempotent,
+  // append-only assertion about two stable ids, true regardless of what either
+  // card's title says now or later. See tests/service-data.test.js.
   app.post("/api/duplicates/not-duplicate", (req, res) => {
     const entries = req.body && req.body.entries;
-    if (!Array.isArray(entries) || entries.length < 2 || entries.length > 200) {
+    if (!Array.isArray(entries) || entries.length < 2 || entries.length > 400) {
       return res.status(400).json({ ok: false, error: "invalid_entries" });
     }
     const parsed = [];
-    let keyBytes = 0;
     for (const raw of entries) {
       const scope = raw && raw.scope, id = raw && String(raw.id || ""), key = raw && raw.key;
-      if ((scope !== "imported" && scope !== "saved") || !id || id.length > 512 || typeof key !== "string" || !key || key.length > 131072) {
+      if ((scope !== "imported" && scope !== "saved") || !id || id.length > 512 || typeof key !== "string" || !key || key.length > 600) {
         return res.status(400).json({ ok: false, error: "invalid_entry" });
       }
-      keyBytes += Buffer.byteLength(key, "utf8");
-      if (keyBytes > 262144) return res.status(413).json({ ok: false, error: "entries_too_large" });
       parsed.push({ scope, id, key });
-    }
-    const groups = new Map();
-    for (const entry of parsed) {
-      if (!groups.has(entry.key)) groups.set(entry.key, []);
-      groups.get(entry.key).push(entry);
-    }
-    const expectedByKey = new Map();
-    for (const [key, groupEntries] of groups) {
-      let members;
-      try { members = JSON.parse(key); } catch (e) { members = null; }
-      if (!Array.isArray(members) || members.length !== groupEntries.length || members.length > 200) {
-        return res.status(400).json({ ok: false, error: "invalid_key" });
-      }
-      const requested = new Set(groupEntries.map(entry => entry.scope + "\n" + entry.id));
-      if (requested.size !== groupEntries.length || members.some(member => !Array.isArray(member) || member.length !== 4 ||
-          (member[0] !== "imported" && member[0] !== "saved") || typeof member[1] !== "string" ||
-          typeof member[2] !== "string" || typeof member[3] !== "string" ||
-          !requested.has(member[0] + "\n" + member[1]))) {
-        return res.status(400).json({ ok: false, error: "invalid_key" });
-      }
-      const memberById = new Map(members.map(member => [member[0] + "\n" + member[1], member]));
-      if (memberById.size !== members.length) return res.status(400).json({ ok: false, error: "invalid_key" });
-      expectedByKey.set(key, memberById);
     }
     let changed = 0;
     ctx.db.exec("BEGIN IMMEDIATE");
     try {
-      for (const entry of parsed) {
-        const item = entry.scope === "saved" ? dbm.getSaved(ctx.db, entry.id) : dbm.getCard(ctx.db, entry.id);
-        const expected = expectedByKey.get(entry.key).get(entry.scope + "\n" + entry.id);
-        const current = [entry.scope, String(item && item.id || ""), String(item && item.url || "").trim().toLowerCase(),
-          String(item && item.title || "").trim().toLowerCase().replace(/\s+/g, " ")];
-        if (!item || JSON.stringify(current) !== JSON.stringify(expected)) {
-          ctx.db.exec("ROLLBACK");
-          return res.status(409).json({ ok: false, error: "row_changed" });
-        }
-      }
       for (const entry of parsed) {
         if (dbm.addNotDuplicateMarker(ctx.db, entry.scope, entry.id, entry.key)) changed++;
       }
