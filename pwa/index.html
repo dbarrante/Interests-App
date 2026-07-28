@@ -320,6 +320,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-row .meta .s{font-size:12px;opacity:.7}
 .dupe-row.keep{background:rgba(34,139,69,.12);border-radius:8px}
 .dupe-badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--line)}
+.dupe-why{background:transparent;border:1px solid var(--line);color:var(--muted,#9a9488);font-weight:600}
 .dupe-modebar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:4px 4px 12px}
 .dupe-review-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .dupe-modecopy{font-size:12px;color:var(--muted);line-height:1.4}
@@ -5708,8 +5709,20 @@ function dupeModeBarHTML(){
         <button class="${_dupeReviewMode==="single"?"on":""}" aria-pressed="${_dupeReviewMode==="single"}" onclick="dupeSetReviewMode('single')">One at a time</button>
       </div></div></div>`;
 }
+// "Why matched" diagnostic label for a duplicate group. Image groups keep the
+// existing "Same picture" review warning (now carrying the hamming distance);
+// link/title groups get a muted badge, so the CAUSE of a false positive (e.g. a
+// shared Facebook-group fallback title, or a group URL stamped on many posts) is
+// visible at a glance instead of having to guess.
+function dupeWhyHTML(g){
+  if(g && g.imageMatch) return `<span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture${g.imageDistance!=null?" · distance "+g.imageDistance:""} — review before removing</span>`;
+  if(g && g.reason==="link") return `<span class="dupe-badge dupe-why">matched: same link</span>`;
+  if(g && g.reason==="title") return `<span class="dupe-badge dupe-why">matched: same title</span>`;
+  return "";
+}
 function dupeCompactGroupHTML(g,gi){
-  return `<div class="dupe-group">${g.imageMatch ? `<div class="s" style="padding:0 0 6px"><span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span></div>` : ""}${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
+  const why=dupeWhyHTML(g);
+  return `<div class="dupe-group">${why ? `<div class="s" style="padding:0 0 6px">${why}</div>` : ""}${g.members.slice().sort((a,b)=> (dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1))
     .map(m=>dupeRowHTML(m,gi,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>`;
 }
 function dupeLargeCardHTML(mem,gi,keep,imageMatch){
@@ -5790,7 +5803,7 @@ function renderHealthDupes(list){
     const sorted=g.members.slice().sort((a,b)=>(dupeMemberKey(a)===g.keepKey?-1:1)-(dupeMemberKey(b)===g.keepKey?-1:1));
     const title=(g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0]).card.title||"Duplicate set";
     list.innerHTML=`${dupeModeBarHTML()}${scanBanner}
-      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)}${g.imageMatch?` <span class="dupe-badge" style="background:var(--accent);color:#fff">Same picture — review before removing</span>`:""}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
+      <div class="dupe-progress"><div><div class="dupe-progress-title">${esc(title)} ${dupeWhyHTML(g)}</div><div class="dupe-progress-count">Group ${_dupeReviewIndex+1} of ${_dupeGroups.length}</div></div>
         <div class="dupe-progress-count">${g.members.length} matching cards</div></div>
       <div class="dupe-large-grid">${sorted.map(m=>dupeLargeCardHTML(m,_dupeReviewIndex,dupeMemberKey(m)===g.keepKey,g.imageMatch)).join("")}</div>
       <div class="dupe-safety"><b>Only this group will change.</b> Unchecked cards are kept and the retained set is marked as not duplicates. Removing a card creates a verified safety snapshot first. ${window.IA_IDB?`<button class="btn btn-ghost" style="padding:4px 9px;margin-left:6px" onclick="restoreDupeSafetySnapshot(false)">Restore last cleanup</button>`:""}</div>
@@ -6211,7 +6224,13 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
   saveImgHashCache(cache);
   const groups = groupByImageHash(todo, alreadyGroupedKeys, IA_IMGHASH.hamming, IA_IMGHASH.MAX_DISTANCE);
   return groups
-    .map(mem => ({ members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true }))
+    .map(mem => {
+      // Widest pairwise hamming inside the group -- shown in the "why matched"
+      // label ("Same picture · distance N") so a loose match is visible.
+      let maxD = 0;
+      for(let i=0;i<mem.length;i++) for(let j=i+1;j<mem.length;j++){ const d=IA_IMGHASH.hamming(mem[i].hash, mem[j].hash); if(d>maxD) maxD=d; }
+      return { members: mem.map(e=>({card:e.card, scope:e.scope})), imageMatch: true, reason: "image", imageDistance: maxD };
+    })
     .filter(g => !dupeGroupDismissed(g.members))
     .map(g => Object.assign(g, { keepKey: dupeMemberKey(dupePrimary(g.members)) }));
 }
@@ -6246,7 +6265,9 @@ function scanDuplicates(){
   // group unrelated posts an auto-import mis-stamped with it.
   const inGroup = new Set();
   const raw = [];
-  const bucketBy = (keyOf, skipGrouped) => {
+  // reason is carried onto each group so the UI can show WHY it matched
+  // ("same link" / "same title") — a diagnostic for tuning false positives.
+  const bucketBy = (keyOf, skipGrouped, reason) => {
     const by = new Map();
     members.forEach((m,i)=>{
       if(skipGrouped && inGroup.has(i)) return;
@@ -6254,17 +6275,17 @@ function scanDuplicates(){
       if(!by.has(k)) by.set(k, []);
       by.get(k).push(i);
     });
-    by.forEach(idxs=>{ if(idxs.length>=2){ idxs.forEach(i=>inGroup.add(i)); raw.push(idxs.map(i=>members[i])); } });
+    by.forEach(idxs=>{ if(idxs.length>=2){ idxs.forEach(i=>inGroup.add(i)); raw.push({members: idxs.map(i=>members[i]), reason}); } });
   };
   // Link pass first: dupeKey, but only when it carries a path or an id -- a bare
   // host ("instagram.com") is too broad to mean "same page".
-  bucketBy(c=>{ if(!c.url) return ""; const k=dupeKey(c.url); return (k && (k.indexOf("/")>=0 || k.indexOf("?")>=0)) ? "u:"+k : ""; }, false);
+  bucketBy(c=>{ if(!c.url) return ""; const k=dupeKey(c.url); return (k && (k.indexOf("/")>=0 || k.indexOf("?")>=0)) ? "u:"+k : ""; }, false, "link");
   // Title pass over cards not already claimed by a link group.
-  bucketBy(c=>{ const t=normTitle(c.title); return t ? "t:"+t : ""; }, true);
+  bucketBy(c=>{ const t=normTitle(c.title); return t ? "t:"+t : ""; }, true, "title");
   const out = [];
-  raw.forEach(mem=>{
-    if (mem.length < 2 || dupeGroupDismissed(mem)) return;
-    out.push({ members: mem, keepKey: dupeMemberKey(dupePrimary(mem)) });
+  raw.forEach(g=>{
+    if (g.members.length < 2 || dupeGroupDismissed(g.members)) return;
+    out.push({ members: g.members, keepKey: dupeMemberKey(dupePrimary(g.members)), reason: g.reason });
   });
   return out;
 }
