@@ -604,7 +604,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const api = loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock);
 
     api.scanClick();   // kicks off the scan synchronously (the "Scan for duplicates" button)
-    assert.deepStrictEqual(api.getProgress(), { done: 0, total: 0 }, "sanity: the scan must be marked in-progress immediately");
+    assert.deepStrictEqual(api.getProgress(), { done: 0, total: 0, phase: "hash" }, "sanity: the scan must be marked in-progress immediately");
     assert.strictEqual(api.getScanned(), true, "sanity: _healthScanned.dupes is set before the async scan even starts");
 
     rejectFn(new Error("imagehash.js failed to load"));
@@ -614,6 +614,32 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(api.toasts.length, 1, "the user must be told the check failed, not left staring at a frozen progress line with no explanation");
     assert.match(api.toasts[0], /couldn.t check pictures/i);
     assert.strictEqual(api.warnCalls.length, 1, "the failure must be logged");
+  });
+
+  // The "Confirming close matches…" label only ever showed up as a ternary in
+  // web/index.html that no test read (data-safety review finding) -- an
+  // inverted condition there would have shipped green. _dupeGroups=[] takes
+  // renderHealthDupes's simplest (no-groups) branch, which only needs
+  // dupeScanButtonHTML and _healthScanned alongside the banner itself.
+  function loadBannerOnly(src, imgScanProgress) {
+    const body = fn(src, "dupeScanButtonHTML") + "\n" + fn(src, "renderHealthDupes");
+    const factory = new Function("_dupeGroups", "_imgScanProgress", "_healthScanned",
+      body + "\nreturn renderHealthDupes;");
+    return factory([], imgScanProgress, { dupes: true });
+  }
+
+  t(label + ": renderHealthDupes shows the hash-phase label during hashing, not the OCR-confirmation label", () => {
+    const list = {};
+    loadBannerOnly(src, { done: 1, total: 2, phase: "hash" })(list);
+    assert.match(list.innerHTML, /Checking pictures for duplicates…/);
+    assert.doesNotMatch(list.innerHTML, /Confirming close matches…/);
+  });
+
+  t(label + ": renderHealthDupes shows a DISTINCT label during the OCR-confirmation phase, not the hash-phase label", () => {
+    const list = {};
+    loadBannerOnly(src, { done: 1, total: 2, phase: "ocr" })(list);
+    assert.match(list.innerHTML, /Confirming close matches…/);
+    assert.doesNotMatch(list.innerHTML, /Checking pictures for duplicates…/);
   });
 }
 

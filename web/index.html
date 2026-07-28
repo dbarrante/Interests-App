@@ -5720,10 +5720,20 @@ function runDupeScan(){
   _dupeGroups.forEach(g => g.members.forEach(m => groupedKeys.add(m.scope + ":" + m.card.id)));
   _imgScanAbort = false;
   const gen = ++_imgScanGen;
-  _imgScanProgress = { done: 0, total: 0 };
-  scanImageDuplicates(groupedKeys, (done,total)=>{
+  _imgScanProgress = { done: 0, total: 0, phase: "hash" };
+  scanImageDuplicates(groupedKeys, (done,total,phase)=>{
     if(gen !== _imgScanGen) return;
-    _imgScanProgress = { done, total };
+    // The OCR-confirmation phase starts its own count from 0 -- patching just
+    // the percentage span would show the number drop right after the hash
+    // phase reached 100%, which reads as a stall/regression. Re-render once,
+    // on the phase's first tick, so the label text changes with it; every
+    // other tick in the same phase stays a cheap percentage-only patch.
+    const phaseChanged = _imgScanProgress && _imgScanProgress.phase !== phase;
+    _imgScanProgress = { done, total, phase };
+    if(phaseChanged && _healthTab==="dupes" && document.getElementById("healthModal").classList.contains("open")){
+      renderHealthDupes(document.getElementById("healthList"));
+      return;
+    }
     const pct = document.getElementById("imgScanPct");
     if(pct) pct.textContent = Math.round(done/Math.max(1,total)*100) + "%";
   }).then(imgGroups=>{
@@ -5760,7 +5770,7 @@ function dupeScanClick(){
 }
 function renderHealthDupes(list){
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
-  const scanBanner = _imgScanProgress ? `<div class="s" style="padding:8px 4px;opacity:.75">Checking pictures for duplicates… <span id="imgScanPct">${_imgScanProgress.total?Math.round(_imgScanProgress.done/_imgScanProgress.total*100):0}%</span></div>` : "";
+  const scanBanner = _imgScanProgress ? `<div class="s" style="padding:8px 4px;opacity:.75">${_imgScanProgress.phase==="ocr"?"Confirming close matches…":"Checking pictures for duplicates…"} <span id="imgScanPct">${_imgScanProgress.total?Math.round(_imgScanProgress.done/_imgScanProgress.total*100):0}%</span></div>` : "";
   if(!_dupeGroups.length){
     const msg = _healthScanned.dupes
       ? "No duplicate links, titles, or pictures found."+(_imgScanProgress?" Still checking pictures for visual duplicates.":"")
@@ -6158,6 +6168,116 @@ function groupByImageHash(entries, alreadyGrouped, hammingFn, maxDistance){
   }
   return groups;
 }
+// A personal library's genuine same-picture duplicates cluster in 2s and 3s.
+// Measured against this app's own real library (6,916 cards): the hash pass
+// above produced two outlier cliques of 100 and 33 members, and both turned
+// out to be a single shared image reused across completely unrelated cards --
+// a VPN "Website blocked" interstitial screenshot, and a site's generic
+// "no thumbnail" brand logo -- caught by the fetch/screenshot pipeline instead
+// of each card's real content. The hash pass is technically correct that
+// those ARE the same picture; the actual bug is one layer upstream (the wrong
+// image got captured), and offering 100 unrelated cards as a one-click bulk
+// "remove duplicates" prompt is a real deletion hazard regardless of cause --
+// same spirit as the mass-delete guard already on /api/saved and /api/cards.
+// Checked BEFORE any OCR is spent (below): a clique this size is excluded on
+// its member count alone, so nothing is wasted confirming what the count
+// already establishes. This cap sits well above every other size observed in
+// that same real-library run (the next largest, once the OCR pass below
+// exists to split out genuine template collisions, was in the single digits).
+const IMAGE_GROUP_SIZE_CAP = 8;
+// OCR-text-conflict: a second, independent signal alongside the image hash.
+// dHash samples only a 9x8 grid of adjacent-pixel comparisons (see
+// imagehash.js) -- coarse enough that two DIFFERENT pictures sharing the same
+// template (the same app's UI chrome, the same meme layout, the same social-
+// media post frame) can coincidentally land within MAX_DISTANCE of each
+// other, even though a person looking at them would never call them
+// duplicates. Verified against this app's real library: 20 different
+// Instagram Reels screenshots, sharing the same viewer UI chrome, all grouped
+// as "the same picture" -- yet OCR reads a distinct real caption off each one
+// (a New Year greeting, a holiday message, a car-build post, a news clip).
+// OCR is the one signal that can see past shared template/chrome to the
+// actual differing content.
+//
+// Not a threshold tuned against a labeled true/false-positive set -- there
+// isn't one yet. 0.35 is chosen so that two OCR reads of the literal SAME
+// image (recognition noise only -- a misread letter, different word
+// spacing) still clear it easily, while two reads that share only generic UI
+// chrome words ("Messages", app icon labels) but differ in actual content do
+// not. Revisit if real usage shows it too loose or too strict, the same way
+// imagehash.js's MAX_DISTANCE invites future measurement.
+const OCR_TEXT_CONFLICT_THRESHOLD = 0.35;
+function normalizeOcrWords(s){
+  return String(s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim().split(/\s+/).filter(Boolean);
+}
+// Jaccard overlap of the two texts' word sets. Empty/near-empty input (after
+// normalizing) returns 1 (maximal overlap, i.e. "not a conflict") rather than
+// 0 -- a near-empty OCR read is already unreliable on its own (ocrExtractText
+// enforces OCR_MIN_CHARS before returning anything at all), so it must never
+// be the reason two images get split apart; that would be treating a weak
+// signal as strong evidence of a difference that was never actually measured.
+function ocrTextOverlap(a,b){
+  const wa = new Set(normalizeOcrWords(a)), wb = new Set(normalizeOcrWords(b));
+  if(!wa.size || !wb.size) return 1;
+  let inter = 0; wa.forEach(w => { if(wb.has(w)) inter++; });
+  const union = wa.size + wb.size - inter;
+  return union ? inter/union : 1;
+}
+function ocrTextConflicts(a,b){
+  return ocrTextOverlap(a,b) < OCR_TEXT_CONFLICT_THRESHOLD;
+}
+// Splits/shrinks each image-hash-matched group so every emitted group is ALSO
+// a full pairwise clique under "no OCR text conflict" -- the same clique-
+// growth shape as groupByImageHash above, and for the same reason: closeness
+// here is evaluated pairwise, not assumed transitive, so this can only ever
+// keep a group as-is or break it into smaller pieces. It can NEVER merge two
+// members that groupByImageHash did not already put in the same group, and
+// it can never combine two of groupByImageHash's groups into one -- each
+// input group is processed independently. That is the only direction of
+// error this function is allowed to make (groupByImageHash's own "smaller-
+// but-correct beats bigger-but-wrong" precedent).
+//
+// textByKey holds OCR text ONLY for members where extraction actually
+// produced usable text (see scanImageDuplicates) -- a member absent from it
+// is "no evidence", not "conflicting evidence": conflictFn is never even
+// called for a pair where either side has no text, so OCR failing (offline,
+// a fetch blip, Tesseract not loading) always degrades back to hash-only
+// behavior, never to a wrongly-forced split.
+function splitGroupsOnTextConflict(groups, textByKey, conflictFn){
+  const out = [];
+  for(const group of (groups||[])){
+    const items = (group||[]).slice().sort((a,b)=> (a.key<b.key?-1:a.key>b.key?1:0));
+    const textOf = e => (textByKey && Object.prototype.hasOwnProperty.call(textByKey, e.key)) ? textByKey[e.key] : null;
+    const conflicts = (a,b) => {
+      const ta = textOf(a), tb = textOf(b);
+      if(ta==null || tb==null) return false;
+      return conflictFn(ta, tb);
+    };
+    const used = new Array(items.length).fill(false);
+    for(let i=0;i<items.length;i++){
+      if(used[i]) continue;
+      const idxs=[i];
+      for(let j=i+1;j<items.length;j++){
+        if(used[j]) continue;
+        if(idxs.every(k => !conflicts(items[k], items[j]))) idxs.push(j);
+      }
+      if(idxs.length>1){
+        idxs.forEach(k=>{used[k]=true;});
+        out.push(idxs.map(k=>items[k]));
+      }
+    }
+  }
+  return out;
+}
+async function loadImgOcrCache(){
+  try{
+    const m = await Store.kvGet("ia_imgocr");
+    if(!m || typeof m !== "object") return {};
+    return m;
+  }catch(e){ return {}; }
+}
+function saveImgOcrCache(map){
+  try{ Store.kvSet("ia_imgocr", map); }catch(e){}
+}
 // Hash-backed duplicate pass. Runs AFTER scanDuplicates and only over cards it
 // did not already group, so today's behavior is untouched and nothing merges
 // across the two passes. Returns groups shaped like scanDuplicates' output plus
@@ -6203,11 +6323,75 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
     // `|| done === todo.length` guarantees a final tick even when the total
     // isn't a multiple of 10 -- otherwise the UI could rest at "990 of 997"
     // forever once the loop finishes.
-    if(onProgress && (done % 10 === 0 || done === todo.length)) onProgress(done, todo.length);
+    if(onProgress && (done % 10 === 0 || done === todo.length)) onProgress(done, todo.length, "hash");
     if(_imgScanAbort) break;
   }
   saveImgHashCache(cache);
-  const groups = groupByImageHash(todo, alreadyGroupedKeys, IA_IMGHASH.hamming, IA_IMGHASH.MAX_DISTANCE);
+  let groups = groupByImageHash(todo, alreadyGroupedKeys, IA_IMGHASH.hamming, IA_IMGHASH.MAX_DISTANCE);
+
+  // Oversized-clique guard -- see IMAGE_GROUP_SIZE_CAP above. Checked before
+  // any OCR is spent: excluding a group by member count alone costs nothing.
+  groups = groups.filter(mem => mem.length <= IMAGE_GROUP_SIZE_CAP);
+
+  // Drop already-dismissed groups BEFORE spending any OCR on them too. This
+  // duplicates the dupeGroupDismissed filter below (on the mapped output) by
+  // design, not by accident: the OCR-conflict split just below can SHRINK a
+  // group, and a decision recorded under the old whole-group JSON key (see
+  // dupeGroupDismissed's legacy fallback) is keyed on the group's exact prior
+  // membership -- a shrunk group no longer matches that key and would
+  // silently resurface. Checking here, on the group as groupByImageHash
+  // actually produced it, closes that gap; the pairwise scheme this file
+  // normally writes is immune (a dismissed superset implies every subset is
+  // already dismissed), so this is a no-op in the common case and only
+  // matters for decisions made before that scheme existed.
+  groups = groups.filter(mem => !dupeGroupDismissed(mem));
+
+  // OCR-confirmation pass: only over members of the (already small) surviving
+  // candidate groups -- bounded by how many hash candidates exist, never by
+  // library size. Text is cached (ia_imgocr) the same way hashes are; ONLY a
+  // successful extraction is ever cached, matching computeCardHash's own
+  // null-is-never-cached rule above (ocrExtractText's null is overloaded --
+  // "no text found", "low confidence", and "any failure" all return it alike
+  // -- caching that would risk locking a transient OCR/fetch failure in as a
+  // permanent "no text", the same bug class the hash cache already guards
+  // against). A member absent from textByKey is "no evidence", never fed to
+  // conflictFn as if it were "text differs" -- see splitGroupsOnTextConflict.
+  const ocrCache = await loadImgOcrCache();
+  const textByKey = {};
+  const ocrMembers = [];
+  const seenOcrKeys = new Set();
+  groups.forEach(mem => mem.forEach(e => { if(!seenOcrKeys.has(e.key)){ seenOcrKeys.add(e.key); ocrMembers.push(e); } }));
+  let ocrDone = 0, ocrRecomputed = 0, ocrAborted = false;
+  for(const e of ocrMembers){
+    // Checked at the TOP, not just the bottom: if the hash phase above was
+    // already aborted, this must spend zero OCR calls, not one -- Tesseract's
+    // load+recognize is real, non-trivial work per card.
+    if(_imgScanAbort){ ocrAborted = true; break; }
+    const src = imgHashSrcKey(e.card);
+    const hit = ocrCache[e.card.id];
+    if(hit && hit.src === src){
+      if(hit.text) textByKey[e.key] = hit.text;
+    } else {
+      const text = await ocrExtractText(e.card);
+      if(text){
+        ocrCache[e.card.id] = { text, src };
+        textByKey[e.key] = text;
+        ocrRecomputed++;
+        if(ocrRecomputed % 10 === 0) saveImgOcrCache(ocrCache);
+      }
+    }
+    ocrDone++;
+    if(onProgress && (ocrDone % 5 === 0 || ocrDone === ocrMembers.length)) onProgress(ocrDone, ocrMembers.length, "ocr");
+  }
+  saveImgOcrCache(ocrCache);
+  // An aborted pass has confirmed only a SUBSET of the surviving candidates'
+  // text, so splitting on that partial textByKey could hand back groups
+  // LARGER or less-confirmed than a full scan would ever produce -- every
+  // caller already discards an aborted scan's result (runDupeScan's
+  // generation guard + _imgScanAbort check), but this function must not
+  // manufacture a result that looks more confident than the work actually done.
+  groups = ocrAborted ? [] : splitGroupsOnTextConflict(groups, textByKey, ocrTextConflicts);
+
   return groups
     .map(mem => {
       // Widest pairwise hamming inside the group -- shown in the "why matched"

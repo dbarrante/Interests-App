@@ -173,6 +173,158 @@ t("scanImageDuplicates is byte-identical between web and pwa", () => {
   assert.strictEqual(a, b);
 });
 
+for (const name of ["splitGroupsOnTextConflict", "ocrTextConflicts", "ocrTextOverlap", "normalizeOcrWords"]) {
+  t(name + " is byte-identical between web and pwa", () => {
+    const a = extractFn(webHtml, name), b = extractFn(pwaHtml, name);
+    assert.ok(a && b, name + " not found in one or both sources");
+    assert.strictEqual(a, b);
+  });
+}
+
+// The test harness INJECTS IMAGE_GROUP_SIZE_CAP/OCR_TEXT_CONFLICT_THRESHOLD as
+// sandbox parameters everywhere else in this file (so behavior can be tested
+// against controlled values) -- which means nothing else in this suite ever
+// reads the REAL declared value in web/pwa index.html. web and pwa could
+// silently disagree (e.g. pwa left at a stale/different cap) with every other
+// test here still green (data-safety review finding). Pin the literal value
+// in both real sources directly.
+for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
+  t(label + ": IMAGE_GROUP_SIZE_CAP is declared as exactly 8", () => {
+    assert.match(src, /const IMAGE_GROUP_SIZE_CAP = 8;/);
+  });
+  t(label + ": OCR_TEXT_CONFLICT_THRESHOLD is declared as exactly 0.35", () => {
+    assert.match(src, /const OCR_TEXT_CONFLICT_THRESHOLD = 0\.35;/);
+  });
+}
+
+// --- OCR-text-conflict pure functions (Task: "look at the text in the
+// pictures too" — dHash's 9x8 sample can't see text at all; two DIFFERENT
+// pictures sharing a template/UI-chrome can still land within MAX_DISTANCE.
+// OCR is the second, independent signal that can see past that. ---------
+function loadOcrFns(src) {
+  const names = ["ocrTextOverlap", "ocrTextConflicts", "normalizeOcrWords"];
+  const body = names.map(n => extractFn(src, n)).join("\n");
+  const factory = new Function("OCR_TEXT_CONFLICT_THRESHOLD", body + "\nreturn {ocrTextOverlap, ocrTextConflicts, normalizeOcrWords};");
+  return factory(0.35);
+}
+
+for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
+  const { ocrTextOverlap, ocrTextConflicts } = loadOcrFns(src);
+
+  t(label + ": identical text never conflicts", () => {
+    assert.strictEqual(ocrTextOverlap("Happy New Year Messages", "Happy New Year Messages"), 1);
+    assert.ok(!ocrTextConflicts("Happy New Year Messages", "Happy New Year Messages"));
+  });
+
+  t(label + ": the same text with minor OCR noise (case, punctuation, a dropped word) stays well clear of conflict", () => {
+    assert.ok(!ocrTextConflicts("Happy New Year Messages", "happy new year, messages"));
+  });
+
+  t(label + ": completely unrelated captions conflict (the Instagram-reels false-positive case)", () => {
+    // Real text extracted from this app's own library during diagnosis: two
+    // different Reels screenshots sharing the same viewer UI chrome, whose
+    // ACTUAL captions have nothing to do with each other.
+    assert.ok(ocrTextConflicts(
+      "Happy New Year Messages",
+      "As the U.S. and Israel launched military strikes deep inside Iran"
+    ), "a New Year greeting and a war-news caption must be treated as conflicting text");
+  });
+
+  t(label + ": shared UI-chrome words alone are not enough to call two captions the same", () => {
+    // Both share only generic app-chrome tokens ("Messages"); the real
+    // content ("bio" promo vs a philosophical quote about borders) differs.
+    assert.ok(ocrTextConflicts(
+      "Get yours in our bio Messages",
+      "If borders arent real neither are property lines Messages"
+    ));
+  });
+
+  t(label + ": either side empty/near-empty never causes a conflict (a weak OCR read must never manufacture evidence)", () => {
+    assert.strictEqual(ocrTextOverlap("", "Some real caption here"), 1);
+    assert.ok(!ocrTextConflicts("", "Some real caption here"));
+    assert.ok(!ocrTextConflicts("!!! ??? ...", "Some real caption here"));
+  });
+
+  t(label + ": normalization ignores case, punctuation, and spacing differences", () => {
+    assert.strictEqual(ocrTextOverlap("Hello, World!", "hello   world"), 1);
+  });
+}
+
+// --- splitGroupsOnTextConflict: the safety-preserving post-processor over
+// groupByImageHash's output. Can only ever shrink/drop a group, never grow
+// one or merge two of groupByImageHash's groups together. -----------------
+function loadSplitFn(src) {
+  const names = ["splitGroupsOnTextConflict"];
+  const body = names.map(n => extractFn(src, n)).join("\n");
+  return new Function(body + "\nreturn splitGroupsOnTextConflict;")();
+}
+
+for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
+  const splitGroupsOnTextConflict = loadSplitFn(src);
+  const CONFLICTS = (a, b) => a !== b;   // simple test predicate: any different label conflicts
+
+  t(label + ": a group where two members' text conflicts is split apart", () => {
+    const groups = splitGroupsOnTextConflict(
+      [[{ key: "a" }, { key: "b" }]],
+      { a: "topic-1", b: "topic-2" },
+      CONFLICTS
+    );
+    assert.strictEqual(groups.length, 0, "a conflicting pair must not survive as a group at all");
+  });
+
+  t(label + ": a group where text agrees stays together", () => {
+    const groups = splitGroupsOnTextConflict(
+      [[{ key: "a" }, { key: "b" }]],
+      { a: "topic-1", b: "topic-1" },
+      CONFLICTS
+    );
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].length, 2);
+  });
+
+  t(label + ": a member with NO extracted text is never treated as conflicting -- insufficient evidence, not evidence of difference", () => {
+    const groups = splitGroupsOnTextConflict(
+      [[{ key: "a" }, { key: "b" }]],
+      { a: "topic-1" },   // b has no entry at all -- OCR found nothing usable
+      CONFLICTS
+    );
+    assert.strictEqual(groups.length, 1, "missing OCR text on one side must fall back to hash-only behavior (keep grouped)");
+  });
+
+  t(label + ": both members missing text also keeps the group together (today's unchanged behavior)", () => {
+    const groups = splitGroupsOnTextConflict([[{ key: "a" }, { key: "b" }]], {}, CONFLICTS);
+    assert.strictEqual(groups.length, 1);
+  });
+
+  t(label + ": a 3-member group where one member conflicts with the other two shrinks to a pair, dropping the odd one out", () => {
+    const groups = splitGroupsOnTextConflict(
+      [[{ key: "a" }, { key: "b" }, { key: "c" }]],
+      { a: "topic-1", b: "topic-1", c: "topic-2" },
+      CONFLICTS
+    );
+    const allKeys = groups.flatMap(g => g.map(e => e.key)).sort();
+    assert.deepStrictEqual(allKeys, ["a", "b"], "c must be excluded; a and b (agreeing text) must survive as a pair");
+  });
+
+  t(label + ": never merges two SEPARATE groupByImageHash groups together, even if their text happens to agree", () => {
+    const groups = splitGroupsOnTextConflict(
+      [[{ key: "a" }, { key: "b" }], [{ key: "c" }, { key: "d" }]],
+      { a: "same", b: "same", c: "same", d: "same" },
+      CONFLICTS
+    );
+    assert.strictEqual(groups.length, 2, "two distinct hash-matched groups must never be combined into one");
+    const keysets = groups.map(g => g.map(e => e.key).sort().join(",")).sort();
+    assert.deepStrictEqual(keysets, ["a,b", "c,d"]);
+  });
+
+  t(label + ": can only shrink or drop groups, never grow one beyond its original members", () => {
+    const input = [[{ key: "a" }, { key: "b" }, { key: "c" }]];
+    const groups = splitGroupsOnTextConflict(input, {}, CONFLICTS);   // no text at all -> nothing to split
+    const outKeys = groups.flatMap(g => g.map(e => e.key));
+    assert.ok(outKeys.every(k => ["a", "b", "c"].includes(k)), "output must never contain a member absent from the input group");
+  });
+}
+
 // --- scanImageDuplicates: wiring/composition checks on the real source ----
 // scanImageDuplicates depends on browser globals (imported/saved/IA_IMGHASH/
 // Store/loadImgHashCache/computeCardHash) that would need heavy mocking to
@@ -223,6 +375,42 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
   t(label + ": scanImageDuplicates respects an abort flag so closing the modal mid-scan doesn't run to completion", () => {
     assert.match(src, /let _imgScanAbort\s*=\s*false;/);
     assert.match(body, /_imgScanAbort/);
+  });
+
+  t(label + ": scanImageDuplicates excludes oversized cliques BEFORE any OCR is spent (placeholder-cluster guard)", () => {
+    const capIdx = body.search(/groups\s*=\s*groups\.filter\(mem\s*=>\s*mem\.length\s*<=\s*IMAGE_GROUP_SIZE_CAP\)/);
+    const ocrIdx = body.indexOf("loadImgOcrCache()");
+    assert.ok(capIdx >= 0, "must filter groups by IMAGE_GROUP_SIZE_CAP");
+    assert.ok(ocrIdx >= 0, "must load the OCR cache");
+    assert.ok(capIdx < ocrIdx, "the size-cap filter must run BEFORE any OCR work, not after -- excluding by count alone must cost nothing");
+  });
+
+  t(label + ": scanImageDuplicates runs OCR only over members of surviving (post-size-cap) candidate groups, not the whole library", () => {
+    assert.match(body, /groups\.forEach\(mem\s*=>\s*mem\.forEach\(e\s*=>/, "OCR candidates must be gathered FROM the groups, not from `members`/`todo`/the full library");
+    assert.doesNotMatch(body, /todo\.forEach\([^)]*ocrExtractText/, "must not run OCR over the full `todo` list");
+  });
+
+  t(label + ": scanImageDuplicates never caches a null/failed OCR result -- only a successful extraction is written to ia_imgocr", () => {
+    assert.match(body, /if\(text\)\{\s*\n\s*ocrCache\[e\.card\.id\]\s*=\s*\{\s*text,\s*src\s*\}/,
+      "a null OCR result must never be written to the cache, or a transient failure becomes permanent \"no text\" (same bug class computeCardHash's null-vs-\"\" split already guards against)");
+  });
+
+  t(label + ": scanImageDuplicates splits groups on OCR text conflict via splitGroupsOnTextConflict/ocrTextConflicts, not a bespoke re-grouping", () => {
+    assert.match(body, /splitGroupsOnTextConflict\(groups,\s*textByKey,\s*ocrTextConflicts\)/);
+  });
+
+  t(label + ": the OCR loop references _imgScanAbort at all (source smoke check only -- see the BEHAVIORAL abort tests below for proof it actually stops)", () => {
+    const ocrLoopStart = body.indexOf("for(const e of ocrMembers)");
+    const ocrBlockEnd = body.indexOf("ocrAborted ? [] : splitGroupsOnTextConflict", ocrLoopStart);
+    assert.ok(ocrLoopStart >= 0, "OCR loop not found");
+    assert.ok(ocrBlockEnd > ocrLoopStart, "end-of-OCR-block marker not found");
+    const ocrLoopBody = body.slice(ocrLoopStart, ocrBlockEnd);
+    assert.match(ocrLoopBody, /_imgScanAbort/, "the OCR loop must be abortable exactly like the hash loop above it");
+  });
+
+  t(label + ": scanImageDuplicates tags onProgress calls with a phase (\"hash\" then \"ocr\") so the UI can tell the two apart", () => {
+    assert.match(body, /onProgress\([^)]*,\s*"hash"\)/);
+    assert.match(body, /onProgress\([^)]*,\s*"ocr"\)/);
   });
 }
 
@@ -359,23 +547,35 @@ console.log(pass + " passed, " + fail + " failed");
 // so these run in a trailing IIFE after the synchronous tests above finish
 // (the shared pass/fail counters and final summary/exit are relocated here).
 function loadScanImageDuplicates(src, deps) {
-  // scanImageDuplicates calls groupByImageHash internally — both function
-  // declarations must share the sandbox scope (same trap the cache-wiring
-  // suite already documented for computeCardHash/isDegenerateHash): omitting
-  // groupByImageHash here would throw a ReferenceError deep inside the call,
-  // which is NOT swallowed (scanImageDuplicates has no its own try/catch
-  // around that call), so this is a load-bearing inclusion, not decoration.
-  const fnSrc = extractFn(src, "groupByImageHash") + "\n" + extractFn(src, "scanImageDuplicates");
-  assert.ok(fnSrc, "scanImageDuplicates (or its groupByImageHash dependency) not found");
+  // scanImageDuplicates calls groupByImageHash, splitGroupsOnTextConflict, and
+  // ocrTextConflicts internally — every function declaration it calls must
+  // share the sandbox scope (same trap the cache-wiring suite already
+  // documented for computeCardHash/isDegenerateHash): omitting one here would
+  // throw a ReferenceError deep inside the call, which is NOT swallowed
+  // (scanImageDuplicates has no try/catch of its own around these calls), so
+  // this is a load-bearing inclusion list, not decoration.
+  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "scanImageDuplicates"]
+    .map(n => extractFn(src, n)).join("\n");
+  assert.ok(fnSrc, "scanImageDuplicates (or one of its dependencies) not found");
+  // _imgScanAbort is shadowed by an inner `let` seeded from the factory
+  // param, then exposed as a `.setAbort()` on the returned function -- a
+  // real running scan can be aborted MID-LOOP this way (data-safety review:
+  // the previous version passed it as a plain snapshotted parameter, which
+  // could never change once scanImageDuplicates started running, so the
+  // structural "does _imgScanAbort appear in the source" checks below were
+  // the only thing standing in for actual abort behavior).
   const factory = new Function(
     "imported", "saved", "loadImgHashCache", "saveImgHashCache", "imgHashSrcKey", "computeCardHash",
-    "IA_IMGHASH", "dupeGroupDismissed", "dupeMemberKey", "dupePrimary", "isBadImg", "_imgScanAbort",
-    fnSrc + "\nreturn scanImageDuplicates;"
+    "IA_IMGHASH", "dupeGroupDismissed", "dupeMemberKey", "dupePrimary", "isBadImg", "_imgScanAbortInit",
+    "IMAGE_GROUP_SIZE_CAP", "OCR_TEXT_CONFLICT_THRESHOLD", "loadImgOcrCache", "saveImgOcrCache", "ocrExtractText",
+    "let _imgScanAbort = _imgScanAbortInit;\n" + fnSrc +
+    "\nreturn Object.assign(scanImageDuplicates, { setAbort: (v) => { _imgScanAbort = v; } });"
   );
   return factory(
     deps.imported, deps.saved, deps.loadImgHashCache, deps.saveImgHashCache, deps.imgHashSrcKey,
     deps.computeCardHash, deps.IA_IMGHASH, deps.dupeGroupDismissed, deps.dupeMemberKey, deps.dupePrimary,
-    deps.isBadImg, deps._imgScanAbort
+    deps.isBadImg, deps._imgScanAbort, deps.IMAGE_GROUP_SIZE_CAP, deps.OCR_TEXT_CONFLICT_THRESHOLD,
+    deps.loadImgOcrCache, deps.saveImgOcrCache, deps.ocrExtractText
   );
 }
 function baseDeps(cards) {
@@ -391,6 +591,11 @@ function baseDeps(cards) {
     dupePrimary: (members) => members[0],
     isBadImg: () => false,   // by default no card is a placeholder; the exclusion test overrides this
     _imgScanAbort: false,
+    IMAGE_GROUP_SIZE_CAP: 8,
+    OCR_TEXT_CONFLICT_THRESHOLD: 0.35,
+    loadImgOcrCache: async () => ({}),
+    saveImgOcrCache: () => {},
+    ocrExtractText: async () => null,   // by default no card yields OCR text; conflict tests override this
   };
 }
 async function at(n, fn) {
@@ -505,6 +710,134 @@ async function at(n, fn) {
         "a placeholder-image card must never be hashed into an image-match group");
       assert.ok(groups.some(g => { const ids = g.members.map(m => m.card.id); return ids.includes("real1") && ids.includes("real2"); }),
         "two real images with matching hashes must still group");
+    });
+
+    await at(label + ": scanImageDuplicates excludes a clique larger than IMAGE_GROUP_SIZE_CAP entirely, and spends NO OCR calls confirming it (placeholder-cluster guard)", async () => {
+      // Modeled on this app's own real library: a shared placeholder/broken-
+      // capture image (a VPN block page, a site's generic "no thumbnail" logo)
+      // independently produced 30-100 member cliques -- offering that as a
+      // one-click bulk-removal prompt is a real deletion hazard regardless of
+      // cause. A normal 2-3 member duplicate cluster must be unaffected.
+      const bigCards = Array.from({ length: 12 }, (_, i) => ({ id: "big" + i }));
+      const smallCards = [{ id: "s1" }, { id: "s2" }];
+      const ocrCalledFor = [];
+      const deps = Object.assign(baseDeps(bigCards.concat(smallCards)), {
+        computeCardHash: async (card) => (card.id.startsWith("big") ? "0000000000000000" : "ffffffffffffffff"),
+        IA_IMGHASH: { hamming: (a, b) => (a === b ? 0 : 64), MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => { ocrCalledFor.push(card.id); return null; },
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      const allIds = groups.flatMap(g => g.members.map(m => m.card.id));
+      assert.ok(!bigCards.some(c => allIds.includes(c.id)), "the 12-member clique must be excluded entirely, not offered as a duplicate group");
+      assert.ok(allIds.includes("s1") && allIds.includes("s2"), "an ordinary 2-member cluster must still group normally");
+      assert.ok(!ocrCalledFor.some(id => id.startsWith("big")), "OCR must never be spent on a clique the size cap already excluded -- that's the whole point of checking size first");
+    });
+
+    await at(label + ": scanImageDuplicates splits a hash-matched group whose members' OCR text clearly conflicts", async () => {
+      const cards = [{ id: "a", img: "idb:a" }, { id: "b", img: "idb:b" }];
+      const texts = { a: "Happy New Year Messages", b: "military strikes deep inside Iran breaking news today" };
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => texts[card.id],
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "conflicting OCR text must remove this pair from the duplicate results entirely");
+    });
+
+    await at(label + ": scanImageDuplicates keeps a hash-matched group together when OCR text agrees (a true reposted duplicate)", async () => {
+      const cards = [{ id: "a", img: "idb:a" }, { id: "b", img: "idb:b" }];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => "Same real caption on both copies",
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "agreeing OCR text must not block a real duplicate match");
+      assert.strictEqual(groups[0].members.length, 2);
+    });
+
+    await at(label + ": scanImageDuplicates keeps a hash-matched group together when OCR finds no usable text on either side (unchanged, hash-only behavior)", async () => {
+      const cards = [{ id: "a", img: "idb:a" }, { id: "b", img: "idb:b" }];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "no OCR evidence on either side must fall back to today's hash-only grouping, not an unconfirmed split");
+    });
+
+    await at(label + ": scanImageDuplicates never caches a failed/null OCR result -- a transient failure is retried, not permanently locked in", async () => {
+      const cards = [{ id: "a", img: "idb:a" }, { id: "b", img: "idb:b" }];
+      let calls = 0;
+      const persistedOcr = {};
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        loadImgOcrCache: async () => persistedOcr,
+        saveImgOcrCache: () => {},   // persistedOcr IS the object mutated in place, mirroring the real KV-backed cache
+        ocrExtractText: async (card) => { calls++; return (card.id === "a" && calls <= 1) ? null : "some real caption text here"; },
+      });
+      const firstScan = loadScanImageDuplicates(src, deps);
+      await firstScan(new Set(), null);
+      assert.ok(!("a" in persistedOcr), "a failed/null OCR result must never be written to the cache");
+
+      const secondScan = loadScanImageDuplicates(src, deps);
+      await secondScan(new Set(), null);
+      assert.ok(persistedOcr.a && persistedOcr.a.text, "a successful retry on a later scan must be cached normally");
+    });
+
+    await at(label + ": scanImageDuplicates reports onProgress with phase \"hash\" during hashing and phase \"ocr\" during OCR confirmation", async () => {
+      const cards = [{ id: "a", img: "idb:a" }, { id: "b", img: "idb:b" }];
+      const phases = [];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      await scanImageDuplicates(new Set(), (done, total, phase) => phases.push(phase));
+      assert.ok(phases.includes("hash"), "must report at least one hash-phase progress tick");
+      assert.ok(phases.includes("ocr"), "must report at least one ocr-phase progress tick");
+    });
+
+    // --- BEHAVIORAL abort tests (data-safety review: the structural "does
+    // _imgScanAbort appear in the source" checks above cannot prove the loop
+    // actually stops -- _imgScanAbort is now a mutable inner `let` exposed via
+    // .setAbort() precisely so these can flip it mid-run, the same technique
+    // tests/_dupe-harness.js uses for other live scan state). ---------------
+    await at(label + ": aborting MID-OCR-pass stops further OCR calls immediately and discards the result entirely, not a partial/less-confirmed one", async () => {
+      const cards = [{ id: "a1" }, { id: "a2" }, { id: "b1" }, { id: "b2" }, { id: "c1" }, { id: "c2" }];
+      const HASHES = { a1: "H1", a2: "H1", b1: "H2", b2: "H2", c1: "H3", c2: "H3" };
+      let ocrCalls = 0, scanRef;
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async (card) => HASHES[card.id],
+        IA_IMGHASH: { hamming: (a, b) => (a === b ? 0 : 64), MAX_DISTANCE: 5 },
+        ocrExtractText: async () => { ocrCalls++; if (ocrCalls === 2) scanRef.setAbort(true); return null; },
+      });
+      scanRef = loadScanImageDuplicates(src, deps);
+      const groups = await scanRef(new Set(), null);
+      assert.strictEqual(ocrCalls, 2, "the OCR loop must stop the instant it's aborted, not continue through the remaining candidates");
+      assert.deepStrictEqual(groups, [], "an aborted OCR pass must discard its result entirely -- a partial textByKey could otherwise hand back groups LARGER/less-confirmed than a full scan would");
+    });
+
+    await at(label + ": if the scan is already aborted by the time the OCR phase starts (aborted during hashing), the OCR phase spends ZERO calls, not one", async () => {
+      const cards = [{ id: "a1" }, { id: "a2" }];
+      let ocrCalls = 0, scanRef;
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async (card) => { if (card.id === "a2") scanRef.setAbort(true); return "H1"; },
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => { ocrCalls++; return null; },
+      });
+      scanRef = loadScanImageDuplicates(src, deps);
+      const groups = await scanRef(new Set(), null);
+      assert.strictEqual(ocrCalls, 0, "Tesseract load+recognize is real, non-trivial work -- an already-aborted scan must not spend even one OCR call, even though a real group WAS found by the hash phase");
+      assert.deepStrictEqual(groups, [], "an aborted scan must return no groups");
     });
   }
 
