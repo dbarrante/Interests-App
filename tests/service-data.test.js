@@ -97,24 +97,32 @@ t("not-duplicate decision is additive, atomic, and preserves current card fields
   await fetch(base + "/api/saved", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ saved: [
     { id: "s", url: "https://example.test/a", category: "Tips", clipped: 5, image: "", title: "Saved title" },
   ] }) });
-  const key = JSON.stringify([["imported","a","https://example.test/a","current title"],["saved","s","https://example.test/a","saved title"]]);
-  const body = { entries: [{ scope:"imported", id:"a", key }, { scope:"saved", id:"s", key }] };
+  // The decision key is a stable (scope,id) peer tag -- no url/title baked in --
+  // so each member records who it was dismissed alongside, not a snapshot of
+  // content that can go stale. See dupePeerTagsFor in web/pwa index.html.
+  const body = { entries: [{ scope:"imported", id:"a", key:"p:saved:s" }, { scope:"saved", id:"s", key:"p:imported:a" }] };
   let r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
   assert.deepStrictEqual(await r.json(), { ok:true, changed:2 });
   const cards = (await (await fetch(base + "/api/cards")).json()).cards;
   const saved = (await (await fetch(base + "/api/saved")).json()).saved;
   assert.strictEqual(cards[0].title, "Current title");
   assert.strictEqual(cards[0].notes, "keep me");
-  assert.deepStrictEqual(cards[0].dupeNotDuplicateGroups, [key]);
-  assert.deepStrictEqual(saved[0].dupeNotDuplicateGroups, [key]);
+  assert.deepStrictEqual(cards[0].dupeNotDuplicateGroups, ["p:saved:s"]);
+  assert.deepStrictEqual(saved[0].dupeNotDuplicateGroups, ["p:imported:a"]);
   r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
   assert.deepStrictEqual(await r.json(), { ok:true, changed:0 }, "retries are idempotent");
-  const badKey = JSON.stringify([["imported","different-id","u","t"],["saved","s","u","t"]]);
-  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"imported",id:"a",key:badKey}] }) });
-  assert.strictEqual(r.status, 400, "a decision key must name the row it marks");
-  const staleKey = JSON.stringify([["imported","a","https://example.test/a","stale title"],["saved","s","https://example.test/a","saved title"]]);
-  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"imported",id:"a",key:staleKey},{scope:"saved",id:"s",key:staleKey}] }) });
-  assert.strictEqual(r.status, 409, "a stale decision cannot mark rows whose duplicate-relevant content changed");
+
+  // The old CAS validation rejected a key whose embedded url/title no longer
+  // matched the row (400 invalid_key / 409 row_changed) -- deliberately removed.
+  // A pairwise identity tag has no content to go stale, so a title change must
+  // neither block the write nor be required to match it.
+  await fetch(base + "/api/cards", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ cards: [
+    { id: "a", url: "https://example.test/a", platform: "fb", cat: "Saved", ts: 2, img: "", title: "A brand new title", notes: "keep me" },
+  ] }) });
+  r = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"imported",id:"a",key:"p:saved:zzz"},{scope:"saved",id:"s",key:"p:imported:a"}] }) });
+  assert.deepStrictEqual(await r.json(), { ok:true, changed:1 }, "a title change afterward must not block, or need to match, a decision");
+  const invalidScope = await fetch(base + "/api/duplicates/not-duplicate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ entries:[{scope:"bogus",id:"a",key:"p:saved:s"},{scope:"saved",id:"s",key:"p:imported:a"}] }) });
+  assert.strictEqual(invalidScope.status, 400, "scope must still be structurally validated");
 });
 
 t("not-duplicate decision degrades gracefully on a corrupt row instead of failing the whole batch", async ({ base, database }) => {

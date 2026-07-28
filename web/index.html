@@ -5471,8 +5471,14 @@ let _healthTab = "dupes";
 let _healthScanned = {};   // {tabId:true} once its lazy scan has run this open
 function openHealth(tab){
   _healthTab = tab || "dupes";
-  _healthScanned = {};
-  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {};
+  // Dead/failed/no-link/titles re-check every open (unchanged) -- but Duplicates
+  // does NOT: a scan only ever runs from the explicit "Scan for duplicates"
+  // button (dupeScanClick), so its results (_dupeGroups) and _healthScanned.dupes
+  // deliberately survive opening/closing this modal. Re-scanning on every open
+  // was the dominant cause of "Checking pictures for duplicates…" reappearing
+  // repeatedly during a single cleanup session.
+  _deadList = []; _failModalList = []; _failStatus = {};
+  _healthScanned.dead = false; _healthScanned.failed = false; _healthScanned.nolink = false; _healthScanned.titles = false;
   _dupeFullScreen = false;
   document.getElementById("healthModal").classList.remove("dupe-fullscreen");
   document.getElementById("healthModal").classList.add("open");
@@ -5481,7 +5487,11 @@ function openHealth(tab){
 function closeHealth(){
   _dupeFullScreen = false;
   document.getElementById("healthModal").classList.remove("open","dupe-fullscreen");
-  _dupeGroups = []; _deadList = []; _failModalList = []; _failStatus = {}; _healthScanned = {}; _titleSuggestions = {};
+  // See openHealth -- _dupeGroups/_healthScanned.dupes intentionally survive a
+  // close so reopening shows the same frozen results, not a fresh auto-scan.
+  _deadList = []; _failModalList = []; _failStatus = {};
+  _healthScanned.dead = false; _healthScanned.failed = false; _healthScanned.nolink = false; _healthScanned.titles = false;
+  _titleSuggestions = {};
   _imgScanAbort = true;   // stop a running image scan; its .then() checks this before applying results
   _imgScanProgress = null;
 }
@@ -5641,10 +5651,17 @@ function dupeReviewMove(delta){
   _dupeReviewIndex = Math.max(0,Math.min(_dupeGroups.length-1,_dupeReviewIndex+delta));
   renderHealthDupes(document.getElementById("healthList"));
 }
+// Duplicates only ever scans when this is clicked -- see runDupeScan. Label
+// reflects whether this is the first scan or a deliberate rescan of a frozen
+// result set (e.g. after editing titles, or to pick up newly captured cards).
+function dupeScanButtonHTML(){
+  const label = _healthScanned.dupes ? "Rescan for duplicates" : "Scan for duplicates";
+  return `<button class="btn btn-ghost" onclick="dupeScanClick()" ${_imgScanProgress?"disabled":""}>&#128260; ${label}</button>`;
+}
 function dupeModeBarHTML(){
   return `<div class="dupe-modebar">
     <div class="dupe-modecopy"><b>Review layout</b>Focus on one duplicate set or scan all groups.</div>
-    <div class="dupe-review-controls"><button class="btn btn-ghost" id="dupeFullscreenBtn" aria-pressed="${_dupeFullScreen}" onclick="dupeSetFullscreen()">${_dupeFullScreen?"Exit full screen":"Full screen"}</button>
+    <div class="dupe-review-controls">${dupeScanButtonHTML()}<button class="btn btn-ghost" id="dupeFullscreenBtn" aria-pressed="${_dupeFullScreen}" onclick="dupeSetFullscreen()">${_dupeFullScreen?"Exit full screen":"Full screen"}</button>
       <div class="dupe-col-slider"><label for="dupeColSlider">Columns</label><input type="range" id="dupeColSlider" min="1" max="3" step="1" value="${_dupeFullCols}" oninput="dupeSetFullCols(this.value)"><strong id="dupeColVal">${_dupeFullCols}</strong></div>
       <div class="dupe-modes" role="group" aria-label="Duplicate review layout">
         <button class="${_dupeReviewMode==="all"?"on":""}" aria-pressed="${_dupeReviewMode==="all"}" onclick="dupeSetReviewMode('all')">All groups</button>
@@ -5684,59 +5701,85 @@ function dupeLargeCardHTML(mem,gi,keep,imageMatch){
          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="dupeSetKeep(${gi},'${esc(dupeMemberKey(mem))}')">Keep this</button>`}
     </div></div>`;
 }
+// Runs the actual scan: the (cheap, synchronous) url/title pass, then the
+// (slower) async image-similarity pass. ONLY ever called from dupeScanClick --
+// duplicates is manual-scan-only, so opening the tab, closing/reopening the
+// modal, and applying a choice must never trigger this on their own (that
+// repeated auto-triggering was the cause of "Checking pictures for
+// duplicates…" reappearing over and over during a single cleanup session).
+function runDupeScan(){
+  _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _dupeImageChecked.clear(); _dupeImageTouched.clear();
+  _healthScanned.dupes = true; _dupeReviewIndex = 0;
+  // Second pass: image-similarity matches over whatever the url/title pass
+  // above did NOT already group. Runs async and can take a while on a large
+  // library, so it never blocks this render -- it re-renders the tab itself
+  // when done. `gen` guards a scan that finishes after the modal was
+  // closed/reopened or the tab switched away: only the newest scan's result
+  // is ever applied, even if an older one is still physically running.
+  const groupedKeys = new Set();
+  _dupeGroups.forEach(g => g.members.forEach(m => groupedKeys.add(m.scope + ":" + m.card.id)));
+  _imgScanAbort = false;
+  const gen = ++_imgScanGen;
+  _imgScanProgress = { done: 0, total: 0 };
+  scanImageDuplicates(groupedKeys, (done,total)=>{
+    if(gen !== _imgScanGen) return;
+    _imgScanProgress = { done, total };
+    const pct = document.getElementById("imgScanPct");
+    if(pct) pct.textContent = Math.round(done/Math.max(1,total)*100) + "%";
+  }).then(imgGroups=>{
+    if(gen !== _imgScanGen) return;                                          // superseded by a newer scan
+    _imgScanProgress = null;
+    if(_imgScanAbort) return;                                                // modal closed mid-scan -- drop the result
+    if(!document.getElementById("healthModal").classList.contains("open")) return;
+    // Keep the result even if the user switched to another health tab --
+    // _healthScanned.dupes is already true, so nothing else will ever
+    // re-fetch these groups; discarding them here would mean switching
+    // back to Duplicates shows stale (image-match-free) results forever.
+    _dupeGroups = _dupeGroups.concat(imgGroups);
+    if(_healthTab==="dupes") renderHealthDupes(document.getElementById("healthList"));
+  }).catch(e=>{
+    // scanImageDuplicates has no try/catch of its own -- a thrown failure
+    // (realistically: imagehash.js failed to load offline, or some awaited
+    // Store call rejected) must not leave "Checking pictures for
+    // duplicates… N%" on screen forever with no explanation, which is what
+    // happened before this .catch existed: _imgScanProgress was only ever
+    // cleared inside the success .then(), so a throw skipped that and the
+    // banner stuck around permanently, on top of whatever partial cache
+    // write the loop had already made before it threw.
+    console.warn("scanImageDuplicates failed", e);
+    if(gen !== _imgScanGen) return;                                          // superseded by a newer scan; that one's own handlers own the UI now
+    _imgScanProgress = null;
+    if(_imgScanAbort) return;                                                // modal already closed -- nothing to show
+    toast("Couldn't check pictures for duplicates.", 6000);
+    if(_healthTab==="dupes" && document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+  });
+}
+function dupeScanClick(){
+  runDupeScan();
+  renderHealthDupes(document.getElementById("healthList"));
+}
 function renderHealthDupes(list){
-  if(!_healthScanned.dupes){
-    _dupeGroups = scanDuplicates(); _dupeSpared.clear(); _dupeImageChecked.clear(); _dupeImageTouched.clear(); _healthScanned.dupes = true;
-    // Second pass: image-similarity matches over whatever the url/title pass
-    // above did NOT already group. Runs async and can take a while on a large
-    // library, so it never blocks this render -- it re-renders the tab itself
-    // when done. `gen` guards a scan that finishes after the modal was
-    // closed/reopened or the tab switched away: only the newest scan's result
-    // is ever applied, even if an older one is still physically running.
-    const groupedKeys = new Set();
-    _dupeGroups.forEach(g => g.members.forEach(m => groupedKeys.add(m.scope + ":" + m.card.id)));
-    _imgScanAbort = false;
-    const gen = ++_imgScanGen;
-    _imgScanProgress = { done: 0, total: 0 };
-    scanImageDuplicates(groupedKeys, (done,total)=>{
-      if(gen !== _imgScanGen) return;
-      _imgScanProgress = { done, total };
-      const pct = document.getElementById("imgScanPct");
-      if(pct) pct.textContent = Math.round(done/Math.max(1,total)*100) + "%";
-    }).then(imgGroups=>{
-      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan
-      _imgScanProgress = null;
-      if(_imgScanAbort) return;                                                // modal closed mid-scan -- drop the result
-      if(!document.getElementById("healthModal").classList.contains("open")) return;
-      // Keep the result even if the user switched to another health tab --
-      // _healthScanned.dupes is already true, so nothing else will ever
-      // re-fetch these groups; discarding them here would mean switching
-      // back to Duplicates shows stale (image-match-free) results forever.
-      _dupeGroups = _dupeGroups.concat(imgGroups);
-      if(_healthTab==="dupes") renderHealthDupes(document.getElementById("healthList"));
-    }).catch(e=>{
-      // scanImageDuplicates has no try/catch of its own -- a thrown failure
-      // (realistically: imagehash.js failed to load offline, or some awaited
-      // Store call rejected) must not leave "Checking pictures for
-      // duplicates… N%" on screen forever with no explanation, which is what
-      // happened before this .catch existed: _imgScanProgress was only ever
-      // cleared inside the success .then(), so a throw skipped that and the
-      // banner stuck around permanently, on top of whatever partial cache
-      // write the loop had already made before it threw.
-      console.warn("scanImageDuplicates failed", e);
-      if(gen !== _imgScanGen) return;                                          // superseded by a newer scan; that one's own handlers own the UI now
-      _imgScanProgress = null;
-      if(_imgScanAbort) return;                                                // modal already closed -- nothing to show
-      toast("Couldn't check pictures for duplicates.", 6000);
-      if(_healthTab==="dupes" && document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
-    });
-  }
   const total = _dupeGroups.reduce((n,g)=>n+(g.members.length-1),0);
   const scanBanner = _imgScanProgress ? `<div class="s" style="padding:8px 4px;opacity:.75">Checking pictures for duplicates… <span id="imgScanPct">${_imgScanProgress.total?Math.round(_imgScanProgress.done/_imgScanProgress.total*100):0}%</span></div>` : "";
-  if(!_dupeGroups.length){ list.innerHTML = scanBanner + `<div class="s" style="padding:14px 4px">No duplicate links or near-identical titles found${_imgScanProgress?" yet — still checking pictures for visual duplicates.":"."}</div>`; return; }
+  if(!_dupeGroups.length){
+    const msg = _healthScanned.dupes
+      ? "No duplicate links, titles, or pictures found."+(_imgScanProgress?" Still checking pictures for visual duplicates.":"")
+      : "Scan your library to find duplicate links, titles, and near-identical pictures.";
+    list.innerHTML = scanBanner + `<div class="s" style="padding:14px 4px">${msg}</div><div style="padding:4px 4px 14px">${dupeScanButtonHTML()}</div>`;
+    return;
+  }
   _dupeReviewIndex=Math.min(_dupeReviewIndex,_dupeGroups.length-1);
-  const summary=`${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy is kept; uncheck any duplicate you want to spare.`;
   if(_dupeReviewMode==="all"){
+    // The bulk Apply button silently skips any untouched image-match group (a
+    // deliberate data-safety guard -- see computeDupeApplyGroups), so the
+    // summary must say so instead of just showing a total that Apply can
+    // never fully clear: that gap read as "reports more duplicates than it
+    // lets me clean" when it was only ever surfaced in a trailing toast clause.
+    const {applyGroups:readyGroups,untouchedImageGroups:needReview} = computeDupeApplyGroups(_dupeGroups,_dupeImageTouched,dupeGroupKey);
+    const readyRemovable = readyGroups.reduce((n,g)=>n+(g.members.length-1),0);
+    const summary = needReview
+      ? `${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"} — ${readyGroups.length} ready to clean (${readyRemovable} removable), ${needReview} picture match${needReview===1?"":"es"} need review below.`
+      : `${_dupeGroups.length} group${_dupeGroups.length===1?"":"s"}, ${total} removable. The best copy is kept; uncheck any duplicate you want to spare.`;
     list.innerHTML=`${dupeModeBarHTML()}${scanBanner}<div class="s" style="opacity:.75;padding:2px 4px 10px">${summary}</div>
       ${_dupeGroups.map(dupeCompactGroupHTML).join("")}
       <div class="dupe-foot" style="justify-content:flex-start;border-top:0;padding-top:4px"><button class="btn btn-primary" onclick="applyDupeRemoval()">Apply choices</button></div>`;
@@ -6234,20 +6277,54 @@ function scanDuplicates(){
 function dupeGroupKey(members){
   return JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 }
+// Pairwise "not-a-duplicate-of" tags for a just-reviewed group: every member
+// gets one tag per OTHER member, keyed by stable (scope,id) identity only --
+// never url/title. That's the fix for two failure modes the old whole-group
+// JSON key had: (1) an unrelated later title edit on ANY member changed the
+// key, silently un-dismissing the group; (2) a group's membership changing
+// (e.g. a third duplicate later removed) changed the key too, for the same
+// reason. Pairwise tags are unaffected by either -- a relationship, once
+// declared, stays declared regardless of what happens to the cards' content
+// or to any OTHER member of the group it was declared in.
+function dupePeerTagsFor(members){
+  const keys=(members||[]).map(dupeMemberKey);
+  const entries=[];
+  (members||[]).forEach((m,i)=>{
+    keys.forEach((k,j)=>{ if(j!==i) entries.push({scope:m.scope,id:m.card.id,key:"p:"+k}); });
+  });
+  return entries;
+}
 function dupeGroupDismissed(members){
-  const key=JSON.stringify((members||[]).map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
-  return (members||[]).length>1&&members.every(m=>Array.isArray(m.card&&m.card.dupeNotDuplicateGroups)&&m.card.dupeNotDuplicateGroups.indexOf(key)>=0);
+  if((members||[]).length<2) return false;
+  const keys=members.map(dupeMemberKey);
+  const pairwise=members.every((m,i)=>{
+    const list=Array.isArray(m.card&&m.card.dupeNotDuplicateGroups)?m.card.dupeNotDuplicateGroups:[];
+    return keys.every((k,j)=> i===j || list.indexOf("p:"+k)>=0);
+  });
+  if(pairwise) return true;
+  // Legacy fallback: a decision made before this file switched to pairwise
+  // tags was stored as ONE shared whole-group key (JSON of every member's
+  // [scope,id,url,title]). That key is still valid as long as nothing about
+  // the group has changed since -- exactly its pre-fix behavior -- so an
+  // upgrade does not resurface (and risk re-deleting) anything a user
+  // already dismissed under the old scheme. It only stops matching once the
+  // group's content changes, same fragility as before for OLD decisions;
+  // every decision made from now on is pairwise and immune to that.
+  const legacyKey=dupeGroupKey(members);
+  return members.every(m=>Array.isArray(m.card&&m.card.dupeNotDuplicateGroups)&&m.card.dupeNotDuplicateGroups.indexOf(legacyKey)>=0);
 }
 function markDupeGroupNotDuplicate(members,importedById,savedById){
   if((members||[]).length<2) return false;
-  const key=JSON.stringify(members.map(m=>[String(m.scope||""),String(m.card&&m.card.id||""),String(m.card&&m.card.url||"").trim().toLowerCase(),String(m.card&&m.card.title||"").trim().toLowerCase().replace(/\s+/g," ")]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
   let changed=false;
-  members.forEach(m=>{
-    const card=(m.scope==="saved"?savedById:importedById).get(m.card.id);
+  dupePeerTagsFor(members).forEach(entry=>{
+    const card=(entry.scope==="saved"?savedById:importedById).get(entry.id);
     if(!card) return;
     const prior=Array.isArray(card.dupeNotDuplicateGroups)?card.dupeNotDuplicateGroups:[];
-    if(prior.indexOf(key)>=0) return;
-    card.dupeNotDuplicateGroups=prior.concat([key]); changed=true;
+    if(prior.indexOf(entry.key)>=0) return;
+    // Cap sized generously vs. the old scheme's 49: pairwise tags accumulate
+    // faster (an N-member group now writes N-1 tags to EACH member, not 1),
+    // and evicting a real dismissal early would just reproduce this file's bug.
+    card.dupeNotDuplicateGroups=prior.concat([entry.key]).slice(-200); changed=true;
   });
   return changed;
 }
@@ -6331,8 +6408,14 @@ async function restoreDupeSafetySnapshot(silent){
     await Store.putCards(snapshot.imported,{confirm:true});
     await Store.putSaved(snapshot.saved,{confirm:true});
     imported=snapshot.imported; saved=snapshot.saved; updateCounts();
-    _healthScanned.dupes=false; _dupeReviewIndex=0;
-    if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+    // A restore replaces the whole library, so the frozen _dupeGroups (from
+    // the last "Scan for duplicates" click, if any) can reference cards that
+    // no longer reflect current content -- an explicit rescan here, not just
+    // resetting a flag nothing else reads under the manual-scan-only design.
+    if(document.getElementById("healthModal").classList.contains("open")){
+      if(_healthTab==="dupes") runDupeScan();
+      renderHealthDupes(document.getElementById("healthList"));
+    }
     if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
     if(!silent) toast("Library restored from the duplicate-cleanup recovery journal.",6000);
     return true;
@@ -6396,7 +6479,6 @@ function computeDupeApplyGroups(groupsToProcess, imageTouched, groupKeyFn){
 async function applyDupeRemoval(){
   const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
   const priorIndex=_dupeReviewIndex;
-  const processedKeepKey=_dupeReviewMode==="single"&&_dupeGroups[_dupeReviewIndex]?_dupeGroups[_dupeReviewIndex].keepKey:"";
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
   // An explicit per-group Apply in one-at-a-time mode IS a review of the group on
   // screen, so treat it as touched: an image-match group here (which renders
@@ -6408,32 +6490,38 @@ async function applyDupeRemoval(){
   const {applyGroups,untouchedImageGroups} = computeDupeApplyGroups(groupsToProcess, _dupeImageTouched, dupeGroupKey);
   const leftForReview = untouchedImageGroups ? " "+untouchedImageGroups+" picture match"+(untouchedImageGroups===1?"":"es")+" left for review." : "";
   if(!checked.size){
-    const changes=[];
-    applyGroups.forEach(g=>{
-      const key=dupeGroupKey(g.members);
-      g.members.forEach(mem=>changes.push({scope:mem.scope,id:mem.card.id,key}));
-    });
-    if(!changes.length){
+    if(!applyGroups.length){
       toast("Nothing to apply yet."+leftForReview,5000);
       return;
     }
     showBusyOverlay("Saving your keep choices…");
     await new Promise(resolve=>requestAnimationFrame(resolve));
     try{
-      const batches=new Map(); changes.forEach(change=>{ if(!batches.has(change.key)) batches.set(change.key,[]); batches.get(change.key).push(change); });
-      for(const batch of batches.values()) await Store.markNotDuplicates(batch);
-      changes.forEach(change=>{
-        const collection=change.scope==="saved"?saved:imported;
-        const item=collection.find(card=>card&&String(card.id)===String(change.id)); if(!item) return;
-        const prior=Array.isArray(item.dupeNotDuplicateGroups)?item.dupeNotDuplicateGroups:[];
-        if(prior.indexOf(change.key)<0) item.dupeNotDuplicateGroups=prior.slice(-49).concat([change.key]);
-      });
+      // One targeted call per group (dupePeerTagsFor) rather than a full
+      // putCards/putSaved replace -- these cards aren't otherwise changing.
+      // Chunked well under the server's per-request entry cap: a group's
+      // pairwise tag count grows O(n^2) with its member count, so a large
+      // duplicate group (e.g. many posts sharing one FB fallback title) must
+      // never be permanently blocked from being marked not-duplicate just
+      // because it's big.
+      for(const g of applyGroups){
+        const tags=dupePeerTagsFor(g.members);
+        for(let i=0;i<tags.length;i+=200) await Store.markNotDuplicates(tags.slice(i,i+200));
+      }
+      const importedById=new Map(imported.filter(Boolean).map(c=>[c.id,c]));
+      const savedById=new Map(saved.filter(Boolean).map(c=>[c.id,c]));
+      applyGroups.forEach(g=>markDupeGroupNotDuplicate(g.members,importedById,savedById));
+      // Freeze-until-rescan: drop the just-processed groups; every other group
+      // is left exactly as the last scan found it. See the removal branch
+      // below for why this replaced a scanDuplicates() rescan.
+      const applySet=new Set(applyGroups);
+      _dupeGroups=_dupeGroups.filter(g=>!applySet.has(g));
       _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
-      _healthScanned.dupes=false; renderHealth();
+      renderHealthDupes(document.getElementById("healthList"));
       toast("Kept the cards and marked them as not duplicates."+leftForReview,5000);
     }catch(e){
       try{ imported=await Store.getCards(); saved=await Store.getSaved(); updateCounts(); }catch(_){}
-      _healthScanned.dupes=false; renderHealth();
+      renderHealthDupes(document.getElementById("healthList"));
       toast("The keep choices could not be saved. No cards were removed — please try again.",7000);
     }finally{ hideBusyOverlay(); }
     return;
@@ -6456,9 +6544,11 @@ async function applyDupeRemoval(){
   let removed=0,notDuplicateGroups=0;
   for(const g of applyGroups){
     const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
-    // Belt-and-braces: a card is supposed to belong to at most one group (see
-    // the freshMemberKeys filter below, which is the actual fix), but this
-    // loop mutates rmImported/rmSaved as it goes and never re-checks them
+    // Belt-and-braces: a card is supposed to belong to at most one group (the
+    // actual fix is structural now -- applyDupeRemoval never rescans, so a
+    // metadata merge below can't create a new cross-group match mid-apply;
+    // see the freeze-until-rescan prune further down), but this loop mutates
+    // rmImported/rmSaved as it goes and never re-checks them
     // against nextImportedById/nextSavedById -- so IF that invariant were
     // ever violated again, an earlier group in this SAME apply could already
     // have condemned this group's keeper. Without this guard the stale-but-
@@ -6512,49 +6602,26 @@ async function applyDupeRemoval(){
   }
   rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
   rmImported.forEach(id=>_dupeImageChecked.delete("imported:"+id)); rmSaved.forEach(id=>_dupeImageChecked.delete("saved:"+id));
-  // Re-run the (cheap, synchronous) url/title pass, but do NOT blindly
-  // discard the image-match groups scanImageDuplicates already found --
-  // scanDuplicates() only ever returns url/title matches, and this path
-  // never sets _healthScanned.dupes=false, so nothing would re-trigger the
-  // (expensive) image pass to regenerate them. Any image group that was
-  // fully processed just now (applyGroups) is done -- its members are
-  // either removed or freshly marked not-duplicate -- so only groups NOT in
-  // applyGroups survive forward untouched. (Every card belongs to at
-  // most one group -- proven by the clique/no-double-membership property
-  // test -- so a survivor can never contain a card that was just removed.)
-  // An untouched image-match group is excluded from applyGroups too (see
-  // computeDupeApplyGroups), so it naturally lands in this "survives
-  // forward" set instead of being silently marked not-duplicate.
-  // Read _dupeGroups LIVE here, not a groupsToProcess/applyGroups snapshot --
-  // the async image scan's own .then() can append newly-found groups to
-  // _dupeGroups while the awaits above were in flight, and those must not be
-  // dropped just because they weren't part of this apply.
-  const freshGroups = scanDuplicates();
-  // A survivor must not share ANY member with a group the fresh url/title
-  // rescan just produced. Union-find guarantees uniqueness WITHIN
-  // freshGroups, but says nothing about the UNION of freshGroups and the old
-  // image-match survivors -- two different old survivors could each fail to
-  // notice the other. Two concrete ways a card ends up in both: (1)
-  // mergeDupeMetadata above can fill an image-match keeper's previously-EMPTY
-  // title from a member just removed, so that keeper newly joins a title
-  // component on THIS scan even though it didn't join one before; (2)
-  // removing a member from a dismissed group changes that group's
-  // dupeGroupKey (computed from the full current member list), un-dismissing
-  // it. Either way, once a card is in two groups, a later apply would process
-  // both against a keeper-lookup map (nextImportedById/nextSavedById) built
-  // once and never refreshed mid-loop -- the second group's keeper lookup can
-  // return a card the first group already condemned, so mergeDupeMetadata
-  // writes into a card about to be deleted and that merge silently vanishes
-  // (see the belt-and-braces guard above for the second half of this fix).
-  const freshMemberKeys = new Set();
-  freshGroups.forEach(g => g.members.forEach(m => freshMemberKeys.add(dupeMemberKey(m))));
-  const survivingImageGroups = _dupeGroups.filter(g => g.imageMatch && !applyGroups.includes(g) && g.members.every(m => !freshMemberKeys.has(dupeMemberKey(m))));
-  _dupeGroups = freshGroups.concat(survivingImageGroups);
-  if(_dupeReviewMode==="single"){
-    const stillAt=processedKeepKey?_dupeGroups.findIndex(g=>g.members.some(m=>dupeMemberKey(m)===processedKeepKey)):-1;
-    _dupeReviewIndex=stillAt>=0?Math.min(stillAt+1,_dupeGroups.length-1):Math.min(priorIndex,_dupeGroups.length-1);
-    if(_dupeReviewIndex<0) _dupeReviewIndex=0;
-  }
+  // Freeze-until-rescan: no scanDuplicates() re-run here (duplicates is
+  // manual-scan-only -- see runDupeScan). A fully-processed group (applyGroups)
+  // is done -- its members are either removed or freshly marked not-duplicate
+  // -- so it's dropped outright. Every OTHER group is left EXACTLY as the last
+  // scan found it: a metadata merge above that happens to create a new match,
+  // or a title edit that breaks an old one, is only ever picked up by the next
+  // explicit "Scan for duplicates" click, never silently mid-review. A removed
+  // card is still belt-and-braces stripped from any surviving group's member
+  // list -- it should never appear in one (every card belongs to at most one
+  // group), but a stray reference must never point at a card that no longer
+  // exists.
+  const applySet=new Set(applyGroups);
+  _dupeGroups = _dupeGroups
+    .filter(g=>!applySet.has(g))
+    .map(g=>{
+      const members=g.members.filter(m=>!(m.scope==="saved"?rmSaved:rmImported).has(m.card.id));
+      return members.length===g.members.length ? g : Object.assign({},g,{members});
+    })
+    .filter(g=>g.members.length>=2);
+  _dupeReviewIndex=Math.min(priorIndex,Math.max(0,_dupeGroups.length-1));
   if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   hideBusyOverlay();

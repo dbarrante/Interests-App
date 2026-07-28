@@ -1,7 +1,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { loadFns } = require("./_extract");
+const { loadFns, extractFn } = require("./_extract");
 
 const root = path.join(__dirname, "..");
 const web = fs.readFileSync(path.join(root, "web", "index.html"), "utf8");
@@ -56,10 +56,18 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.match(block, /Store\.backupNow\(\{safety:true\}\)/, name + "requests a unique non-rotating desktop cleanup snapshot");
   assert.match(block, /function dupeSnapshotSignature\(/, name + " verifies journal content, not counts alone");
   assert.match(block, /async function restoreDupeSafetySnapshot\(/, name + " provides an actual PWA recovery path");
+  // data-safety review F-4: a restore replaces the WHOLE library, so the
+  // frozen _dupeGroups from the last "Scan for duplicates" click can reference
+  // stale content. Must trigger a real rescan (runDupeScan), not just reset a
+  // flag that nothing else reads under manual-scan-only duplicates.
+  assert.match(extractFn(source, "restoreDupeSafetySnapshot"), /if\(_healthTab===\"dupes\"\) runDupeScan\(\)/,
+    name + " must explicitly rescan for duplicates after a restore, not just reset a flag");
+  assert.doesNotMatch(extractFn(source, "restoreDupeSafetySnapshot"), /_healthScanned\.dupes\s*=\s*false/,
+    name + " must not rely on the now-inert _healthScanned.dupes=false reset");
   assert.match(block, /function mergeDupeMetadata\(/, name + " defines the keeper metadata merge policy");
   assert.match(block, /await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
     name + " fails closed when the safety snapshot cannot be verified");
-  assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("for(const g of applyGroups)"),
+  assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)"),
     name + " verifies the safety snapshot before processing removals");
   assert.match(block, /shouldReuseDupeSafety\(_dupeSafetyCache, ?Date\.now\(\), ?!!window\.IA_IDB\)/,
     name + " reuses a recently-verified desktop safety snapshot instead of taking a fresh one on every card");
@@ -86,13 +94,22 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
     name + "marks retained groups before the guarded collection writes");
   assert.ok(block.indexOf("if(!checked.size)") < block.indexOf("await createDupeSafetySnapshot()"),
     name + "routes keep-all decisions around the destructive backup and full-library rewrite path");
-  assert.match(block, /for\(const batch of batches\.values\(\)\) await Store\.markNotDuplicates\(batch\)/,
-    name + "persists each complete keep-all group with the narrow additive operation");
-  assert.match(block, /g\.members\.forEach\(mem=>changes\.push\(/,
-    name + "submits every member so a partially marked group remains retryable");
+  assert.match(block, /for\(const g of applyGroups\)\{\s*const tags=dupePeerTagsFor\(g\.members\);[\s\S]{0,120}await Store\.markNotDuplicates\(tags\.slice\(/,
+    name + "persists each group's peer tags with the narrow additive operation, chunked so a large group can't wedge against the server's entry cap");
+  assert.match(block, /function dupePeerTagsFor\(members\)/,
+    name + " derives stable (scope,id) peer tags rather than a content-bearing group key");
   assert.match(block, /showBusyOverlay\("Saving your keep choices/, name + "shows visible progress instead of appearing frozen");
-  assert.match(block, /_healthScanned\.dupes=false;[\s\S]*?renderHealth\(\)/,
-    name + "forces a fresh duplicate scan after the decision persists");
+  // Duplicates is manual-scan-only (see runDupeScan/dupeScanClick): applying a
+  // decision must NOT force a fresh scan. It used to (_healthScanned.dupes=false;
+  // renderHealth()), which was the dominant cause of "Checking pictures for
+  // duplicates…" reappearing on every keep-only decision -- see runDupeScan.
+  // Scoped to applyDupeRemoval itself, not the whole feature block: restoring
+  // from a safety-snapshot backup legitimately forces a rescan elsewhere
+  // (restoreDupeSafetySnapshot) since the whole library just changed underneath it.
+  assert.doesNotMatch(extractFn(source, "applyDupeRemoval"), /_healthScanned\.dupes\s*=\s*false/,
+    name + " must never force a rescan from inside applyDupeRemoval -- only the explicit Scan/Rescan button may");
+  assert.match(block, /const applySet=new Set\(applyGroups\);[\s\S]{0,120}_dupeGroups\s*=\s*_dupeGroups\s*\n?\s*\.filter\(g=>!applySet\.has\(g\)\)/,
+    name + " prunes the frozen group list in place instead of rescanning");
 }
 
 const webFeature = featureSlice(web);
@@ -131,8 +148,14 @@ assert.match(pwaIdb, /markNotDuplicates\(entries\)[\s\S]*?db\.transaction\(\["ca
   "PWA reads and writes card and saved markers inside one transaction");
 assert.match(pwaIdb, /transaction\.onabort = \(\) => reject/,
   "PWA multi-row writes reject transaction aborts");
+// data-safety review F-2: pairwise dismissal tags accumulate faster than the
+// old one-key-per-group scheme, so the persisted cap must match the web/pwa
+// client's 200 (see tests/db.test.js for the desktop-side behavioral proof) --
+// a lower persisted cap would silently evict a decision the UI thinks is saved.
+assert.match(pwaIdb, /item\.dupeNotDuplicateGroups = prior\.concat\(\[entry\.key\]\)\.slice\(-200\)/,
+  "PWA's persisted cap must be 200, matching web/pwa index.html's client-side cap");
 
-const { mergeDupeMetadata, dupeSnapshotSignature, dupeGroupKey, dupeGroupDismissed, markDupeGroupNotDuplicate, dupeMemberKey, shouldReuseDupeSafety } = loadFns(["mergeDupeMetadata", "dupeSnapshotSignature", "dupeGroupKey", "dupeGroupDismissed", "markDupeGroupNotDuplicate", "dupeMemberKey", "shouldReuseDupeSafety"]);
+const { mergeDupeMetadata, dupeSnapshotSignature, dupeGroupKey, dupeGroupDismissed, markDupeGroupNotDuplicate, dupePeerTagsFor, dupeMemberKey, shouldReuseDupeSafety } = loadFns(["mergeDupeMetadata", "dupeSnapshotSignature", "dupeGroupKey", "dupeGroupDismissed", "markDupeGroupNotDuplicate", "dupePeerTagsFor", "dupeMemberKey", "shouldReuseDupeSafety"]);
 const keeper = { id:"keep", image:"idb:keep", desc:"Primary description", tags:["one"], liked:false, captured:200, blocked:10, category:"Work", meta:{owner:"keeper"} };
 const source = { id:"remove", image:"idb:remove", desc:"Unique source description", notes:"Personal note", tags:["one","two"], liked:true, captured:100, blocked:20, category:"Ideas", meta:{owner:"source",sourceOnly:true}, dupeNotDuplicateGroups:["old-unrelated-group"] };
 mergeDupeMetadata(keeper, source);
@@ -153,25 +176,29 @@ const sigA = dupeSnapshotSignature([{id:"a",title:"one"}], [{id:"s",title:"saved
 const sigB = dupeSnapshotSignature([{id:"a",title:"changed"}], [{id:"s",title:"saved"}]);
 assert.notStrictEqual(sigA, sigB, "journal signature detects content changes with unchanged counts");
 
+// Dismissal is keyed PAIRWISE by stable (scope,id) identity only -- never
+// url/title -- so a later content edit or an unrelated member disappearing
+// cannot silently un-dismiss a decision the user already made. dupeGroupKey
+// itself is unchanged (still used for the separate _dupeImageTouched
+// bookkeeping, which is deliberately session-local and content-keyed).
 const members = [
   {scope:"imported",card:{id:"a"}},
   {scope:"saved",card:{id:"b"}},
 ];
 const importedById = new Map([["a", members[0].card]]);
 const savedById = new Map([["b", members[1].card]]);
-const groupKey = dupeGroupKey(members);
 assert.strictEqual(dupeGroupDismissed(members), false, "an unmarked group remains reviewable");
 assert.strictEqual(markDupeGroupNotDuplicate(members, importedById, savedById), true, "retained group metadata is added");
-assert.deepStrictEqual(members[0].card.dupeNotDuplicateGroups, [groupKey]);
-assert.deepStrictEqual(members[1].card.dupeNotDuplicateGroups, [groupKey]);
-assert.strictEqual(dupeGroupDismissed(members), true, "the exact retained group is suppressed");
-const changedMembers = members.concat([{scope:"imported",card:{id:"new",dupeNotDuplicateGroups:[groupKey]}}]);
-assert.strictEqual(dupeGroupDismissed(changedMembers), false, "a newly joined matching card resurfaces the changed group");
+assert.deepStrictEqual(members[0].card.dupeNotDuplicateGroups, ["p:saved:b"], "member a records a peer tag naming b, not a content-bearing group key");
+assert.deepStrictEqual(members[1].card.dupeNotDuplicateGroups, ["p:imported:a"], "member b records a peer tag naming a");
+assert.strictEqual(dupeGroupDismissed(members), true, "the exact retained pair is suppressed");
+const changedMembers = members.concat([{scope:"imported",card:{id:"new"}}]);
+assert.strictEqual(dupeGroupDismissed(changedMembers), false, "a newly joined third card is not itself dismissed with either existing member");
+// The fix this file exists for: a title edit on either member must NOT
+// resurface a pair the user already declared not duplicates.
 members[0].card.title = "Materially revised title";
-assert.notStrictEqual(dupeGroupKey(members), groupKey, "duplicate-relevant content changes invalidate the retained-group decision");
-assert.strictEqual(dupeGroupDismissed(members), false, "the same cards resurface after duplicate evidence changes");
+assert.strictEqual(dupeGroupDismissed(members), true, "a title edit on either card must not un-dismiss the pair");
 assert.notStrictEqual(dupeMemberKey({scope:"imported",card:{id:"same"}}), dupeMemberKey({scope:"saved",card:{id:"same"}}), "cross-collection id collisions cannot select the wrong keeper");
-members[0].card.title = "";
 assert.strictEqual(markDupeGroupNotDuplicate(members, importedById, savedById), false, "repeating the same decision is idempotent");
 
 /* ---------- shouldReuseDupeSafety ----------

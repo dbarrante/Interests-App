@@ -54,13 +54,18 @@ function extractFn(html, name) {
 
 function loadFns(names) {
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
-  const out = {};
-  for (const name of names) {
+  // All requested functions are wired into ONE shared scope (not evaluated in
+  // isolation) so a function that calls another requested-by-name function
+  // (e.g. dupeGroupDismissed calling dupeMemberKey) actually resolves it,
+  // instead of throwing "X is not defined". Callers must list every function
+  // a requested one transitively depends on.
+  const srcs = names.map((name) => {
     const src = extractFn(html, name);
     if (!src) throw new Error("function not found in index.html: " + name);
-    out[name] = eval("(" + src + ")");
-  }
-  return out;
+    return src;
+  });
+  const factory = new Function(srcs.join("\n") + "\nreturn {" + names.join(",") + "};");
+  return factory();
 }
 
 module.exports = { loadFns, extractFn };

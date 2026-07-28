@@ -363,7 +363,12 @@ function addNotDuplicateMarker(db, scope, id, key) {
   const prior = Array.isArray(data.dupeNotDuplicateGroups)
     ? data.dupeNotDuplicateGroups.filter(v => typeof v === "string") : [];
   if (prior.indexOf(key) >= 0) return false;
-  data.dupeNotDuplicateGroups = prior.slice(-49).concat([key]);
+  // Cap matches web/pwa index.html's markDupeGroupNotDuplicate (200, not the
+  // old 49): pairwise tags accumulate faster than the old one-key-per-group
+  // scheme (an N-member group writes N-1 tags to EACH member), and a lower
+  // persisted cap than the client's in-memory one would silently evict a
+  // decision the UI still thinks is saved -- the same bug this file fixes.
+  data.dupeNotDuplicateGroups = prior.concat([key]).slice(-200);
   db.prepare("UPDATE " + table + " SET data=?, updatedAt=? WHERE id=?").run(JSON.stringify(data), Date.now(), id);
   bumpMutationRevision(db);
   return true;

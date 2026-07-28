@@ -136,13 +136,29 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 }
 
 // --- structural: the scan is wired in with progress + abort guards --------
+// Duplicates is manual-scan-only: the scan itself lives in runDupeScan, fired
+// ONLY by dupeScanClick (the "Scan for duplicates" button) -- never by
+// renderHealthDupes, opening the tab, or reopening the modal. See runDupeScan.
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": renderHealthDupes kicks off scanImageDuplicates and merges its groups into _dupeGroups", () => {
+  t(label + ": renderHealthDupes never kicks off a scan itself -- duplicates is manual-scan-only", () => {
     const body = fn(src, "renderHealthDupes");
+    assert.doesNotMatch(body, /scanImageDuplicates\(/, "renderHealthDupes must be a pure render -- the scan belongs to runDupeScan, fired only by the button");
+    assert.doesNotMatch(body, /scanDuplicates\(\)/, "renderHealthDupes must not run the url/title pass itself either");
+  });
+  t(label + ": runDupeScan kicks off scanImageDuplicates and merges its groups into _dupeGroups", () => {
+    const body = fn(src, "runDupeScan");
     assert.match(body, /scanImageDuplicates\(/);
     assert.match(body, /_dupeGroups\s*=\s*_dupeGroups\.concat\(/, "image-match groups must be ADDED to the url/title groups, not replace them");
   });
-  t(label + ": renderHealthDupes bails on a stale/aborted scan before applying its results (closing/reopening the modal mid-scan must not corrupt the list)", () => {
+  t(label + ": dupeScanClick is the ONLY caller of runDupeScan", () => {
+    assert.match(fn(src, "dupeScanClick"), /runDupeScan\(\)/);
+    // openHealth/closeHealth must not reset the scanned flag or the frozen
+    // group list -- that reset-on-every-open was the dominant cause of
+    // "Checking pictures for duplicates…" reappearing repeatedly.
+    assert.doesNotMatch(fn(src, "openHealth"), /_dupeGroups\s*=\s*\[\]/);
+    assert.doesNotMatch(fn(src, "closeHealth"), /_dupeGroups\s*=\s*\[\]/);
+  });
+  t(label + ": runDupeScan bails on a stale/aborted scan before applying its results (closing/reopening the modal mid-scan must not corrupt the list)", () => {
     // A plain "does /_imgScanAbort/ and /_imgScanGen/ appear somewhere" check
     // would pass even if the two guards were reordered, or if one of them
     // didn't actually gate the _dupeGroups mutation below it. Pin the real
@@ -150,7 +166,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     // tabs" test pins the concat-before-tab-check ordering: the newer-scan
     // guard must run before the abort guard, and both must run before a
     // (possibly stale) scan's groups are ever applied to _dupeGroups.
-    const body = fn(src, "renderHealthDupes");
+    const body = fn(src, "runDupeScan");
     assert.match(body, /gen !== _imgScanGen\) return;[\s\S]{0,250}if\(_imgScanAbort\) return;[\s\S]{0,650}_dupeGroups = _dupeGroups\.concat\(imgGroups\);/,
       "the newer-scan guard must run before the abort guard, and both must run before a stale scan's groups are applied");
   });
@@ -168,7 +184,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     // permanently -- _healthScanned.dupes stays true, so nothing ever
     // re-fetches them, and switching back to Duplicates shows a stale,
     // image-match-free list until the whole modal is closed and reopened.
-    const body = fn(src, "renderHealthDupes");
+    const body = fn(src, "runDupeScan");
     assert.match(body, /_dupeGroups\s*=\s*_dupeGroups\.concat\(imgGroups\);[\s\S]{0,80}if\(_healthTab===/,
       "the concat must run unconditionally (once past abort/modal-open checks); only the re-render call may be gated on the active tab");
   });
@@ -303,7 +319,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 // guard) -- the behavioral tests below are what actually prove it holds
 // under execution.
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": applyDupeRemoval derives its processing set from computeDupeApplyGroups and re-reads live _dupeGroups for survivors", () => {
+  t(label + ": applyDupeRemoval derives its processing set from computeDupeApplyGroups and prunes _dupeGroups in place (freeze-until-rescan)", () => {
     const body = fn(src, "applyDupeRemoval");
     assert.match(body, /computeDupeApplyGroups\(groupsToProcess,\s*_dupeImageTouched,\s*dupeGroupKey\)/,
       "must derive applyGroups from the real touched-group decision, not reimplement it inline");
@@ -311,17 +327,19 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "the removal/retain loop must use applyGroups (touched-filtered), not the raw groupsToProcess snapshot");
     assert.match(body, /if\(\(keep\.scope===\"saved\"\?rmSaved:rmImported\)\.has\(keep\.card\.id\)\) continue;/,
       "F1 belt-and-braces: a group whose keeper was already condemned by an earlier group in this SAME apply must be skipped, not processed against a stale map entry");
-    assert.match(body, /const freshGroups\s*=\s*scanDuplicates\(\);/,
-      "the fresh url/title rescan must be captured once, not inlined twice");
-    assert.match(body, /_dupeGroups\.filter\(g\s*=>\s*g\.imageMatch\s*&&\s*!applyGroups\.includes\(g\)\s*&&\s*g\.members\.every\(m\s*=>\s*!freshMemberKeys\.has\(dupeMemberKey\(m\)\)\)\)/,
-      "F1 fix: a surviving image group must not share ANY member with a group the fresh scan just produced, or a card can end up in two groups");
-    assert.match(body, /_dupeGroups\s*=\s*freshGroups\.concat\(survivingImageGroups\);/,
-      "the fresh url/title scan must be concatenated with the (now overlap-filtered) survivors, not used as a full replacement");
+    assert.doesNotMatch(body, /=\s*scanDuplicates\(\)/,
+      "duplicates is manual-scan-only: applying a choice must never re-run discovery -- only the explicit Scan/Rescan button may");
+    assert.match(body, /const applySet\s*=\s*new Set\(applyGroups\);/,
+      "processed groups must be dropped by identity, not rediscovered");
+    assert.match(body, /\.filter\(g\s*=>\s*!applySet\.has\(g\)\)/,
+      "a fully-processed group (removed and/or freshly marked not-duplicate) must be dropped outright");
+    assert.match(body, /\.filter\(g\s*=>\s*g\.members\.length\s*>=\s*2\)/,
+      "a surviving group that degenerates below 2 members after a belt-and-braces strip is no longer a duplicate set");
   });
 }
 
 // --- byte-identical between web and pwa for every function this task touched
-for (const name of ["renderHealthDupes", "dupeRowHTML", "dupeLargeCardHTML", "dupeCompactGroupHTML", "closeHealth", "applyDupeRemoval", "dupeToggleRemoval", "computeDupeApplyGroups"]) {
+for (const name of ["renderHealthDupes", "runDupeScan", "dupeScanClick", "dupeScanButtonHTML", "dupeRowHTML", "dupeLargeCardHTML", "dupeCompactGroupHTML", "openHealth", "closeHealth", "applyDupeRemoval", "dupeToggleRemoval", "computeDupeApplyGroups"]) {
   t(name + " is byte-identical between web and pwa", () => {
     const a = extractFn(html, name);
     const b = extractFn(pwaHtml, name);
@@ -351,9 +369,11 @@ async function at(n, fn) {
 // which is unaffected by which/how many groups eventually render (that's
 // covered by the row/group-render tests elsewhere in this file already).
 function loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock) {
-  const body = fn(src, "scanDuplicates") + "\n" + fn(src, "renderHealthDupes") + `
+  const body = fn(src, "scanDuplicates") + "\n" + fn(src, "runDupeScan") + "\n" + fn(src, "dupeScanClick") +
+    "\n" + fn(src, "dupeScanButtonHTML") + "\n" + fn(src, "renderHealthDupes") + `
     return {
       render: renderHealthDupes,
+      scanClick: dupeScanClick,
       getProgress: () => _imgScanProgress,
       getScanned: () => _healthScanned.dupes,
     };`;
@@ -362,7 +382,7 @@ function loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock) {
   const document = {
     getElementById: (id) => {
       if (id === "healthModal") return { classList: { contains: () => true } };   // modal stays open throughout
-      return { textContent: "" };   // e.g. the #imgScanPct span; unused here
+      return { textContent: "" };   // e.g. the #imgScanPct span / #healthList; unused here
     },
   };
   const consoleStub = { warn: (...a) => warnCalls.push(a), log: () => {}, error: () => {} };
@@ -370,7 +390,7 @@ function loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock) {
     "document", "toast", "console", "scanImageDuplicates",
     "let imported=[],saved=[],_dupeGroups=[],_dupeSpared=new Set(),_dupeImageChecked=new Set()," +
     "_dupeImageTouched=new Set(),_healthScanned={},_imgScanAbort=false,_imgScanGen=0," +
-    "_imgScanProgress=null,_healthTab='dupes';\n" + body
+    "_imgScanProgress=null,_healthTab='dupes',_dupeReviewIndex=0;\n" + body
   );
   const api = factory(document, (m) => toasts.push(m), consoleStub, scanImageDuplicatesMock);
   api.toasts = toasts; api.warnCalls = warnCalls;
@@ -382,13 +402,22 @@ function loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock) {
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   // ---- F1: a card must never end up a member of two _dupeGroups entries ---
-  await at(label + ": applyDupeRemoval never lets a card end up in two groups, even when a merge fills a previously-empty title and re-joins it to an untouched image-match group's member (F1)", async () => {
+  await at(label + ": applyDupeRemoval never lets a card end up in two groups, and a merge-created match is frozen out until the next explicit scan (F1 + freeze-until-rescan)", async () => {
     // Reproduces the reported incident: an image-match group's keeper (K)
     // has an EMPTY title; its non-keep member (M) gets removed and ticked,
     // and mergeDupeMetadata fills K's title from M's. A SEPARATE card (L)
     // already carries that exact title AND is independently the keeper of
     // its own untouched image-match group (with member P). Titles must be
     // >=10 chars / >=2 words to clear normTitle's grouping floor.
+    //
+    // Under freeze-until-rescan, K and L must NOT auto-join a fresh title
+    // group after this apply -- applyDupeRemoval no longer re-runs discovery
+    // (that rescan was deleted; see runDupeScan/dupeScanClick). The old F1 fix
+    // caught this exact scenario by filtering the rescan's output; the new
+    // design sidesteps it entirely by never rescanning. A later api.scan()
+    // (the user explicitly clicking "Scan for duplicates" again) proves the
+    // merge really did happen and the match is genuinely discoverable, just
+    // not auto-surfaced mid-review.
     const memberKey = (scope, id) => scope + ":" + id;
     const K = { id: "K", title: "", ts: 1 };                         // older tie-break winner once titled
     const M = { id: "M", title: "Echo Cat Adventures" };
@@ -414,20 +443,27 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       }
     }
     assert.ok(!st1.imported.some(c => c.id === "M"), "M was ticked and must be removed");
+    const kNow = st1.imported.find(c => c.id === "K");
+    assert.strictEqual(kNow && kNow.title, "Echo Cat Adventures", "mergeDupeMetadata must still fill K's empty title from M's");
 
-    // apply #2: the user reviews whatever _dupeGroups now shows. Tick the
-    // non-keep member of the fresh title group (K or L, whichever
-    // dupePrimary didn't pick) plus P in the still-surviving image group, if
-    // there is one — reproducing the "user reviews two groups that turned
-    // out to share a card" scenario from the report.
-    const titleGroup = st1._dupeGroups.find(g => !g.imageMatch);
-    assert.ok(titleGroup, "K and L must have joined a fresh title group once K's title was filled by the merge");
-    const nonKeep = titleGroup.members.find(m => memberKey(m.scope, m.card.id) !== titleGroup.keepKey);
-    const imgGroupNow = st1._dupeGroups.find(g => g.imageMatch);
+    // Freeze-until-rescan: G1 is fully processed and dropped; G3 was never
+    // touched by this apply and must survive UNCHANGED -- no fresh title
+    // group for K/L, even though their titles now match.
+    assert.strictEqual(st1._dupeGroups.length, 1, "only G3 should remain -- G1 is done, and nothing re-discovers a K/L match mid-review");
+    assert.strictEqual(st1._dupeGroups[0], G3, "the surviving group must be the SAME G3 reference, untouched by a rescan");
+    assert.ok(!st1._dupeGroups.some(g => !g.imageMatch), "no fresh (non-image) title group may appear without an explicit rescan");
+
+    // Prove the match is real and discoverable, just not auto-surfaced: an
+    // explicit rescan (api.scan(), standing in for the user clicking "Scan for
+    // duplicates" again) DOES find K and L now.
+    const rescanned = api.scan();
+    const kl = rescanned.find(g => g.members.some(m => m.card.id === "K") && g.members.some(m => m.card.id === "L"));
+    assert.ok(kl, "an explicit rescan must find the K/L title match the merge created -- the data is correct, only auto-discovery is frozen");
+
+    // apply #2: the user reviews the still-surviving G3 (touched + P ticked).
     api.checkedKeys.clear();
-    api.checkedKeys.add(memberKey(nonKeep.scope, nonKeep.card.id));
     api.checkedKeys.add("imported:P");
-    if (imgGroupNow) api.set({ touched: [api.groupKey(imgGroupNow.members)] });
+    api.set({ touched: [api.groupKey(G3.members)] });
 
     await api.run();   // apply #2
     const st2 = api.get();
@@ -498,6 +534,29 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "a bulk 'Apply choices' must NOT dismiss an image group the user never touched");
   });
 
+  // ---- data-safety review F-3: a large group must never wedge against the server's entry cap ----
+  await at(label + ": a keep-all decision on a large group is chunked so it can never be permanently blocked (F-3)", async () => {
+    // Pairwise tags grow O(n^2) with group size (n members -> n*(n-1) entries),
+    // while core/server.js's /api/duplicates/not-duplicate caps a single
+    // request's entries -- so a big shared-title group (e.g. many posts
+    // sharing one FB fallback title, which this project has hit before) must
+    // never be sent as ONE oversized call that permanently 400s.
+    const api = buildDupeHarness(src);
+    const N = 25;   // 25*24 = 600 pairwise entries -- 3+ chunks at 200/call
+    const cards = Array.from({ length: N }, (_, i) => ({ id: "m" + i, title: "Shared Fallback Post Title Here" }));
+    const G = { imageMatch: false, keepKey: "imported:m0", members: cards.map(c => ({ scope: "imported", card: c })) };
+    api.set({ imported: cards, saved: [], groups: [G], mode: "all" });   // nothing checked -> keep-all path
+    await api.run();
+
+    assert.ok(api.log.markNotDup.length > 1, "a 600-entry decision must be split across multiple calls, not sent as one");
+    for (const batch of api.log.markNotDup) {
+      assert.ok(batch.length <= 200, "every chunk must stay comfortably under the server's per-request entry cap, got " + batch.length);
+    }
+    const totalEntries = api.log.markNotDup.reduce((n, b) => n + b.length, 0);
+    assert.strictEqual(totalEntries, N * (N - 1), "every pairwise entry must still be sent, just chunked");
+    assert.strictEqual(api.get().imported.length, N, "a keep-all decision must not remove any card");
+  });
+
   // ---- scanDuplicates precision: no transitive chaining, no over-broad link keys ----
   await at(label + ": scanDuplicates does NOT chain unrelated cards through a shared intermediary", async () => {
     // A shares a TITLE with B; B shares a LINK with C; A and C share nothing. The old
@@ -544,7 +603,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const scanImageDuplicatesMock = () => new Promise((resolve, reject) => { rejectFn = reject; });
     const api = loadRenderHealthDupesForCatch(src, scanImageDuplicatesMock);
 
-    api.render({});   // kicks off the scan synchronously
+    api.scanClick();   // kicks off the scan synchronously (the "Scan for duplicates" button)
     assert.deepStrictEqual(api.getProgress(), { done: 0, total: 0 }, "sanity: the scan must be marked in-progress immediately");
     assert.strictEqual(api.getScanned(), true, "sanity: _healthScanned.dupes is set before the async scan even starts");
 
