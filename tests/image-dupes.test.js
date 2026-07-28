@@ -399,6 +399,14 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
     assert.match(body, /splitGroupsOnTextConflict\(groups,\s*textByKey,\s*ocrTextConflicts\)/);
   });
 
+  t(label + ": scanImageDuplicates falls back to normTitle for any member OCR found nothing for, BEFORE the split runs", () => {
+    const titleFallbackIdx = body.search(/const nt = normTitle\(e\.card && e\.card\.title\)/);
+    const splitIdx = body.indexOf("groups = ocrAborted ? [] : splitGroupsOnTextConflict");
+    assert.ok(titleFallbackIdx >= 0, "title-fallback line not found");
+    assert.ok(splitIdx > titleFallbackIdx, "the title fallback must run BEFORE the split, or it never affects the result");
+    assert.match(body, /if\(!\(e\.key in textByKey\)\)/, "must only fill in members OCR found NOTHING for -- OCR must never be overridden by title");
+  });
+
   t(label + ": the OCR loop references _imgScanAbort at all (source smoke check only -- see the BEHAVIORAL abort tests below for proof it actually stops)", () => {
     const ocrLoopStart = body.indexOf("for(const e of ocrMembers)");
     const ocrBlockEnd = body.indexOf("ocrAborted ? [] : splitGroupsOnTextConflict", ocrLoopStart);
@@ -554,7 +562,7 @@ function loadScanImageDuplicates(src, deps) {
   // throw a ReferenceError deep inside the call, which is NOT swallowed
   // (scanImageDuplicates has no try/catch of its own around these calls), so
   // this is a load-bearing inclusion list, not decoration.
-  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "scanImageDuplicates"]
+  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "normTitle", "scanImageDuplicates"]
     .map(n => extractFn(src, n)).join("\n");
   assert.ok(fnSrc, "scanImageDuplicates (or one of its dependencies) not found");
   // _imgScanAbort is shadowed by an inner `let` seeded from the factory
@@ -770,6 +778,116 @@ async function at(n, fn) {
       const scanImageDuplicates = loadScanImageDuplicates(src, deps);
       const groups = await scanImageDuplicates(new Set(), null);
       assert.strictEqual(groups.length, 1, "no OCR evidence on either side must fall back to today's hash-only grouping, not an unconfirmed split");
+    });
+
+    // --- title fallback (real-library finding: two unrelated cults3d.com posts,
+    // and a 3-way trivia/Facebook/recipe tangle, both shared a photo-like image
+    // OCR found no text in at all -- OCR alone left them grouped; only their
+    // titles tell them apart). Only ever consulted when OCR found NOTHING on a
+    // member -- see the priority-ordering tests further below. -------------
+    await at(label + ": scanImageDuplicates falls back to card TITLES when OCR finds no usable text on either side, splitting clearly unrelated posts", async () => {
+      const cards = [
+        { id: "a", img: "idb:a", title: "3D Printable Designs by Yohanna Jeong" },
+        { id: "b", img: "idb:b", title: "Whimsical T-Shirt Designs by LuisCreation" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,   // photo-like image; OCR finds nothing, exactly the real-library case
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "clearly unrelated titles must remove this pair when OCR has no evidence at all");
+    });
+
+    await at(label + ": scanImageDuplicates keeps a group together when titles agree (or are close enough), even with no OCR evidence", async () => {
+      const cards = [
+        { id: "a", img: "idb:a", title: "Homemade Sourdough Starter Guide" },
+        { id: "b", img: "idb:b", title: "Homemade Sourdough Starter Guide (repost)" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "agreeing titles must not block a real duplicate match");
+    });
+
+    await at(label + ": scanImageDuplicates does NOT use a generic/platform-fallback title as evidence (reuses normTitle's own rejection rules)", async () => {
+      // "post by" fallback titles (the exact real-library "Old Made New post by
+      // Luis Chambers" case) and bare platform-generic titles say nothing about
+      // content -- normTitle already rejects both for the url/title pass; this
+      // must inherit that rejection, not treat a shared/near-empty normalized
+      // string as either agreement or conflict.
+      const cards = [
+        { id: "a", img: "idb:a", title: "Old Made New post by Luis Chambers" },
+        { id: "b", img: "idb:b", title: "Facebook post" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "unusable (generic/fallback) titles must be 'no evidence', falling back to today's hash-only grouping, not a wrongly-forced split");
+    });
+
+    await at(label + ": OCR evidence takes priority over title evidence when both are present -- OCR agreement is not overridden by differing titles", async () => {
+      const cards = [
+        { id: "a", img: "idb:a", title: "Totally Different Topic One Here" },
+        { id: "b", img: "idb:b", title: "A Completely Unrelated Topic Two" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => "Same real caption on both copies",   // OCR agrees on both sides
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "OCR agreement must win over differing titles -- title is only a FALLBACK for when OCR has nothing to say");
+    });
+
+    await at(label + ": OCR conflict takes priority over title evidence when both are present -- agreeing titles do not override an OCR-confirmed conflict", async () => {
+      const texts = { a: "Happy New Year Messages", b: "military strikes deep inside Iran breaking news today" };
+      const cards = [
+        { id: "a", img: "idb:a", title: "Homemade Sourdough Starter Guide" },
+        { id: "b", img: "idb:b", title: "Homemade Sourdough Starter Guide (repost)" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => texts[card.id],
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "OCR conflict must win over agreeing titles -- the images' actual text is the stronger signal");
+    });
+
+    await at(label + ": PINNED (data-safety review): mixed evidence -- OCR text on one side, title fallback on the other -- compares across signal types and can split even a genuine duplicate with IDENTICAL titles", async () => {
+      // A real, plausible case: one copy's image happens to have legible
+      // baked-in text (e.g. an ingredient list) an OCR run reads successfully;
+      // the other copy's image doesn't. Comparing that OCR string against the
+      // OTHER side's title (not its own -- it has none to compare) can
+      // conflict even though the two CARDS' titles agree perfectly. This is
+      // an accepted, documented trade-off (see splitGroupsOnTextConflict's
+      // comment) -- fewer, more conservative groups is the safe direction --
+      // not a bug to fix. Pinned so a future edit to the priority/fallback
+      // logic changes this on PURPOSE, not by accident.
+      const cards = [
+        { id: "a", img: "idb:a", title: "Homemade Sourdough Starter Guide" },
+        { id: "b", img: "idb:b", title: "Homemade Sourdough Starter Guide" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async (card) => (card.id === "a" ? "step by step overnight proof dutch oven bake" : null),
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "current, accepted behavior: cross-type OCR-vs-title comparison splits this pair despite identical titles");
     });
 
     await at(label + ": scanImageDuplicates never caches a failed/null OCR result -- a transient failure is retried, not permanently locked in", async () => {

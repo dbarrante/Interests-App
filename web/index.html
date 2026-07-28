@@ -6236,12 +6236,20 @@ function ocrTextConflicts(a,b){
 // error this function is allowed to make (groupByImageHash's own "smaller-
 // but-correct beats bigger-but-wrong" precedent).
 //
-// textByKey holds OCR text ONLY for members where extraction actually
-// produced usable text (see scanImageDuplicates) -- a member absent from it
-// is "no evidence", not "conflicting evidence": conflictFn is never even
-// called for a pair where either side has no text, so OCR failing (offline,
-// a fetch blip, Tesseract not loading) always degrades back to hash-only
-// behavior, never to a wrongly-forced split.
+// textByKey holds comparable text ONLY for a member where SOME signal
+// actually produced usable text -- OCR first, falling back to a normalized
+// card title when OCR found nothing (see scanImageDuplicates) -- never both;
+// a member absent from it is "no evidence", not "conflicting evidence":
+// conflictFn is never even called for a pair where either side has no text
+// at all, so a total signal failure (offline, a fetch blip, Tesseract not
+// loading, AND no usable title) always degrades back to hash-only behavior,
+// never to a wrongly-forced split. A pair where one side's evidence is OCR
+// and the other's is a title (one image had readable text, the other didn't)
+// DOES get compared across those two signal types, and can occasionally
+// split a genuine duplicate whose title happens to read differently from its
+// own image's text -- that cost is accepted, not overlooked: it is the same
+// direction (fewer, more conservative groups) the title fallback already
+// costs on purpose when NEITHER side has OCR text, just rarer.
 function splitGroupsOnTextConflict(groups, textByKey, conflictFn){
   const out = [];
   for(const group of (groups||[])){
@@ -6384,6 +6392,28 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
     if(onProgress && (ocrDone % 5 === 0 || ocrDone === ocrMembers.length)) onProgress(ocrDone, ocrMembers.length, "ocr");
   }
   saveImgOcrCache(ocrCache);
+
+  // Title fallback: reuses scanDuplicates' own normTitle -- same generic-
+  // platform-title and "post by" fallback-title rejection it already applies,
+  // so a title that says nothing about content (see normTitle's own comment
+  // on the "Old Made New post by Luis Chambers" false-group report) is just
+  // as much "no evidence" here as a missing OCR read. Only fills in a member
+  // OCR found nothing for -- OCR is the stronger, purpose-built signal and
+  // wins whenever it has something to say; title only speaks up when OCR has
+  // nothing (a text-light photo, or an image OCR itself couldn't read).
+  // Verified against this app's own real library: two clearly-unrelated
+  // cults3d.com posts sharing a template screenshot, and a 3-way tangle of a
+  // trivia article/Facebook post/recipe sharing another, both had NO usable
+  // OCR text on either side (photos, not text-heavy screenshots) -- OCR alone
+  // left them grouped; their titles alone are exactly what tells them apart.
+  if(!ocrAborted){
+    groups.forEach(mem => mem.forEach(e => {
+      if(!(e.key in textByKey)){
+        const nt = normTitle(e.card && e.card.title);
+        if(nt) textByKey[e.key] = nt;
+      }
+    }));
+  }
   // An aborted pass has confirmed only a SUBSET of the surviving candidates'
   // text, so splitting on that partial textByKey could hand back groups
   // LARGER or less-confirmed than a full scan would ever produce -- every
