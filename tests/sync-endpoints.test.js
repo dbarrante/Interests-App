@@ -17,6 +17,14 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.strictEqual(r.status, 200);
     assert.ok("enabled" in r.json && "deviceId" in r.json);
   });
+  await test("GET /api/sync-status reflects ctx.syncRunning (the header indicator's background-sync signal)", async () => {
+    ctx.syncRunning = true;
+    let r = await req(port, "GET", "/api/sync-status");
+    assert.strictEqual(r.json && r.json.running, true, "running must be true while a sync cycle is in flight");
+    ctx.syncRunning = false;
+    r = await req(port, "GET", "/api/sync-status");
+    assert.strictEqual(r.json && r.json.running, false, "running must be false when idle");
+  });
   await test("POST /api/sync/folder rejects a relative path", async () => {
     const r = await req(port, "POST", "/api/sync/folder", { folder: "relative/dir" });
     assert.strictEqual(r.status, 400);

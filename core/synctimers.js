@@ -37,6 +37,7 @@ function startSyncTimers(deps) {
       if (!syncDir) return;
       if (mergeBusy) return;
       mergeBusy = true;
+      if (deps.ctx) deps.ctx.syncRunning = true;   // advisory UI flag for the header indicator's background-sync spin
       Promise.resolve(deps.sync.runSync(deps.ctx, {
         syncDir,
         deviceId: sc.deviceId,
@@ -49,7 +50,7 @@ function startSyncTimers(deps) {
         }
       }).catch(function (e) {
         deps.log("periodic sync error:", e && e.message);
-      }).finally(function () { mergeBusy = false; });
+      }).finally(function () { mergeBusy = false; if (deps.ctx) deps.ctx.syncRunning = false; });
     } catch (e) { mergeBusy = false; deps.log("periodic sync error:", e && e.message); }
   }, mergeMs);
 

@@ -56,12 +56,12 @@ t("wake lock held during sync cycles: acquired on start, released in finally, re
   assert.ok(/async function acquireSyncWakeLock\(/.test(src), "acquireSyncWakeLock must exist");
   assert.ok(/navigator\.wakeLock\.request\("screen"\)/.test(src), "must request a screen wake lock");
   assert.ok(/function releaseSyncWakeLock\(/.test(src), "releaseSyncWakeLock must exist");
-  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 1900);
+  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 2300);
   assert.ok(/acquireSyncWakeLock\(\);/.test(manual), "manual sync must acquire the lock");
-  assert.ok(/finally\{[\s\S]{0,120}releaseSyncWakeLock\(\)/.test(manual), "manual sync must release in finally");
-  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 2400);
+  assert.ok(/finally\{[\s\S]{0,220}releaseSyncWakeLock\(\)/.test(manual), "manual sync must release in finally");
+  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 2900);
   assert.ok(/acquireSyncWakeLock\(\);/.test(auto), "auto sync must acquire the lock");
-  assert.ok(/finally\{ _syncInFlight = null; releaseSyncWakeLock\(\); \}/.test(auto), "auto sync must release in finally");
+  assert.ok(/finally\{[\s\S]{0,120}_syncInFlight = null[\s\S]{0,120}releaseSyncWakeLock\(\)/.test(auto), "auto sync must release in finally");
   assert.ok(/visibilitychange[\s\S]{0,120}_syncInFlight\) acquireSyncWakeLock\(\)/.test(src),
     "must re-acquire on returning to the page mid-sync (the OS drops the lock whenever the page hides)");
 });
@@ -92,16 +92,16 @@ t("all three triggers are wired: boot, visibilitychange, interval", () => {
 });
 
 t("manual sync shows all progress; auto-sync shows progress ONLY for big (50+) phases", () => {
-  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 1800);
-  assert.ok(/Store\.syncNow\(p=>\{ if\(p && p\.total\)\{ toast\(/.test(manual), "syncNowClick must surface onProgress via toast");
-  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 2600);
-  assert.ok(/Store\.syncNow\(p=>\{ if\(p && p\.total >= 50\)\{ toast\(/.test(auto),
+  const manual = src.slice(src.indexOf("async function syncNowClick("), src.indexOf("async function syncNowClick(") + 2200);
+  assert.ok(/Store\.syncNow\(p=>\{[\s\S]{0,160}if\(p\.total\) toast\(/.test(manual), "syncNowClick must surface onProgress via toast (all phases)");
+  const auto = src.slice(src.indexOf("async function autoSync("), src.indexOf("async function autoSync(") + 3000);
+  assert.ok(/Store\.syncNow\(p=>\{[\s\S]{0,160}if\(p\.total >= 50\)\{ toast\(/.test(auto),
     "autoSync must toast progress for big catch-up phases (an invisible boot catch-up looks like a hang — live complaint 2026-07-16) while routine ticks stay silent");
 });
 
 t("syncNowClick shares the in-flight guard (no overlapping cycles) and clears it in finally", () => {
   const start = src.indexOf("async function syncNowClick(");
-  const region = src.slice(start, start + 1600);
+  const region = src.slice(start, start + 2000);
   assert.ok(/if\(_syncInFlight\)/.test(region), "manual tap must refuse to start a second concurrent cycle");
   assert.ok(/finally\{[\s\S]{0,80}_syncInFlight = null/.test(region), "guard must clear in finally (a thrown sync must not wedge auto-sync forever)");
 });
