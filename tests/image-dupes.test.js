@@ -173,11 +173,44 @@ t("scanImageDuplicates is byte-identical between web and pwa", () => {
   assert.strictEqual(a, b);
 });
 
-for (const name of ["splitGroupsOnTextConflict", "ocrTextConflicts", "ocrTextOverlap", "normalizeOcrWords"]) {
+for (const name of ["splitGroupsOnTextConflict", "ocrTextConflicts", "ocrTextOverlap", "normalizeOcrWords", "postByAuthor"]) {
   t(name + " is byte-identical between web and pwa", () => {
     const a = extractFn(webHtml, name), b = extractFn(pwaHtml, name);
     assert.ok(a && b, name + " not found in one or both sources");
     assert.strictEqual(a, b);
+  });
+}
+
+// --- postByAuthor pure-function tests (real-library finding: three
+// unrelated Facebook GROUP posts -- two different authors' posts in the same
+// group, plus an unrelated post from a different group -- shared a
+// photo-only image; normTitle correctly rejects the whole "post by" title as
+// generic, throwing away the one real signal it carries: the author). ------
+function loadPostByAuthor(src) {
+  return new Function(extractFn(src, "postByAuthor") + "\nreturn postByAuthor;")();
+}
+for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
+  const postByAuthor = loadPostByAuthor(src);
+
+  t(label + ": extracts the author from a real 'post by' fallback title", () => {
+    assert.strictEqual(postByAuthor("Resin 3d Printing For Beginners post by Nathaniel Holt"), "nathaniel holt");
+  });
+
+  t(label + ": is case-insensitive and normalizes punctuation/spacing in the author", () => {
+    assert.strictEqual(postByAuthor("Some Group POST BY  Jane   O'Brien!!"), "jane o brien");
+  });
+
+  t(label + ": returns null when there is no 'post by' pattern at all", () => {
+    assert.strictEqual(postByAuthor("Homemade Sourdough Starter Guide"), null);
+    assert.strictEqual(postByAuthor("Facebook post"), null);
+    assert.strictEqual(postByAuthor(""), null);
+    assert.strictEqual(postByAuthor(null), null);
+    assert.strictEqual(postByAuthor(undefined), null);
+  });
+
+  t(label + ": rejects a too-short/empty author (nothing usable survived normalization)", () => {
+    assert.strictEqual(postByAuthor("Some Group post by !!!"), null);
+    assert.strictEqual(postByAuthor("Some Group post by a"), null);
   });
 }
 
@@ -407,6 +440,13 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
     assert.match(body, /if\(!\(e\.key in textByKey\)\)/, "must only fill in members OCR found NOTHING for -- OCR must never be overridden by title");
   });
 
+  t(label + ": scanImageDuplicates falls back to postByAuthor when normTitle ALSO rejected the title (generic/post-by), before giving up entirely", () => {
+    const authorFallbackIdx = body.search(/const author = postByAuthor\(e\.card && e\.card\.title\)/);
+    const ntIdx = body.search(/const nt = normTitle\(e\.card && e\.card\.title\)/);
+    assert.ok(authorFallbackIdx >= 0, "author-fallback line not found");
+    assert.ok(authorFallbackIdx > ntIdx, "the author fallback must be tried AFTER normTitle, only once normTitle itself found nothing");
+  });
+
   t(label + ": the OCR loop references _imgScanAbort at all (source smoke check only -- see the BEHAVIORAL abort tests below for proof it actually stops)", () => {
     const ocrLoopStart = body.indexOf("for(const e of ocrMembers)");
     const ocrBlockEnd = body.indexOf("ocrAborted ? [] : splitGroupsOnTextConflict", ocrLoopStart);
@@ -562,7 +602,7 @@ function loadScanImageDuplicates(src, deps) {
   // throw a ReferenceError deep inside the call, which is NOT swallowed
   // (scanImageDuplicates has no try/catch of its own around these calls), so
   // this is a load-bearing inclusion list, not decoration.
-  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "normTitle", "scanImageDuplicates"]
+  const fnSrc = ["groupByImageHash", "splitGroupsOnTextConflict", "ocrTextConflicts", "normalizeOcrWords", "ocrTextOverlap", "normTitle", "postByAuthor", "scanImageDuplicates"]
     .map(n => extractFn(src, n)).join("\n");
   assert.ok(fnSrc, "scanImageDuplicates (or one of its dependencies) not found");
   // _imgScanAbort is shadowed by an inner `let` seeded from the factory
@@ -888,6 +928,80 @@ async function at(n, fn) {
       const scanImageDuplicates = loadScanImageDuplicates(src, deps);
       const groups = await scanImageDuplicates(new Set(), null);
       assert.strictEqual(groups.length, 0, "current, accepted behavior: cross-type OCR-vs-title comparison splits this pair despite identical titles");
+    });
+
+    // --- postByAuthor fallback (real Facebook-GROUP false positive) --------
+    await at(label + ": scanImageDuplicates splits a group of Facebook GROUP posts by DIFFERENT authors, even though normTitle rejects the whole 'post by' title as generic", async () => {
+      // Real example from the live library: two different authors' posts in
+      // the SAME Facebook group, sharing a photo-only image (no OCR text).
+      const cards = [
+        { id: "a", img: "idb:a", title: "Resin 3d Printing For Beginners post by Nathaniel Holt" },
+        { id: "b", img: "idb:b", title: "Resin 3d Printing For Beginners post by Robert Ray" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "different authors posting in the same group must be treated as different posts, not left grouped with zero distinguishing signal");
+    });
+
+    await at(label + ": scanImageDuplicates keeps the SAME author's posts together while splitting off a third, DIFFERENT author from the same 3-way hash clique", async () => {
+      // Proves the author fallback actually FIRES, not just that "no evidence"
+      // defaults to keeping things together (data-safety review L1): if
+      // postByAuthor never populated textByKey at all, a/b/c would stay ONE
+      // undivided 3-member group (no evidence anywhere to split on). The
+      // feature working means a and b (same author) survive as a pair and c
+      // (a different author) is excluded entirely.
+      const cards = [
+        { id: "a", img: "idb:a", title: "Resin 3d Printing For Beginners post by Nathaniel Holt" },
+        { id: "b", img: "idb:b", title: "Resin 3d Printing For Beginners post by Nathaniel Holt" },
+        { id: "c", img: "idb:c", title: "Resin 3d Printing For Beginners post by Robert Ray" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "exactly one surviving group expected (a+b); c must not form or join any group");
+      const ids = groups[0].members.map(m => m.card.id).sort();
+      assert.deepStrictEqual(ids, ["a", "b"], "the same-author pair must survive together and the different-author card must be excluded entirely");
+    });
+
+    await at(label + ": scanImageDuplicates splits a real title against an unrelated 'post by' fallback (author-vs-title comparison)", async () => {
+      // Real example from the live library: a real, non-generic title on one
+      // side, an unrelated Facebook-group fallback title on the other.
+      const cards = [
+        { id: "a", img: "idb:a", title: "Never Get Complacent: Strive for Personal Growth" },
+        { id: "b", img: "idb:b", title: "3D Printing Stls post by Sean Guerrez" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => null,
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 0, "an unrelated real title vs. a fallback title's author name must still be recognized as unrelated");
+    });
+
+    await at(label + ": OCR still takes priority over the author fallback when OCR has usable text on both sides", async () => {
+      const cards = [
+        { id: "a", img: "idb:a", title: "Some Group post by Alice Anderson" },
+        { id: "b", img: "idb:b", title: "Some Group post by Bob Baker" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "0000000000000000",
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },
+        ocrExtractText: async () => "Same real caption baked into both copies",
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      assert.strictEqual(groups.length, 1, "OCR agreement must win over differing post-by authors -- author name is only a fallback for when NEITHER OCR nor a real title has anything to say");
     });
 
     await at(label + ": scanImageDuplicates never caches a failed/null OCR result -- a transient failure is retried, not permanently locked in", async () => {

@@ -6225,6 +6225,26 @@ function ocrTextOverlap(a,b){
 function ocrTextConflicts(a,b){
   return ocrTextOverlap(a,b) < OCR_TEXT_CONFLICT_THRESHOLD;
 }
+// normTitle rejects a WHOLE "<page/group> post by <author>" title as generic
+// -- correctly: the "<page/group>" prefix is shared by every post from that
+// page/group regardless of content (see normTitle's own comment on the "Old
+// Made New post by Luis Chambers" false-group report), so the title as a
+// whole says nothing. But it throws away the <author> suffix along with it,
+// which IS real, specific information normTitle was never asked to use.
+// Verified against this app's real library: three completely unrelated
+// Facebook GROUP posts -- two different authors' posts in the same group,
+// plus an unrelated post from a different group entirely -- all sharing a
+// photo-only image (so OCR finds nothing either), left with NO distinguishing
+// signal at all once normTitle discards the whole title. Different authors
+// posting in the same group are almost always different posts; used ONLY as
+// a last-resort fallback here, when normTitle itself found nothing usable --
+// never touches normTitle or the url/title pass it serves.
+function postByAuthor(title){
+  const m = /\bpost by\s+(.+)$/i.exec(String(title||"").trim());
+  if(!m) return null;
+  const author = m[1].toLowerCase().replace(/[^a-z0-9 ]+/g," ").replace(/\s+/g," ").trim();
+  return author.length>=2 ? author : null;
+}
 // Splits/shrinks each image-hash-matched group so every emitted group is ALSO
 // a full pairwise clique under "no OCR text conflict" -- the same clique-
 // growth shape as groupByImageHash above, and for the same reason: closeness
@@ -6411,6 +6431,14 @@ async function scanImageDuplicates(alreadyGroupedKeys, onProgress){
       if(!(e.key in textByKey)){
         const nt = normTitle(e.card && e.card.title);
         if(nt) textByKey[e.key] = nt;
+        else {
+          // normTitle rejected the whole title (generic, or a "post by"
+          // fallback) -- try the author name alone before giving up entirely.
+          // See postByAuthor's own comment (real Facebook-GROUP false
+          // positive this fixes).
+          const author = postByAuthor(e.card && e.card.title);
+          if(author) textByKey[e.key] = author;
+        }
       }
     }));
   }
