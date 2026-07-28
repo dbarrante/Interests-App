@@ -369,13 +369,13 @@ function loadScanImageDuplicates(src, deps) {
   assert.ok(fnSrc, "scanImageDuplicates (or its groupByImageHash dependency) not found");
   const factory = new Function(
     "imported", "saved", "loadImgHashCache", "saveImgHashCache", "imgHashSrcKey", "computeCardHash",
-    "IA_IMGHASH", "dupeGroupDismissed", "dupeMemberKey", "dupePrimary", "_imgScanAbort",
+    "IA_IMGHASH", "dupeGroupDismissed", "dupeMemberKey", "dupePrimary", "isBadImg", "_imgScanAbort",
     fnSrc + "\nreturn scanImageDuplicates;"
   );
   return factory(
     deps.imported, deps.saved, deps.loadImgHashCache, deps.saveImgHashCache, deps.imgHashSrcKey,
     deps.computeCardHash, deps.IA_IMGHASH, deps.dupeGroupDismissed, deps.dupeMemberKey, deps.dupePrimary,
-    deps._imgScanAbort
+    deps.isBadImg, deps._imgScanAbort
   );
 }
 function baseDeps(cards) {
@@ -389,6 +389,7 @@ function baseDeps(cards) {
     dupeGroupDismissed: () => false,
     dupeMemberKey: (m) => m.scope + ":" + m.card.id,
     dupePrimary: (members) => members[0],
+    isBadImg: () => false,   // by default no card is a placeholder; the exclusion test overrides this
     _imgScanAbort: false,
   };
 }
@@ -479,6 +480,31 @@ async function at(n, fn) {
       await secondScan(new Set(), null);
       assert.strictEqual(calls, 2, "an uncached (previously-failed) card must be retried on the next scan, not silently skipped forever");
       assert.ok(persisted.c0 && persisted.c0.h === "1111111111111111", "a successful retry must be cached normally, exactly like any other verdict");
+    });
+
+    await at(label + ": scanImageDuplicates EXCLUDES placeholder-image cards (isBadImg) so they can't form false 'same picture' groups", async () => {
+      // Placeholder thumbnails (favicon / screenshot-fallback) are shared by many
+      // unrelated cards; hashing them collapsed those cards into bogus image groups.
+      // Two real-image cards with a matching hash still group; two placeholder cards
+      // with the SAME matching hash must not appear in any group at all.
+      const cards = [
+        { id: "real1", img: "https://cdn.example.com/photo1.jpg" },
+        { id: "real2", img: "https://cdn.example.com/photo2.jpg" },
+        { id: "ph1", img: "https://s0.wp.com/mshots/v1/aaa" },
+        { id: "ph2", img: "https://s0.wp.com/mshots/v1/bbb" },
+      ];
+      const deps = Object.assign(baseDeps(cards), {
+        computeCardHash: async () => "ffffffffffffffff",   // identical hash for every hashed card
+        IA_IMGHASH: { hamming: () => 0, MAX_DISTANCE: 5 },  // distance 0 -> everything hashed would match
+        isBadImg: (u) => /mshots|thum\.io|microlink/.test(u || ""),
+      });
+      const scanImageDuplicates = loadScanImageDuplicates(src, deps);
+      const groups = await scanImageDuplicates(new Set(), null);
+      const allIds = groups.flatMap(g => g.members.map(m => m.card.id));
+      assert.ok(!allIds.includes("ph1") && !allIds.includes("ph2"),
+        "a placeholder-image card must never be hashed into an image-match group");
+      assert.ok(groups.some(g => { const ids = g.members.map(m => m.card.id); return ids.includes("real1") && ids.includes("real2"); }),
+        "two real images with matching hashes must still group");
     });
   }
 
