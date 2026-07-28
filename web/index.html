@@ -271,8 +271,15 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 #healthModal.open{display:flex}
 #healthModal.dupe-fullscreen{padding:0;align-items:stretch}
 #healthModal.dupe-fullscreen .dupe-box{width:100vw;max-width:none;height:100dvh;max-height:none;border-radius:0}
-#healthModal.dupe-fullscreen .dupe-large-grid{grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr))}
-#healthModal.dupe-fullscreen .dupe-card-photo{aspect-ratio:16/10}
+#healthModal.dupe-fullscreen .dupe-large-grid{grid-template-columns:repeat(var(--dupe-cols,2),minmax(0,1fr));gap:18px}
+#healthModal.dupe-fullscreen .dupe-card-photo{aspect-ratio:4/3}
+#healthModal.dupe-fullscreen .dupe-card-desc{padding:16px 17px}
+#healthModal.dupe-fullscreen .dupe-card-desc .t{font-size:17px}
+#healthModal.dupe-fullscreen .dupe-card-desc .d{font-size:14px;-webkit-line-clamp:6}
+#healthModal.dupe-fullscreen .dupe-card-desc .s{font-size:12.5px}
+#healthModal.dupe-fullscreen .dupe-card-actions{font-size:13px;padding:11px 13px}
+#healthModal.dupe-fullscreen .dupe-card-actions input[type=checkbox]{width:16px;height:16px}
+#healthModal.dupe-fullscreen .dupe-card-keep{font-size:12px;padding:5px 11px}
 .dupe-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(820px,96vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
 #healthBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;overflow:hidden}
 #healthBody .dupe-row .meta .t{cursor:pointer}
@@ -301,6 +308,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
 .dupe-modes{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:999px}
 .dupe-modes button{border:0;background:transparent;color:var(--muted);border-radius:999px;padding:7px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
 .dupe-modes button.on{background:var(--ink);color:var(--card)}
+.dupe-col-slider{display:none;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+.dupe-col-slider strong{color:var(--ink);min-width:1em;text-align:center}
+.dupe-col-slider input[type=range]{accent-color:var(--accent-strong);width:120px}
+#healthModal.dupe-fullscreen .dupe-col-slider{display:flex}
 .dupe-progress{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:8px 4px 12px}
 .dupe-progress-title{font-size:14px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dupe-progress-count{font-size:12px;color:var(--muted);white-space:nowrap}
@@ -5593,11 +5604,21 @@ let _dupeSpared = new Set();
 let _dupeImageChecked = new Set();
 let _dupeImageTouched = new Set();
 let _dupeFullScreen = false;
+let _dupeFullCols = Math.min(3,Math.max(1,Number(localStorage.getItem("ia_dupecols"))||2));
 function dupeSetFullscreen(on){
   _dupeFullScreen = on==null ? !_dupeFullScreen : !!on;
-  document.getElementById("healthModal").classList.toggle("dupe-fullscreen",_dupeFullScreen);
+  const modal=document.getElementById("healthModal");
+  modal.classList.toggle("dupe-fullscreen",_dupeFullScreen);
+  modal.style.setProperty("--dupe-cols",_dupeFullCols);
   const button=document.getElementById("dupeFullscreenBtn");
   if(button){ button.textContent=_dupeFullScreen?"Exit full screen":"Full screen"; button.setAttribute("aria-pressed",String(_dupeFullScreen)); }
+}
+function dupeSetFullCols(n){
+  _dupeFullCols = Math.min(3,Math.max(1,Number(n)||2));
+  localStorage.setItem("ia_dupecols",String(_dupeFullCols));
+  document.getElementById("healthModal").style.setProperty("--dupe-cols",_dupeFullCols);
+  const out=document.getElementById("dupeColVal");
+  if(out) out.textContent=_dupeFullCols;
 }
 function dupeToggleRemoval(key,checked){
   if(checked) _dupeSpared.delete(key); else _dupeSpared.add(key);
@@ -5624,6 +5645,7 @@ function dupeModeBarHTML(){
   return `<div class="dupe-modebar">
     <div class="dupe-modecopy"><b>Review layout</b>Focus on one duplicate set or scan all groups.</div>
     <div class="dupe-review-controls"><button class="btn btn-ghost" id="dupeFullscreenBtn" aria-pressed="${_dupeFullScreen}" onclick="dupeSetFullscreen()">${_dupeFullScreen?"Exit full screen":"Full screen"}</button>
+      <div class="dupe-col-slider"><label for="dupeColSlider">Columns</label><input type="range" id="dupeColSlider" min="1" max="3" step="1" value="${_dupeFullCols}" oninput="dupeSetFullCols(this.value)"><strong id="dupeColVal">${_dupeFullCols}</strong></div>
       <div class="dupe-modes" role="group" aria-label="Duplicate review layout">
         <button class="${_dupeReviewMode==="all"?"on":""}" aria-pressed="${_dupeReviewMode==="all"}" onclick="dupeSetReviewMode('all')">All groups</button>
         <button class="${_dupeReviewMode==="single"?"on":""}" aria-pressed="${_dupeReviewMode==="single"}" onclick="dupeSetReviewMode('single')">One at a time</button>
