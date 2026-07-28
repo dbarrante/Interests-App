@@ -118,15 +118,20 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 }
 
 // --- structural: image-matched groups are visibly badged ------------------
+// The "Same picture" badge now lives in the shared dupeWhyHTML label helper
+// (which also labels link/title groups); both group views render it by calling
+// dupeWhyHTML(g), so assert the badge in the helper AND the call in each view.
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": a group formed only by image similarity is labelled \"Same picture\" in the compact (all-groups) view", () => {
-    const body = fn(src, "dupeCompactGroupHTML");
+  t(label + ": dupeWhyHTML badges an image-similarity group \"Same picture\" (weaker signal than a shared link/title)", () => {
+    const body = fn(src, "dupeWhyHTML");
     assert.match(body, /imageMatch[\s\S]{0,200}?Same picture/i,
       "image-matched groups must say so — it is a weaker signal than a shared link/title");
   });
-  t(label + ": a group formed only by image similarity is labelled \"Same picture\" in the one-at-a-time review view", () => {
-    const body = fn(src, "renderHealthDupes");
-    assert.match(body, /imageMatch[\s\S]{0,200}?Same picture/i);
+  t(label + ": the compact (all-groups) view renders the why-matched label via dupeWhyHTML", () => {
+    assert.match(fn(src, "dupeCompactGroupHTML"), /dupeWhyHTML\(g\)/);
+  });
+  t(label + ": the one-at-a-time review view renders the why-matched label via dupeWhyHTML", () => {
+    assert.match(fn(src, "renderHealthDupes"), /dupeWhyHTML\(g\)/);
   });
 }
 
