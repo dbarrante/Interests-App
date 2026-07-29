@@ -1583,11 +1583,14 @@ async function restoreFromList(name){
 async function restoreLatest(){
   const list = await Store.listBackups();
   if(!list || !list.length){ toast("No backups found"); return; }
+  // Prefer a real dated backup -- the thing "Backups to retain" actually
+  // governs -- over the rolling mirror or a reactive safety snapshot; those
+  // are internal recovery points, not one of the user's retained backups.
   // list[0] can be the rolling mirror (it sorts by wall-clock time, so it's
   // routinely "newer" than the freshest dated snapshot) — but it's rewritten
   // in place every few minutes, not a point-in-time recovery point, so the
   // "restore latest" button must skip it and land on a real dated backup.
-  const target = list.find(b=>!b.mirror) || list[0];
+  const target = list.find(b=>!b.mirror && !b.safety) || list.find(b=>!b.mirror) || list[0];
   return restoreFromList(target.name);
 }
 async function renderBackupList(){
@@ -1595,8 +1598,16 @@ async function renderBackupList(){
   if(!host) return;
   let list = [];
   try{ list = await Store.listBackups(); }catch(e){ host.innerHTML = "<div class='muted'>Couldn't load backups.</div>"; return; }
-  if(!list.length){ host.innerHTML = "<div class='muted'>No backups yet.</div>"; return; }
-  host.innerHTML = list.map(function(b){
+  // Only list the backups "Backups to retain" governs -- the rolling mirror
+  // and reactive safety snapshots are internal recovery points the user never
+  // chose to keep, and showing them made the count exceed the retain setting.
+  // Fall back to the raw list if no dated backup exists yet (e.g. a fresh
+  // install's first week, before the weekly full-snapshot cadence kicks in),
+  // so a real recovery point is never hidden entirely.
+  let shown = list.filter(b=>!b.mirror && !b.safety);
+  if(!shown.length) shown = list;
+  if(!shown.length){ host.innerHTML = "<div class='muted'>No backups yet.</div>"; return; }
+  host.innerHTML = shown.map(function(b){
     const c = b.counts || {};
     const label = (b.date||b.name) + " · " + (c.cards!=null?c.cards:(c.imported||0)) + " cards, " + (c.images||0) + " images";
     return "<div class='backup-row'><span>"+label+"</span> " +
