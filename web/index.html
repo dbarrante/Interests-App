@@ -3324,8 +3324,8 @@ let _autoSug = [];            // AutoTag AI suggestions: [{tag, sel}]
 let _autoErr = "";
 function allTags(){
   const s=new Set();
-  imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
-  saved.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
+  imported.forEach(i=>(i&&i.tags||[]).forEach(t=>s.add(t)));
+  saved.forEach(i=>(i&&i.tags||[]).forEach(t=>s.add(t)));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 // Resolve the item the currently-open tag picker is editing, regardless of scope.
