@@ -3560,11 +3560,16 @@ function openTabSuggest(){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
   _tabSug=[]; _tabSugErr=""; _tabSugLoading=true;
   renderTabsView();
+  const suggTabId = t.id;   // guard against switching tabs while this AI call is in flight
   aiSuggestCardsForTab(t).then(cands=>{
+    if(openTabId!==suggTabId) return;   // user moved to a different tab meanwhile — discard
     _tabSugLoading=false;
     _tabSug = cands.map(c=>Object.assign({sel:false}, c));
     renderTabsView();
-  }).catch(e=>{ _tabSugLoading=false; _tabSugErr=e.message||"Try again"; renderTabsView(); });
+  }).catch(e=>{
+    if(openTabId!==suggTabId) return;
+    _tabSugLoading=false; _tabSugErr=e.message||"Try again"; renderTabsView();
+  });
 }
 function tabSugToggleSel(i){ if(_tabSug[i]){ _tabSug[i].sel=!_tabSug[i].sel; renderTabsView(); } }
 function tabSugRemove(i){ _tabSug.splice(i,1); renderTabsView(); }

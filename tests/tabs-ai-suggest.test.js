@@ -83,6 +83,34 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const tabSuggestPanelHTML = factory([], "", false, (s)=>s);
     assert.strictEqual(tabSuggestPanelHTML(), "");
   });
+
+  t(label + ": openTabSuggest discards a stale response if the user switched tabs while the AI call was in flight", async () => {
+    // The mock callAI (declared INSIDE the same generated scope, so it shares
+    // the closure over openTabId with openTabSuggest itself) simulates the
+    // exact race: the "user" switches tabs mid-flight, before the AI call
+    // resolves.
+    const mockCallAI = `function callAI(prompt) { openTabId = "t2"; return Promise.resolve("[0]"); }\n`;
+    const body = mockCallAI + [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab"), fn(src, "openTabSuggest")].join("\n");
+    const factory = new Function(
+      "tabs", "openTabId", "imported", "saved", "cardHasTag",
+      "IA_AI", "PROVIDERS", "S", "toast", "renderTabsView",
+      "_tabSug", "_tabSugErr", "_tabSugLoading",
+      body + "\nreturn { run: openTabSuggest, getTabSug: () => _tabSug, getOpenTabId: () => openTabId };"
+    );
+    const importedArr = [{ tags: [], title: "Candidate", desc: "" }];
+    const api = factory(
+      [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], "t1",
+      importedArr, [], (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
+      { hasAIKey: () => true }, { p: { keyName: "key" } }, { provider: "p" },
+      () => {}, () => {},
+      [], "", false
+    );
+    api.run();
+    await new Promise(r => setTimeout(r, 0));   // let the pending promise chain settle
+    await new Promise(r => setTimeout(r, 0));
+    assert.strictEqual(api.getOpenTabId(), "t2", "sanity: the simulated tab switch actually happened");
+    assert.deepStrictEqual(api.getTabSug(), [], "stale suggestions for the abandoned tab must NOT populate _tabSug once a different tab is open");
+  });
 }
 
 // Run queued tests sequentially, awaiting each (some are async).
