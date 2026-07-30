@@ -3506,7 +3506,7 @@ function tagPickerRows(query){
   const it=imported[_tagPickIdx]; if(!it) return "";
   const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
   const q=(query||"").trim().toLowerCase();
-  let all=allImportedTags();
+  let all=allTags();
   if(q) all=all.filter(t=>t.toLowerCase().includes(q));
   if(all.length) return all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();impTagToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("");
   return q ? `<div class="tp-empty">No matches — Add to create &ldquo;${esc(query.trim())}&rdquo;</div>`
