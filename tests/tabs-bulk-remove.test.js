@@ -45,7 +45,9 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   t(label + ": removeTabPicksFromTab strips only the open tab's tag, from both imported and saved picks", () => {
-    const importedArr = [{ tags: ["stl files", "other"] }, { tags: ["stl files"] }];
+    // Imported identity is now the card's stable id, not its array index (F4,
+    // final review round 3) — resolved via imported.find(x=>x.id===id).
+    const importedArr = [{ id: "i0", tags: ["stl files", "other"] }, { id: "i1", tags: ["stl files"] }];
     const savedArr = [{ id: "s0", tags: ["stl files"] }];
     const calls = [];
     const body = [fn(src, "removeTabPicksFromTab")].join("\n");
@@ -55,7 +57,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     );
     const removeTabPicksFromTab = factory(
       [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], "t1",
-      new Set(["imported:0", "saved:s0"]), true,
+      new Set(["imported:i0", "saved:s0"]), true,
       importedArr, savedArr,
       { putCards: (arr) => calls.push(["putCards", arr]), putSaved: (arr) => calls.push(["putSaved", arr]) },
       () => calls.push("toast"), () => calls.push("render")

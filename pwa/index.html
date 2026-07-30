@@ -436,7 +436,7 @@ body.reader-locked{overflow:hidden}
 @media(max-width:540px){.ig-g4,.ig-g2,.ig-detail{grid-template-columns:1fr}}
 .imp-card{position:relative;background:var(--card);border-radius:11px;box-shadow:var(--shadow);padding:12px 14px;display:flex;gap:11px;align-items:flex-start;content-visibility:auto;contain-intrinsic-size:130px}
 .imp-card.selpick{outline:2.5px solid var(--accent)}
-.pickov{position:absolute;inset:0;z-index:5;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
+.pickov{position:absolute;inset:0;z-index:7;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
 .pickov:hover{background:rgba(194,65,12,.08)}
 .selpick .pickov{background:rgba(194,65,12,.13)}
 .imp-edit,.imp-refresh,.imp-reader,.imp-title{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
@@ -1386,7 +1386,7 @@ function openItem(id,mode){
 function unsaveItem(id){
   saved = saved.filter(i=>i.id!==id);
   persistAll();
-  if(curTab==="tabs") renderTabsView(); else renderSaved();
+  if(!refreshTabsViewIfShowing()) renderSaved();
 }
 function resetLearning(){
   if(!confirm("Clear save/click/hide history the AI learns from? (Your saved items list stays.)")) return;
@@ -3507,7 +3507,12 @@ function renderTabsView(){
       ? `<div class="empty"><h2>Nothing in "${esc(t.name)}" yet</h2><p>Add cards from Saved or Imported using the tag picker's Tabs section.</p></div>`
       : `<div class="${gridClass()}">${list.map(r=>{
           const inner = r.kind==="saved" ? cardHTML(r.it,"saved") : impCardHTML(r.it,r.idx);
-          const identity = r.kind==="saved" ? r.it.id : r.idx;
+          // Imported identity is the card's stable id, NOT its array index — a pick
+          // made now must still resolve to the right card even if something else
+          // (a delete, a background capture-drain) splices `imported` before the
+          // pick is acted on, which would silently shift every later index.
+          if(r.kind==="imported" && !r.it.id){ r.it.id=newId(); Store.putCards(imported); }
+          const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
   }
@@ -3594,6 +3599,17 @@ function toggleTabPick(scope, identity){
   tabSelPicks.has(key)?tabSelPicks.delete(key):tabSelPicks.add(key);
   renderTabsView();
 }
+// The ONE check every imported/saved mutation must run before choosing how to
+// re-render: a card can be showing right now inside the Tabs grid (via
+// impCardHTML/cardHTML, reusing their real index/id), which renderImported()/
+// renderSaved() never touch since that grid lives in a different view. Three
+// review rounds each found more call sites that skipped this check by hand —
+// centralizing it as one required first line closes the class instead of
+// relying on every future handler to remember the curTab==="tabs" branch.
+function refreshTabsViewIfShowing(){
+  if(curTab==="tabs"){ renderTabsView(); return true; }
+  return false;
+}
 // Wraps an already-rendered card's HTML with the tab-detail view's OWN pick overlay
 // — deliberately independent of cardHTML's/impCardHTML's own select-mode overlays
 // (savedSelMode/selMode), so the two never conflict.
@@ -3607,7 +3623,7 @@ function removeTabPicksFromTab(){
   tabSelPicks.forEach(key=>{
     const sep = key.indexOf(":");
     const scope = key.slice(0,sep), id = key.slice(sep+1);
-    const it = scope==="saved" ? saved.find(c=>c&&c.id===id) : imported[Number(id)];
+    const it = scope==="saved" ? saved.find(c=>c&&c.id===id) : imported.find(c=>c&&c.id===id);
     if(it && it.tags && it.tags.some(x=>x.toLowerCase()===t.tag.toLowerCase())){
       it.tags = it.tags.filter(x=>x.toLowerCase()!==t.tag.toLowerCase());
       n++;
@@ -3624,9 +3640,17 @@ let _tabSug = [];       // AI-suggested candidate cards for the open tab: [{scop
 let _tabSugErr = "";
 let _tabSugLoading = false;
 async function aiSuggestCardsForTab(tab){
-  const already = new Set(tabsFilteredList(tab.tag).map(r=>r.kind+":"+(r.kind==="saved"?r.it.id:r.idx)));
+  // Identity is the card's stable id, not its array index — a suggestion accepted
+  // later must still resolve to the right card even if a delete elsewhere shifted
+  // indices while the suggestion panel was open (F3, final review round 3). Ids
+  // must exist BEFORE `already` is built, or an unidd already-in-tab card would
+  // compare as "imported:undefined" and never match its own candidate below.
+  let idsAssigned=false;
+  imported.forEach(it=>{ if(!it.id){ it.id=newId(); idsAssigned=true; } });
+  if(idsAssigned) Store.putCards(imported);
+  const already = new Set(tabsFilteredList(tab.tag).map(r=>r.kind+":"+r.it.id));
   const candidates = [];
-  imported.forEach((it,idx)=>{ if(!already.has("imported:"+idx)) candidates.push({scope:"imported", identity:idx, title:it.title, desc:it.desc}); });
+  imported.forEach(it=>{ if(!already.has("imported:"+it.id)) candidates.push({scope:"imported", identity:it.id, title:it.title, desc:it.desc}); });
   saved.forEach(it=>{ if(it && !already.has("saved:"+it.id)) candidates.push({scope:"saved", identity:it.id, title:it.title, desc:it.desc}); });
   const batch = candidates.slice(0,40);
   if(!batch.length) throw new Error("Nothing left to suggest — every card is already in this tab");
@@ -3663,7 +3687,7 @@ function tabSugAccept(){
   if(!pick.length){ toast("No cards selected"); return; }
   let n=0;
   pick.forEach(c=>{
-    const it = c.scope==="saved" ? saved.find(s=>s&&s.id===c.identity) : imported[c.identity];
+    const it = c.scope==="saved" ? saved.find(s=>s&&s.id===c.identity) : imported.find(x=>x&&x.id===c.identity);
     if(it){ if(!it.tags) it.tags=[]; if(!it.tags.some(x=>x.toLowerCase()===t.tag.toLowerCase())){ it.tags.push(t.tag); n++; } }
   });
   Store.putCards(imported); Store.putSaved(saved);
@@ -3755,7 +3779,7 @@ function canonicalTag(t){
 function _afterTagEdit(scope, identity){
   if(scope==="saved"){
     Store.putSaved(saved);
-    if(curTab==="tabs"){ renderTabsView(); return; }
+    if(refreshTabsViewIfShowing()) return;
     const y=window.scrollY; renderSaved(); window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
     return;
   }
@@ -3765,7 +3789,7 @@ function _afterTagEdit(scope, identity){
   // an unscoped document.querySelector would match the HIDDEN Imported copy
   // first (it comes earlier in document order), silently patching a view no
   // one is looking at while the visible tab grid stays stale.
-  if(curTab==="tabs"){ renderTabsView(); return; }
+  if(refreshTabsViewIfShowing()) return;
   const it=imported[identity];
   if(it && it.id){
     const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
@@ -4244,7 +4268,7 @@ async function cardEditSave(){
   it.title = title.slice(0,250); it.titleSet = true;
   await Store.putSaved(saved);
   closeGuide();
-  if(curTab==="tabs") renderTabsView(); else renderSaved();
+  if(!refreshTabsViewIfShowing()) renderSaved();
   toast("Title updated");
 }
 // Fill the open editor's Title box from the AI pipeline. Deliberately writes
@@ -4351,8 +4375,7 @@ function pasteImageToCard(idx, file){
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
     persistCards();
-    if(curTab==="tabs"){ renderTabsView(); }
-    else { anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
+    if(!refreshTabsViewIfShowing()){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
     toast("Image pasted to: "+(it.title||"card"));
   });
 }
@@ -4371,8 +4394,7 @@ function impEditSave(){
   it.edited=Date.now();
   persistCards();
   closeGuide();
-  if(curTab==="tabs"){ renderTabsView(); }
-  else {
+  if(!refreshTabsViewIfShowing()){
     // keep the edited card in place across the re-render (height may change)
     anchorImpOnCard(it);
     renderImported();
@@ -4524,7 +4546,7 @@ function readerRemove(){
   removeCards(new Set([id]), {scope:"imported"});
   readerSnapshot.splice(readerPos, 1);
   if(curTab==="imported") renderImported();
-  else if(curTab==="tabs") renderTabsView();
+  else refreshTabsViewIfShowing();
   if(!readerSnapshot.length){ closeReader(); toast("Removed 1 card"); return; }
   if(readerPos >= readerSnapshot.length) readerPos = readerSnapshot.length - 1;
   renderReader();
@@ -4558,7 +4580,7 @@ function impRefresh(idx){
   // overwrites the card with no manual delete.
   enrichOnOpen(it, idx);    // fast Core og/thumbnail fallback while the real screenshot lands
   // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
-  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
+  if(!refreshTabsViewIfShowing()) renderImportedKeepFocus();
   toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
 }
 async function enrichOnOpen(it, idx){
@@ -4619,9 +4641,9 @@ async function enrichOnOpen(it, idx){
     }
     if(changed){
       Store.putCards(imported);
-      if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+      if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
       toast("Card updated with article info");
-      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } };
+      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); } };
       document.addEventListener("visibilitychange", onReturn);
     }
   }catch(e){ console.warn("enrichOnOpen failed",e); }
@@ -5046,7 +5068,7 @@ function impLike(idx){
   likes.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
   Store.putCards(imported); persistAll();
-  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
+  if(!refreshTabsViewIfShowing()) renderImportedKeepFocus();
   toast("Liked — more like this in Stumble");
 }
 function impSave(idx){
@@ -5064,7 +5086,7 @@ function impSave(idx){
   }
   imported.splice(idx,1);
   Store.putCards(imported); persistAll();
-  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
+  if(!refreshTabsViewIfShowing()) renderImportedKeepFocus();
   updateCounts();
   toast("Moved to Saved");
 }
@@ -5082,7 +5104,7 @@ function impDrop(idx){
   const gone=imported.splice(idx,1)[0];
   if(gone && gone.img && (""+gone.img).indexOf("idb:")===0){ Store.imgDel(gone.id); } // free its stored image
   Store.putCards(imported);
-  if(curTab==="tabs") renderTabsView(); else { renderImported(); restoreImpScrollSettle(); }
+  if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
   updateCounts();
 }
 
@@ -6429,7 +6451,7 @@ async function impRefreshTitle(idx){
   // Anchor BEFORE the re-render, while the old DOM is still on screen — without
   // this, restoreImpScrollSettle ran against whatever anchor some earlier
   // interaction left behind and jumped away from the card being refreshed.
-  if(curTab==="imported"){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
+  if(!refreshTabsViewIfShowing()){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
   toast("New title: "+out, 7000);
 }
 // Resolve a Title-issues row key ("<scope>:<id>") back to its live card.
@@ -7799,7 +7821,7 @@ async function drainCaptures(){
   if(autoImported.length){
     try{ await ingestImported(autoImported); }
     catch(e){ console.error("[auto-import] durable card write failed", e); return; }
-    updateCounts(); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+    updateCounts(); if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
   }   // updateCounts: the tab badge lagged after an auto-import-only drain (task review polish)
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ await Store.kvSet("ia_last_opened", {id:lastOpened.id, ts:Date.now()}); }catch(e){} }
@@ -7813,7 +7835,11 @@ async function drainCaptures(){
     catch(e){ console.warn("[drainCaptures] capture ACK failed; lease retry will preserve the capture", e); }
   }
   if(changed){
-    if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); }
+    // drainCaptures runs on a background timer/visibilitychange, not a card
+    // button — a dead-card splice here must refresh whichever view is showing
+    // (Critical, F5, final review round 3), or a stale Tabs grid's next click
+    // acts on the wrong post-splice index, same as impDrop's already-fixed risk.
+    if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
     if(removedDead){
       toast("Removed "+(_deadUndo?("“"+(_deadUndo.title||"card").slice(0,40)+"”"):removedDead+" card(s)")+" — unreachable site. Click to undo.", 9000, undoDead);
     } else {
@@ -7949,7 +7975,10 @@ function undoDead(){
   if(!_deadUndo) return;
   imported.unshift(_deadUndo); _deadUndo=null;
   Store.putCards(imported); updateCounts();
+  // unshift shifts EVERY index by one — same stale-grid risk as drainCaptures'
+  // splice above, and this toast button is clickable from any view.
   if(curTab==="imported") renderImported();
+  else refreshTabsViewIfShowing();
   toast("Card restored");
 }
 

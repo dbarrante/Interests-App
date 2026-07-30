@@ -20,18 +20,25 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": aiSuggestCardsForTab excludes cards already in the tab from its candidate batch", async () => {
-    const importedArr = [{ tags: ["stl files"], title: "Already in" }, { tags: [], title: "Candidate A", desc: "" }];
+    // Imported identity is now the card's stable id (F3, final review round 3) —
+    // the already-tagged card needs one BEFORE the call, matching a real card
+    // that's been rendered before; the never-tagged ones get theirs from the
+    // injected newId() stub, just like the real function assigns lazily.
+    const importedArr = [{ id: "i-existing", tags: ["stl files"], title: "Already in" }, { tags: [], title: "Candidate A", desc: "" }];
     const savedArr = [{ id: "s0", tags: [], title: "Candidate B", desc: "" }];
     const body = [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab")].join("\n");
     const factory = new Function(
-      "imported", "saved", "cardHasTag", "callAI",
+      "imported", "saved", "cardHasTag", "callAI", "newId", "Store",
       body + "\nreturn aiSuggestCardsForTab;"
     );
     let sentPrompt = "";
+    let nextId = 0;
     const aiSuggestCardsForTab = factory(
       importedArr, savedArr,
       (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
-      async (prompt) => { sentPrompt = prompt; return "[0,1]"; }   // both remaining candidates picked
+      async (prompt) => { sentPrompt = prompt; return "[0,1]"; },   // both remaining candidates picked
+      () => "gen_" + (nextId++),
+      { putCards: () => {} }
     );
     const picks = await aiSuggestCardsForTab({ name: "STL files", tag: "stl files" });
     assert.ok(!sentPrompt.includes("Already in"), "the already-tagged card must not be sent as a candidate");
@@ -43,19 +50,23 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": aiSuggestCardsForTab throws a clear error when the AI returns nothing parseable", async () => {
     const body = [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab")].join("\n");
     const factory = new Function(
-      "imported", "saved", "cardHasTag", "callAI",
+      "imported", "saved", "cardHasTag", "callAI", "newId", "Store",
       body + "\nreturn aiSuggestCardsForTab;"
     );
     const aiSuggestCardsForTab = factory(
       [{ tags: [], title: "A" }], [],
       (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
-      async () => "not json at all"
+      async () => "not json at all",
+      () => "gen_id",
+      { putCards: () => {} }
     );
     await assert.rejects(() => aiSuggestCardsForTab({ name: "STL files", tag: "stl files" }));
   });
 
   t(label + ": tabSugAccept applies the tab's tag to selected (or all, if none selected) candidates", () => {
-    const importedArr = [{ tags: [] }];
+    // Imported identity is now the card's stable id, not its array index (F3,
+    // final review round 3) — resolved via imported.find(x=>x.id===identity).
+    const importedArr = [{ id: "i0", tags: [] }];
     const savedArr = [{ id: "s0", tags: [] }];
     const calls = [];
     const body = [fn(src, "tabSugAccept")].join("\n");
@@ -65,7 +76,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     );
     const tabSugAccept = factory(
       [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], "t1",
-      [ { scope: "imported", identity: 0, title: "A", sel: false }, { scope: "saved", identity: "s0", title: "B", sel: false } ],
+      [ { scope: "imported", identity: "i0", title: "A", sel: false }, { scope: "saved", identity: "s0", title: "B", sel: false } ],
       importedArr, savedArr,
       { putCards: (arr)=>calls.push(["putCards",arr]), putSaved: (arr)=>calls.push(["putSaved",arr]) },
       ()=>calls.push("toast"), ()=>calls.push("render")
@@ -93,16 +104,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const body = mockCallAI + [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab"), fn(src, "openTabSuggest")].join("\n");
     const factory = new Function(
       "tabs", "openTabId", "imported", "saved", "cardHasTag",
-      "IA_AI", "PROVIDERS", "S", "toast", "renderTabsView",
+      "IA_AI", "PROVIDERS", "S", "toast", "renderTabsView", "newId", "Store",
       "_tabSug", "_tabSugErr", "_tabSugLoading",
       body + "\nreturn { run: openTabSuggest, getTabSug: () => _tabSug, getOpenTabId: () => openTabId };"
     );
-    const importedArr = [{ tags: [], title: "Candidate", desc: "" }];
+    const importedArr = [{ id: "i0", tags: [], title: "Candidate", desc: "" }];
     const api = factory(
       [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], "t1",
       importedArr, [], (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
       { hasAIKey: () => true }, { p: { keyName: "key" } }, { provider: "p" },
-      () => {}, () => {},
+      () => {}, () => {}, () => "gen_id", { putCards: () => {} },
       [], "", false
     );
     api.run();

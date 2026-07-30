@@ -20,7 +20,7 @@ function loadAfterTagEdit(src, log) {
   const factory = new Function(
     "imported", "saved", "Store", "window", "document", "requestAnimationFrame", "tagRow",
     "renderSaved", "renderImported", "curTab", "renderTabsView",
-    fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
+    fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
   );
   const win = { scrollY: 0, scrollTo: () => {} };
   return factory(

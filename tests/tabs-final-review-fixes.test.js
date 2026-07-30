@@ -31,7 +31,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "imported", "curTab", "window", "document", "Store", "renderImported", "renderTabsView",
       "restoreImpScrollSettle", "updateCounts", "_impScrollY", "_impAnchorId", "_impAnchorTop",
-      fn(src, "impDrop") + "\nreturn impDrop;"
+      fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "impDrop") + "\nreturn impDrop;"
     );
     const impDrop = factory(
       importedArr, "tabs",
@@ -50,7 +50,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "imported", "saved", "curTab", "Store", "persistAll", "renderImportedKeepFocus", "renderTabsView",
       "updateCounts", "toast", "domain", "guessCat", "cleanDesc", "impThumb",
-      fn(src, "impSave") + "\nreturn impSave;"
+      fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "impSave") + "\nreturn impSave;"
     );
     const impSave = factory(
       importedArr, [], "tabs",
@@ -68,7 +68,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "imported", "curTab", "likes", "Store", "persistAll", "renderImportedKeepFocus", "renderTabsView",
       "toast", "guessCat",
-      fn(src, "impLike") + "\nreturn impLike;"
+      fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "impLike") + "\nreturn impLike;"
     );
     const impLike = factory(
       importedArr, "tabs", [],
@@ -98,7 +98,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "readerSnapshot", "readerPos", "imported", "curTab",
       "snapshotBeforeDestructive", "removeCards", "renderImported", "renderTabsView", "closeReader", "renderReader", "toast",
-      fn(src, "readerRemove") + "\nreturn readerRemove;"
+      fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "readerRemove") + "\nreturn readerRemove;"
     );
     const readerRemove = factory(
       ["i0", "i1"], 0, importedArr, "tabs",
@@ -115,7 +115,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "imported", "saved", "Store", "window", "document", "requestAnimationFrame", "tagRow",
       "renderSaved", "renderImported", "curTab", "renderTabsView",
-      fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
+      fn(src, "refreshTabsViewIfShowing") + "\n" + fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
     );
     const make = () => factory(
       [{ id: "i0", tags: ["a"] }], [{ id: "s0", tags: ["a"] }],
