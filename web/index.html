@@ -454,6 +454,8 @@ body.reader-locked{overflow:hidden}
 .tp-row.hi{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .tp-row.on{color:var(--accent)}
 .tp-empty{padding:8px 10px;color:var(--muted);font-size:12px}
+.tp-tabs-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:4px 10px 2px}
+.tp-tabs{display:flex;flex-direction:column;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:4px}
 /* AutoTag (AI) suggestions */
 .tp-head{font-size:12px;font-weight:700;color:var(--muted);padding:4px 6px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .tp-hint{font-weight:600;opacity:.75;font-size:11px}
@@ -3418,6 +3420,17 @@ function renderTabsView(){
     gridHtml;
   attachCardImages();
 }
+// Pinned "Tabs" section at the top of the tag picker — a tab is just a tag, so
+// toggling one of these pills IS adding/removing that tag (reuses tagPickerToggle
+// directly via the same data-tag attribute the regular tag rows already use).
+function tabPickerRows(){
+  const it = _tagPickItem(); if(!it || !tabs.length) return "";
+  const have = new Set((it.tags||[]).map(t=>t.toLowerCase()));
+  const chips = tabs.map(tb=>
+    `<button class="tp-row tp-tab${have.has(tb.tag.toLowerCase())?" on":""}" data-tag="${esc(tb.tag)}" onclick="event.stopPropagation();tagPickerToggle(this)">${have.has(tb.tag.toLowerCase())?"&#10003; ":""}${tb.reserved?"&#129302; ":""}${esc(tb.name)}</button>`
+  ).join("");
+  return `<div class="tp-tabs-label">Tabs</div><div class="tp-tabs">${chips}</div>`;
+}
 /* ---- inline tag editing (works across imported + saved) ---- */
 let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
 let _tagPickIdx = -1;             // index into `imported` — meaningful only when _tagPickScope==="imported"
@@ -3565,6 +3578,7 @@ function renderTagPicker(){
   const p=document.getElementById("tagPicker"); if(!p) return;
   const it=_tagPickItem(); if(!it){ closeTagPicker(); return; }
   p.innerHTML =
+    tabPickerRows() +
     `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="tagPickerKey(event)"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
     `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
     `<div class="tp-list">${tagPickerRows("")}</div>`;
