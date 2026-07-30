@@ -552,6 +552,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
       <button class="tab active" data-tab="stumble" onclick="showTab('stumble')">Stumble</button>
       <button class="tab" data-tab="saved" onclick="showTab('saved')">Saved <span class="cnt" data-cnt="saved"></span></button>
       <button class="tab" data-tab="imported" onclick="showTab('imported')">Imported <span class="cnt" data-cnt="imported"></span></button>
+      <button class="tab" data-tab="tabs" onclick="showTab('tabs')">Tabs</button>
       <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
     </nav>
     <button class="sync-chip sync-idle" id="syncIndicator" onclick="syncChipClick()" title="Sync status"><span class="sync-dot"></span> sync</button>
@@ -563,6 +564,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   <button class="tab mtab active" data-tab="stumble" onclick="showTab('stumble')"><span class="micon">&#127919;</span>Stumble</button>
   <button class="tab mtab" data-tab="saved" onclick="showTab('saved')"><span class="micon">&#11088;</span><span>Saved <span class="cnt" data-cnt="saved"></span></span></button>
   <button class="tab mtab" data-tab="imported" onclick="showTab('imported')"><span class="micon">&#128229;</span><span>Imported <span class="cnt" data-cnt="imported"></span></span></button>
+  <button class="tab mtab" data-tab="tabs" onclick="showTab('tabs')"><span class="micon">&#128204;</span>Tabs</button>
   <button class="tab mtab" data-tab="settings" onclick="showTab('settings')"><span class="micon">&#9881;</span>Settings</button>
 </nav>
 
@@ -571,6 +573,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
   <div id="view-stumble"></div>
   <div id="view-saved" style="display:none"><div id="savedBody"><aside class="tag-side cat-side" id="catSide" style="display:none"></aside><div class="masonry" id="savedGrid"></div></div><div id="savedEmpty"></div></div>
   <div id="view-imported" style="display:none"></div>
+  <div id="view-tabs" style="display:none"></div>
 
   <div id="view-settings" style="display:none">
     <div class="panel">
@@ -1073,12 +1076,13 @@ function showTab(t, deferStumble){
   _refreshPins.clear();
   save("tab", t);
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
-  ["stumble","saved","imported","settings"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
+  ["stumble","saved","imported","settings","tabs"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
   window.scrollTo(0,0);   // land at the top of every tab — don't inherit the previous tab's scroll depth
-  document.getElementById("catBar").style.display = t==="settings"?"none":"";
+  document.getElementById("catBar").style.display = (t==="settings"||t==="tabs")?"none":"";
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
+  if(t==="tabs"){ selMode=false; selPicks.clear(); renderTabsView(); }
   // "NEW" badge semantics: a card is NEW if it was imported after the LAST
   // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
   // The stamp advances on each visit, so badges self-clear once seen. A
@@ -3427,6 +3431,67 @@ function deleteTab(id){
   tabs=tabs.filter(x=>x.id!==id);
   save("tabs", tabs);
   return true;
+}
+/* ---- Tabs nav view ---- */
+let openTabId = null;   // id of the currently open tab pill, or null (no tabs yet / just deleted)
+function tabsFilteredList(tag){
+  const list = [];
+  imported.forEach((it,idx)=>{ if(cardHasTag(it,tag)) list.push({kind:"imported", it, idx}); });
+  saved.forEach(it=>{ if(it && cardHasTag(it,tag)) list.push({kind:"saved", it}); });
+  return list;
+}
+function openTab(id){
+  openTabId = id;
+  window.scrollTo(0,0);
+  renderTabsView();
+}
+function newTabPrompt(){
+  const name = prompt("New tab name:");
+  if(name==null) return;
+  const created = createTab(name);
+  if(created) openTab(created.id);
+  else renderTabsView();
+}
+function renameTabPrompt(id){
+  const t = tabs.find(x=>x.id===id); if(!t || t.reserved) return;
+  const name = prompt("Rename tab:", t.name);
+  if(name==null) return;
+  renameTab(id, name);
+  renderTabsView();
+}
+function deleteTabPrompt(id){
+  const t = tabs.find(x=>x.id===id); if(!t) return;
+  if(t.reserved){ toast("The AI tab can't be deleted"); return; }
+  if(confirm(`Remove the "${t.name}" tab? Cards keep their "${t.tag}" tag — nothing is deleted.`)){
+    if(deleteTab(id) && openTabId===id) openTabId=null;
+    renderTabsView();
+  }
+}
+function renderTabsView(){
+  const v = document.getElementById("view-tabs"); if(!v) return;
+  if((!openTabId || !tabs.some(x=>x.id===openTabId)) && tabs.length) openTabId = tabs[0].id;
+  const pills = tabs.map(tb=>
+    `<button class="catpill${openTabId===tb.id?" on":""}" style="${openTabId===tb.id?"background:var(--ink)":""}" onclick="openTab('${tb.id}')">${tb.reserved?"&#129302; ":""}${esc(tb.name)} <span class="cnt">${tabCardCount(tb.tag)}</span></button>`
+  ).join("") + `<button class="catpill" onclick="newTabPrompt()">+ New tab</button>`;
+  const t = tabs.find(x=>x.id===openTabId);
+  let gridHtml;
+  if(!tabs.length){
+    gridHtml = `<div class="empty"><h2>No tabs yet</h2><p>Create a tab to organize cards around a topic — like "STL files" or a project you're tracking.</p><button class="btn btn-primary" onclick="newTabPrompt()">+ New tab</button></div>`;
+  } else if(!t){
+    gridHtml = "";
+  } else {
+    const list = tabsFilteredList(t.tag);
+    gridHtml = !list.length
+      ? `<div class="empty"><h2>Nothing in "${esc(t.name)}" yet</h2><p>Add cards from Saved or Imported using the tag picker's Tabs section.</p></div>`
+      : `<div class="${gridClass()}">${list.map(r=>r.kind==="saved"?cardHTML(r.it,"saved"):impCardHTML(r.it,r.idx)).join("")}</div>`;
+  }
+  const manageHtml = t && !t.reserved
+    ? `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`
+    : "";
+  v.innerHTML = `<div class="tabbar-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">${pills}</div>` +
+    (t ? `<div style="display:flex;gap:8px;margin-bottom:10px">${manageHtml}</div>` : "") +
+    gridHtml;
+  attachCardImages();
 }
 /* ---- inline tag editing (works across imported + saved) ---- */
 let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
