@@ -73,7 +73,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const body = fn(src, "showTab");
     assert.match(body, /\[\s*"stumble"\s*,\s*"saved"\s*,\s*"imported"\s*,\s*"settings"\s*,\s*"tabs"\s*\]/);
     assert.match(body, /t===["']settings["']\s*\|\|\s*t===["']tabs["']/);
-    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);\s*renderTabsView\(\)/);
+    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);.*renderTabsView\(\)/);
   });
 
   t(label + ": the desktop nav and mobile nav both gained a Tabs button", () => {
