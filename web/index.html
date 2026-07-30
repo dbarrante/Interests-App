@@ -3309,16 +3309,23 @@ function tagRow(tags, idx){
     ? `<div class="tagsline">${tags.map(t=>`<span class="tg${impTag===t?" on":""}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}</span>`).join("")}</div>`
     : "";
 }
-/* ---- inline tag editing (1x1 imported view) ---- */
-let _tagPickIdx = -1;
+/* ---- inline tag editing (works across imported + saved) ---- */
+let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
+let _tagPickIdx = -1;             // index into `imported` — meaningful only when _tagPickScope==="imported"
+let _tagPickId = null;            // id of a `saved` item — meaningful only when _tagPickScope==="saved"
 let _tagMulti = false;        // "Select multiple" is off by default each time the picker opens
 let _tpHi = -1;               // arrow-key highlighted row in the picker list
 let _autoSug = [];            // AutoTag AI suggestions: [{tag, sel}]
 let _autoErr = "";
-function allImportedTags(){
+function allTags(){
   const s=new Set();
   imported.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
+  saved.forEach(i=>(i.tags||[]).forEach(t=>s.add(t)));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+// Resolve the item the currently-open tag picker is editing, regardless of scope.
+function _tagPickItem(){
+  return _tagPickScope==="saved" ? saved.find(s=>s&&s.id===_tagPickId) : imported[_tagPickIdx];
 }
 /* ---- AutoTag learning: per-tag stats teach it what to suggest ---- */
 let tagStats = {};   // { tagLower: {sug,acc,rej,rem} } — hydrated from Store.kv in bootData()
@@ -3360,7 +3367,7 @@ function learnedAvoid(n){
 // simple plural) so cards converge on one spelling instead of near-duplicates.
 function canonicalTag(t){
   const k=(t||"").toLowerCase();
-  for(const e of allImportedTags()){ const ek=e.toLowerCase();
+  for(const e of allTags()){ const ek=e.toLowerCase();
     if(ek===k || ek===k+"s" || ek+"s"===k || ek.replace(/s$/,"")===k.replace(/s$/,"")) return e;
   }
   return t;
