@@ -18,7 +18,8 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 
 function loadAfterTagEdit(src, log) {
   const factory = new Function(
-    "imported", "saved", "Store", "window", "document", "requestAnimationFrame", "tagRow", "renderSaved", "renderImported",
+    "imported", "saved", "Store", "window", "document", "requestAnimationFrame", "tagRow",
+    "renderSaved", "renderImported", "curTab", "renderTabsView",
     fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
   );
   const win = { scrollY: 0, scrollTo: () => {} };
@@ -30,7 +31,9 @@ function loadAfterTagEdit(src, log) {
     (cb) => {},
     () => "<div></div>",
     () => log.calls.push(["renderSaved"]),
-    () => log.calls.push(["renderImported"])
+    () => log.calls.push(["renderImported"]),
+    "saved",   // curTab: neither "tabs" scenario is under test here — that's tests/tabs-final-review-fixes.test.js's job
+    () => log.calls.push(["renderTabsView"])
   );
 }
 

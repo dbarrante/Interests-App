@@ -3680,10 +3680,17 @@ function canonicalTag(t){
 function _afterTagEdit(scope, identity){
   if(scope==="saved"){
     Store.putSaved(saved);
+    if(curTab==="tabs"){ renderTabsView(); return; }
     const y=window.scrollY; renderSaved(); window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
     return;
   }
   Store.putCards(imported);
+  // Skip the in-place DOM-patch attempt below when the Tabs view is what's
+  // actually showing: its card, if any, is NOT inside #view-imported, and
+  // an unscoped document.querySelector would match the HIDDEN Imported copy
+  // first (it comes earlier in document order), silently patching a view no
+  // one is looking at while the visible tab grid stays stale.
+  if(curTab==="tabs"){ renderTabsView(); return; }
   const it=imported[identity];
   if(it && it.id){
     const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
@@ -4269,8 +4276,8 @@ function pasteImageToCard(idx, file){
     setCardImage(it, d);                 // data URL -> IndexedDB (ref in it.img)
     if(it.blocked) delete it.blocked; it.edited=Date.now();
     persistCards();
-    anchorImpOnCard(it);
-    renderImported(); restoreImpScrollSettle();
+    if(curTab==="tabs"){ renderTabsView(); }
+    else { anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
     toast("Image pasted to: "+(it.title||"card"));
   });
 }
@@ -4289,10 +4296,13 @@ function impEditSave(){
   it.edited=Date.now();
   persistCards();
   closeGuide();
-  // keep the edited card in place across the re-render (height may change)
-  anchorImpOnCard(it);
-  renderImported();
-  restoreImpScrollSettle();
+  if(curTab==="tabs"){ renderTabsView(); }
+  else {
+    // keep the edited card in place across the re-render (height may change)
+    anchorImpOnCard(it);
+    renderImported();
+    restoreImpScrollSettle();
+  }
   toast("Card updated");
 }
 let _impScrollY = 0, _impAnchorId = "", _impAnchorTop = 0;
@@ -4434,6 +4444,7 @@ function readerRemove(){
   removeCards(new Set([id]), {scope:"imported"});
   readerSnapshot.splice(readerPos, 1);
   if(curTab==="imported") renderImported();
+  else if(curTab==="tabs") renderTabsView();
   if(!readerSnapshot.length){ closeReader(); toast("Removed 1 card"); return; }
   if(readerPos >= readerSnapshot.length) readerPos = readerSnapshot.length - 1;
   renderReader();
@@ -4466,7 +4477,8 @@ function impRefresh(idx){
   // duplicate). The image was cleared above and the request carries force:true, so the capture
   // overwrites the card with no manual delete.
   enrichOnOpen(it, idx);    // fast Core og/thumbnail fallback while the real screenshot lands
-  renderImportedKeepFocus();   // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
+  // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
+  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
   toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
 }
 async function enrichOnOpen(it, idx){

@@ -91,6 +91,47 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       /openTabId\s*=\s*tabs\[0\]\.id;[^}]*tabSelMode\s*=\s*false;[^}]*tabSelPicks\.clear\(\);[^}]*_tabSug\s*=\s*\[\];[^}]*_tabSugErr\s*=\s*"";[^}]*_tabSugLoading\s*=\s*false;/
     );
   });
+
+  t(label + ": readerRemove renders the Tabs view (not the hidden Imported view) when curTab is 'tabs' — same splice-then-stale-index risk as impDrop", () => {
+    const calls = [];
+    const importedArr = [{ id: "i0" }, { id: "i1" }];
+    const factory = new Function(
+      "readerSnapshot", "readerPos", "imported", "curTab",
+      "snapshotBeforeDestructive", "removeCards", "renderImported", "renderTabsView", "closeReader", "renderReader", "toast",
+      fn(src, "readerRemove") + "\nreturn readerRemove;"
+    );
+    const readerRemove = factory(
+      ["i0", "i1"], 0, importedArr, "tabs",
+      () => {}, () => { importedArr.splice(0,1); },
+      () => calls.push("renderImported"), () => calls.push("renderTabsView"),
+      () => {}, () => {}, () => {}
+    );
+    readerRemove();
+    assert.deepStrictEqual(calls, ["renderTabsView"], "must call renderTabsView, never renderImported, while a tab is open");
+  });
+
+  t(label + ": _afterTagEdit routes BOTH scopes to renderTabsView (not renderSaved/renderImported) when curTab is 'tabs'", () => {
+    const calls = [];
+    const factory = new Function(
+      "imported", "saved", "Store", "window", "document", "requestAnimationFrame", "tagRow",
+      "renderSaved", "renderImported", "curTab", "renderTabsView",
+      fn(src, "_afterTagEdit") + "\nreturn _afterTagEdit;"
+    );
+    const make = () => factory(
+      [{ id: "i0", tags: ["a"] }], [{ id: "s0", tags: ["a"] }],
+      { putSaved: () => {}, putCards: () => {} },
+      { scrollY: 0, scrollTo: () => {} },
+      { querySelector: () => calls.push("querySelector") && null, createElement: () => ({}) },
+      (cb) => {}, () => "<div></div>",
+      () => calls.push("renderSaved"), () => calls.push("renderImported"),
+      "tabs", () => calls.push("renderTabsView")
+    );
+    const afterSaved = make();
+    afterSaved("saved", "s0");
+    const afterImported = make();
+    afterImported("imported", 0);
+    assert.deepStrictEqual(calls, ["renderTabsView", "renderTabsView"], "both scopes must short-circuit to renderTabsView, and the imported scope must not even attempt the unscoped document.querySelector patch");
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
