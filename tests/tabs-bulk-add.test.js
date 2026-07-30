@@ -91,7 +91,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": entering the Tabs view also closes the new Add-to-tab menu", () => {
     const body = fn(src, "showTab");
-    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);\s*impAddTabMenuOpen=false;\s*renderTabsView\(\)/);
+    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);\s*impAddTabMenuOpen=false;.*renderTabsView\(\)/);
   });
 
   t(label + ": savedAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {

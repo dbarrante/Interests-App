@@ -1046,7 +1046,7 @@ function showTab(t, deferStumble){
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
-  if(t==="tabs"){ selMode=false; selPicks.clear(); impAddTabMenuOpen=false; renderTabsView(); }
+  if(t==="tabs"){ selMode=false; selPicks.clear(); impAddTabMenuOpen=false; savedSelMode=false; savedSelPicks.clear(); savedAddTabMenuOpen=false; renderTabsView(); }
   // "NEW" badge semantics: a card is NEW if it was imported after the LAST
   // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
   // The stamp advances on each visit, so badges self-clear once seen. A
