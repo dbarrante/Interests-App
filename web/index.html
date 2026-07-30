@@ -3372,16 +3372,25 @@ function canonicalTag(t){
   }
   return t;
 }
-// Persist + update ONLY the edited card's tag row in place (no full re-render),
-// so the page never jumps while tagging.
-function _afterTagEdit(idx){
+// Persist + patch the DOM for the edited card, regardless of scope.
+// Imported: in-place patch of just that card's tag row (no full re-render, so
+// the page never jumps while tagging) — falls back to a scroll-preserving full
+// render if the card isn't in the DOM. Saved has no per-card DOM patch (its
+// masonry grid re-flows on every render anyway), so it always does the
+// scroll-preserving full render directly.
+function _afterTagEdit(scope, identity){
+  if(scope==="saved"){
+    Store.putSaved(saved);
+    const y=window.scrollY; renderSaved(); window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
+    return;
+  }
   Store.putCards(imported);
-  const it=imported[idx];
+  const it=imported[identity];
   if(it && it.id){
     const sel='.imp-card[data-id="'+(window.CSS&&CSS.escape?CSS.escape(it.id):it.id)+'"]';
     const card=document.querySelector(sel);
     if(card){
-      const tmp=document.createElement("div"); tmp.innerHTML=tagRow(it.tags, idx);
+      const tmp=document.createElement("div"); tmp.innerHTML=tagRow(it.tags, identity);
       const fresh=tmp.firstElementChild;
       const line=card.querySelector(".tagsline");
       if(line && fresh){ line.replaceWith(fresh); return; }
@@ -3391,22 +3400,27 @@ function _afterTagEdit(idx){
   // fallback only if the card isn't in the DOM: scroll-preserving full render
   const y=window.scrollY; renderImported(); window.scrollTo(0,y); requestAnimationFrame(()=>window.scrollTo(0,y));
 }
-function impAddTag(idx, tag){
-  const it=imported[idx]; tag=(tag||"").trim(); if(!it||!tag) return;
+// Picker-driven ADD — always acts on whatever the open picker is showing.
+function cardAddTag(tag){
+  const it=_tagPickItem(); tag=(tag||"").trim(); if(!it||!tag) return;
   if(!it.tags) it.tags=[];
   if(!it.tags.some(t=>t.toLowerCase()===tag.toLowerCase())){ it.tags.push(tag); tsRec(tag,"acc"); tsSave(); }   // learn: user wants this tag
-  _afterTagEdit(idx);
+  _afterTagEdit(_tagPickScope, _tagPickScope==="saved"?_tagPickId:_tagPickIdx);
 }
-function impRemoveTag(idx, tag){
-  const it=imported[idx]; if(!it||!it.tags) return;
+// Direct chip removal — resolved independently of any open picker (the "×" on
+// a rendered chip works whether or not the tag picker itself is open).
+function cardRemoveTag(scope, identity, tag){
+  const arr = scope==="saved" ? saved : imported;
+  const it = scope==="saved" ? arr.find(c=>c&&c.id===identity) : arr[identity];
+  if(!it||!it.tags) return;
   const had=it.tags.some(t=>t===tag);
   it.tags=it.tags.filter(t=>t!==tag);
   if(had){ tsRec(tag,"rem"); tsSave(); }   // learn: user removed this tag (strong negative)
-  _afterTagEdit(idx);
+  _afterTagEdit(scope, identity);
 }
-function impRemoveTagEl(idx, x){
+function cardRemoveTagEl(scope, identity, x){
   const chip=x.closest(".tg"); if(!chip) return;
-  impRemoveTag(idx, chip.getAttribute("data-tag"));
+  cardRemoveTag(scope, identity, chip.getAttribute("data-tag"));
 }
 // position the popover near the clicked control, kept within the viewport
 function positionPicker(ev){
@@ -3417,29 +3431,30 @@ function positionPicker(ev){
   let top=r.bottom+6; if(top+h>window.innerHeight-8) top=Math.max(8, r.top-h-6);
   p.style.left=Math.max(8,left)+"px"; p.style.top=top+"px";
 }
-function openTagPicker(idx, ev){
-  _tagPickIdx=idx;
+function openTagPicker(scope, identity, ev){
+  _tagPickScope = scope||"imported";
+  if(_tagPickScope==="saved"){ _tagPickId=identity; _tagPickIdx=-1; } else { _tagPickIdx=identity; _tagPickId=null; }
   _tagMulti=false; _tpHi=-1;   // single-select + no highlight by default on each open
   renderTagPicker();
   document.getElementById("tagPicker").classList.add("open");
   positionPicker(ev);
   const inp=document.getElementById("tpNew"); if(inp) inp.focus();
 }
-function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; _autoSug=[]; }
+function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; _tagPickId=null; _autoSug=[]; }
 // build the filtered tag rows (used on open and on every keystroke)
 function tagPickerRows(query){
-  const it=imported[_tagPickIdx]; if(!it) return "";
+  const it=_tagPickItem(); if(!it) return "";
   const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
   const q=(query||"").trim().toLowerCase();
   let all=allTags();
   if(q) all=all.filter(t=>t.toLowerCase().includes(q));
-  if(all.length) return all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();impTagToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("");
+  if(all.length) return all.map(t=>`<button class="tp-row${have.has(t.toLowerCase())?" on":""}" data-tag="${esc(t)}" onclick="event.stopPropagation();tagPickerToggle(this)">${have.has(t.toLowerCase())?"&#10003; ":""}${esc(t)}</button>`).join("");
   return q ? `<div class="tp-empty">No matches — Add to create &ldquo;${esc(query.trim())}&rdquo;</div>`
            : `<div class="tp-empty">No tags yet — type one above.</div>`;
 }
 function renderTagPicker(){
-  const p=document.getElementById("tagPicker"); if(!p||_tagPickIdx<0) return;
-  const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
+  const p=document.getElementById("tagPicker"); if(!p) return;
+  const it=_tagPickItem(); if(!it){ closeTagPicker(); return; }
   p.innerHTML =
     `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="tagPickerKey(event)"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
     `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
@@ -3461,28 +3476,28 @@ function tagPickerKey(e){
   const rows=Array.prototype.slice.call(document.querySelectorAll("#tagPicker .tp-row"));
   if(e.key==="ArrowDown"){ e.preventDefault(); if(!rows.length) return; _tpHi=(_tpHi+1>=rows.length)?0:_tpHi+1; tpHighlight(rows); }
   else if(e.key==="ArrowUp"){ e.preventDefault(); if(!rows.length) return; _tpHi=(_tpHi<=0)?rows.length-1:_tpHi-1; tpHighlight(rows); }
-  else if(e.key==="Enter"){ e.preventDefault(); if(_tpHi>=0 && rows[_tpHi]) impTagToggle(rows[_tpHi]); else tagPickerNewTag(); }
+  else if(e.key==="Enter"){ e.preventDefault(); if(_tpHi>=0 && rows[_tpHi]) tagPickerToggle(rows[_tpHi]); else tagPickerNewTag(); }
   else if(e.key==="Escape"){ e.preventDefault(); closeTagPicker(); }
 }
 function tpHighlight(rows){
   rows.forEach((r,i)=>r.classList.toggle("hi", i===_tpHi));
   if(rows[_tpHi] && rows[_tpHi].scrollIntoView) rows[_tpHi].scrollIntoView({block:"nearest"});
 }
-function impTagToggle(btn){
-  if(_tagPickIdx<0) return;
+function tagPickerToggle(btn){
   const tag=btn.getAttribute("data-tag");
-  const it=imported[_tagPickIdx]; if(!it) return;
+  const it=_tagPickItem(); if(!it) return;
   const has=(it.tags||[]).some(t=>t.toLowerCase()===tag.toLowerCase());
-  if(has) impRemoveTag(_tagPickIdx, (it.tags||[]).find(t=>t.toLowerCase()===tag.toLowerCase()));
-  else impAddTag(_tagPickIdx, tag);
+  const identity=_tagPickScope==="saved"?_tagPickId:_tagPickIdx;
+  if(has) cardRemoveTag(_tagPickScope, identity, (it.tags||[]).find(t=>t.toLowerCase()===tag.toLowerCase()));
+  else cardAddTag(tag);
   if(_tagMulti){ renderTagPicker(); const i=document.getElementById("tpNew"); if(i) i.focus(); }   // keep open + typing
   else closeTagPicker();
 }
 function tagPickerNewTag(){
-  if(_tagPickIdx<0) return;
+  const it=_tagPickItem(); if(!it) return;
   const inp=document.getElementById("tpNew"); const tag=inp?inp.value.trim():"";
   if(!tag) return;
-  impAddTag(_tagPickIdx, tag);
+  cardAddTag(tag);
   if(_tagMulti){ renderTagPicker(); const i2=document.getElementById("tpNew"); if(i2) i2.focus(); }
   else closeTagPicker();
 }
@@ -3513,20 +3528,23 @@ async function aiSuggestTags(it){
   out.sort((a,b)=>(vset.has(b.toLowerCase())?1:0)-(vset.has(a.toLowerCase())?1:0));
   return out.slice(0,8);
 }
-function openAutoTag(idx, ev){
+function openAutoTag(scope, identity, ev){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
-  _tagPickIdx=idx; _autoSug=[]; _autoErr="";
+  _tagPickScope = scope||"imported";
+  if(_tagPickScope==="saved"){ _tagPickId=identity; _tagPickIdx=-1; } else { _tagPickIdx=identity; _tagPickId=null; }
+  _autoSug=[]; _autoErr="";
   document.getElementById("tagPicker").classList.add("open");
   renderAutoTag("loading");
   positionPicker(ev);
-  const it=imported[idx]; if(!it){ closeTagPicker(); return; }
+  const it=_tagPickItem(); if(!it){ closeTagPicker(); return; }
+  const openScope=_tagPickScope, openIdentity=identity;
   aiSuggestTags(it).then(tags=>{
-    if(_tagPickIdx!==idx) return;   // picker was closed/changed meanwhile
+    if(_tagPickScope!==openScope || (openScope==="saved"?_tagPickId:_tagPickIdx)!==openIdentity) return;   // picker was closed/changed meanwhile
     const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
     _autoSug = tags.filter(t=>!have.has(t.toLowerCase())).map(t=>({tag:t, sel:false}));
     _autoSug.forEach(s=>tsRec(s.tag,"sug")); tsSave();   // learn: these were offered
     renderAutoTag(); positionPicker(ev);
-  }).catch(e=>{ if(_tagPickIdx!==idx) return; _autoErr=e.message||"Try again"; renderAutoTag("error"); console.warn("AutoTag failed",e); });
+  }).catch(e=>{ if(_tagPickScope!==openScope || (openScope==="saved"?_tagPickId:_tagPickIdx)!==openIdentity) return; _autoErr=e.message||"Try again"; renderAutoTag("error"); console.warn("AutoTag failed",e); });
 }
 function renderAutoTag(state){
   const p=document.getElementById("tagPicker"); if(!p) return;
@@ -3543,8 +3561,7 @@ function renderAutoTag(state){
 function autoToggleSel(i){ if(_autoSug[i]){ _autoSug[i].sel=!_autoSug[i].sel; renderAutoTag(); } }
 function autoRemoveSug(i){ const s=_autoSug[i]; if(s){ tsRec(s.tag,"rej"); tsSave(); } _autoSug.splice(i,1); renderAutoTag(); }
 function autoAccept(){
-  if(_tagPickIdx<0) return;
-  const it=imported[_tagPickIdx]; if(!it){ closeTagPicker(); return; }
+  const it=_tagPickItem(); if(!it){ closeTagPicker(); return; }
   const anySel=_autoSug.some(s=>s.sel);
   const pick=_autoSug.filter(s=>anySel?s.sel:true).map(s=>s.tag);
   if(!pick.length){ toast("No tags selected"); return; }
@@ -3554,7 +3571,7 @@ function autoAccept(){
   if(!it.tags) it.tags=[];
   let added=0;
   pick.forEach(t=>{ if(!it.tags.some(x=>x.toLowerCase()===t.toLowerCase())){ it.tags.push(t); added++; } });
-  _afterTagEdit(_tagPickIdx);
+  _afterTagEdit(_tagPickScope, _tagPickScope==="saved"?_tagPickId:_tagPickIdx);
   closeTagPicker();
   toast(added?("Added "+added+" tag"+(added>1?"s":"")):"Already on the card");
 }
