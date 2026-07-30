@@ -1311,7 +1311,7 @@ function mshotsRetry(el){
     setTimeout(()=>{ if(el.isConnected && el.src.includes("/mshots/")) el.src = el.src.split("&rnd=")[0]+"&rnd="+Date.now(); }, 9000);
   }
 }
-function cardHTML(item, mode){
+function cardHTML(item, mode, tabTag){
   const cat = catByName(item.category);
   const dom = domain(item.url);
   const fav = dom ? `https://www.google.com/s2/favicons?domain=${dom}&sz=64` : "";
@@ -1346,7 +1346,9 @@ function cardHTML(item, mode){
       ${mode==="saved"?tagRow(item.tags, item.id, "saved"):""}
     </div>
     <div class="actions">
-      <button class="act saved" onclick="unsaveItem('${id}')">&#10003; Saved — remove</button>
+      ${tabTag
+        ? `<button class="act saved" data-tab-tag="${esc(tabTag)}" title="Remove from this tab (card stays in Saved)" onclick="removeCardFromTab('saved','${id}',this.dataset.tabTag)">&#10005; Remove from tab</button>`
+        : `<button class="act saved" onclick="unsaveItem('${id}')">&#10003; Saved — remove</button>`}
     </div>
   </div>`;
 }
@@ -3541,7 +3543,7 @@ function renderTabsView(){
           // BEFORE rendering the card, or impCardHTML bakes in a blank data-id/
           // _hoverCardId for this pass (self-heals next render, but no reason to).
           if(r.kind==="imported" && !r.it.id){ r.it.id=newId(); Store.putCards(imported); }
-          const inner = r.kind==="saved" ? cardHTML(r.it,"saved") : impCardHTML(r.it,r.idx);
+          const inner = r.kind==="saved" ? cardHTML(r.it,"saved",t.tag) : impCardHTML(r.it,r.idx,t.tag);
           const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
@@ -3664,6 +3666,19 @@ function removeTabPicksFromTab(){
   tabSelMode=false; tabSelPicks.clear();
   renderTabsView();
   toast(n?("Removed "+n+" card"+(n>1?"s":"")+" from "+t.name):"Nothing removed");
+}
+// The single-card ✕ on a card shown INSIDE a tab: unlike impDrop/unsaveItem (the
+// same button's meaning in Imported/Saved, which permanently delete the card),
+// here it only strips this tab's own tag — the card stays everywhere else. Same
+// tag-stripping logic as removeTabPicksFromTab's bulk path, just for one card
+// with no select-mode step required.
+function removeCardFromTab(scope, id, tag){
+  const it = scope==="saved" ? saved.find(c=>c&&c.id===id) : imported.find(c=>c&&c.id===id);
+  if(!it || !it.tags || !it.tags.some(x=>x.toLowerCase()===tag.toLowerCase())) return;
+  it.tags = it.tags.filter(x=>x.toLowerCase()!==tag.toLowerCase());
+  if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+  refreshTabsViewIfShowing();
+  toast("Removed from tab");
 }
 /* ---- AI-suggest cards for a tab ---- */
 let _tabSug = [];       // AI-suggested candidate cards for the open tab: [{scope,identity,title,sel}]
@@ -4183,7 +4198,7 @@ function openSelected(){
   openUrlsInTabs(picks.map(it=>it.url), {skip:_openedSel});
 }
 function fmtCardDate(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }catch(e){ return ""; } }
-function impCardHTML(it,idx){
+function impCardHTML(it,idx,tabTag){
   const dom = it.url ? domain(it.url) : "";
   const yt = /^YouTube/i.test(it.title) || /youtu/.test(dom);
   const thumb = impThumb(it);
@@ -4216,7 +4231,9 @@ function impCardHTML(it,idx){
       <div class="imp-acts">
         ${it.liked?"":`<button onclick="impLike(${idx})">&#128077; Like</button>`}
         ${it.url?`<button onclick="impSave(${idx})">&#128278; Save</button>`:""}
-        <button onclick="impDrop(${idx})">&#10005;</button>
+        ${tabTag
+          ? `<button data-tab-tag="${esc(tabTag)}" title="Remove from this tab (card stays everywhere else)" onclick="removeCardFromTab('imported','${esc(it.id||'')}',this.dataset.tabTag)">&#10005; Remove from tab</button>`
+          : `<button onclick="impDrop(${idx})">&#10005;</button>`}
       </div>
     </div>
   </div>`;
