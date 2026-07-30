@@ -15,12 +15,12 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 
 function loadTagRow(src, globals) {
   const factory = new Function(
-    "esc", "curTab", "viewMode", "impTag",
+    "esc", "curTab", "viewMode", "impTag", "AI_TAB_TAG",
     fn(src, "tagRow") + "\nreturn tagRow;"
   );
   return factory(
     (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
-    globals.curTab, globals.viewMode, globals.impTag
+    globals.curTab, globals.viewMode, globals.impTag, "__ai_research__"
   );
 }
 

@@ -21,10 +21,10 @@ function fn(src, name) {
 // picker state, mirroring loadRowRenderers' technique in image-dupes-ui.test.js.
 function load(src, state) {
   const factory = new Function(
-    "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId",
+    "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId", "AI_TAB_TAG",
     fn(src, "allTags") + "\n" + fn(src, "_tagPickItem") + "\nreturn { allTags, _tagPickItem };"
   );
-  return factory(state.imported, state.saved, state.scope, state.idx, state.id);
+  return factory(state.imported, state.saved, state.scope, state.idx, state.id, "__ai_research__");
 }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
