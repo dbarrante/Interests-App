@@ -3455,6 +3455,7 @@ function tabsFilteredList(tag){
 function openTab(id){
   openTabId = id;
   tabSelMode = false; tabSelPicks.clear();
+  _tabSug = []; _tabSugErr = ""; _tabSugLoading = false;
   window.scrollTo(0,0);
   renderTabsView();
 }
@@ -3505,9 +3506,10 @@ function renderTabsView(){
   const manageHtml = !t ? "" : (t.reserved ? "" : `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`)
     + (t ? (tabSelMode
         ? `<button class="btn btn-ghost" onclick="removeTabPicksFromTab()" ${tabSelPicks.size?"":"disabled"}>Remove from tab (${tabSelPicks.size})</button><button class="btn btn-ghost" onclick="toggleTabSelMode()">Done</button>`
-        : `<button class="btn btn-ghost" onclick="toggleTabSelMode()">&#9745; Select</button>`) : "");
+        : `<button class="btn btn-ghost" onclick="toggleTabSelMode()">&#9745; Select</button><button class="btn btn-ghost" onclick="openTabSuggest()">&#10024; Suggest cards</button>`) : "");
   v.innerHTML = `<div class="tabbar-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">${pills}</div>` +
     (t ? `<div style="display:flex;gap:8px;margin-bottom:10px">${manageHtml}</div>` : "") +
+    (t ? tabSuggestPanelHTML() : "") +
     gridHtml;
   attachCardImages();
 }
@@ -3608,6 +3610,61 @@ function removeTabPicksFromTab(){
   tabSelMode=false; tabSelPicks.clear();
   renderTabsView();
   toast(n?("Removed "+n+" card"+(n>1?"s":"")+" from "+t.name):"Nothing removed");
+}
+/* ---- AI-suggest cards for a tab ---- */
+let _tabSug = [];       // AI-suggested candidate cards for the open tab: [{scope,identity,title,sel}]
+let _tabSugErr = "";
+let _tabSugLoading = false;
+async function aiSuggestCardsForTab(tab){
+  const already = new Set(tabsFilteredList(tab.tag).map(r=>r.kind+":"+(r.kind==="saved"?r.it.id:r.idx)));
+  const candidates = [];
+  imported.forEach((it,idx)=>{ if(!already.has("imported:"+idx)) candidates.push({scope:"imported", identity:idx, title:it.title, desc:it.desc}); });
+  saved.forEach(it=>{ if(it && !already.has("saved:"+it.id)) candidates.push({scope:"saved", identity:it.id, title:it.title, desc:it.desc}); });
+  const batch = candidates.slice(0,40);
+  if(!batch.length) throw new Error("Nothing left to suggest — every card is already in this tab");
+  const listText = batch.map((c,i)=>`${i}. "${(c.title||"").slice(0,120)}" — ${(c.desc||"").slice(0,160)}`).join("\n");
+  const prompt = `A user has a tab called "${tab.name}" for organizing cards around that theme. Given this numbered list of candidate cards (title — description), return the indices of ones that clearly belong in a "${tab.name}" tab. Return ONLY a JSON array of integers, e.g. [0,3,7]. If none clearly fit, return [].\n\n${listText}`;
+  const text = await callAI(prompt);
+  const m = text.match(/\[[\s\S]*\]/); if(!m) throw new Error("No suggestions returned");
+  let idxArr; try{ idxArr = JSON.parse(m[0]); }catch(e){ throw new Error("Could not parse suggestions"); }
+  if(!Array.isArray(idxArr)) throw new Error("Unexpected response");
+  return idxArr.filter(i=>Number.isInteger(i) && i>=0 && i<batch.length).map(i=>batch[i]);
+}
+function openTabSuggest(){
+  const t = tabs.find(x=>x.id===openTabId); if(!t) return;
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
+  _tabSug=[]; _tabSugErr=""; _tabSugLoading=true;
+  renderTabsView();
+  aiSuggestCardsForTab(t).then(cands=>{
+    _tabSugLoading=false;
+    _tabSug = cands.map(c=>Object.assign({sel:false}, c));
+    renderTabsView();
+  }).catch(e=>{ _tabSugLoading=false; _tabSugErr=e.message||"Try again"; renderTabsView(); });
+}
+function tabSugToggleSel(i){ if(_tabSug[i]){ _tabSug[i].sel=!_tabSug[i].sel; renderTabsView(); } }
+function tabSugRemove(i){ _tabSug.splice(i,1); renderTabsView(); }
+function tabSugAccept(){
+  const t = tabs.find(x=>x.id===openTabId); if(!t) return;
+  const anySel = _tabSug.some(s=>s.sel);
+  const pick = _tabSug.filter(s=>anySel?s.sel:true);
+  if(!pick.length){ toast("No cards selected"); return; }
+  let n=0;
+  pick.forEach(c=>{
+    const it = c.scope==="saved" ? saved.find(s=>s&&s.id===c.identity) : imported[c.identity];
+    if(it){ if(!it.tags) it.tags=[]; if(!it.tags.some(x=>x.toLowerCase()===t.tag.toLowerCase())){ it.tags.push(t.tag); n++; } }
+  });
+  Store.putCards(imported); Store.putSaved(saved);
+  _tabSug=[];
+  renderTabsView();
+  toast(n?("Added "+n+" card"+(n>1?"s":"")+" to "+t.name):"Already in "+t.name);
+}
+function tabSuggestPanelHTML(){
+  if(_tabSugLoading) return `<div class="tp-head"><span class="spin"></span> Suggesting cards for this tab…</div>`;
+  if(_tabSugErr) return `<div class="tp-head">Suggest failed</div><div class="tp-empty">${esc(_tabSugErr)}</div>`;
+  if(!_tabSug.length) return "";
+  const anySel = _tabSug.some(s=>s.sel);
+  const chips = _tabSug.map((c,i)=>`<span class="tp-sug${c.sel?" sel":""}" onclick="tabSugToggleSel(${i})">${esc((c.title||"").slice(0,60))}<span class="tgx" title="Drop" onclick="event.stopPropagation();tabSugRemove(${i})">&times;</span></span>`).join("");
+  return `<div class="tp-head">AI suggestions <span class="tp-hint">click to select · X to drop</span></div><div class="tp-sugs">${chips}</div><div class="tp-actions"><button class="tp-accept" onclick="tabSugAccept()">${anySel?"Accept selected":"Accept all"}</button><button class="tp-cancel" onclick="_tabSug=[];renderTabsView()">Cancel</button></div>`;
 }
 /* ---- inline tag editing (works across imported + saved) ---- */
 let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
