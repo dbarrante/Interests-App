@@ -3506,12 +3506,14 @@ function renderTabsView(){
     gridHtml = !list.length
       ? `<div class="empty"><h2>Nothing in "${esc(t.name)}" yet</h2><p>Add cards from Saved or Imported using the tag picker's Tabs section.</p></div>`
       : `<div class="${gridClass()}">${list.map(r=>{
-          const inner = r.kind==="saved" ? cardHTML(r.it,"saved") : impCardHTML(r.it,r.idx);
           // Imported identity is the card's stable id, NOT its array index — a pick
           // made now must still resolve to the right card even if something else
           // (a delete, a background capture-drain) splices `imported` before the
-          // pick is acted on, which would silently shift every later index.
+          // pick is acted on, which would silently shift every later index. Assign
+          // BEFORE rendering the card, or impCardHTML bakes in a blank data-id/
+          // _hoverCardId for this pass (self-heals next render, but no reason to).
           if(r.kind==="imported" && !r.it.id){ r.it.id=newId(); Store.putCards(imported); }
+          const inner = r.kind==="saved" ? cardHTML(r.it,"saved") : impCardHTML(r.it,r.idx);
           const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
@@ -3592,7 +3594,7 @@ function addImportedPicksToTab(tabId){
 }
 /* ---- bulk "Remove from tab" (inside an open tab) ---- */
 let tabSelMode = false;
-let tabSelPicks = new Set();   // composite keys: "imported:<idx>" or "saved:<id>"
+let tabSelPicks = new Set();   // composite keys: "imported:<id>" or "saved:<id>"
 function toggleTabSelMode(){ tabSelMode=!tabSelMode; if(!tabSelMode) tabSelPicks.clear(); renderTabsView(); }
 function toggleTabPick(scope, identity){
   const key = scope+":"+identity;
@@ -4641,9 +4643,9 @@ async function enrichOnOpen(it, idx){
     }
     if(changed){
       Store.putCards(imported);
-      if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
+      if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
       toast("Card updated with article info");
-      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); } };
+      const onReturn = ()=>{ document.removeEventListener("visibilitychange", onReturn); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing(); };
       document.addEventListener("visibilitychange", onReturn);
     }
   }catch(e){ console.warn("enrichOnOpen failed",e); }
@@ -6451,7 +6453,7 @@ async function impRefreshTitle(idx){
   // Anchor BEFORE the re-render, while the old DOM is still on screen — without
   // this, restoreImpScrollSettle ran against whatever anchor some earlier
   // interaction left behind and jumped away from the card being refreshed.
-  if(!refreshTabsViewIfShowing()){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); }
+  if(curTab==="imported"){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
   toast("New title: "+out, 7000);
 }
 // Resolve a Title-issues row key ("<scope>:<id>") back to its live card.
@@ -7821,7 +7823,7 @@ async function drainCaptures(){
   if(autoImported.length){
     try{ await ingestImported(autoImported); }
     catch(e){ console.error("[auto-import] durable card write failed", e); return; }
-    updateCounts(); if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
+    updateCounts(); if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
   }   // updateCounts: the tab badge lagged after an auto-import-only drain (task review polish)
   // keep the active card alive on a rolling window while you're working on it
   if(refreshActive){ try{ await Store.kvSet("ia_last_opened", {id:lastOpened.id, ts:Date.now()}); }catch(e){} }
@@ -7839,7 +7841,7 @@ async function drainCaptures(){
     // button — a dead-card splice here must refresh whichever view is showing
     // (Critical, F5, final review round 3), or a stale Tabs grid's next click
     // acts on the wrong post-splice index, same as impDrop's already-fixed risk.
-    if(!refreshTabsViewIfShowing()){ renderImported(); restoreImpScrollSettle(); }
+    if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
     if(removedDead){
       toast("Removed "+(_deadUndo?("“"+(_deadUndo.title||"card").slice(0,40)+"”"):removedDead+" card(s)")+" — unreachable site. Click to undo.", 9000, undoDead);
     } else {
