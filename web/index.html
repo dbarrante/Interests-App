@@ -3301,18 +3301,57 @@ ${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).jo
 }
 function tagRow(tags, identity, scope){
   scope = scope || "imported";
+  tags = (tags||[]).filter(t=>t!==AI_TAB_TAG);   // the reserved AI-tab tag is an implementation detail, never shown as a chip
   if(scope==="saved"){
-    const chips=(tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}">${esc(t)}<span class="tgx" title="Remove tag" onclick="event.stopPropagation();cardRemoveTagEl('saved','${esc(identity)}',this)">&times;</span></span>`).join("");
+    const chips=tags.map(t=>`<span class="tg" data-tag="${esc(t)}">${esc(t)}<span class="tgx" title="Remove tag" onclick="event.stopPropagation();cardRemoveTagEl('saved','${esc(identity)}',this)">&times;</span></span>`).join("");
     return `<div class="tagsline edit">${chips}<span class="tg tg-add" title="Add tag" onclick="event.stopPropagation();openTagPicker('saved','${esc(identity)}',event)">+</span><span class="tg tg-auto" title="AutoTag with AI" onclick="event.stopPropagation();openAutoTag('saved','${esc(identity)}',event)">&#10024; AI</span></div>`;
   }
   // Editable chips + a "+" picker in the 1x1 imported view; read-only elsewhere.
   if(typeof identity==="number" && curTab==="imported" && viewMode==="g1"){
-    const chips=(tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}<span class="tgx" title="Remove tag" onclick="event.stopPropagation();cardRemoveTagEl('imported',${identity},this)">&times;</span></span>`).join("");
+    const chips=tags.map(t=>`<span class="tg" data-tag="${esc(t)}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}<span class="tgx" title="Remove tag" onclick="event.stopPropagation();cardRemoveTagEl('imported',${identity},this)">&times;</span></span>`).join("");
     return `<div class="tagsline edit">${chips}<span class="tg tg-add" title="Add tag" onclick="event.stopPropagation();openTagPicker('imported',${identity},event)">+</span><span class="tg tg-auto" title="AutoTag with AI" onclick="event.stopPropagation();openAutoTag('imported',${identity},event)">&#10024; AI</span></div>`;
   }
-  return tags && tags.length
+  return tags.length
     ? `<div class="tagsline">${tags.map(t=>`<span class="tg${impTag===t?" on":""}" onclick="event.stopPropagation();if(curTab!=='imported')showTab('imported');setImpTag('${esc(t)}')">${esc(t)}</span>`).join("")}</div>`
     : "";
+}
+
+/* ---- custom tabs (pinned tags) ---- */
+const AI_TAB_TAG = "__ai_research__";   // namespaced so it can never collide with a user-typed tag
+let tabs = [];   // [{id,name,tag,reserved,createdAt}] — hydrated from Store.kv in bootData()
+function cardHasTag(it, tag){ return !!(it && it.tags && it.tags.includes(tag)); }
+function tabCardCount(tag){
+  return imported.filter(it=>cardHasTag(it,tag)).length + saved.filter(it=>cardHasTag(it,tag)).length;
+}
+// Auto-creates the reserved AI tab exactly once (idempotent — safe to call every boot).
+function bootstrapAiTab(){
+  if(tabs.some(t=>t.reserved)) return;
+  tabs.push({ id:newId(), name:"AI", tag:AI_TAB_TAG, reserved:true, createdAt:Date.now() });
+  save("tabs", tabs);
+}
+function createTab(name){
+  name=(name||"").trim();
+  if(!name) return null;
+  const tag=name.toLowerCase();
+  if(tabs.some(t=>t.tag===tag)){ toast(`A tab named "${name}" already exists`); return null; }
+  const t={ id:newId(), name, tag, reserved:false, createdAt:Date.now() };
+  tabs.push(t);
+  save("tabs", tabs);
+  return t;
+}
+function renameTab(id, name){
+  name=(name||"").trim(); if(!name) return;
+  const t=tabs.find(x=>x.id===id);
+  if(!t || t.reserved) return;
+  t.name=name;
+  save("tabs", tabs);
+}
+function deleteTab(id){
+  const t=tabs.find(x=>x.id===id);
+  if(!t || t.reserved) return false;
+  tabs=tabs.filter(x=>x.id!==id);
+  save("tabs", tabs);
+  return true;
 }
 /* ---- inline tag editing (works across imported + saved) ---- */
 let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
@@ -3324,8 +3363,8 @@ let _autoSug = [];            // AutoTag AI suggestions: [{tag, sel}]
 let _autoErr = "";
 function allTags(){
   const s=new Set();
-  imported.forEach(i=>(i&&i.tags||[]).forEach(t=>s.add(t)));
-  saved.forEach(i=>(i&&i.tags||[]).forEach(t=>s.add(t)));
+  imported.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG) s.add(t); }));
+  saved.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG) s.add(t); }));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 // Resolve the item the currently-open tag picker is editing, regardless of scope.
@@ -3523,7 +3562,7 @@ async function aiSuggestTags(it){
   if(!Array.isArray(arr)) throw new Error("Unexpected response");
   // clean -> canonicalize onto existing vocab -> drop learned/bad tags -> dedup
   const seen=new Set(), cleaned=[], loose=[];
-  arr.forEach(t=>{ t=(""+t).replace(/^#/,"").trim(); if(!t||t.length>40) return; t=canonicalTag(t); const k=t.toLowerCase(); if(seen.has(k)) return; seen.add(k);
+  arr.forEach(t=>{ t=(""+t).replace(/^#/,"").trim(); if(!t||t.length>40||t.toLowerCase()===AI_TAB_TAG) return; t=canonicalTag(t); const k=t.toLowerCase(); if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) loose.push(t);          // keep as a fallback (ignores learned suppression)
     if(!tagSuppressed(t)) cleaned.push(t);
   });
@@ -7590,6 +7629,8 @@ async function bootData(){
   impSort   = (await load("isort", "newest")) || "newest";
   impUnreviewed = !!(await load("iunrev", false));
   tagStats  = (await load("tagstats", {})) || {};
+  tabs = (await load("tabs", [])) || [];
+  bootstrapAiTab();
   try{ const ph = await Store.kvGet("ia_ph_fps"); _phFps = new Set(Array.isArray(ph)?ph:[]); }catch(e){ _phFps = new Set(); }
   try{ _fbTested = !!(await Store.kvGet("ia_fbtested")); _fbRenderTested = !!(await Store.kvGet("ia_fbrender_tested")); }catch(e){}
   const st = await Store.kvGet("ia_settings"); if(st && typeof st==="object") S = Object.assign(S, st);
