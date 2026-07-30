@@ -1046,7 +1046,7 @@ function showTab(t, deferStumble){
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
-  if(t==="tabs"){ selMode=false; selPicks.clear(); impAddTabMenuOpen=false; savedSelMode=false; savedSelPicks.clear(); savedAddTabMenuOpen=false; renderTabsView(); }
+  if(t==="tabs"){ selMode=false; selPicks.clear(); impAddTabMenuOpen=false; savedSelMode=false; savedSelPicks.clear(); savedAddTabMenuOpen=false; tabSelMode=false; tabSelPicks.clear(); _tabSug=[]; _tabSugErr=""; _tabSugLoading=false; renderTabsView(); }
   // "NEW" badge semantics: a card is NEW if it was imported after the LAST
   // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
   // The stamp advances on each visit, so badges self-clear once seen. A
@@ -1347,7 +1347,8 @@ function openItem(id,mode){
 }
 function unsaveItem(id){
   saved = saved.filter(i=>i.id!==id);
-  persistAll(); renderSaved();
+  persistAll();
+  if(curTab==="tabs") renderTabsView(); else renderSaved();
 }
 function resetLearning(){
   if(!confirm("Clear save/click/hide history the AI learns from? (Your saved items list stays.)")) return;
@@ -3335,7 +3336,7 @@ function tagRow(tags, identity, scope){
 /* ---- custom tabs (pinned tags) ---- */
 const AI_TAB_TAG = "__ai_research__";   // namespaced so it can never collide with a user-typed tag
 let tabs = [];   // [{id,name,tag,reserved,createdAt}] — hydrated from Store.kv in bootData()
-function cardHasTag(it, tag){ return !!(it && it.tags && it.tags.includes(tag)); }
+function cardHasTag(it, tag){ return !!(it && it.tags && it.tags.some(x=>x.toLowerCase()===tag.toLowerCase())); }
 function tabCardCount(tag){
   return imported.filter(it=>cardHasTag(it,tag)).length + saved.filter(it=>cardHasTag(it,tag)).length;
 }
@@ -3408,7 +3409,14 @@ function deleteTabPrompt(id){
 }
 function renderTabsView(){
   const v = document.getElementById("view-tabs"); if(!v) return;
-  if((!openTabId || !tabs.some(x=>x.id===openTabId)) && tabs.length) openTabId = tabs[0].id;
+  if((!openTabId || !tabs.some(x=>x.id===openTabId)) && tabs.length){
+    // The open tab is changing out from under the view (e.g. it was just
+    // deleted) — any in-progress select/suggestion state referred to THAT
+    // tab and must not silently carry over onto whichever tab we land on.
+    openTabId = tabs[0].id;
+    tabSelMode = false; tabSelPicks.clear();
+    _tabSug = []; _tabSugErr = ""; _tabSugLoading = false;
+  }
   const pills = tabs.map(tb=>
     `<button class="catpill${openTabId===tb.id?" on":""}" style="${openTabId===tb.id?"background:var(--ink)":""}" onclick="openTab('${tb.id}')">${tb.reserved?"&#129302; ":""}${esc(tb.name)} <span class="cnt">${tabCardCount(tb.tag)}</span></button>`
   ).join("") + `<button class="catpill" onclick="newTabPrompt()">+ New tab</button>`;
@@ -4154,7 +4162,7 @@ async function cardEditSave(){
   it.title = title.slice(0,250); it.titleSet = true;
   await Store.putSaved(saved);
   closeGuide();
-  renderSaved();
+  if(curTab==="tabs") renderTabsView(); else renderSaved();
   toast("Title updated");
 }
 // Fill the open editor's Title box from the AI pipeline. Deliberately writes
@@ -4934,12 +4942,19 @@ function groomNoLink(){
   toast("Removed "+n+" link-less card"+(n===1?"":"s"));
 }
 
+// Imported cards can also be shown (with their real `imported` index) inside
+// the Tabs view (renderTabsView), which has its own container and doesn't
+// exist while curTab!=="tabs". Any handler that mutates `imported` by index
+// must re-render THAT view when it's the one currently visible — otherwise
+// the tab grid keeps stale, index-bound handlers after a splice reshuffles
+// every later card's real index, and the next click acts on the wrong card.
 function impLike(idx){
   const it=imported[idx]; if(!it) return;
   it.liked=true;
   likes.push({title:it.title, category:guessCat(it.title), ts:Date.now()});
   if(likes.length>60) likes=likes.slice(-60);
-  Store.putCards(imported); persistAll(); renderImportedKeepFocus();
+  Store.putCards(imported); persistAll();
+  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
   toast("Liked — more like this in Stumble");
 }
 function impSave(idx){
@@ -4956,7 +4971,9 @@ function impSave(idx){
     });
   }
   imported.splice(idx,1);
-  Store.putCards(imported); persistAll(); renderImportedKeepFocus(); updateCounts();
+  Store.putCards(imported); persistAll();
+  if(curTab==="tabs") renderTabsView(); else renderImportedKeepFocus();
+  updateCounts();
   toast("Moved to Saved");
 }
 function impDrop(idx){
@@ -4973,7 +4990,7 @@ function impDrop(idx){
   const gone=imported.splice(idx,1)[0];
   if(gone && gone.img && (""+gone.img).indexOf("idb:")===0){ Store.imgDel(gone.id); } // free its stored image
   Store.putCards(imported);
-  renderImported(); restoreImpScrollSettle();
+  if(curTab==="tabs") renderTabsView(); else { renderImported(); restoreImpScrollSettle(); }
   updateCounts();
 }
 

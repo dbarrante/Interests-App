@@ -19,11 +19,14 @@ function t(n, fn) { try { fn(); pass++; console.log("  ok  " + n); } catch (e) {
 function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " not found in source"); return m; }
 
 function loadFilteredList(src, importedArr, savedArr){
+  // Extract the REAL cardHasTag from source rather than hand-mocking its
+  // matching rule — a hand-written mock can silently drift from the actual
+  // implementation (e.g. case-sensitivity) and hide a real regression.
   const factory = new Function(
-    "imported", "saved", "cardHasTag",
-    fn(src,"tabsFilteredList") + "\nreturn tabsFilteredList;"
+    "imported", "saved",
+    fn(src,"cardHasTag") + "\n" + fn(src,"tabsFilteredList") + "\nreturn tabsFilteredList;"
   );
-  return factory(importedArr, savedArr, (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)));
+  return factory(importedArr, savedArr);
 }
 
 function loadOpenTab(src, initialOpenTabId, log){

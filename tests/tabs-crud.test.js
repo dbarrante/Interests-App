@@ -116,6 +116,12 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(api.cardHasTag(null, "a"), false);
   });
 
+  t(label + ": cardHasTag matches case-insensitively — createTab lowercases a tab's tag, but a card's actual tag chip may keep whatever case was typed/imported", () => {
+    const api = loadTabs(src, {});
+    assert.strictEqual(api.cardHasTag({ tags: ["STL Files"] }, "stl files"), true);
+    assert.strictEqual(api.cardHasTag({ tags: ["stl files"] }, "STL Files"), true);
+  });
+
   t(label + ": tabCardCount counts matching cards across BOTH imported and saved, tolerating null holes", () => {
     const importedArr = [{ tags: ["stl files"] }, { tags: ["other"] }];
     const savedArr = [{ tags: ["stl files"] }, { tags: [] }, null];   // bulk-remove leaves null holes in `saved`
