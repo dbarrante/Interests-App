@@ -3534,7 +3534,10 @@ function toggleSavedSelMode(){ savedSelMode=!savedSelMode; if(!savedSelMode){ sa
 function toggleSavedPick(id){ savedSelPicks.has(id)?savedSelPicks.delete(id):savedSelPicks.add(id); renderSaved(); }
 function toggleSavedAddTabMenu(){ savedAddTabMenuOpen=!savedAddTabMenuOpen; renderSaved(); }
 function savedAddTabMenuHTML(){
-  if(!savedAddTabMenuOpen) return "";
+  // Also close if the backing selection emptied out from under it (e.g. the
+  // user unchecked every card) — otherwise the menu would stay visibly open
+  // next to a now-disabled trigger, and clicking a tab row would silently no-op.
+  if(!savedAddTabMenuOpen || !savedSelPicks.size) return "";
   if(!tabs.length) return `<div class="addtab-menu"><div class="tp-empty">No tabs yet — create one from the Tabs nav area.</div></div>`;
   return `<div class="addtab-menu">${tabs.map(tb=>`<button class="tp-row" onclick="addSavedPicksToTab('${tb.id}')">${tb.reserved?"&#129302; ":""}${esc(tb.name)}</button>`).join("")}</div>`;
 }
@@ -3550,7 +3553,11 @@ function addSavedPicksToTab(tabId){
 let impAddTabMenuOpen = false;
 function toggleImpAddTabMenu(){ impAddTabMenuOpen=!impAddTabMenuOpen; renderImportedKeepFocus(); }
 function impAddTabMenuHTML(){
-  if(!impAddTabMenuOpen) return "";
+  // Also close if the backing selection emptied out from under it (e.g.
+  // captureSelected()/fetchSelectedInfo() cleared selPicks) — otherwise the
+  // menu would stay visibly open next to a now-disabled trigger, and clicking
+  // a tab row would silently no-op.
+  if(!impAddTabMenuOpen || !selPicks.size) return "";
   if(!tabs.length) return `<div class="addtab-menu"><div class="tp-empty">No tabs yet — create one from the Tabs nav area.</div></div>`;
   return `<div class="addtab-menu">${tabs.map(tb=>`<button class="tp-row" onclick="addImportedPicksToTab('${tb.id}')">${tb.reserved?"&#129302; ":""}${esc(tb.name)}</button>`).join("")}</div>`;
 }

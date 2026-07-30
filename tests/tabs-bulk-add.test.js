@@ -93,6 +93,24 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const body = fn(src, "showTab");
     assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);\s*impAddTabMenuOpen=false;\s*renderTabsView\(\)/);
   });
+
+  t(label + ": savedAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {
+    const factory = new Function(
+      "savedAddTabMenuOpen", "savedSelPicks", "tabs", "esc",
+      fn(src, "savedAddTabMenuHTML") + "\nreturn savedAddTabMenuHTML;"
+    );
+    const menu = factory(true, new Set(), [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], (s) => s);
+    assert.strictEqual(menu(), "");
+  });
+
+  t(label + ": impAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {
+    const factory = new Function(
+      "impAddTabMenuOpen", "selPicks", "tabs", "esc",
+      fn(src, "impAddTabMenuHTML") + "\nreturn impAddTabMenuHTML;"
+    );
+    const menu = factory(true, new Set(), [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], (s) => s);
+    assert.strictEqual(menu(), "");
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
