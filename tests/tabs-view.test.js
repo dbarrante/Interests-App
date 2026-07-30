@@ -28,10 +28,10 @@ function loadFilteredList(src, importedArr, savedArr){
 
 function loadOpenTab(src, initialOpenTabId, log){
   const factory = new Function(
-    "openTabId", "window", "renderTabsView",
+    "openTabId", "window", "renderTabsView", "tabSelMode", "tabSelPicks",
     fn(src, "openTab") + "\nreturn { openTab, get: () => openTabId };"
   );
-  return factory(initialOpenTabId, { scrollTo: () => {} }, () => log.push("rendered"));
+  return factory(initialOpenTabId, { scrollTo: () => {} }, () => log.push("rendered"), false, new Set());
 }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {

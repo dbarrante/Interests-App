@@ -3454,6 +3454,7 @@ function tabsFilteredList(tag){
 }
 function openTab(id){
   openTabId = id;
+  tabSelMode = false; tabSelPicks.clear();
   window.scrollTo(0,0);
   renderTabsView();
 }
@@ -3495,11 +3496,16 @@ function renderTabsView(){
     const list = tabsFilteredList(t.tag);
     gridHtml = !list.length
       ? `<div class="empty"><h2>Nothing in "${esc(t.name)}" yet</h2><p>Add cards from Saved or Imported using the tag picker's Tabs section.</p></div>`
-      : `<div class="${gridClass()}">${list.map(r=>r.kind==="saved"?cardHTML(r.it,"saved"):impCardHTML(r.it,r.idx)).join("")}</div>`;
+      : `<div class="${gridClass()}">${list.map(r=>{
+          const inner = r.kind==="saved" ? cardHTML(r.it,"saved") : impCardHTML(r.it,r.idx);
+          const identity = r.kind==="saved" ? r.it.id : r.idx;
+          return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
+        }).join("")}</div>`;
   }
-  const manageHtml = t && !t.reserved
-    ? `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`
-    : "";
+  const manageHtml = !t ? "" : (t.reserved ? "" : `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`)
+    + (t ? (tabSelMode
+        ? `<button class="btn btn-ghost" onclick="removeTabPicksFromTab()" ${tabSelPicks.size?"":"disabled"}>Remove from tab (${tabSelPicks.size})</button><button class="btn btn-ghost" onclick="toggleTabSelMode()">Done</button>`
+        : `<button class="btn btn-ghost" onclick="toggleTabSelMode()">&#9745; Select</button>`) : "");
   v.innerHTML = `<div class="tabbar-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">${pills}</div>` +
     (t ? `<div style="display:flex;gap:8px;margin-bottom:10px">${manageHtml}</div>` : "") +
     gridHtml;
@@ -3568,6 +3574,40 @@ function addImportedPicksToTab(tabId){
   Store.putCards(imported);
   renderImportedKeepFocus();
   toast(n?("Added "+n+" card"+(n>1?"s":"")+" to "+tb.name):"Already in "+tb.name);
+}
+/* ---- bulk "Remove from tab" (inside an open tab) ---- */
+let tabSelMode = false;
+let tabSelPicks = new Set();   // composite keys: "imported:<idx>" or "saved:<id>"
+function toggleTabSelMode(){ tabSelMode=!tabSelMode; if(!tabSelMode) tabSelPicks.clear(); renderTabsView(); }
+function toggleTabPick(scope, identity){
+  const key = scope+":"+identity;
+  tabSelPicks.has(key)?tabSelPicks.delete(key):tabSelPicks.add(key);
+  renderTabsView();
+}
+// Wraps an already-rendered card's HTML with the tab-detail view's OWN pick overlay
+// — deliberately independent of cardHTML's/impCardHTML's own select-mode overlays
+// (savedSelMode/selMode), so the two never conflict.
+function tabCardWrapper(innerHtml, scope, identity, picked){
+  if(!tabSelMode) return innerHtml;
+  return `<div style="position:relative">${innerHtml}<div class="pickov" onclick="event.stopPropagation();toggleTabPick('${scope}','${identity}')">${picked?'<span class="pk">&#10003;</span>':""}</div></div>`;
+}
+function removeTabPicksFromTab(){
+  const t = tabs.find(x=>x.id===openTabId); if(!t || !tabSelPicks.size) return;
+  let n=0;
+  tabSelPicks.forEach(key=>{
+    const sep = key.indexOf(":");
+    const scope = key.slice(0,sep), id = key.slice(sep+1);
+    const it = scope==="saved" ? saved.find(c=>c&&c.id===id) : imported[Number(id)];
+    if(it && it.tags && it.tags.some(x=>x.toLowerCase()===t.tag.toLowerCase())){
+      it.tags = it.tags.filter(x=>x.toLowerCase()!==t.tag.toLowerCase());
+      n++;
+    }
+  });
+  Store.putCards(imported);
+  Store.putSaved(saved);
+  tabSelMode=false; tabSelPicks.clear();
+  renderTabsView();
+  toast(n?("Removed "+n+" card"+(n>1?"s":"")+" from "+t.name):"Nothing removed");
 }
 /* ---- inline tag editing (works across imported + saved) ---- */
 let _tagPickScope = "imported";   // "imported" | "saved" — which array the open picker edits
