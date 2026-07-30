@@ -3441,8 +3441,12 @@ let _autoSug = [];            // AutoTag AI suggestions: [{tag, sel}]
 let _autoErr = "";
 function allTags(){
   const s=new Set();
-  imported.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG) s.add(t); }));
-  saved.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG) s.add(t); }));
+  // Tab-backed tags (including the reserved AI tag) are shown in the tag picker's
+  // pinned Tabs section instead — excluding them here stops a tab's tag from
+  // appearing a second time as a plain, unpinned row in the freeform list below.
+  const tabTagSet=new Set(tabs.map(tb=>tb.tag));
+  imported.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG && !tabTagSet.has(t)) s.add(t); }));
+  saved.forEach(i=>(i&&i.tags||[]).forEach(t=>{ if(t!==AI_TAB_TAG && !tabTagSet.has(t)) s.add(t); }));
   return [...s].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 // Resolve the item the currently-open tag picker is editing, regardless of scope.

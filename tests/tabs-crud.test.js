@@ -125,16 +125,29 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": allTags() excludes the reserved AI_TAB_TAG from its output", () => {
     const factory = new Function(
-      "imported", "saved", "AI_TAB_TAG",
+      "imported", "saved", "tabs", "AI_TAB_TAG",
       fn(src, "allTags") + "\nreturn allTags;"
     );
     const allTags = factory(
-      [{ tags: ["3d printing", "__ai_research__"] }], [{ tags: ["stl files"] }], "__ai_research__"
+      [{ tags: ["3d printing", "__ai_research__"] }], [{ tags: ["stl files"] }], [], "__ai_research__"
     );
     const out = allTags();
     assert.ok(!out.includes("__ai_research__"));
     assert.ok(out.includes("3d printing"));
     assert.ok(out.includes("stl files"));
+  });
+
+  t(label + ": allTags() also excludes a NON-reserved tab's tag — it's shown in the picker's pinned Tabs section instead, not duplicated in the freeform list", () => {
+    const factory = new Function(
+      "imported", "saved", "tabs", "AI_TAB_TAG",
+      fn(src, "allTags") + "\nreturn allTags;"
+    );
+    const allTags = factory(
+      [{ tags: ["3d printing", "stl files"] }], [], [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], "__ai_research__"
+    );
+    const out = allTags();
+    assert.ok(!out.includes("stl files"));
+    assert.ok(out.includes("3d printing"));
   });
 
   t(label + ": tagRow() never renders the reserved AI_TAB_TAG as a visible chip", () => {
