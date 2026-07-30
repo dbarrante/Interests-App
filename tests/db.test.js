@@ -375,6 +375,50 @@ t("deleteSaved(db, id, deletedAt) stamps the tombstone with the given timestamp"
   d.close();
 });
 
+// The url column lets a later auto-import scrape recognize a post the user
+// already deleted, even though its platformKey was never ledgered (see
+// core/autoimport.js's existingUrlSet). deleteCard/deleteSaved/replaceCards/
+// replaceSaved all capture the row's url before removing it.
+t("deleteCard captures the row's url onto its tombstone; tombstonedUrls surfaces it", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertCard(d, { id: "x", url: "https://facebook.com/deleted-post" });
+  db.deleteCard(d, "x", 1);
+  assert.deepStrictEqual(db.tombstonedUrls(d), ["https://facebook.com/deleted-post"]);
+  d.close();
+});
+
+t("deleteSaved captures the row's url onto its tombstone", () => {
+  const d = db.openDb(tmpStore());
+  db.upsertSaved(d, { id: "s2", url: "https://instagram.com/p/deleted" });
+  db.deleteSaved(d, "s2", 1);
+  assert.deepStrictEqual(db.tombstonedUrls(d), ["https://instagram.com/p/deleted"]);
+  d.close();
+});
+
+t("replaceCards captures the removed row's url onto its tombstone", () => {
+  const d = db.openDb(tmpStore());
+  db.replaceCards(d, [{ id: "manual_1", url: "https://facebook.com/never-scraped" }]);
+  db.replaceCards(d, [], { asOf: Date.now() + 60000 });
+  assert.deepStrictEqual(db.tombstonedUrls(d), ["https://facebook.com/never-scraped"]);
+  d.close();
+});
+
+t("addTombstone: a url captured locally survives a later url-less call for the same (id,kind) " +
+  "-- e.g. a peer-merged tombstone that carries no url must not blank out an existing one", () => {
+  const d = db.openDb(tmpStore());
+  db.addTombstone(d, "p1", "card", 1, "https://example.com/known-url");
+  db.addTombstone(d, "p1", "card", 2); // no url argument, as sync.js's plan.tombstones merge passes today
+  assert.deepStrictEqual(db.tombstonedUrls(d), ["https://example.com/known-url"]);
+  d.close();
+});
+
+t("tombstonedUrls omits tombstones with no known url (bare peer-merged deletes)", () => {
+  const d = db.openDb(tmpStore());
+  db.addTombstone(d, "p2", "card", 1);
+  assert.deepStrictEqual(db.tombstonedUrls(d), []);
+  d.close();
+});
+
 // Task 5 / L1: one corrupt `data` JSON row must not make allCards()/allSaved()
 // throw for the whole library — degrade that single row (column fields populated,
 // JSON extras absent) instead of losing every other row.

@@ -5,7 +5,7 @@
 // it unchanged via cap.clip -> routeCapture action "saved").
 const assert = require("assert");
 const fs = require("fs"), path = require("path"), os = require("os");
-const { openDb, getKV, setKV, upsertCard, upsertSaved } = require("../core/db.js");
+const { openDb, getKV, setKV, upsertCard, upsertSaved, replaceCards, allCards, tombstonedUrls } = require("../core/db.js");
 const autoimport = require("../core/autoimport.js");
 const captureQueue = require("../core/capture-queue.js");
 
@@ -162,6 +162,29 @@ t("processBatch: ledger blocks re-import even after the card is DELETED from the
   setKV(db, "ia_autoimport_seen_fb", JSON.stringify({ gone_1: 500 }));
   const r = autoimport.processBatch(ctx, { platform: "fb", status: "ok", checkedAt: 999, items: [item({ url: "https://facebook.com/deleted-post", platformKey: "gone_1" })] });
   assert.deepStrictEqual(r, { added: 0, duplicates: 1, status: "ok" });
+});
+
+t("processBatch: a card deleted (via replaceCards, the app's real delete path) BEFORE autoimport " +
+  "ever saw its platformKey is still not re-imported by the first scrape that finds it", () => {
+  const db = openDb(tmpStore());
+  // The card was added some other way (manual clip, legacy import, etc) --
+  // autoimport's ledger has never recorded this post's platformKey.
+  replaceCards(db, [{ id: "manual_1", url: "https://facebook.com/never-scraped-yet", title: "Manual card" }]);
+  // User deletes it from the app; the post itself is still up on Facebook.
+  replaceCards(db, [], { asOf: Date.now() + 60000 });
+  assert.strictEqual(getKV(db, "ia_autoimport_seen_fb"), null, "sanity: the ledger never saw this post");
+  // Sanity: confirm this really took the tombstone-delete branch (not the
+  // asOf-staleness preserve branch, which would keep the card live and make
+  // this test pass for a completely different reason).
+  assert.strictEqual(allCards(db).length, 0, "sanity: the card is actually gone, not preserved by asOf");
+  assert.deepStrictEqual(tombstonedUrls(db), ["https://facebook.com/never-scraped-yet"]);
+  // The next scrape finds the same still-live post for the very first time.
+  const r = autoimport.processBatch({ db }, {
+    platform: "fb", status: "ok", checkedAt: 1,
+    items: [item({ url: "https://facebook.com/never-scraped-yet", platformKey: "brand_new_key" })],
+  });
+  assert.deepStrictEqual(r, { added: 0, duplicates: 1, status: "ok" },
+    "the deleted post's URL must block it even though its platformKey is brand new to the ledger");
 });
 
 t("processBatch: a NEW platformKey whose normalized URL already exists as a card is a duplicate " +

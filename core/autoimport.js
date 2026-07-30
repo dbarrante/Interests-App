@@ -106,14 +106,20 @@ function pruneLedger(ledger) {
   return ledger;
 }
 
-// Every existing card/saved URL, normalized, for the URL half of the dedup
-// check (platformKey-ledger dedup is the primary/permanent guard; this is a
-// secondary guard so an item never duplicates a URL already in the library
-// even the very first time its platformKey is seen).
+// Every URL the library either currently holds OR once held before the user
+// deleted it, normalized, for the URL half of the dedup check (platformKey-
+// ledger dedup is the primary/permanent guard; this is a secondary guard so
+// an item never duplicates a URL already in the library even the very first
+// time its platformKey is seen). Tombstoned urls make a delete permanent even
+// when the ledger never saw the item's platformKey before it was deleted --
+// e.g. a manually-clipped card removed before autoimport ever scraped its
+// post -- since a re-clip/re-scrape of the SAME post is otherwise a brand-new
+// platformKey the ledger has no record of.
 function existingUrlSet(db) {
   const set = new Set();
   try { dbm.allCards(db).forEach((c) => { if (c && c.url) set.add(normalizeUrl(c.url)); }); } catch (e) {}
   try { dbm.allSaved(db).forEach((s) => { if (s && s.url) set.add(normalizeUrl(s.url)); }); } catch (e) {}
+  try { dbm.tombstonedUrls(db).forEach((u) => { if (u) set.add(normalizeUrl(u)); }); } catch (e) {}
   return set;
 }
 

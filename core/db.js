@@ -69,6 +69,11 @@ function ensureColumns(db) {
     db.exec("ALTER TABLE saved ADD COLUMN updatedAt INTEGER");
     db.exec("UPDATE saved SET updatedAt = " + now + " WHERE updatedAt IS NULL");
   }
+  // Lets a deleted card/saved item's URL be recognized and rejected by a later
+  // auto-import scrape of the same still-live post — see addTombstone/tombstonedUrls.
+  if (!hasCol("tombstones", "url")) {
+    db.exec("ALTER TABLE tombstones ADD COLUMN url TEXT");
+  }
 }
 
 function openDb(storeDir) {
@@ -246,7 +251,7 @@ function replaceCards(db, arr, opts) {
         continue;
       }
       changed = true;
-      addTombstone(db, id, "card", now);
+      addTombstone(db, id, "card", now, existing[id].url);
     }
     for (const id of incoming) {
       if (db.prepare("SELECT 1 FROM tombstones WHERE id=? AND kind=?").get(id, "card")) changed = true;
@@ -261,15 +266,29 @@ function replaceCards(db, arr, opts) {
   return { preserved };
 }
 
-function addTombstone(db, id, kind, deletedAt) {
+// url is the deleted row's url, when known (omitted/undefined for a bare
+// peer-tombstone merge, e.g. sync.js's plan.tombstones) — kept alongside the
+// id/kind/deletedAt so autoimport's dedupe can recognize the same still-live
+// post on a later scrape (see tombstonedUrls). COALESCE on conflict so a
+// url captured locally is never overwritten by a later url-less merge of the
+// same (id,kind) tombstone from a peer.
+function addTombstone(db, id, kind, deletedAt, url) {
   const ts = (deletedAt != null && isFinite(deletedAt)) ? Math.trunc(Number(deletedAt)) : Date.now();
+  const u = (typeof url === "string" && url) ? url : null;
   const prior = db.prepare("SELECT deletedAt FROM tombstones WHERE id=? AND kind=?").get(id, kind);
-  // Keep the NEWEST deletedAt for an (id,kind).
   db.prepare(
-    "INSERT INTO tombstones(id,kind,deletedAt) VALUES(?,?,?) " +
-    "ON CONFLICT(id,kind) DO UPDATE SET deletedAt=MAX(tombstones.deletedAt, excluded.deletedAt)"
-  ).run(id, kind, ts);
+    "INSERT INTO tombstones(id,kind,deletedAt,url) VALUES(?,?,?,?) " +
+    "ON CONFLICT(id,kind) DO UPDATE SET deletedAt=MAX(tombstones.deletedAt, excluded.deletedAt), " +
+    "url=COALESCE(tombstones.url, excluded.url)"
+  ).run(id, kind, ts, u);
   if (!prior || Number(prior.deletedAt) < ts) bumpMutationRevision(db);
+}
+// Every url a deleted card/saved row is known to have had, for auto-import's
+// permanent dedupe guard (core/autoimport.js's existingUrlSet). Tombstones are
+// kept forever (see pruneTombstones's retention-policy comment above), so a
+// deleted post never becomes importable again just because time passed.
+function tombstonedUrls(db) {
+  return db.prepare("SELECT url FROM tombstones WHERE url IS NOT NULL AND url != ''").all().map(r => r.url);
 }
 function allTombstones(db) {
   return db.prepare("SELECT id,kind,deletedAt FROM tombstones").all()
@@ -295,8 +314,9 @@ function pruneTombstones(db, olderThanMs) {
 }
 
 function deleteCard(db, id, deletedAt) {
+  const row = db.prepare("SELECT url FROM cards WHERE id=?").get(id);
   db.prepare("DELETE FROM cards WHERE id=?").run(id);
-  addTombstone(db, id, "card", deletedAt);
+  addTombstone(db, id, "card", deletedAt, row && row.url);
   bumpMutationRevision(db);
 }
 
@@ -434,7 +454,7 @@ function replaceSaved(db, arr, opts) {
         continue;
       }
       changed = true;
-      addTombstone(db, id, "saved", now);
+      addTombstone(db, id, "saved", now, existing[id].url);
     }
     for (const id of incoming) {
       if (db.prepare("SELECT 1 FROM tombstones WHERE id=? AND kind=?").get(id, "saved")) changed = true;
@@ -450,8 +470,9 @@ function replaceSaved(db, arr, opts) {
 }
 
 function deleteSaved(db, id, deletedAt) {
+  const row = db.prepare("SELECT url FROM saved WHERE id=?").get(id);
   db.prepare("DELETE FROM saved WHERE id=?").run(id);
-  addTombstone(db, id, "saved", deletedAt);
+  addTombstone(db, id, "saved", deletedAt, row && row.url);
   bumpMutationRevision(db);
 }
 
@@ -566,7 +587,7 @@ module.exports = {
   rowToSaved, savedToRow, savedSig, allSaved, getSaved, replaceSaved, upsertSaved, upsertSavedSynced, deleteSaved,
   addNotDuplicateMarker,
   getFp, setFp, delFp, allFp,
-  addTombstone, allTombstones, delTombstone, pruneTombstones,
+  addTombstone, allTombstones, delTombstone, pruneTombstones, tombstonedUrls,
   cardsSince, savedSince, tombstonesSince,
   serializeLibrary, settingsForSync, applySyncedSettings, signatureAggregates,
 };
