@@ -3745,18 +3745,30 @@ function researchPanelHTML(scope, it){
       ? `<div class="hint">Researching…</div>`
       : `<button onclick="generateArticle('${scope}','${it.id}')">&#128221; Research &amp; draft article</button>`;
   } else {
-    const expanded = _articleExpanded.has(key);
-    const long = art.text.length>240;
-    const preview = long && !expanded ? art.text.slice(0,240)+"…" : art.text;
-    articleHtml = `<div class="research-article">
-      <div class="research-article-text">${esc(preview)}</div>
-      ${long?`<button class="btn-ghost" onclick="toggleArticleExpanded('${scope}','${it.id}')">${expanded?"Show less":"Show full article"}</button>`:""}
-      ${art.sources.length?`<div class="hint">Sources: ${art.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
-      <div style="display:flex;gap:8px;margin-top:6px">
-        <button class="btn-ghost" onclick="copyArticleText('${scope}','${it.id}')">Copy</button>
-        <button class="btn-ghost" ${busy?"disabled":""} onclick="generateArticle('${scope}','${it.id}')">${busy?"Regenerating…":"&#8635; Regenerate"}</button>
-      </div>
-    </div>`;
+    const editing = _articleEditing.has(key);
+    if(editing){
+      articleHtml = `<div class="research-article">
+        <textarea id="artEdit_${scope}_${it.id}">${esc(art.text)}</textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button onclick="saveArticleEdit('${scope}','${it.id}')">Save</button>
+          <button class="btn-ghost" onclick="toggleArticleEdit('${scope}','${it.id}')">Cancel</button>
+        </div>
+      </div>`;
+    } else {
+      const expanded = _articleExpanded.has(key);
+      const long = art.text.length>240;
+      const preview = long && !expanded ? art.text.slice(0,240)+"…" : art.text;
+      articleHtml = `<div class="research-article">
+        <div class="research-article-text">${esc(preview)}</div>
+        ${long?`<button class="btn-ghost" onclick="toggleArticleExpanded('${scope}','${it.id}')">${expanded?"Show less":"Show full article"}</button>`:""}
+        ${art.sources.length?`<div class="hint">Sources: ${art.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn-ghost" onclick="copyArticleText('${scope}','${it.id}')">Copy</button>
+          <button class="btn-ghost" onclick="toggleArticleEdit('${scope}','${it.id}')">Edit</button>
+          <button class="btn-ghost" ${busy?"disabled":""} onclick="generateArticle('${scope}','${it.id}')">${busy?"Regenerating…":"&#8635; Regenerate"}</button>
+        </div>
+      </div>`;
+    }
   }
   return `<div class="research-panel">${articleHtml}</div>`;
 }
@@ -3764,6 +3776,23 @@ function toggleArticleExpanded(scope, id){
   const key = scope+":"+id;
   _articleExpanded.has(key) ? _articleExpanded.delete(key) : _articleExpanded.add(key);
   renderTabsView();
+}
+let _articleEditing = new Set();   // "scope:id" keys with the article's textarea open
+function toggleArticleEdit(scope, id){
+  const key = scope+":"+id;
+  _articleEditing.has(key) ? _articleEditing.delete(key) : _articleEditing.add(key);
+  renderTabsView();
+}
+function saveArticleEdit(scope, id){
+  const it = _researchCard(scope, id); if(!it || !it.research || !it.research.article) return;
+  const ta = document.getElementById("artEdit_"+scope+"_"+id); if(!ta) return;
+  const text = ta.value.trim();
+  if(!text){ toast("Article text can't be empty"); return; }
+  it.research.article.text = text;
+  if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+  _articleEditing.delete(scope+":"+id);
+  renderTabsView();
+  toast("Article updated");
 }
 function removeTabPicksFromTab(){
   const t = tabs.find(x=>x.id===openTabId); if(!t || !tabSelPicks.size) return;
