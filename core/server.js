@@ -792,7 +792,15 @@ function createServer(ctx) {
       // backup.moveStore(t, ctx) against the REAL ctx directly (exactly as
       // today) and already repoints it internally — guard against
       // double-repointing that path.
-      if (usingWorker && out.ok) { ctx.setStorePath(target); ctx.storeDir = target; ctx.db = ctx.reopen(); }
+      if (usingWorker && out.ok) {
+        ctx.setStorePath(target); ctx.storeDir = target; ctx.db = ctx.reopen();
+        // The storeWorker object is the SAME one startSyncTimers holds (main.js
+        // hands ctx.storeWorker and the timer's `sync` the identical reference)
+        // and its runSync/publishSnapshot read an internal currentStoreDir, not
+        // ctx.storeDir — without this repoint the next periodic sync tick would
+        // silently keep targeting the OLD, abandoned store directory.
+        if (ctx.storeWorker && ctx.storeWorker.setStoreDir) ctx.storeWorker.setStoreDir(target);
+      }
       res.json({ ok: out.ok, path: ctx.storeDir });
     } catch (e) {
       console.error("store move failed:", e);

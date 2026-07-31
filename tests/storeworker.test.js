@@ -111,6 +111,39 @@ async function run(name, fn) {
     assert.ok(out.error);
   });
 
+  await run("setStoreDir repoints an existing storeWorker: publishSnapshot follows it, not the construction-time closure", async () => {
+    // Regression test for the stale-storeDir-after-move gap: ctx.storeWorker
+    // and startSyncTimers's `sync` reference are the SAME object in main.js,
+    // and runSync/publishSnapshot took no storeDir argument — they always read
+    // whatever createStoreWorker closed over AT CONSTRUCTION. A successful
+    // /api/store-location/move repoints ctx.storeDir but, without setStoreDir,
+    // this object would keep targeting the OLD directory until app restart.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-repoint-"));
+    const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+    const storeA = path.join(root, "A"); fs.mkdirSync(path.join(storeA, "images"), { recursive: true });
+    const storeB = path.join(root, "B"); fs.mkdirSync(path.join(storeB, "images"), { recursive: true });
+    const dA = db.openDb(storeA);
+    db.upsertCard(dA, { id: "onlyInA", url: "http://a/1", ts: 1 });
+    dA.close();
+    const dB = db.openDb(storeB);
+    db.upsertCard(dB, { id: "onlyInB", url: "http://b/1", ts: 1 });
+    dB.close();
+
+    const storeWorker = createStoreWorker(storeA);
+    let r = await storeWorker.publishSnapshot(null, syncDir, "dev1", "Dev1");
+    assert.strictEqual(r.ok, true, "publish against A must succeed: " + (r.error || ""));
+    let snap = JSON.parse(fs.readFileSync(path.join(syncDir, "dev1", "snapshot.json"), "utf8"));
+    assert.ok(snap.cards.some((c) => c.id === "onlyInA"), "before setStoreDir: snapshot reflects store A");
+    assert.ok(!snap.cards.some((c) => c.id === "onlyInB"), "before setStoreDir: snapshot must NOT contain B's card");
+
+    storeWorker.setStoreDir(storeB);
+    r = await storeWorker.publishSnapshot(null, syncDir, "dev1", "Dev1");
+    assert.strictEqual(r.ok, true, "publish against B must succeed: " + (r.error || ""));
+    snap = JSON.parse(fs.readFileSync(path.join(syncDir, "dev1", "snapshot.json"), "utf8"));
+    assert.ok(snap.cards.some((c) => c.id === "onlyInB"), "after setStoreDir: snapshot must now reflect store B");
+    assert.ok(!snap.cards.some((c) => c.id === "onlyInA"), "after setStoreDir: snapshot must NOT still reflect the old store A");
+  });
+
   await run("movestore job copies+verifies off-thread; main thread only repoints", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-move-"));
     const storeDir = path.join(root, "store"); fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });

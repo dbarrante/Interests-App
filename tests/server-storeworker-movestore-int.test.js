@@ -91,6 +91,21 @@ function listen(app) {
     assert.strictEqual(config.loadConfig().storePath, target, "on-disk store pointer matches — worker's write and the route's write agree");
     assert.ok(fs.existsSync(path.join(target, "interests.db")), "db physically present at target");
 
+    // End-to-end proof for the stale-storeDir-after-move gap: the route must
+    // have called ctx.storeWorker.setStoreDir(target), not just repointed the
+    // main-thread ctx. If it hadn't, ctx.storeWorker (the SAME object
+    // startSyncTimers holds in main.js) would still target the OLD store dir
+    // on its next call — the exact scenario that would silently strand the
+    // periodic sync timer against an abandoned directory after a move.
+    upsertCard(ctx.db, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2 });
+    const syncDir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvwk-mvstore-sync-"));
+    const pub = await ctx.storeWorker.publishSnapshot(ctx, syncDir, "dev1", "Dev1");
+    assert.strictEqual(pub.ok, true, "post-move publish must succeed: " + (pub.error || ""));
+    const snap = JSON.parse(fs.readFileSync(path.join(syncDir, "dev1", "snapshot.json"), "utf8"));
+    assert.ok(snap.cards.some((c) => c.id === "c2"),
+      "ctx.storeWorker must publish the NEW store's contents (c2, written only at target) — " +
+      "proves the route's setStoreDir call actually repointed the worker, not just ctx");
+
     await new Promise((res) => srv.close(res));
     try { ctx.db.close(); } catch (e) {}
   });

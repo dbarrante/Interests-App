@@ -77,6 +77,19 @@ if (!isMainThread) {
   // two concurrent store-mutating operations would fight over the same files.
   function createStoreWorker(storeDir) {
     const syncMod = require("./sync");
+    // Mutable, not a closed-over const: ctx.storeWorker and startSyncTimers's
+    // `sync` reference are the SAME object (main.js constructs one storeWorker
+    // and hands it to both), but runSync/publishSnapshot take no storeDir
+    // argument — they always read whatever this object currently considers
+    // "the store". A successful /api/store-location/move repoints the real
+    // ctx.storeDir but, without this, would leave THIS object still pointed at
+    // the OLD directory: the next periodic sync tick (or shutdown publish)
+    // would silently keep merging/publishing against the abandoned store until
+    // the app restarts. setStoreDir() lets the move route repoint this object
+    // in place so both call sites pick it up immediately. (runBackup and
+    // moveStore are unaffected — the route already passes ctx.storeDir fresh
+    // on every call, shadowing this closure via their own per-call parameter.)
+    let currentStoreDir = storeDir;
     let inFlight = null;
     function exclusive(job) {
       if (inFlight) return inFlight.then(() => exclusive(job));
@@ -87,10 +100,10 @@ if (!isMainThread) {
     return {
       defaultSyncDir: syncMod.defaultSyncDir,
       runSync(_ctx, opts) {
-        return exclusive({ op: "run", storeDir, syncDir: opts.syncDir, deviceId: opts.deviceId, deviceLabel: opts.deviceLabel, publish: opts.publish, noBackup: !!opts.noBackup });
+        return exclusive({ op: "run", storeDir: currentStoreDir, syncDir: opts.syncDir, deviceId: opts.deviceId, deviceLabel: opts.deviceLabel, publish: opts.publish, noBackup: !!opts.noBackup });
       },
       publishSnapshot(_ctx, syncDir, deviceId, deviceLabel) {
-        return exclusive({ op: "publish", storeDir, syncDir, deviceId, deviceLabel });
+        return exclusive({ op: "publish", storeDir: currentStoreDir, syncDir, deviceId, deviceLabel });
       },
       runBackup(storeDir, opts) {
         opts = opts || {};
@@ -99,6 +112,7 @@ if (!isMainThread) {
       moveStore(storeDir, target) {
         return exclusive({ op: "movestore", storeDir, target });
       },
+      setStoreDir(newStoreDir) { currentStoreDir = newStoreDir; },
     };
   }
 
