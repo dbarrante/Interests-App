@@ -16,6 +16,7 @@ Read this before changing code here. These are the rules that keep the project s
 ## Architecture (v1 target)
 - Electron shell + a bundled Node/Express **Core service** on `localhost:3456` + SQLite via Node's built-in **`node:sqlite`** (`DatabaseSync`) for `cards`/`saved`/`kv`/`fp` + image files. The existing single-file UI (`web/index.html`) talks to the service through `web/storage.js`. The Chrome capture extension's engine is untouched; only its delivery is HTTP. See `docs/superpowers/specs/2026-06-26-interests-formal-app-design.md`.
 - Live store defaults to `<install>\data\` (relocatable in Settings; pointer in `%APPDATA%`). Backups go to `Dropbox\Interests App\backups\`.
+- The desktop `BrowserWindow` runs `sandbox: true` (`main.js`, added 2026-06-27 for renderer hardening). **`window.prompt()` throws `Error: prompt() is not supported` under this setting — confirmed live, not theoretical** (Custom Tabs' `newTabPrompt`/`renameTabPrompt` shipped broken because of it, only caught by manual smoke-testing since unit tests stub `prompt()`). Any free-text input from the user must use an in-page modal (see `#tabNameModal`/`#getpicModal`/`#healthModal` for the pattern), never `prompt()`. `confirm()`/`alert()` ARE supported under `sandbox:true` — only `prompt()` is blocked. The pre-existing "Move data store" and "Set Dropbox sync folder" settings still use `prompt()` and are silently broken by this same defect (not yet fixed).
 
 ## Code & test conventions
 - Backend code under `core/` is CommonJS, directly `require()`-able from tests.
