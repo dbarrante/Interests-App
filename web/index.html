@@ -465,6 +465,9 @@ body.reader-locked{overflow:hidden}
 .addtab-menu{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;margin-left:8px;vertical-align:top}
 .research-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .research-article-text{white-space:pre-wrap;font-size:13.5px;line-height:1.5}
+.research-qa{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);font-size:13.5px}
+.research-q{margin-bottom:4px}
+.research-a{white-space:pre-wrap}
 /* AutoTag (AI) suggestions */
 .tp-head{font-size:12px;font-weight:700;color:var(--muted);padding:4px 6px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .tp-hint{font-weight:600;opacity:.75;font-size:11px}
@@ -3695,7 +3698,21 @@ function researchPanelHTML(scope, it){
       </div>`;
     }
   }
-  return `<div class="research-panel">${articleHtml}</div>`;
+  const qaList = ((it.research && it.research.qa) || []).map((qa,i)=>`
+    <div class="research-qa">
+      <div class="research-q"><b>Q:</b> ${esc(qa.question)}</div>
+      <div class="research-a"><b>A:</b> ${esc(qa.answer)}</div>
+      ${qa.sources.length?`<div class="hint">Sources: ${qa.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
+      <button class="btn-ghost" onclick="deleteQaEntry('${scope}','${it.id}',${i})">Delete</button>
+    </div>`).join("");
+  return `<div class="research-panel">
+    ${articleHtml}
+    <div class="research-qa-ask" style="display:flex;gap:8px;margin-top:10px">
+      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" ${busy?"disabled":""}>
+      <button ${busy?"disabled":""} onclick="askQuestion('${scope}','${it.id}')">${busy?"…":"Ask"}</button>
+    </div>
+    ${qaList}
+  </div>`;
 }
 function toggleArticleExpanded(scope, id){
   const key = scope+":"+id;
@@ -3718,6 +3735,42 @@ function saveArticleEdit(scope, id){
   _articleEditing.delete(scope+":"+id);
   renderTabsView();
   toast("Article updated");
+}
+async function askQuestion(scope, id){
+  if(!_researchCard(scope, id)) return;
+  if(!hasResearchProvider()){ toast("Asking a question needs a web-search-capable provider (Claude, ChatGPT, Gemini, or OpenRouter) — switch in Settings", 6000); return; }
+  const inp = document.getElementById("qaInput_"+scope+"_"+id); if(!inp) return;
+  const question = inp.value.trim();
+  if(!question) return;
+  const key = scope+":"+id;
+  if(_researchBusy.has(key)) return;
+  const promptIt = _researchCard(scope, id);
+  _researchBusy.add(key);
+  renderTabsView();
+  try{
+    const text = await callAI(buildQuestionPrompt(promptIt, question), {webSearch:true});
+    const parsed = parseResearchResponse(text);
+    // Re-resolve by id — same stale-reference guard as generateArticle (Task 2).
+    const it = _researchCard(scope, id);
+    if(it){
+      if(!it.research) it.research = {article:null, qa:[]};
+      if(!it.research.qa) it.research.qa = [];
+      it.research.qa.push({question:question, answer:parsed.text, sources:parsed.sources, answeredAt:Date.now()});
+      if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+      toast("Answered");
+    }
+  }catch(e){
+    toast("Couldn't answer: "+(e&&e.message||e));
+  }finally{
+    _researchBusy.delete(key);
+    renderTabsView();
+  }
+}
+function deleteQaEntry(scope, id, idx){
+  const it = _researchCard(scope, id); if(!it || !it.research || !it.research.qa) return;
+  it.research.qa.splice(idx,1);
+  if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+  renderTabsView();
 }
 function removeTabPicksFromTab(){
   const t = tabs.find(x=>x.id===openTabId); if(!t || !tabSelPicks.size) return;
