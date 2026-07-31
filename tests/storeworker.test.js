@@ -111,6 +111,22 @@ async function run(name, fn) {
     assert.ok(out.error);
   });
 
+  await run("movestore job copies+verifies off-thread; main thread only repoints", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-move-"));
+    const storeDir = path.join(root, "store"); fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });
+    const target = path.join(root, "moved");
+    const d = db.openDb(storeDir);
+    db.upsertCard(d, { id: "c1", url: "http://x/1", ts: 1 });
+    d.close();
+
+    const storeWorker = createStoreWorker(storeDir);
+    const out = await storeWorker.moveStore(storeDir, target);
+    assert.strictEqual(out.ok, true, "move must succeed: " + (out.error || ""));
+    assert.ok(fs.existsSync(path.join(target, "interests.db")), "db copied to target");
+    // Old copy is left on disk (matches moveStore's own documented behavior)
+    assert.ok(fs.existsSync(path.join(storeDir, "interests.db")), "old store files left in place");
+  });
+
   console.log("storeworker: " + pass + " passed, " + fail + " failed");
   if (fail) process.exitCode = 1;
 })();

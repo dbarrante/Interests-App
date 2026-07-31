@@ -38,6 +38,9 @@ if (!isMainThread) {
         const verified = backup.verifyBackup(out.name, out.counts);
         if (verified && !job.safety && job.keep) backup.rotate(job.keep);
         result = { ok: true, verified, name: out.name, counts: out.counts };
+      } else if (job.op === "movestore") {
+        const backup = require("./backup");
+        result = backup.moveStore(job.target, ctx);
       } else {
         // backupFn isn't serializable across the thread boundary; noBackup is
         // the test hook (production omits it and keeps the real safety backup).
@@ -92,6 +95,9 @@ if (!isMainThread) {
       runBackup(storeDir, opts) {
         opts = opts || {};
         return exclusive({ op: "backup", storeDir, safety: !!opts.safety, keep: opts.keep });
+      },
+      moveStore(storeDir, target) {
+        return exclusive({ op: "movestore", storeDir, target });
       },
     };
   }

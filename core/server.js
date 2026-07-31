@@ -775,14 +775,24 @@ function createServer(ctx) {
     });
   });
 
-  app.post("/api/store-location/move", (req, res) => {
+  app.post("/api/store-location/move", async (req, res) => {
     let target = req.body && req.body.target;
     if (!target || typeof target !== "string" || !path.isAbsolute(target)) {
       return res.status(400).json({ ok: false, path: ctx.storeDir, error: "absolute target required" });
     }
     target = path.resolve(target);
     try {
-      const out = backup.moveStore(target, ctx);   // repoints ctx.db/ctx.storeDir on success
+      const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.moveStore);
+      const runner = usingWorker ? ctx.storeWorker : { moveStore: (storeDir, t) => Promise.resolve(backup.moveStore(t, ctx)) };
+      const out = await runner.moveStore(ctx.storeDir, target);
+      // The worker path's own internal ctx is a throwaway (closed inside the
+      // worker thread) and never repoints anything — only the main thread's
+      // real ctx can be safely repointed, so that happens here, once the
+      // worker confirms success. The no-worker fallback calls
+      // backup.moveStore(t, ctx) against the REAL ctx directly (exactly as
+      // today) and already repoints it internally — guard against
+      // double-repointing that path.
+      if (usingWorker && out.ok) { ctx.setStorePath(target); ctx.storeDir = target; ctx.db = ctx.reopen(); }
       res.json({ ok: out.ok, path: ctx.storeDir });
     } catch (e) {
       console.error("store move failed:", e);
