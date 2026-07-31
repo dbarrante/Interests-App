@@ -52,7 +52,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(fn(src, "moveDataLocation"), /finally/);
   });
 
-  t(label + ": restoreLatest also sets _storeOpInFlight (covers the listBackups() await before restoreFromList runs)", () => {
+  t(label + ": restoreLatest also sets _storeOpInFlight (covers the listBackups() await before the actual restore runs)", () => {
     assert.match(fn(src, "restoreLatest"), /_storeOpInFlight\s*=\s*"restore"/);
     assert.match(fn(src, "restoreLatest"), /finally/);
   });

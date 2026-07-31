@@ -1404,6 +1404,14 @@ function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if
 // (rotated + verified) if connected, else download it. Returns true on success.
 // manual=true shows the progress overlay (auto-backups stay silent/non-blocking).
 async function backupNow(){
+  // Function-level re-entrancy guard (Task 5 follow-up): the disabled-button
+  // wiring in renderStoreOpIndicator only covers the three known trigger
+  // buttons. Other live surfaces -- the durability banner's own button, the
+  // Ctrl+Shift+B shortcut, a per-row restore button -- stay reachable while an
+  // op is in flight and would otherwise clobber _storeOpInFlight out from
+  // under the operation that's actually still running. Checking here closes
+  // the gap at the source regardless of which surface calls in.
+  if(_storeOpInFlight){ toast("Another store operation is already in progress — please wait."); return; }
   _storeOpInFlight = "backup";
   renderStoreOpIndicator();
   try{
@@ -1475,7 +1483,12 @@ function showDurabilityBanner(folder){
     ? "⚠ Automatic backups are due — back up now to be safe."
     : "⚠ The app service isn't reachable — backups can't run right now.";
   b.innerHTML = "<span>" + msg + "</span><button class=\"btn btn-primary\" style=\"padding:6px 14px\">Back up now</button>";
-  b.querySelector("button").onclick = function(){ backupNow(); b.remove(); };
+  // Only dismiss the banner once backupNow() actually reports a result --
+  // it resolves to undefined both when the re-entrancy guard rejected the
+  // click (another op already in flight) and when the backup itself threw,
+  // and dismissing an "automatic backups are due" warning in either of
+  // those cases would hide a real problem behind a false all-clear.
+  b.querySelector("button").onclick = function(){ backupNow().then(function(res){ if(res) b.remove(); }); };
   const main = document.querySelector("main"); if(main) main.prepend(b);
 }
 async function renderDurabilityStatus(health){
@@ -1612,22 +1625,39 @@ function restoreData(ev){
   };
   reader.readAsText(file);
 }
-async function restoreFromList(name){
-  if(!name) return;
-  if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return;
-  _storeOpInFlight = "restore";
-  renderStoreOpIndicator();
+// Shared restore-by-name core for restoreFromList and restoreLatest below.
+// Deliberately does NOT touch _storeOpInFlight itself -- both callers already
+// hold the flag (and own its finally-reset) by the time this runs, so a guard
+// in here would reject restoreLatest's own internal handoff to this same
+// logic as if it were a conflicting second operation.
+async function restoreByName(name){
+  if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return false;
   try{
     const result = await Store.restore(name);
     if(!result || result.ok !== true) throw new Error((result && result.reason) || "restore was not verified");
     toast("Restored from "+name+" — reloading");
     setTimeout(()=>location.reload(), 600);
-  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); } finally {
+    return true;
+  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); return false; }
+}
+async function restoreFromList(name){
+  if(!name) return;
+  // Function-level re-entrancy guard (Task 5 follow-up) -- see backupNow's
+  // comment. This is the entry point the per-row "Restore" buttons in
+  // renderBackupList call directly, which the disabled-button wiring never
+  // covered since those rows aren't backupNowBtn/restoreLatestBtn/moveDataBtn.
+  if(_storeOpInFlight){ toast("Another store operation is already in progress — please wait."); return; }
+  _storeOpInFlight = "restore";
+  renderStoreOpIndicator();
+  try{
+    await restoreByName(name);
+  } finally {
     _storeOpInFlight = null;
     renderStoreOpIndicator();
   }
 }
 async function restoreLatest(){
+  if(_storeOpInFlight){ toast("Another store operation is already in progress — please wait."); return; }
   _storeOpInFlight = "restore";
   renderStoreOpIndicator();
   try{
@@ -1641,7 +1671,10 @@ async function restoreLatest(){
     // in place every few minutes, not a point-in-time recovery point, so the
     // "restore latest" button must skip it and land on a real dated backup.
     const target = list.find(b=>!b.mirror && !b.safety) || list.find(b=>!b.mirror) || list[0];
-    return await restoreFromList(target.name);
+    // Calls the shared core directly, NOT restoreFromList -- this function
+    // already holds _storeOpInFlight, and restoreFromList's own re-entrancy
+    // guard would otherwise reject this legitimate internal handoff.
+    return await restoreByName(target.name);
   } finally {
     _storeOpInFlight = null;
     renderStoreOpIndicator();
@@ -1669,17 +1702,25 @@ async function renderBackupList(){
   }).join("");
 }
 async function moveDataLocation(){
-  let cur = {};
-  try{ cur = await Store.storeLocation(); }catch(e){}
-  let target = null;
-  const pf = window.ia && window.ia.pickFolder;
-  if (pf) { try { target = await pf(); } catch(e){ target = null; } }
-  else { target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||""); }
-  if(!target || target === cur.path) return;
-  toast("Moving data store… (the old copy is kept until the move verifies)");
+  // Function-level re-entrancy guard (Task 5 follow-up) -- see backupNow's
+  // comment. The flag is set immediately after the guard, BEFORE the
+  // storeLocation()/folder-picker awaits below (not just around
+  // Store.moveStore) -- data-safety review caught that setting it only
+  // around the actual move left a window where two clicks could both pass
+  // the guard while the first click's folder picker was still open, each
+  // proceeding to its own Store.moveStore call.
+  if(_storeOpInFlight){ toast("Another store operation is already in progress — please wait."); return; }
   _storeOpInFlight = "move";
   renderStoreOpIndicator();
   try{
+    let cur = {};
+    try{ cur = await Store.storeLocation(); }catch(e){}
+    let target = null;
+    const pf = window.ia && window.ia.pickFolder;
+    if (pf) { try { target = await pf(); } catch(e){ target = null; } }
+    else { target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||""); }
+    if(!target || target === cur.path) return;
+    toast("Moving data store… (the old copy is kept until the move verifies)");
     const res = await Store.moveStore(target);
     if(res && res.ok===false){ toast(res.reason || "Move not available"); return; }
     toast("Data store moved to " + (res.path||target));
