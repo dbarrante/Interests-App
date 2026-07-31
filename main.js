@@ -10,6 +10,7 @@ const { setKV, getKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
 const { ensureChromeForAutoImport } = require("./core/chrome-launch");
 const { createChromeAvailabilityMonitor } = require("./core/chrome-monitor");
+const { sweepOrphanedStageFolders } = require("./core/backup");
 
 // Swallow the benign async undici socket-teardown assertion (`assert(!this.paused)` fired
 // from a cancelled/aborted response body during a link sweep) that would otherwise crash
@@ -109,6 +110,19 @@ if (!gotLock) {
       config.saveConfig(Object.assign({}, config.loadConfig(), { port }));
 
       createWindow(port);
+
+      // Boot sweep for restore stage folders orphaned next to the LIVE store
+      // (".<store>.restage-*" and its ".old" sibling) — a near-full copy of the
+      // library, interests.db and the provider API key in it, left behind when
+      // a staging worker died mid-copy or a swap rolled back. AFTER
+      // createWindow and deferred off the boot tick on purpose: a recursive rm
+      // of an image-library-sized folder is exactly the kind of synchronous
+      // main-process work this branch exists to keep off the launch path.
+      // Never allowed to fail launch.
+      setTimeout(() => {
+        try { sweepOrphanedStageFolders(ctx.storeDir); }
+        catch (e) { console.error("boot stage-folder sweep failed (continuing):", e && e.message); }
+      }, 5000);
 
       // Platform auto-import runs in the Chrome extension. While automatic
       // checks are enabled, keep a visible Chrome window available. The first

@@ -127,14 +127,16 @@ if (!isMainThread) {
       },
       // Runs ONLY the staging half of a restore (backup.stageRestore): verify,
       // safety-snapshot the live store, stage the incoming content. Resolves
-      // the STAGED result ({ok, stageFolder, snapshotFolder, witness}), NOT a
-      // finished restore — the caller must then run
+      // the STAGED result ({ok, stageFolder, snapshotFolder, witness, storeDir}),
+      // NOT a finished restore — the caller must then run
       // backup.swapInStagedRestore(staged, ctx) on the main thread, which is
       // the only part that needs the real ctx.db / ctx.reopen and is cheap
       // (renames, not copies). `witness` is backup.storeWitness(ctx.db,
       // storeDir) read on the main thread just before this call; it rides
       // through the worker untouched so the swap can prove nothing was written
-      // to the live store meanwhile.
+      // to the live store meanwhile. runJob resolves the worker's result object
+      // WHOLESALE — do not reshape it into a field list here: dropping storeDir
+      // would make swapInStagedRestore refuse every worker-path restore.
       restore(storeDir, name, witness) {
         return exclusive({ op: "restore", storeDir, name, witness });
       },

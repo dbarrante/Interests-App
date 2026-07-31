@@ -1921,5 +1921,261 @@ t("swapInStagedRestore fails closed when handed no write-witness", () => {
   });
 });
 
+/* ---- F-1: orphaned stage folders next to the LIVE store (security review 2026-07-31)
+   stageRestore stages into ".<store>.restage-<pid>-<ts>" AS A SIBLING of the
+   live store, and the swap parks the displaced live content in that name +
+   ".old". Each holds a full interests.db — which carries ia_settings, i.e. the
+   user's provider API key — plus most of the image library, OUTSIDE the backup
+   root where sweepOrphanedArtifacts never looks. stageRestore's own cleanup is
+   in-process only, so three paths leak forever: a staging worker KILLED
+   mid-copy (no JS catch runs in a dead thread), the swap's rollback path, and
+   its reopen-failure path. The reviewer's PoC killed a worker mid-image-copy
+   and read the API key back out of the orphan. Simulating the exact on-disk
+   artifact pins the same behaviour without a flaky real kill. */
+function plantOrphanStage(store, suffix, ageMs) {
+  const folder = path.join(path.dirname(store), "." + path.basename(store) + ".restage-9999-1" + (suffix || ""));
+  fs.mkdirSync(path.join(folder, "images"), { recursive: true });
+  // The db an orphan actually contains: a real store db holding a settings row
+  // with an API key, exactly what the reviewer read back off disk.
+  const odb = openDb(folder);
+  setKV(odb, "ia_settings", JSON.stringify({ apiKey: "sk-ant-LEAKED-SECRET" }));
+  odb.close();
+  fs.writeFileSync(path.join(folder, "images", "x.jpg"), "img");
+  if (ageMs) backdateStage(folder, ageMs);
+  return folder;
+}
+// Backdate images/ too — the sweep takes the NEWEST of the two so an in-flight
+// copy (which only advances images/) is never swept. Must be the LAST thing
+// done to the folder: even opening its db writes -wal/-shm and refreshes it.
+function backdateStage(folder, ageMs) {
+  const when = new Date(Date.now() - ageMs);
+  fs.utimesSync(path.join(folder, "images"), when, when);
+  fs.utimesSync(folder, when, when);
+}
+const TWO_HOURS = 2 * 60 * 60 * 1000;   // > STALE_STAGING_MS (1h) in core/backup.js
+
+t("F-1: an orphan stage folder left by a DEAD staging worker is swept (and its API key with it)", () => {
+  const store = newStore();
+  const orphan = plantOrphanStage(store, "", 0);
+  // Precondition: the leak is real — the key is readable straight off disk.
+  const leaked = openDb(orphan);
+  assert.match(String(getKV(leaked, "ia_settings")), /sk-ant-LEAKED-SECRET/, "precondition: the orphan holds the provider API key");
+  leaked.close();
+  backdateStage(orphan, TWO_HOURS);   // AFTER the read above, which refreshes the folder's mtime
+
+  assert.strictEqual(backup.sweepOrphanedStageFolders(store), 1, "the stale orphan must be swept");
+  assert.strictEqual(fs.existsSync(orphan), false, "the orphan folder (db + images) must be gone");
+  fs.rmSync(store, { recursive: true, force: true });
+});
+
+t("F-1: the swap's displaced-old ('.restage-*.old') holding folder is swept too", () => {
+  // The rollback and reopen-failure paths deliberately KEEP their folders so a
+  // partial rollback stays recoverable by hand. That is right at the moment it
+  // happens; the gap is that nothing swept them LATER. A prefix match (not an
+  // anchored .restage-<token>$ regex) is what makes the ".old" sibling visible.
+  const store = newStore();
+  const orphan = plantOrphanStage(store, ".old", TWO_HOURS);
+  assert.strictEqual(backup.sweepOrphanedStageFolders(store), 1, "the displaced-old holding folder must be swept once stale");
+  assert.strictEqual(fs.existsSync(orphan), false);
+  fs.rmSync(store, { recursive: true, force: true });
+});
+
+t("F-1: an IN-FLIGHT restore's own stage folder is NEVER swept (stale-mtime rule)", () => {
+  const store = newStore();
+  const fresh = plantOrphanStage(store, "", 0);             // just created — a run still in flight
+  assert.strictEqual(backup.sweepOrphanedStageFolders(store), 0, "a fresh stage folder must survive");
+  assert.strictEqual(fs.existsSync(fresh), true, "an in-flight restore's staged content must not be deleted under it");
+
+  // And the load-bearing half of that rule: during a long image copy only
+  // images/ keeps being touched, so the TOP folder's mtime alone would look
+  // stale. The sweep takes the newest of the two.
+  const old = new Date(Date.now() - TWO_HOURS);
+  fs.utimesSync(fresh, old, old);
+  assert.strictEqual(backup.sweepOrphanedStageFolders(store), 0,
+    "a long in-flight image copy (stale top folder, live images/) must not be swept");
+  assert.strictEqual(fs.existsSync(fresh), true);
+  fs.rmSync(store, { recursive: true, force: true });
+  fs.rmSync(fresh, { recursive: true, force: true });
+});
+
+t("F-1: the sweep never touches a folder belonging to a DIFFERENT store in the same parent", () => {
+  // Every newStore() lands directly in os.tmpdir(), so a loosely scoped sweep
+  // would delete other stores' (and other tests') stage folders. Same
+  // never-delete-near-the-live-store-on-a-loose-match discipline as the
+  // 2026-07-19 near-miss.
+  const store = newStore();
+  const otherStore = newStore();
+  const otherOrphan = plantOrphanStage(otherStore, "", TWO_HOURS);
+  const unrelated = path.join(path.dirname(store), "." + path.basename(store) + ".NOTrestage-9999-1");
+  fs.mkdirSync(unrelated, { recursive: true });
+  const oldT = new Date(Date.now() - TWO_HOURS);
+  fs.utimesSync(unrelated, oldT, oldT);
+
+  assert.strictEqual(backup.sweepOrphanedStageFolders(store), 0, "nothing of THIS store's is orphaned");
+  assert.strictEqual(fs.existsSync(otherOrphan), true, "another store's stage folder must survive this store's sweep");
+  assert.strictEqual(fs.existsSync(unrelated), true, "a sibling that merely starts with the store name must not match");
+  fs.rmSync(store, { recursive: true, force: true });
+  fs.rmSync(otherStore, { recursive: true, force: true });
+  fs.rmSync(otherOrphan, { recursive: true, force: true });
+  fs.rmSync(unrelated, { recursive: true, force: true });
+});
+
+t("F-1: stageRestore clears a stale orphan before staging a new restore", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "o1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:o1" });
+    images.putImg(store, "o1", TINY_JPG);
+    const made = backup.runBackup(db, store);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+    const orphan = plantOrphanStage(store, "", TWO_HOURS);
+    const staged = backup.stageRestore(made.name, store, backup.storeWitness(db, store));
+    assert.strictEqual(staged.ok, true, "the restore must still stage normally: " + (staged.error || ""));
+    assert.strictEqual(fs.existsSync(orphan), false, "the prior run's orphan must be cleared before a new stage begins");
+    // The NEW stage folder is of course still there — it is in flight.
+    assert.strictEqual(fs.existsSync(staged.stageFolder), true, "this run's own stage folder must survive its own pre-stage sweep");
+    fs.rmSync(staged.stageFolder, { recursive: true, force: true });
+    db.close();
+  });
+});
+
+t("F-1: runBackup sweeps stale stage folders next to the live store", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "rb1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:rb1" });
+    images.putImg(store, "rb1", TINY_JPG);
+    const orphan = plantOrphanStage(store, "", TWO_HOURS);
+    backup.runBackup(db, store);
+    assert.strictEqual(fs.existsSync(orphan), false, "the recurring backup pass must collect orphans next to the live store");
+    db.close();
+  });
+});
+
+t("F-1: main.js sweeps orphaned stage folders at startup, off the launch path", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(src, /sweepOrphanedStageFolders\(ctx\.storeDir\)/, "main.js must sweep at boot");
+  // A recursive rm of an image-library-sized folder must not run on the boot
+  // tick — that is the launch-freeze class this whole branch exists to remove.
+  const idxWindow = src.indexOf("createWindow(port);");
+  const idxSweep = src.indexOf("sweepOrphanedStageFolders(ctx.storeDir)");
+  assert.ok(idxWindow > 0 && idxSweep > idxWindow, "the boot sweep must run AFTER createWindow, not before it");
+  assert.match(src.slice(idxWindow, idxSweep), /setTimeout\(/, "the boot sweep must be deferred off the boot tick");
+});
+
+/* ---- F-2: the stage folder and the displaced-old folder must fail closed on a
+   pre-existing path. Both live at a GUESSABLE location (pid + "-" + Date.now()),
+   and mkdirSync({recursive:true}) silently ADOPTS whatever is already there —
+   a planted directory, or an NTFS junction pointing somewhere else entirely. */
+t("F-2: stageRestore fails closed if something already occupies its stage path", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "f2a", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:f2a" });
+    images.putImg(store, "f2a", TINY_JPG);
+    const made = backup.runBackup(db, store);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+    // Occupy the EXACT path stageRestore is about to use. The token is
+    // pid + "-" + Date.now(), both knowable, so this is the attacker's shot.
+    const realNow = Date.now;
+    const frozen = realNow();
+    Date.now = function () { return frozen; };
+    const planted = path.join(path.dirname(store), "." + path.basename(store) + ".restage-" + process.pid + "-" + frozen);
+    fs.mkdirSync(planted, { recursive: true });
+    fs.writeFileSync(path.join(planted, "planted.txt"), "attacker content");
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, backup.storeWitness(db, store)); }
+    finally { Date.now = realNow; }
+
+    assert.strictEqual(staged.ok, false, "staging into an already-occupied path must be refused, not adopted");
+    assert.match(String(staged.error), /EEXIST/i, "it must fail on EEXIST specifically: " + staged.error);
+    assert.strictEqual(fs.existsSync(path.join(planted, "planted.txt")), true,
+      "the refused folder is not ours — the failure path must not delete it either");
+    assert.strictEqual(fs.existsSync(path.join(planted, "interests.db")), false, "nothing may have been staged into it");
+    assert.strictEqual(counts(db).cards, 1, "live store untouched");
+    fs.rmSync(planted, { recursive: true, force: true });
+    db.close();
+  });
+});
+
+t("F-2: the swap fails closed (and rolls back) if something already occupies the displaced-old path", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db1 = openDb(store);
+    upsertCard(db1, { id: "f2b", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:f2b" });
+    images.putImg(store, "f2b", TINY_JPG);
+    const made = backup.runBackup(db1, store);
+    db1.close();
+
+    const db2 = openDb(store);
+    upsertCard(db2, { id: "f2c", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "idb:f2c" });
+    images.putImg(store, "f2c", TINY_JPG);
+    db2.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const staged = backup.stageRestore(made.name, store, backup.storeWitness(db2, store));
+    assert.strictEqual(staged.ok, true, "sanity: staging must succeed");
+    // Occupy stageFolder + ".old" — the folder the live db+images get renamed INTO.
+    const oldAside = staged.stageFolder + ".old";
+    fs.mkdirSync(oldAside, { recursive: true });
+    fs.writeFileSync(path.join(oldAside, "planted.txt"), "attacker content");
+
+    const r = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(r.ok, false, "the swap must refuse rather than rename the live store into an adopted folder");
+    assert.strictEqual(fs.existsSync(path.join(oldAside, "interests.db")), false,
+      "the live db must NOT have been renamed into the pre-existing folder");
+    assert.strictEqual(counts(ctx.db).cards, 2, "the live store must be exactly as it was, on a live handle");
+    assert.ok(fs.existsSync(path.join(store, "images", "f2c.jpg")), "live images still in place");
+    ctx.db.close();
+    fs.rmSync(oldAside, { recursive: true, force: true });
+    fs.rmSync(staged.stageFolder, { recursive: true, force: true });
+  });
+});
+
+/* ---- F-3: the swap must confirm it is applying staged content to the store it
+   was staged FROM. /api/restore and /api/store-location/move share the worker's
+   exclusive() queue, but only the WORKER halves serialize — each route's
+   main-thread continuation runs on its own, so a move that repoints
+   ctx.storeDir between a restore's staging and its swap would otherwise have
+   the swap apply content staged for the OLD directory onto the NEW one. */
+t("F-3: swapInStagedRestore refuses when the store was repointed after staging", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db1 = openDb(store);
+    upsertCard(db1, { id: "f3a", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:f3a" });
+    images.putImg(store, "f3a", TINY_JPG);
+    const made = backup.runBackup(db1, store);
+    db1.close();
+
+    const db2 = openDb(store);
+    upsertCard(db2, { id: "f3b", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2 });
+    db2.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const staged = backup.stageRestore(made.name, store, backup.storeWitness(db2, store));
+    assert.strictEqual(staged.ok, true, "sanity: staging must succeed");
+    assert.strictEqual(staged.storeDir, store, "the staged result must carry the store it was staged from");
+    db2.close();
+
+    // A store move landed in between: ctx now points somewhere else entirely,
+    // with its own content. Applying the OTHER directory's staged content here
+    // would silently replace this store's library.
+    const moved = newStore();
+    const mdb = openDb(moved);
+    upsertCard(mdb, { id: "moved1", url: "https://x/m", platform: "fb", cat: "Saved", ts: 3 });
+    const ctx = { db: mdb, storeDir: moved, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const r = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(r.ok, false, "the swap must refuse staged content prepared for a different data folder");
+    assert.match(r.error, /different data folder/);
+    assert.strictEqual(counts(ctx.db).cards, 1, "the repointed store must be untouched");
+    assert.ok(ctx.db && typeof ctx.db.prepare === "function", "ctx.db must be left live");
+    assert.strictEqual(fs.existsSync(staged.stageFolder), true,
+      "and it must not delete a stage folder belonging to a different store");
+    ctx.db.close();
+    fs.rmSync(staged.stageFolder, { recursive: true, force: true });
+  });
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

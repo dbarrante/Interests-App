@@ -304,6 +304,58 @@ function sweepOrphanedArtifacts(backupRoot) {
   return cleaned;
 }
 
+// ---- orphaned RESTORE STAGE folders (next to the LIVE store) ---------------
+// A restore stages the incoming backup into ".<storeBasename>.restage-<pid>-<ts>"
+// as a SIBLING of the live store (see stageRestore), and swapInStagedRestore
+// parks the displaced live content in that same name + ".old". Each is a
+// near-full copy of the user's library — including an interests.db that holds
+// ia_settings, i.e. the user's provider API key — sitting OUTSIDE the backup
+// root, where sweepOrphanedArtifacts never looks.
+//
+// Three paths leave one behind permanently:
+//   1. the staging worker DIES mid-copy (an OOM during the image copy is
+//      realistic) — no JS catch ever runs in a dead thread, so stageRestore's
+//      own cleanup never fires;
+//   2. swapInStagedRestore's rollback path and
+//   3. its reopen-failure path, both of which deliberately KEEP their folders
+//      so a partial rollback stays recoverable by hand.
+// (2) and (3) are correct at the moment they happen; the gap is that nothing
+// ever swept them LATER, once the user had recovered. Same stale-mtime rule as
+// sweepOrphanedArtifacts: only folders old enough that they cannot belong to a
+// run still in flight.
+function stageFolderPrefix(storeDir) { return "." + path.basename(storeDir) + ".restage-"; }
+// Never delete near the LIVE store on a loose match (2026-07-19 near-miss
+// discipline). A candidate qualifies only if it is a direct sibling of THIS
+// exact storeDir and carries THIS exact store's stage prefix.
+function isOwnStageFolder(candidate, storeDir) {
+  if (typeof candidate !== "string" || !candidate || typeof storeDir !== "string" || !storeDir) return false;
+  if (path.dirname(candidate) !== path.dirname(storeDir)) return false;
+  return path.basename(candidate).indexOf(stageFolderPrefix(storeDir)) === 0;
+}
+function sweepOrphanedStageFolders(storeDir) {
+  if (typeof storeDir !== "string" || !storeDir) return 0;
+  const parent = path.dirname(storeDir);
+  const prefix = stageFolderPrefix(storeDir);
+  let names = [];
+  try { names = fs.readdirSync(parent); } catch (e) { return 0; }
+  const now = Date.now();
+  let cleaned = 0;
+  for (const n of names) {
+    if (n.indexOf(prefix) !== 0) continue;   // scoped to this store's own stage folders (and their ".old" siblings)
+    const full = path.join(parent, n);
+    // The top folder's mtime stops advancing as soon as images/ exists, so a
+    // long in-flight image copy would look stale by that mtime alone. Take the
+    // NEWEST of the folder and its images/ subdir — the one an in-flight copy
+    // keeps touching — so a running restore's own folder is never swept.
+    let mtime = 0;
+    try { mtime = fs.statSync(full).mtimeMs; } catch (e) { continue; }
+    try { mtime = Math.max(mtime, fs.statSync(path.join(full, "images")).mtimeMs); } catch (e) {}
+    if (now - mtime <= STALE_STAGING_MS) continue;
+    try { fs.rmSync(full, { recursive: true, force: true }); cleaned++; } catch (e) {}
+  }
+  return cleaned;
+}
+
 // Cards+saved in a backup's recorded counts — the "how much library is in here"
 // number the collapsed-newest guards compare.
 function countsSize(c) { return c ? ((c.imported | 0) + (c.saved | 0)) : 0; }
@@ -461,6 +513,12 @@ function runBackup(db, storeDir, opts) {
   // not here — rotating before would always leave keep+1 around (the pruned
   // set plus the one this call is about to add).
   sweepOrphanedArtifacts(backupRoot);
+  // Same idea, different location: restore stage folders live next to the LIVE
+  // store, not in the backup root, so the sweep above cannot see them. This is
+  // the recurring sweep that eventually collects a stage folder abandoned by a
+  // worker that died mid-copy or by a rolled-back swap; runBackup already runs
+  // off the main process (core/storeworker.js) and already has storeDir here.
+  try { sweepOrphanedStageFolders(storeDir); } catch (e) {}
 
   // Flush WAL pages into interests.db so a backup taken while the live db is open
   // captures the most recent committed writes (the on-disk file lags the -wal sidecar).
@@ -1372,10 +1430,26 @@ function stageRestore(name, storeDir, witness) {
     // Dropbox-sync lock class documented on renameSyncWithRetry above. A dot
     // prefix keeps it out of the way; pid+timestamp keeps two concurrent
     // attempts (or a leftover from a crash) from colliding.
+    //
+    // Clear a genuinely-orphaned stage folder from an earlier crashed run
+    // BEFORE staging a new one — a worker killed mid-copy leaves one that no
+    // catch in this function can ever reach. Best-effort and never allowed to
+    // fail the restore: a Dropbox/AV lock (EBUSY) on a leftover copy must not
+    // block a legitimate restore, and the stale-mtime rule inside the sweep
+    // keeps it away from anything a run still in flight could own.
+    try { sweepOrphanedStageFolders(storeDir); } catch (e) {}
     const token = process.pid + "-" + Date.now();
-    const stageFolder = path.join(path.dirname(storeDir), "." + path.basename(storeDir) + ".restage-" + token);
+    const stageFolder = path.join(path.dirname(storeDir), stageFolderPrefix(storeDir) + token);
+    // Deliberately NOT {recursive:true} at the top level: recursive mkdir
+    // silently ADOPTS whatever is already at this guessable (pid+ms) path —
+    // including a pre-planted directory or an NTFS junction pointing somewhere
+    // else entirely. Plain mkdirSync fails closed with EEXIST instead. A
+    // same-pid-same-millisecond leftover is not a realistic false failure.
+    fs.mkdirSync(stageFolder);
+    // Only ours to clean up once WE are the ones who created it — an EEXIST
+    // above must not send the catch below into rm'ing a folder we refused.
     stagedSoFar = stageFolder;
-    fs.mkdirSync(path.join(stageFolder, "images"), { recursive: true });
+    fs.mkdirSync(path.join(stageFolder, "images"));
     fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(stageFolder, "interests.db"));
     // Copy exactly the images the backup's own verified manifest lists.
     // verifyBackupFolder above already proved the folder's on-disk .jpg set is
@@ -1395,7 +1469,12 @@ function stageRestore(name, storeDir, witness) {
     // this restore attempt's now-pointless safety snapshot (see
     // swapInStagedRestore). Failure returns deliberately stay bare {ok:false} —
     // the route relays them verbatim and callers match on that exact shape.
-    return { ok: true, stageFolder: stageFolder, snapshotFolder: snapFolder, witness: witness };
+    //
+    // storeDir travels with the result so swapInStagedRestore can prove it is
+    // applying this content to the store it was staged FROM (see there). Only
+    // on the SUCCESS object — failures stay bare {ok:false}, which is the shape
+    // /api/restore relays to the client, so no path is added to a response.
+    return { ok: true, stageFolder: stageFolder, snapshotFolder: snapFolder, witness: witness, storeDir: storeDir };
   } catch (e) {
     // A stage folder abandoned mid-copy is a near-full copy of the user's
     // library (db + images) sitting next to the live store where NOTHING
@@ -1437,6 +1516,19 @@ function swapInStagedRestore(staged, ctx) {
   if (typeof stageFolder !== "string" || !stageFolder || !before) {
     return { ok: false, error: "restore swap refused: the staged result is missing its stage folder or its write-witness" };
   }
+  // The staged content must belong to the store we are about to apply it TO.
+  // /api/restore and /api/store-location/move share the worker's exclusive()
+  // queue, but only the WORKER halves serialize — each route's main-thread
+  // continuation runs on its own, so a move that repoints ctx.storeDir between
+  // a restore's staging and its swap would otherwise have this apply content
+  // staged for the OLD directory onto the NEW one. That is benign today only
+  // because moveStore leaves the two directories content-identical — an
+  // incidental property of moveStore, not a guarantee this function makes.
+  // Make it one. Raw === is right: ctx.storeDir is the very string that was
+  // passed into staging, so any difference means it was repointed.
+  if (staged.storeDir !== ctx.storeDir) {
+    return { ok: false, error: "restore swap refused: the staged content was prepared for a different data folder than the one now in use (the store was moved while the restore was being prepared) — nothing was changed, please run the restore again" };
+  }
 
   // ---- WRITE-WITNESS RE-CHECK (F1) ----------------------------------------
   // Staging now happens off-thread and can take minutes on a large image
@@ -1465,7 +1557,13 @@ function swapInStagedRestore(staged, ctx) {
     // not exist (auto-deleting near the store is its own design pass). This
     // runs at the tail of a user-initiated restore that has already spent
     // minutes staging — not on the launch path this refactor exists to unblock.
-    try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+    //
+    // Name-guarded exactly like the snapshot delete below it: this one deletes
+    // a folder sitting NEXT TO THE LIVE STORE, so it must be provably one
+    // stageRestore itself created (same 2026-07-19 discipline).
+    if (isOwnStageFolder(stageFolder, ctx.storeDir)) {
+      try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+    }
     // Drop this attempt's safety snapshot too: the live store was never
     // modified, so it protects nothing, and leaving it would both look like a
     // completed restore and burn one of the two slots rotation keeps for real
@@ -1494,7 +1592,12 @@ function swapInStagedRestore(staged, ctx) {
   // db + images are one rename away from being back.
   const oldAside = stageFolder + ".old";
   try {
-    fs.mkdirSync(oldAside, { recursive: true });
+    // Non-recursive for the same reason as the stage folder itself: this path
+    // is guessable (it is the stage token + ".old"), and a recursive mkdir
+    // would silently adopt a pre-existing directory or junction and then
+    // rename the user's live db+images INTO it. EEXIST here lands in the catch
+    // below, which rolls back and leaves the live store exactly as it was.
+    fs.mkdirSync(oldAside);
     renameSyncWithRetry(path.join(ctx.storeDir, "interests.db"), path.join(oldAside, "interests.db"));
     renameSyncWithRetry(path.join(ctx.storeDir, "images"), path.join(oldAside, "images"));
     renameSyncWithRetry(path.join(stageFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
@@ -1522,8 +1625,16 @@ function swapInStagedRestore(staged, ctx) {
   }
   // Confirmed: the live store is now an exact copy of the backup (the old
   // images went aside wholesale, so no orphan from the replaced db survives).
-  try { fs.rmSync(oldAside, { recursive: true, force: true }); } catch (e) {}
-  try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+  // Both are next to the live store, so both take the same name guard as the
+  // abort path above (they always pass — each is derived from stageFolder,
+  // which the precondition already tied to ctx.storeDir — which is exactly
+  // what makes the guard free to apply consistently).
+  if (isOwnStageFolder(oldAside, ctx.storeDir)) {
+    try { fs.rmSync(oldAside, { recursive: true, force: true }); } catch (e) {}
+  }
+  if (isOwnStageFolder(stageFolder, ctx.storeDir)) {
+    try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+  }
 
   // A restore is a DELIBERATE store transition — re-baseline the boot-guard's
   // last-known counts so restoring an intentionally smaller/older backup does
@@ -1574,4 +1685,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, storeWitness, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, _timing: timing };
+module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, storeWitness, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, sweepOrphanedStageFolders, _timing: timing };

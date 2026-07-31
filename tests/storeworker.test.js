@@ -191,6 +191,14 @@ async function run(name, fn) {
       assert.strictEqual(staged.ok, true, "restore job must succeed: " + (staged.error || ""));
       assert.deepStrictEqual(staged.witness, witness,
         "the witness must ride through the worker intact, or the main-thread swap can never verify it");
+      // Same contract for storeDir: swapInStagedRestore refuses unless
+      // staged.storeDir === ctx.storeDir (security review F-3). runJob resolves
+      // the worker's result object wholesale, so this holds today — but a
+      // handler that reshaped the message into a field list would drop it and
+      // make EVERY worker-path restore fail closed while the direct-call tests
+      // in backup.test.js all stayed green. Assert it explicitly.
+      assert.strictEqual(staged.storeDir, storeDir,
+        "storeDir must ride through the worker intact, or the main-thread swap refuses every restore");
       assert.ok(fs.existsSync(path.join(staged.stageFolder, "interests.db")),
         "the worker staged real content the main thread can now swap in");
       assert.ok(fs.readdirSync(backupRoot).some((n) => n.indexOf("interests-backup-before-restore-") === 0),
