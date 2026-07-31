@@ -181,11 +181,16 @@ async function run(name, fn) {
       // Mutate the live store AFTER the backup, so a correct restore must roll
       // it back to the 1-card state rather than being a no-op.
       db.upsertCard(d1, { id: "c2", url: "http://x/2", ts: 2 });
+      // The write-witness can only be read from a LIVE handle on this thread —
+      // the worker deliberately has none. Capture it before staging starts.
+      const witness = backupMod.storeWitness(d1, storeDir);
       d1.close();
 
       const storeWorker = createStoreWorker(storeDir);
-      const staged = await storeWorker.restore(storeDir, made.name);
+      const staged = await storeWorker.restore(storeDir, made.name, witness);
       assert.strictEqual(staged.ok, true, "restore job must succeed: " + (staged.error || ""));
+      assert.deepStrictEqual(staged.witness, witness,
+        "the witness must ride through the worker intact, or the main-thread swap can never verify it");
       assert.ok(fs.existsSync(path.join(staged.stageFolder, "interests.db")),
         "the worker staged real content the main thread can now swap in");
       assert.ok(fs.readdirSync(backupRoot).some((n) => n.indexOf("interests-backup-before-restore-") === 0),
@@ -193,7 +198,7 @@ async function run(name, fn) {
 
       // The swap is main-thread-only: it needs the real ctx.db/ctx.reopen.
       const ctx = { db: db.openDb(storeDir), storeDir, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = db.openDb(ctx.storeDir); return ctx.db; } };
-      const out = backupMod.swapInStagedRestore(staged.stageFolder, ctx);
+      const out = backupMod.swapInStagedRestore(staged, ctx);
       assert.strictEqual(out.ok, true, "swap must succeed: " + (out.error || ""));
       const ids = db.allCards(ctx.db).map((c) => c.id);
       assert.ok(ids.indexOf("c1") >= 0, "restored content present");

@@ -1143,6 +1143,52 @@ function freezeMirrorForRestore() {
   return freezeName;
 }
 
+// ---- restore write-witness ------------------------------------------------
+// "Has the live store been written to since staging began?" Captured from the
+// LIVE handle at the instant staging starts, re-checked against the live handle
+// in the same synchronous block as the swap. A mismatch means the app took a
+// write (a capture, an auto-import, an edit) while the restore was being
+// prepared; swapping would delete it from the live store, and — because the
+// pre-restore safety snapshot was taken BEFORE the write too — it would survive
+// in no copy anywhere. So a mismatch aborts (see swapInStagedRestore).
+//
+// WHY NOT `PRAGMA data_version`, SQLite's purpose-built "did another connection
+// change this database" counter — verified empirically under node:sqlite +
+// Node 25 + WAL, not assumed:
+//   * It is readable (db.prepare("PRAGMA data_version").get() → {data_version:N};
+//     db.exec runs it but yields no value), so availability was never the issue.
+//   * It deliberately does NOT change for commits made on the reading connection
+//     itself (measured: 2 → 2 across the connection's own INSERT). Every
+//     interleaved write we must catch arrives through ctx.db — the very handle
+//     that would be doing the checking — so data_version is blind to exactly
+//     the writes F1 is about.
+//   * Its value is not comparable across connections (measured: one connection
+//     reporting 3 while a fresh connection on the same file reports 2), and
+//     stageRestore holds no connection at all, by design.
+// getKV/counts on that same handle have the mirror-image property: they see the
+// connection's own commits immediately. The primitive works precisely where
+// SQLite's fails here.
+//
+// `rev` is core/db.js's durable ia_mutation_revision, bumped inside the writing
+// transaction by every card/saved/tombstone/settings mutation path
+// (upsertCard, upsertCardSynced, replaceCards, deleteCard, addTombstone,
+// addNotDuplicateMarker, upsert/replace/deleteSaved, setKV for settings).
+// Card/saved counts are belt-and-braces on top of it. `images` covers the
+// standalone image routes (PUT/POST/DELETE /api/img/:id), which write files
+// with no db mutation at all and so never move `rev`.
+function storeWitness(db, storeDir) {
+  const c = counts(db);
+  return {
+    rev: Number(getKV(db, "ia_mutation_revision") || 0) || 0,
+    cards: c.cards | 0,
+    saved: c.saved | 0,
+    images: imageCount(storeDir) | 0,
+  };
+}
+function witnessMatches(a, b) {
+  return !!a && !!b && a.rev === b.rev && a.cards === b.cards && a.saved === b.saved && a.images === b.images;
+}
+
 // Stage a restore off the main thread: freeze the mirror if needed, verify the
 // source backup, take the pre-restore safety snapshot of the CURRENT live
 // store, and stage the incoming backup's db+images into a scratch folder next
@@ -1165,7 +1211,14 @@ function freezeMirrorForRestore() {
 // on a freshly created store, the schema itself) live in the -wal sidecar, so
 // an unflushed snapshot silently under-captures the state it exists to
 // preserve. core/server.js's /api/restore route does the checkpoint.
-function stageRestore(name, storeDir) {
+//
+// `witness` is storeWitness(ctx.db, storeDir), captured by the CALLER from the
+// live handle just before staging begins (right after that checkpoint), and
+// merely CARRIED through here — stageRestore cannot capture it itself precisely
+// because it holds no db handle. Carrying it in the staged result is what makes
+// swapInStagedRestore structurally unable to run without one; it crosses the
+// worker boundary as a plain object of numbers.
+function stageRestore(name, storeDir, witness) {
   if (!isValidBackupName(name)) return { ok: false };
   // The mirror is a moving target — never read it directly across a
   // multi-step restore. Freeze it first; restore from the frozen copy instead
@@ -1234,7 +1287,11 @@ function stageRestore(name, storeDir) {
       return { ok: false, error: "staged restore failed to verify" };
     }
     stagedSoFar = null;   // handed to the caller — no longer ours to clean up
-    return { ok: true, stageFolder: stageFolder };
+    // snapshotFolder travels with the result ONLY so an aborted swap can clear
+    // this restore attempt's now-pointless safety snapshot (see
+    // swapInStagedRestore). Failure returns deliberately stay bare {ok:false} —
+    // the route relays them verbatim and callers match on that exact shape.
+    return { ok: true, stageFolder: stageFolder, snapshotFolder: snapFolder, witness: witness };
   } catch (e) {
     // A stage folder abandoned mid-copy is a near-full copy of the user's
     // library (db + images) sitting next to the live store where NOTHING
@@ -1264,7 +1321,50 @@ function stageRestore(name, storeDir) {
 // "keep the displaced copy until the replacement verifies" posture runBackup's
 // own publish step uses), so a failure here rolls the live store back to
 // exactly what it was and leaves ctx.db a live, usable handle.
-function swapInStagedRestore(stageFolder, ctx) {
+//
+// Takes the WHOLE result object returned by stageRestore (not a bare folder
+// path) so the write-witness captured at staging time travels with the staged
+// content and this step cannot be run without one.
+function swapInStagedRestore(staged, ctx) {
+  const stageFolder = staged && staged.stageFolder;
+  const before = staged && staged.witness;
+  // Fail CLOSED: without a stage folder and a witness there is nothing safe to
+  // do, so refuse rather than swap unverified. ctx.db is untouched here.
+  if (typeof stageFolder !== "string" || !stageFolder || !before) {
+    return { ok: false, error: "restore swap refused: the staged result is missing its stage folder or its write-witness" };
+  }
+
+  // ---- WRITE-WITNESS RE-CHECK (F1) ----------------------------------------
+  // Staging now happens off-thread and can take minutes on a large image
+  // library, so the event loop is free the whole time and the app keeps taking
+  // writes through ctx.db. Anything written in that window is NOT in the staged
+  // content and NOT in the pre-restore safety snapshot (both predate it), so
+  // swapping would destroy it with no copy left anywhere. Abort instead.
+  //
+  // EVERYTHING from here to the rename sequence below must stay in ONE
+  // synchronous block — no await, no async, no callback boundary. That is the
+  // only thing that makes the check meaningful: another HTTP handler is just
+  // more main-thread JS and cannot interleave with straight-line code.
+  let now = null;
+  try { now = storeWitness(ctx.db, ctx.storeDir); } catch (e) { now = null; }   // unreadable → treat as changed
+  if (!witnessMatches(before, now)) {
+    // Live store completely untouched: no close, no reopen, no rename has run.
+    // ctx.db is still the same live, usable handle it was on entry.
+    try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+    // Drop this attempt's safety snapshot too: the live store was never
+    // modified, so it protects nothing, and leaving it would both look like a
+    // completed restore and burn one of the two slots rotation keeps for real
+    // ones. Name-guarded before deleting — this path deletes inside the
+    // Dropbox-synced backup root, so it must be provably scoped to a folder
+    // stageRestore itself created (2026-07-19 near-miss discipline). A failed
+    // delete never changes the outcome.
+    const snap = staged.snapshotFolder;
+    if (typeof snap === "string" && RESTORE_BACKUP_NAME.test(path.basename(snap))) {
+      try { fs.rmSync(snap, { recursive: true, force: true }); } catch (e) {}
+    }
+    return { ok: false, error: "restore aborted: the app received new items while the restore was being prepared, and applying it now would discard them — nothing was changed, please run the restore again" };
+  }
+
   // close the live db so the file can be replaced (Windows holds an exclusive handle)
   try { ctx.db.close(); } catch (e) {}
   // also drop WAL/SHM sidecars so the restored db isn't shadowed by stale WAL pages
@@ -1359,4 +1459,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, _timing: timing };
+module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, storeWitness, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, _timing: timing };

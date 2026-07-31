@@ -796,9 +796,9 @@ t("restore leaves no interests-mirror-freeze-* folder behind, on success OR fail
     backup.updateMirror(db, store);
 
     const ctx = { db: db, storeDir: store, reopen: function () { return openDb(store); } };
-    const ok = backup.stageRestore(backup.MIRROR_NAME, store);
+    const ok = backup.stageRestore(backup.MIRROR_NAME, store, backup.storeWitness(db, store));
     assert.strictEqual(ok.ok, true, "sanity: the mirror restore itself must succeed");
-    assert.strictEqual(backup.swapInStagedRestore(ok.stageFolder, ctx).ok, true, "sanity: the swap must succeed too");
+    assert.strictEqual(backup.swapInStagedRestore(ok, ctx).ok, true, "sanity: the swap must succeed too");
     assert.deepStrictEqual(
       fs.readdirSync(bdir).filter(n => /^interests-mirror-freeze-/.test(n)), [],
       "the freeze copy is a near-full image-library duplicate in the Dropbox-synced folder — it must not survive a successful restore");
@@ -905,9 +905,9 @@ t("restore(MIRROR_NAME) freezes the mirror first and restores correctly from the
     assert.strictEqual(counts(db).cards, 2);
 
     const ctx = { db, storeDir: store, reopen: () => openDb(store) };
-    const staged = backup.stageRestore(backup.MIRROR_NAME, store);
+    const staged = backup.stageRestore(backup.MIRROR_NAME, store, backup.storeWitness(db, store));
     assert.strictEqual(staged.ok, true, "error: " + (staged.error || ""));
-    const r = backup.swapInStagedRestore(staged.stageFolder, ctx);
+    const r = backup.swapInStagedRestore(staged, ctx);
     assert.strictEqual(r.ok, true, "error: " + (r.error || ""));
     assert.strictEqual(counts(ctx.db).cards, 1, "must restore to the mirror's 1-card state, not the mutated 2-card live state");
     ctx.db.close();
@@ -1482,9 +1482,9 @@ t("swapInStagedRestore closes db, swaps in the staged content, reopens db", () =
     images.putImg(store, "c2", TINY_JPG);
     const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
 
-    const staged = backup.stageRestore(made.name, store);
+    const staged = backup.stageRestore(made.name, store, backup.storeWitness(db2, store));
     assert.strictEqual(staged.ok, true);
-    const swapped = backup.swapInStagedRestore(staged.stageFolder, ctx);
+    const swapped = backup.swapInStagedRestore(staged, ctx);
     assert.strictEqual(swapped.ok, true, "swap must succeed: " + (swapped.error || ""));
     const restoredCounts = counts(ctx.db);
     assert.strictEqual(restoredCounts.cards, 1, "live store now reflects the restored (backed-up) content, not the pre-restore c2 card");
@@ -1568,7 +1568,7 @@ t("swapInStagedRestore recovers ctx.db to a live handle when the swap step throw
     images.putImg(store, "c2", TINY_JPG);
     db2.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
-    const staged = backup.stageRestore(made.name, store);
+    const staged = backup.stageRestore(made.name, store, backup.storeWitness(db2, store));
     assert.strictEqual(staged.ok, true);
 
     // Fail ONLY the "rename staged content into place" step: the source must be
@@ -1585,7 +1585,7 @@ t("swapInStagedRestore recovers ctx.db to a live handle when the swap step throw
     };
     let swapped;
     try {
-      swapped = backup.swapInStagedRestore(staged.stageFolder, ctx);
+      swapped = backup.swapInStagedRestore(staged, ctx);
     } finally {
       fs.renameSync = originalRename;
     }
@@ -1637,6 +1637,102 @@ t("stageRestore cleans up its own stage folder when the staging copy throws mid-
       "the half-written stage folder must not be left next to the live store");
     assert.strictEqual(counts(db1).cards, 3, "live store untouched");
     db1.close();
+  });
+});
+
+/* F1 (data-safety review 2026-07-31, BLOCKING regression).
+   Before restore was split into stage+swap the route was synchronous, so the
+   single-threaded event loop made an interleaved write impossible. Staging now
+   runs off-thread for as long as the image library takes, leaving the loop free
+   to serve captures and auto-imports through ctx.db — and anything written in
+   that window is in NEITHER the staged content NOR the pre-restore safety
+   snapshot (both predate it). Applying the swap destroyed it outright, with no
+   copy left anywhere.
+
+   This test performs a REAL live-store write (card + image, the exact shape a
+   capture writes) from inside the staging image copy, then runs the swap. The
+   data assertions come FIRST deliberately: against pre-fix code they are what
+   goes red, and they go red by reporting the interleaved card MISSING — proof
+   this closes F1, not merely that an abort branch exists. */
+t("swapInStagedRestore ABORTS when the live store took a write while staging (F1)", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 3; i++) {
+      upsertCard(db, { id: "rc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:rc" + i });
+      images.putImg(store, "rc" + i, TINY_JPG);
+    }
+    const made = backup.runBackup(db, store);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    // Captured exactly where /api/restore captures it: from the LIVE handle,
+    // after the checkpoint, immediately before staging starts.
+    const witness = backup.storeWitness(ctx.db, store);
+
+    // Interleave the write mid-staging, hooked on the WRITE side of the staging
+    // image copy (a read-side hook fires during backup verification instead,
+    // before staging has even begun — see the stage-cleanup test above).
+    let injected = false;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (!injected && String(p).indexOf(".restage-") >= 0 && String(p).indexOf("rc1.jpg") >= 0) {
+        injected = true;   // set BEFORE the nested writes so putImg cannot re-enter
+        upsertCard(ctx.db, { id: "during", url: "https://x/during", platform: "fb", cat: "Saved", ts: 9, img: "idb:during" });
+        images.putImg(store, "during", TINY_JPG);
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.strictEqual(injected, true, "the mid-staging write must actually have fired, or this test proves nothing");
+    assert.strictEqual(staged.ok, true, "staging itself still succeeds — refusing is the swap's job: " + (staged.error || ""));
+    const snapFolder = staged.snapshotFolder;
+    assert.strictEqual(path.dirname(snapFolder), bdir,
+      "the snapshot the abort deletes must be inside the SANDBOXED backup root — this test deletes in the backups folder");
+    assert.strictEqual(fs.existsSync(snapFolder), true, "sanity: the safety snapshot exists before the abort");
+
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+
+    // ---- the data, first ----
+    assert.ok(ctx.db && typeof ctx.db.prepare === "function", "ctx.db must still be a live, usable handle after an abort");
+    assert.ok(ctx.db.prepare("SELECT 1 FROM cards WHERE id=?").get("during"),
+      "the card written DURING staging must still be in the live store");
+    assert.strictEqual(fs.existsSync(path.join(store, "images", "during.jpg")), true,
+      "the image written DURING staging must still be in the live store");
+    assert.strictEqual(counts(ctx.db).cards, 4, "the live store must be exactly as it was — nothing restored, nothing discarded");
+    assert.strictEqual(images.imageCount(store), 4, "live images untouched");
+
+    // ---- then the outcome + cleanup ----
+    assert.strictEqual(swapped.ok, false, "the swap MUST abort rather than discard the interleaved write");
+    assert.match(swapped.error, /received new items/, "and must tell the caller why, and to retry: " + swapped.error);
+    assert.strictEqual(fs.existsSync(staged.stageFolder), false, "the stage folder must be cleaned up by the abort");
+    assert.strictEqual(fs.existsSync(staged.stageFolder + ".old"), false, "no displaced-old folder — the swap never started");
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(store)).filter(function (n) { return n.indexOf("." + path.basename(store) + ".restage-") === 0; }), [],
+      "no stage folder left next to the live store");
+    assert.strictEqual(fs.existsSync(snapFolder), false,
+      "the aborted attempt's safety snapshot must go too — the live store was never modified, so it protects nothing and would burn one of the two slots rotation keeps");
+    ctx.db.close();
+  });
+});
+
+t("swapInStagedRestore fails closed when handed no write-witness", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "nw1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const ctx = { db: db, storeDir: store, reopen: function () { return openDb(store); } };
+    // The legacy call shape (a bare stage-folder string) must be REFUSED, not
+    // silently swapped in unverified.
+    const r = backup.swapInStagedRestore("/tmp/some-stage-folder", ctx);
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /write-witness/);
+    assert.strictEqual(counts(ctx.db).cards, 1, "live store untouched by a refused swap");
+    assert.ok(ctx.db && typeof ctx.db.prepare === "function", "ctx.db must be left live");
+    ctx.db.close();
   });
 });
 

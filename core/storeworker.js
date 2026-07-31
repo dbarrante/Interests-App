@@ -34,7 +34,10 @@ if (!isMainThread) {
       // which would mutate the very store this job is only supposed to read and
       // snapshot. No ctx is built, so there is none to close either.
       const backup = require("./backup");
-      result = backup.stageRestore(job.name, job.storeDir);
+      // job.witness was read from the LIVE handle on the main thread before the
+      // job was queued (see core/server.js) and is only carried through here —
+      // the worker has no db handle to read one with, which is the whole point.
+      result = backup.stageRestore(job.name, job.storeDir, job.witness);
     } else {
       const ctx = buildContext(job.storeDir);
       try {
@@ -124,12 +127,16 @@ if (!isMainThread) {
       },
       // Runs ONLY the staging half of a restore (backup.stageRestore): verify,
       // safety-snapshot the live store, stage the incoming content. Resolves
-      // the STAGED result ({ok, stageFolder}), NOT a finished restore — the
-      // caller must then run backup.swapInStagedRestore(stageFolder, ctx) on
-      // the main thread, which is the only part that needs the real ctx.db /
-      // ctx.reopen and is cheap (renames, not copies).
-      restore(storeDir, name) {
-        return exclusive({ op: "restore", storeDir, name });
+      // the STAGED result ({ok, stageFolder, snapshotFolder, witness}), NOT a
+      // finished restore — the caller must then run
+      // backup.swapInStagedRestore(staged, ctx) on the main thread, which is
+      // the only part that needs the real ctx.db / ctx.reopen and is cheap
+      // (renames, not copies). `witness` is backup.storeWitness(ctx.db,
+      // storeDir) read on the main thread just before this call; it rides
+      // through the worker untouched so the swap can prove nothing was written
+      // to the live store meanwhile.
+      restore(storeDir, name, witness) {
+        return exclusive({ op: "restore", storeDir, name, witness });
       },
       setStoreDir(newStoreDir) { currentStoreDir = newStoreDir; },
     };

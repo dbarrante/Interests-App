@@ -745,10 +745,18 @@ function createServer(ctx) {
         const cp = ctx.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
         if (cp && cp.busy) console.error("restore: WAL checkpoint reported busy — the pre-restore safety snapshot may lag the live store", cp);
       } catch (e) { console.error("restore: WAL checkpoint failed:", (e && e.message) || e); }
+      // Capture the write-witness AFTER the checkpoint (which is itself
+      // witness-neutral) and immediately before staging starts, so the window
+      // in which an unrelated write could trigger a needless abort is as narrow
+      // as possible. Staging is now off-thread and can run for minutes, during
+      // which this route's `await` leaves the event loop free to serve capture /
+      // auto-import writes through ctx.db; the swap re-reads this witness and
+      // refuses rather than discarding anything written meanwhile.
+      const witness = backup.storeWitness(ctx.db, ctx.storeDir);
       const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.restore);
-      const staged = usingWorker ? await ctx.storeWorker.restore(ctx.storeDir, name) : backup.stageRestore(name, ctx.storeDir);
+      const staged = usingWorker ? await ctx.storeWorker.restore(ctx.storeDir, name, witness) : backup.stageRestore(name, ctx.storeDir, witness);
       if (!staged.ok) return res.json(staged);
-      const out = backup.swapInStagedRestore(staged.stageFolder, ctx);   // rebinds ctx.db
+      const out = backup.swapInStagedRestore(staged, ctx);   // rebinds ctx.db
       res.json(out);
     } catch (e) {
       console.error("restore failed:", e);
