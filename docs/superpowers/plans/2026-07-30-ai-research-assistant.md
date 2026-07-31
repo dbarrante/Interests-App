@@ -197,12 +197,18 @@ function parseResearchResponse(text){
   const m = text.match(marker);
   const body = (m ? text.slice(0, m.index) : text).trim();
   if(!body) throw new Error("No article text in model response");
-  const urlRe = /https?:\/\/[^\s)\]}"'<>]+/g;
+  // Constructed from a string, not a /regex literal/ — this project's
+  // tests/_extract.js brace-balance scanner doesn't recognize regex literals,
+  // so a literal `}` inside a character class (needed here to exclude a
+  // trailing brace from a matched URL) gets miscounted as a real closing
+  // brace and truncates the extracted function mid-pattern.
+  const urlRe = new RegExp("https?://[^\\s)\\]}\"'<>]+", "g");
   const scanFrom = m ? text.slice(m.index + m[0].length) : text;
   const found = scanFrom.match(urlRe) || [];
   const seen = new Set(); const sources = [];
+  const trailingPunct = new RegExp("[.,;:)\\]}>\"']+$");
   for(let u of found){
-    u = u.replace(/[.,;:)\]}>"']+$/, "");
+    u = u.replace(trailingPunct, "");
     if(u && !seen.has(u)){ seen.add(u); sources.push(u); if(sources.length>=10) break; }
   }
   return { text: body, sources: sources };

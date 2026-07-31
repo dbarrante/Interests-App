@@ -3649,6 +3649,49 @@ function tabCardWrapper(innerHtml, scope, identity, picked){
   if(!tabSelMode) return innerHtml;
   return `<div style="position:relative">${innerHtml}<div class="pickov" onclick="event.stopPropagation();toggleTabPick('${scope}','${identity}')">${picked?'<span class="pk">&#10003;</span>':""}</div></div>`;
 }
+/* ---- AI research assistant (Plan 3): article + Q&A on the reserved AI tab ---- */
+// Anthropic/OpenAI/Gemini's callers in web/ai.js always run web search
+// unconditionally; OpenRouter's caller supports it opt-in via opts.webSearch.
+// Groq/Local have no web-search tool at all — never run an ungrounded "research" call.
+const RESEARCH_PROVIDERS = new Set(["anthropic", "openai", "gemini", "openrouter"]);
+function hasResearchProvider(){ return RESEARCH_PROVIDERS.has(S.provider); }
+function _researchCard(scope, id){
+  return scope==="saved" ? saved.find(c=>c&&c.id===id) : imported.find(c=>c&&c.id===id);
+}
+function buildArticlePrompt(it){
+  return `Research and write a well-organized, factual article about the following topic, using web search to find current, accurate information. Write 3-6 paragraphs of plain text — no markdown headers, no bullet lists unless truly necessary. After the article, on its own line write "SOURCES:" followed by one URL per line for the sources you used.\n\nTopic: "${it.title}"${it.desc?"\nContext: "+it.desc:""}${it.url?"\nOriginal link: "+it.url:""}`;
+}
+function buildQuestionPrompt(it, question){
+  return `You are answering a question about the following saved item, using web search to find current, accurate information. Write a clear, well-researched answer in plain text — a few sentences to a couple of short paragraphs. After the answer, on its own line write "SOURCES:" followed by one URL per line for the sources you used.\n\nItem: "${it.title}"${it.desc?"\nContext: "+it.desc:""}${it.url?"\nOriginal link: "+it.url:""}\n\nQuestion: ${question}`;
+}
+// Deterministic parser for the AI's plain-text-plus-sources shape — NOT parseItems'
+// JSON-list schema. Splits on the LAST "sources:"/"source:" line marker (case-
+// insensitive); everything before is the body, everything after is scanned for
+// URLs. No marker found -> whole text is the body, sources is []. Trailing
+// punctuation stripped so a sentence-embedded URL doesn't carry a period/paren
+// into the stored link. Deduped, capped at 10.
+function parseResearchResponse(text){
+  if(!text || !text.trim()) throw new Error("Empty response from model");
+  const marker = /\n\s*sources?:\s*\n?/i;
+  const m = text.match(marker);
+  const body = (m ? text.slice(0, m.index) : text).trim();
+  if(!body) throw new Error("No article text in model response");
+  // Constructed from a string, not a /regex literal/ — this project's
+  // tests/_extract.js brace-balance scanner doesn't recognize regex literals,
+  // so a literal `}` inside a character class (needed here to exclude a
+  // trailing brace from a matched URL) gets miscounted as a real closing
+  // brace and truncates the extracted function mid-pattern.
+  const urlRe = new RegExp("https?://[^\\s)\\]}\"'<>]+", "g");
+  const scanFrom = m ? text.slice(m.index + m[0].length) : text;
+  const found = scanFrom.match(urlRe) || [];
+  const seen = new Set(); const sources = [];
+  const trailingPunct = new RegExp("[.,;:)\\]}>\"']+$");
+  for(let u of found){
+    u = u.replace(trailingPunct, "");
+    if(u && !seen.has(u)){ seen.add(u); sources.push(u); if(sources.length>=10) break; }
+  }
+  return { text: body, sources: sources };
+}
 function removeTabPicksFromTab(){
   const t = tabs.find(x=>x.id===openTabId); if(!t || !tabSelPicks.size) return;
   let n=0;
