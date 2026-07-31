@@ -117,7 +117,8 @@ t("changedImageIds: same-size content changes are selected", () => {
 });
 
 /* ---- runBackup / listBackups / verifyBackup (integration over tmp dirs) ---- */
-const { openDb, upsertCard, upsertSaved, deleteCard, counts, setKV } = require("../core/db.js");
+const { openDb, upsertCard, upsertSaved, deleteCard, counts, setKV, getKV } = require("../core/db.js");
+const captureQueue = require("../core/capture-queue.js");
 const images = require("../core/images.js");
 const config = require("../core/config.js");
 
@@ -1707,7 +1708,7 @@ t("swapInStagedRestore ABORTS when the live store took a write while staging (F1
 
     // ---- then the outcome + cleanup ----
     assert.strictEqual(swapped.ok, false, "the swap MUST abort rather than discard the interleaved write");
-    assert.match(swapped.error, /received new items/, "and must tell the caller why, and to retry: " + swapped.error);
+    assert.match(swapped.error, /would discard/, "and must tell the caller why, and to retry: " + swapped.error);
     assert.strictEqual(fs.existsSync(staged.stageFolder), false, "the stage folder must be cleaned up by the abort");
     assert.strictEqual(fs.existsSync(staged.stageFolder + ".old"), false, "no displaced-old folder — the swap never started");
     assert.deepStrictEqual(
@@ -1715,6 +1716,138 @@ t("swapInStagedRestore ABORTS when the live store took a write while staging (F1
       "no stage folder left next to the live store");
     assert.strictEqual(fs.existsSync(snapFolder), false,
       "the aborted attempt's safety snapshot must go too — the live store was never modified, so it protects nothing and would burn one of the two slots rotation keeps");
+    ctx.db.close();
+  });
+});
+
+/* F1, second shape (data-safety review round 2, 2026-07-31).
+   The first witness was {rev, cards, saved, images}, and `rev`
+   (ia_mutation_revision) only moves for card/saved/tombstone writes and the two
+   SETTINGS kv keys — see core/db.js setKV. So a write to ANY OTHER kv row was
+   invisible to it, and two of those rows are durable, non-self-healing user
+   data: the extension capture mailbox (ia_capture_queue) and the taste signals
+   (ia_hidden and friends). Both reproduced the exact F1 loss shape — the swap
+   returned ok:true and the write was gone from the live store AND absent from
+   the pre-restore safety snapshot.
+
+   This drives the reviewer's exact pair: a real captureQueue.enqueue() plus a
+   real ia_hidden write, fired from inside the staging image copy on the WRITE
+   side. It asserts up front that every pre-existing witness dimension is
+   UNCHANGED by those writes, so the test is provably exercising the gap and not
+   riding on the rev/counts check that was already there. The data assertions
+   come first: against a witness without the kv dimension they go red by
+   reporting the capture and the taste signal MISSING. */
+t("swapInStagedRestore ABORTS when a capture-queue / taste-signal kv row was written while staging (F1, kv shape)", () => {
+  withBackupDir(function (bdir) {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 3; i++) {
+      upsertCard(db, { id: "kv" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:kv" + i });
+      images.putImg(store, "kv" + i, TINY_JPG);
+    }
+    // Pre-existing taste history, so the interleaved write CHANGES a row rather
+    // than creating one (the harder case for a value compare to notice).
+    setKV(db, "ia_hidden", JSON.stringify([{ title: "before", ts: 1 }]));
+    const made = backup.runBackup(db, store);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const witness = backup.storeWitness(ctx.db, store);
+
+    let injected = false;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (!injected && String(p).indexOf(".restage-") >= 0 && String(p).indexOf("kv1.jpg") >= 0) {
+        injected = true;
+        // The extension capture mailbox: an undrained capture at this instant
+        // exists nowhere else on disk.
+        captureQueue.enqueue(ctx.db, { url: "https://x/pending-capture", title: "arrived mid-restore" });
+        // A taste signal, exactly as web/index.html's persistAll() writes it.
+        setKV(ctx.db, "ia_hidden", JSON.stringify([{ title: "before", ts: 1 }, { title: "during", ts: 2 }]));
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.strictEqual(injected, true, "the mid-staging kv write must actually have fired, or this test proves nothing");
+    assert.strictEqual(staged.ok, true, "staging itself still succeeds — refusing is the swap's job: " + (staged.error || ""));
+
+    // The gap, stated as an assertion: NONE of the original witness dimensions
+    // moved. If this ever fails, the test has stopped covering the kv shape and
+    // is passing on the rev/counts check instead.
+    const after = backup.storeWitness(ctx.db, store);
+    assert.strictEqual(after.rev, witness.rev, "ia_mutation_revision must NOT move for these writes — that is the gap under test");
+    assert.strictEqual(after.cards, witness.cards, "no card was written");
+    assert.strictEqual(after.saved, witness.saved, "no saved item was written");
+    assert.strictEqual(after.images, witness.images, "no image file was written");
+
+    const snapFolder = staged.snapshotFolder;
+    assert.strictEqual(path.dirname(snapFolder), bdir,
+      "the snapshot the abort deletes must be inside the SANDBOXED backup root — this test deletes in the backups folder");
+
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+
+    // ---- the data, first ----
+    assert.ok(ctx.db && typeof ctx.db.prepare === "function", "ctx.db must still be a live, usable handle after an abort");
+    const queued = captureQueue.read(ctx.db);
+    assert.strictEqual(queued.length, 1, "the capture queued DURING staging must still be in the live store");
+    assert.strictEqual(queued[0].capture.url, "https://x/pending-capture", "and it must be that capture, unaltered");
+    const hidden = JSON.parse(getKV(ctx.db, "ia_hidden") || "[]");
+    assert.strictEqual(hidden.length, 2, "the taste signal written DURING staging must still be in the live store");
+    assert.strictEqual(hidden[1].title, "during", "and it must be the interleaved entry");
+
+    // ---- then the outcome + cleanup ----
+    assert.strictEqual(swapped.ok, false, "the swap MUST abort rather than discard the interleaved kv writes");
+    assert.match(swapped.error, /would discard/, "and must tell the caller why, and to retry: " + swapped.error);
+    assert.strictEqual(fs.existsSync(staged.stageFolder), false, "the stage folder must be cleaned up by the abort");
+    assert.strictEqual(fs.existsSync(staged.stageFolder + ".old"), false, "no displaced-old folder — the swap never started");
+    assert.strictEqual(fs.existsSync(snapFolder), false, "the aborted attempt's safety snapshot must go too");
+    ctx.db.close();
+  });
+});
+
+/* The other half of the same property: the witness must not fire on kv rows it
+   does NOT watch, or a restore could never succeed while the app is open.
+   ia_health restamps a fresh ts on every health check, and the sync/auto-import
+   status keys churn on their own timers — a blanket "did any kv row change"
+   check would abort here. */
+t("swapInStagedRestore still SUCCEEDS when only operational kv rows churned during staging", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 2; i++) {
+      upsertCard(db, { id: "op" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:op" + i });
+      images.putImg(store, "op" + i, TINY_JPG);
+    }
+    const made = backup.runBackup(db, store);
+    upsertCard(db, { id: "extra", url: "https://x/extra", platform: "fb", cat: "Saved", ts: 9 });   // so the restore is a real change
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const witness = backup.storeWitness(ctx.db, store);
+
+    let injected = false;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (!injected && String(p).indexOf(".restage-") >= 0 && String(p).indexOf("op1.jpg") >= 0) {
+        injected = true;
+        setKV(ctx.db, "ia_health", JSON.stringify({ folder: "connected", ts: Date.now() }));
+        setKV(ctx.db, "ia_sync_changed_at", String(Date.now()));
+        setKV(ctx.db, "ia_batch_progress", JSON.stringify({ done: 7 }));
+        setKV(ctx.db, "ia_autoimport_last_fb", String(Date.now()));
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.strictEqual(injected, true, "the operational kv churn must actually have fired, or this test proves nothing");
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(swapped.ok, true, "operational churn must NOT abort a restore: " + (swapped.error || ""));
+    assert.strictEqual(counts(ctx.db).cards, 2, "and the restore must actually have applied");
     ctx.db.close();
   });
 });

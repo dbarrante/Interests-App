@@ -1173,9 +1173,67 @@ function freezeMirrorForRestore() {
 // transaction by every card/saved/tombstone/settings mutation path
 // (upsertCard, upsertCardSynced, replaceCards, deleteCard, addTombstone,
 // addNotDuplicateMarker, upsert/replace/deleteSaved, setKV for settings).
-// Card/saved counts are belt-and-braces on top of it. `images` covers the
+// Card/saved counts are belt-and-braces on top of it. `images` is a COUNT of
+// the image files, so it catches image ADDITIONS and DELETIONS made by the
 // standalone image routes (PUT/POST/DELETE /api/img/:id), which write files
-// with no db mutation at all and so never move `rev`.
+// with no db mutation at all and so never move `rev`. It does NOT catch an
+// in-place overwrite of an existing id (same count, different bytes) — a known,
+// accepted blind spot; hashing the whole library on every restore is not worth
+// it, and an in-place overwrite is in practice paired with a card write that
+// moves `rev` anyway.
+//
+// ---- WITNESSED KV KEYS ------------------------------------------------------
+// `rev` only moves for card/saved/tombstone writes and for the two SETTINGS kv
+// keys (see core/db.js setKV). Every OTHER kv write is invisible to it, and some
+// of those rows are durable, non-self-healing user data — a reproduced case of
+// the same F1 loss shape. So the witness also watches this TARGETED list.
+//
+// It is deliberately NOT "did any kv row change". Several kv keys are pure
+// operational churn — ia_health (stamps a fresh ts on every check), the sync
+// status keys, auto-import's ledger/last keys, ia_batch_progress/ia_batch_state,
+// and derived caches like ia_imghash / ia_imgocr / ia_ph_fps. Watching those
+// would make a restore abort perpetually while the app is merely open, turning
+// a data-loss bug into a liveness failure where a restore can never succeed.
+//
+// THE LOAD-BEARING PROPERTY: this compares kv rows BY VALUE, not by "was this
+// row written". captureQueue.claim() rewrites byte-identical JSON on every idle
+// poll (core/capture-queue.js — it writes whenever the queue is non-empty, even
+// when nothing was claimable), and web/index.html's persistAll() re-saves all
+// eight of its arrays on every user action whether or not they changed. A
+// write-EVENT trigger would abort spuriously on both; a value compare does not.
+//
+// Included, and why each is durable user data with no self-heal:
+//   ia_capture_queue — the extension capture mailbox. Captures sitting undrained
+//     at the instant of the check exist NOWHERE else, so a swap destroys them.
+//     This is also the funnel every platform auto-import run's real items pass
+//     through (core/autoimport.js writes survivors here), which is why
+//     auto-import's own ia_autoimport_seen_* / ia_autoimport_last_* keys are NOT
+//     listed: only a zero-yield run leaves them unwitnessed, and those genuinely
+//     do self-heal (the items are re-scraped on the next run).
+//   ia_hidden / ia_clicks / ia_likes / ia_disliked / ia_shown / ia_seen /
+//     ia_spool — the taste signals persistAll() writes. Core learned state;
+//     re-deriving them would mean the user re-rating everything.
+//
+// Deliberately excluded despite being written by that same persistAll():
+//   ia_stdeal — the current stumble deck, regenerable, and excluding it costs
+//     nothing: any persistAll() that changed a real taste signal trips the
+//     witness on that signal regardless.
+const WITNESSED_KV_KEYS = [
+  "ia_capture_queue",
+  "ia_hidden", "ia_clicks", "ia_likes", "ia_disliked", "ia_shown", "ia_seen", "ia_spool",
+];
+// A digest rather than the raw values: the witness crosses the worker boundary
+// by structured clone, and ia_capture_queue alone is allowed up to 64MB.
+// Absent (no row) and present-but-empty are distinguished — jsonKvEndpoints
+// writes a literal "" to clear a key, which is a real state change.
+function kvWitness(db) {
+  const out = {};
+  for (const key of WITNESSED_KV_KEYS) {
+    const raw = getKV(db, key);
+    out[key] = raw == null ? "-" : ("h" + crypto.createHash("sha1").update(String(raw)).digest("hex"));
+  }
+  return out;
+}
 function storeWitness(db, storeDir) {
   const c = counts(db);
   return {
@@ -1183,10 +1241,17 @@ function storeWitness(db, storeDir) {
     cards: c.cards | 0,
     saved: c.saved | 0,
     images: imageCount(storeDir) | 0,
+    kv: kvWitness(db),
   };
 }
 function witnessMatches(a, b) {
-  return !!a && !!b && a.rev === b.rev && a.cards === b.cards && a.saved === b.saved && a.images === b.images;
+  if (!a || !b) return false;
+  if (a.rev !== b.rev || a.cards !== b.cards || a.saved !== b.saved || a.images !== b.images) return false;
+  // Fail CLOSED on a witness that predates the kv dimension (or lost it crossing
+  // a boundary): an absent kv map means we cannot prove the kv rows are unchanged.
+  if (!a.kv || !b.kv || typeof a.kv !== "object" || typeof b.kv !== "object") return false;
+  for (const key of WITNESSED_KV_KEYS) { if (a.kv[key] !== b.kv[key]) return false; }
+  return true;
 }
 
 // Stage a restore off the main thread: freeze the mirror if needed, verify the
@@ -1344,12 +1409,23 @@ function swapInStagedRestore(staged, ctx) {
   // EVERYTHING from here to the rename sequence below must stay in ONE
   // synchronous block — no await, no async, no callback boundary. That is the
   // only thing that makes the check meaningful: another HTTP handler is just
-  // more main-thread JS and cannot interleave with straight-line code.
+  // more main-thread JS and cannot interleave with straight-line code. This
+  // holds for the kv dimension too: storeWitness -> kvWitness is plain
+  // getKV + crypto.createHash, both synchronous, with no worker round-trip.
   let now = null;
   try { now = storeWitness(ctx.db, ctx.storeDir); } catch (e) { now = null; }   // unreadable → treat as changed
   if (!witnessMatches(before, now)) {
     // Live store completely untouched: no close, no reopen, no rename has run.
     // ctx.db is still the same live, usable handle it was on entry.
+    //
+    // These two rmSyncs are deliberately SYNCHRONOUS even though each can be a
+    // near-full image-library copy. A fire-and-forget async rm would make the
+    // abort's "nothing is left behind" property racy and unobservable, which is
+    // exactly the weaker guarantee F3 was raised to close, and a
+    // rename-to-be-swept scheme needs a sweeper next to the live store that does
+    // not exist (auto-deleting near the store is its own design pass). This
+    // runs at the tail of a user-initiated restore that has already spent
+    // minutes staging — not on the launch path this refactor exists to unblock.
     try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
     // Drop this attempt's safety snapshot too: the live store was never
     // modified, so it protects nothing, and leaving it would both look like a
@@ -1362,7 +1438,7 @@ function swapInStagedRestore(staged, ctx) {
     if (typeof snap === "string" && RESTORE_BACKUP_NAME.test(path.basename(snap))) {
       try { fs.rmSync(snap, { recursive: true, force: true }); } catch (e) {}
     }
-    return { ok: false, error: "restore aborted: the app received new items while the restore was being prepared, and applying it now would discard them — nothing was changed, please run the restore again" };
+    return { ok: false, error: "restore aborted: the app wrote to your library while the restore was being prepared (a new capture, an edit, or a rating), and applying it now would discard that — nothing was changed, please run the restore again" };
   }
 
   // close the live db so the file can be replaced (Windows holds an exclusive handle)
