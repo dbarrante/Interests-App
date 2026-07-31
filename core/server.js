@@ -828,10 +828,10 @@ function createServer(ctx) {
     if (!sc.enabled || !syncDir) return res.status(400).json({ ok: false, error: "sync not enabled / no Dropbox" });
     ctx.syncRunning = true;   // advisory UI flag; cleared in finally so an error can't leave it stuck on
     try {
-      // Prefer the worker-thread runner (ctx.syncRunner, set by main.js) so a
+      // Prefer the worker-thread runner (ctx.storeWorker, set by main.js) so a
       // manual sync can't freeze the main process either; tests and headless
       // embedders without a runner keep the direct synchronous path.
-      const runner = (ctx.syncRunner && ctx.syncRunner.runSync) ? ctx.syncRunner : sync;
+      const runner = (ctx.storeWorker && ctx.storeWorker.runSync) ? ctx.storeWorker : sync;
       const r = await Promise.resolve(runner.runSync(ctx, { syncDir: syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true }));
       if (r && r.ok === false) { console.error("sync now failed:", r.error); return res.status(500).json({ ok: false, error: "sync failed" }); }
       if (r.changed) { try { dbm.setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) { console.error("setKV ia_sync_changed_at failed:", e); } }

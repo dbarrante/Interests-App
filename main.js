@@ -4,7 +4,7 @@ const config = require("./core/config");
 const { buildContext } = require("./core/appctx");
 const { startServer } = require("./core/server");
 const sync = require("./core/sync");
-const { createAsyncSync } = require("./core/syncworker");
+const { createStoreWorker } = require("./core/storeworker");
 const undiciGuard = require("./core/undici-guard");
 const { setKV, getKV, counts } = require("./core/db");
 const { startSyncTimers } = require("./core/synctimers");
@@ -88,18 +88,19 @@ if (!gotLock) {
         }
       } catch (e) { console.error("boot store-safety check failed (continuing):", e && e.message); }
 
-      // All periodic/launch/manual sync cycles run OFF the main process via a
-      // worker-thread façade — a synchronous merge on the main process froze
-      // every window into "Not responding" (live 2026-07-18). Same call
-      // shapes, async results; one cycle at a time.
-      const asyncSync = createAsyncSync(storeDir);
-      syncRunner = asyncSync;
-      ctx.syncRunner = asyncSync;   // POST /api/sync/now uses this when present
+      // All periodic/launch/manual sync cycles, plus backup/restore/store-move,
+      // run OFF the main process via a worker-thread façade — a synchronous
+      // merge or backup on the main process froze every window into "Not
+      // responding" (live 2026-07-18; backup/restore/move confirmed 2026-07-31).
+      // Same call shapes, async results; one job at a time across all of them.
+      const storeWorker = createStoreWorker(storeDir);
+      syncRunner = storeWorker;
+      ctx.storeWorker = storeWorker;   // POST /api/sync/now, /api/backup, /api/restore, /api/store-location/move all use this when present
 
       // Sync timers self-gate on live config (re-read every tick), so start them
       // unconditionally — enabling/disabling Dropbox sync in Settings takes effect
       // on the next tick with no app restart required.
-      timers = startSyncTimers({ ctx, config, sync: asyncSync, setKV, log: console.error });
+      timers = startSyncTimers({ ctx, config, sync: storeWorker, setKV, log: console.error });
 
       const { server, port } = await startServer(ctx, 3456);
       httpServer = server;
@@ -132,7 +133,7 @@ if (!gotLock) {
           const sc = config.getSyncConfig();
           if (sc.enabled && (sc.dir || sync.defaultSyncDir())) {
             const syncDir = sc.dir || sync.defaultSyncDir();
-            asyncSync.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true })
+            storeWorker.runSync(ctx, { syncDir, deviceId: sc.deviceId, deviceLabel: sc.deviceLabel, publish: true })
               .then((res) => {
                 if (res && res.ok === false) { console.error("launch sync failed:", res.error); return; }
                 if (res && res.changed) { try { setKV(ctx.db, "ia_sync_changed_at", String(Date.now())); } catch (e) {} }

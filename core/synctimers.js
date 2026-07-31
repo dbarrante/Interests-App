@@ -25,7 +25,7 @@ function startSyncTimers(deps) {
   // via a kv flag. Re-reads config every tick so enable/disable takes effect live.
   //
   // deps.sync may be SYNCHRONOUS (core/sync.js, tests) or ASYNC (the
-  // core/syncworker.js façade that runs cycles off the main process —
+  // core/storeworker.js façade that runs cycles off the main process —
   // 2026-07-18 "Not responding" fix). Promise.resolve() handles both; the
   // busy guards stop a slow async cycle from overlapping the next tick.
   let mergeBusy = false;
