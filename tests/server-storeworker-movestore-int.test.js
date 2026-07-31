@@ -52,50 +52,48 @@ function listen(app) {
 
 (async () => {
   let srv;
-  try {
-    await run("POST /api/store-location/move with ctx.storeWorker set repoints the REAL ctx via a real worker thread", async () => {
-      const store = newStore();
-      const db = openDb(store);
-      upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
-      const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvwk-mvtarget-"));
-      const ctx = {
-        db, storeDir: store,
-        getStorePath: () => ctx.storeDir,
-        setStorePath: config.setStorePath,
-        reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; },
-        storeWorker: createStoreWorker(store),
-      };
-      const app = createServer(ctx);
-      const listening = await listen(app);
-      srv = listening.srv;
+  // No shared config sandbox to restore beyond the isolated APPDATA set above
+  // (unlike the backup-int test, which sandboxes/restores config.backupDir).
+  await run("POST /api/store-location/move with ctx.storeWorker set repoints the REAL ctx via a real worker thread", async () => {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvwk-mvtarget-"));
+    const ctx = {
+      db, storeDir: store,
+      getStorePath: () => ctx.storeDir,
+      setStorePath: config.setStorePath,
+      reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; },
+      storeWorker: createStoreWorker(store),
+    };
+    const app = createServer(ctx);
+    const listening = await listen(app);
+    srv = listening.srv;
 
-      const r = await (await fetch(listening.base + "/api/store-location/move", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target })
-      })).json();
+    const r = await (await fetch(listening.base + "/api/store-location/move", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target })
+    })).json();
 
-      assert.strictEqual(r.ok, true, "move via worker must succeed: " + (r.error || ""));
-      assert.strictEqual(r.path, target);
-      // The route — not the worker's own throwaway ctx — must be the one that
-      // repointed the REAL main-thread ctx.
-      assert.strictEqual(ctx.storeDir, target, "real ctx.storeDir repointed by the route handler");
-      // ctx.reopen() must have rebound a LIVE handle at the new location, not
-      // left a closed one — the exact failure mode tests/server-backup-int.test.js
-      // guards for on the direct (no-worker) path.
-      assert.strictEqual(counts(ctx.db).cards, 1, "ctx.db reads through the NEW store after the move");
-      // The worker's own internal moveStore() call already persisted the store
-      // pointer via config.setStorePath(); the route calls ctx.setStorePath(target)
-      // again afterward (belt-and-suspenders, since only the route can safely
-      // repoint the real ctx). Both must agree, not fight over the last write.
-      assert.strictEqual(config.loadConfig().storePath, target, "on-disk store pointer matches — worker's write and the route's write agree");
-      assert.ok(fs.existsSync(path.join(target, "interests.db")), "db physically present at target");
+    assert.strictEqual(r.ok, true, "move via worker must succeed: " + (r.error || ""));
+    assert.strictEqual(r.path, target);
+    // The route — not the worker's own throwaway ctx — must be the one that
+    // repointed the REAL main-thread ctx.
+    assert.strictEqual(ctx.storeDir, target, "real ctx.storeDir repointed by the route handler");
+    // ctx.reopen() must have rebound a LIVE handle at the new location, not
+    // left a closed one — the exact failure mode tests/server-backup-int.test.js
+    // guards for on the direct (no-worker) path.
+    assert.strictEqual(counts(ctx.db).cards, 1, "ctx.db reads through the NEW store after the move");
+    // The worker's own internal moveStore() call already persisted the store
+    // pointer via config.setStorePath(); the route calls ctx.setStorePath(target)
+    // again afterward (belt-and-suspenders, since only the route can safely
+    // repoint the real ctx). Both must agree, not fight over the last write.
+    assert.strictEqual(config.loadConfig().storePath, target, "on-disk store pointer matches — worker's write and the route's write agree");
+    assert.ok(fs.existsSync(path.join(target, "interests.db")), "db physically present at target");
 
-      await new Promise((res) => srv.close(res));
-      try { ctx.db.close(); } catch (e) {}
-    });
-  } finally {
-    // no shared config sandbox to restore beyond the isolated APPDATA above
-  }
+    await new Promise((res) => srv.close(res));
+    try { ctx.db.close(); } catch (e) {}
+  });
   console.log(pass + " passed, " + fail + " failed");
   await new Promise((res) => setTimeout(res, 50));
   process.exit(fail ? 1 : 0);
