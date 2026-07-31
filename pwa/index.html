@@ -490,6 +490,7 @@ body.reader-locked{overflow:hidden}
 .tp-tabs-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:4px 10px 2px}
 .tp-tabs{display:flex;flex-direction:column;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:4px}
 .addtab-menu{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;margin-left:8px;vertical-align:top}
+.research-unit{break-inside:avoid}
 .research-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .research-article-text{white-space:pre-wrap;font-size:13.5px;line-height:1.5}
 .research-qa{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);font-size:13.5px}
@@ -3549,7 +3550,10 @@ function renderTabsView(){
           // _hoverCardId for this pass (self-heals next render, but no reason to).
           if(r.kind==="imported" && !r.it.id){ r.it.id=newId(); Store.putCards(imported); }
           let inner = r.kind==="saved" ? cardHTML(r.it,"saved",t.tag) : impCardHTML(r.it,r.idx,t.tag);
-          if(t.reserved) inner += researchPanelHTML(r.kind, r.it);
+          // Wrapped together (not just concatenated) so the two stay one unit in the
+          // multi-column masonry grid — a bare sibling div can otherwise land in the
+          // NEXT column, visually detaching the panel from its own card.
+          if(t.reserved) inner = `<div class="research-unit">${inner}${researchPanelHTML(r.kind, r.it)}</div>`;
           const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
@@ -3678,8 +3682,12 @@ function buildQuestionPrompt(it, question){
 // into the stored link. Deduped, capped at 10.
 function parseResearchResponse(text){
   if(!text || !text.trim()) throw new Error("Empty response from model");
-  const marker = /\n\s*sources?:\s*\n?/i;
-  const m = text.match(marker);
+  // Global + take the LAST match, not the first — a body sentence that happens
+  // to end "...confirmed by multiple sources:" must not be mistaken for the
+  // marker and truncate the article early.
+  const marker = /\n\s*sources?:\s*\n?/gi;
+  let mm, m = null;
+  while((mm = marker.exec(text))){ m = mm; }
   const body = (m ? text.slice(0, m.index) : text).trim();
   if(!body) throw new Error("No article text in model response");
   // Constructed from a string, not a /regex literal/ — this project's
@@ -3698,15 +3706,23 @@ function parseResearchResponse(text){
   }
   return { text: body, sources: sources };
 }
-let _researchBusy = new Set();   // "scope:id" keys currently mid an AI call (article gen/regen or Q&A — Task 4)
+let _researchBusy = new Map();   // "scope:id" -> "article"|"qa", whichever AI call is currently in flight for that card (shared key deliberately serializes the two — a card can't run both at once)
 let _articleExpanded = new Set();   // "scope:id" keys with the full article shown (vs. a truncated preview)
+// "scope:id" -> in-progress textarea/input text, kept live via oninput. Any AI
+// call anywhere in the tab triggers renderTabsView() (see generateArticle/
+// askQuestion below), which rebuilds EVERY card's HTML from scratch — without
+// this, an open article edit or a half-typed question on a DIFFERENT card gets
+// silently wiped the moment any card's request lands.
+let _articleDrafts = {};
+let _qaDrafts = {};
 async function generateArticle(scope, id){
   if(!_researchCard(scope, id)) return;
   if(!hasResearchProvider()){ toast("Article research needs a web-search-capable provider (Claude, ChatGPT, Gemini, or OpenRouter) — switch in Settings", 6000); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
   const key = scope+":"+id;
   if(_researchBusy.has(key)) return;
   const promptIt = _researchCard(scope, id);
-  _researchBusy.add(key);
+  _researchBusy.set(key, "article");
   renderTabsView();
   try{
     const text = await callAI(buildArticlePrompt(promptIt), {webSearch:true});
@@ -3740,18 +3756,20 @@ function copyArticleText(scope, id){
 // directly, same as openTabSuggest/tabSugAccept/removeTabPicksFromTab (Plan 2).
 function researchPanelHTML(scope, it){
   const key = scope+":"+it.id;
-  const busy = _researchBusy.has(key);
+  const busyOp = _researchBusy.get(key);   // undefined | "article" | "qa"
+  const busy = !!busyOp;
   const art = it.research && it.research.article;
   let articleHtml;
   if(!art){
     articleHtml = busy
-      ? `<div class="hint">Researching…</div>`
+      ? `<div class="hint">${busyOp==="qa"?"Answering your question…":"Researching…"}</div>`
       : `<button onclick="generateArticle('${scope}','${it.id}')">&#128221; Research &amp; draft article</button>`;
   } else {
     const editing = _articleEditing.has(key);
     if(editing){
+      const draftText = Object.prototype.hasOwnProperty.call(_articleDrafts, key) ? _articleDrafts[key] : art.text;
       articleHtml = `<div class="research-article">
-        <textarea id="artEdit_${scope}_${it.id}">${esc(art.text)}</textarea>
+        <textarea id="artEdit_${scope}_${it.id}" oninput="_articleDrafts['${key}']=this.value">${esc(draftText)}</textarea>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button onclick="saveArticleEdit('${scope}','${it.id}')">Save</button>
           <button class="btn-ghost" onclick="toggleArticleEdit('${scope}','${it.id}')">Cancel</button>
@@ -3761,29 +3779,34 @@ function researchPanelHTML(scope, it){
       const expanded = _articleExpanded.has(key);
       const long = art.text.length>240;
       const preview = long && !expanded ? art.text.slice(0,240)+"…" : art.text;
+      const sources = art.sources || [];
       articleHtml = `<div class="research-article">
         <div class="research-article-text">${esc(preview)}</div>
         ${long?`<button class="btn-ghost" onclick="toggleArticleExpanded('${scope}','${it.id}')">${expanded?"Show less":"Show full article"}</button>`:""}
-        ${art.sources.length?`<div class="hint">Sources: ${art.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
+        ${sources.length?`<div class="hint">Sources: ${sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="btn-ghost" onclick="copyArticleText('${scope}','${it.id}')">Copy</button>
           <button class="btn-ghost" onclick="toggleArticleEdit('${scope}','${it.id}')">Edit</button>
-          <button class="btn-ghost" ${busy?"disabled":""} onclick="generateArticle('${scope}','${it.id}')">${busy?"Regenerating…":"&#8635; Regenerate"}</button>
+          <button class="btn-ghost" ${busy?"disabled":""} onclick="generateArticle('${scope}','${it.id}')">${busy?(busyOp==="qa"?"Answering…":"Regenerating…"):"&#8635; Regenerate"}</button>
         </div>
       </div>`;
     }
   }
-  const qaList = ((it.research && it.research.qa) || []).map((qa,i)=>`
+  const qaDraft = Object.prototype.hasOwnProperty.call(_qaDrafts, key) ? _qaDrafts[key] : "";
+  const qaList = ((it.research && it.research.qa) || []).map((qa,i)=>{
+    const qaSources = qa.sources || [];
+    return `
     <div class="research-qa">
       <div class="research-q"><b>Q:</b> ${esc(qa.question)}</div>
       <div class="research-a"><b>A:</b> ${esc(qa.answer)}</div>
-      ${qa.sources.length?`<div class="hint">Sources: ${qa.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
+      ${qaSources.length?`<div class="hint">Sources: ${qaSources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
       <button class="btn-ghost" onclick="deleteQaEntry('${scope}','${it.id}',${i})">Delete</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   return `<div class="research-panel">
     ${articleHtml}
     <div class="research-qa-ask" style="display:flex;gap:8px;margin-top:10px">
-      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" ${busy?"disabled":""}>
+      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" value="${esc(qaDraft)}" oninput="_qaDrafts['${key}']=this.value" ${busy?"disabled":""}>
       <button ${busy?"disabled":""} onclick="askQuestion('${scope}','${it.id}')">${busy?"…":"Ask"}</button>
     </div>
     ${qaList}
@@ -3797,7 +3820,8 @@ function toggleArticleExpanded(scope, id){
 let _articleEditing = new Set();   // "scope:id" keys with the article's textarea open
 function toggleArticleEdit(scope, id){
   const key = scope+":"+id;
-  _articleEditing.has(key) ? _articleEditing.delete(key) : _articleEditing.add(key);
+  if(_articleEditing.has(key)){ _articleEditing.delete(key); delete _articleDrafts[key]; }   // Cancel — discard the draft
+  else _articleEditing.add(key);
   renderTabsView();
 }
 function saveArticleEdit(scope, id){
@@ -3807,20 +3831,23 @@ function saveArticleEdit(scope, id){
   if(!text){ toast("Article text can't be empty"); return; }
   it.research.article.text = text;
   if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
-  _articleEditing.delete(scope+":"+id);
+  const key = scope+":"+id;
+  _articleEditing.delete(key);
+  delete _articleDrafts[key];
   renderTabsView();
   toast("Article updated");
 }
 async function askQuestion(scope, id){
   if(!_researchCard(scope, id)) return;
   if(!hasResearchProvider()){ toast("Asking a question needs a web-search-capable provider (Claude, ChatGPT, Gemini, or OpenRouter) — switch in Settings", 6000); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
   const inp = document.getElementById("qaInput_"+scope+"_"+id); if(!inp) return;
   const question = inp.value.trim();
   if(!question) return;
   const key = scope+":"+id;
   if(_researchBusy.has(key)) return;
   const promptIt = _researchCard(scope, id);
-  _researchBusy.add(key);
+  _researchBusy.set(key, "qa");
   renderTabsView();
   try{
     const text = await callAI(buildQuestionPrompt(promptIt, question), {webSearch:true});
@@ -3832,6 +3859,7 @@ async function askQuestion(scope, id){
       if(!it.research.qa) it.research.qa = [];
       it.research.qa.push({question:question, answer:parsed.text, sources:parsed.sources, answeredAt:Date.now()});
       if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+      delete _qaDrafts[key];   // question was answered — the draft it came from is stale now
       toast("Answered");
     }
   }catch(e){

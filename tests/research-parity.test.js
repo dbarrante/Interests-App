@@ -36,9 +36,9 @@ t("RESEARCH_PROVIDERS declaration is byte-identical between web and pwa", () => 
   assert.strictEqual(a[0], b[0]);
 });
 
-t("renderTabsView's card loop wires researchPanelHTML gated on t.reserved", () => {
+t("renderTabsView's card loop wires researchPanelHTML gated on t.reserved, wrapped with its card for masonry break-inside safety", () => {
   const a = extractFn(html, "renderTabsView"), b = extractFn(pwaHtml, "renderTabsView");
-  assert.match(a, /if\(t\.reserved\)\s*inner\s*\+=\s*researchPanelHTML\(r\.kind,\s*r\.it\)/);
+  assert.match(a, /if\(t\.reserved\)\s*inner\s*=\s*`<div class="research-unit">\$\{inner\}\$\{researchPanelHTML\(r\.kind,\s*r\.it\)\}<\/div>`/);
   assert.strictEqual(a, b);
 });
 

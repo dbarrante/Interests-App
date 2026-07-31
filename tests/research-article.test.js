@@ -26,11 +26,14 @@ function loadGenerateArticle(src, state, callAI) {
     fn(src, "parseResearchResponse"), fn(src, "generateArticle"),
   ].join("\n");
   const factory = new Function(
-    "S", "imported", "saved", "callAI", "toast", "renderTabsView", "Store",
+    "S", "IA_AI", "PROVIDERS", "imported", "saved", "callAI", "toast", "renderTabsView", "Store",
     body + "\nreturn { generateArticle: generateArticle, getBusy: function(){ return _researchBusy; } };"
   );
   return factory(
-    state.S || { provider: "anthropic" }, state.imported || [], state.saved || [],
+    state.S || { provider: "anthropic" },
+    state.IA_AI || { hasAIKey: () => true },
+    state.PROVIDERS || { anthropic: { keyName: "Anthropic API key" } },
+    state.imported || [], state.saved || [],
     callAI, state.toast || (()=>{}), state.renderTabsView || (()=>{}),
     state.Store || { putCards: ()=>{}, putSaved: ()=>{} }
   );
@@ -62,6 +65,21 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(aiCalled, false);
     assert.strictEqual(impArr[0].research, undefined);
     assert.ok(toasts.length && /provider/i.test(toasts[0]));
+  });
+
+  t(label + ": generateArticle refuses when no API key is configured for a capable provider (Important finding #1, final review)", async () => {
+    const impArr = [{ id: "i0", title: "X" }];
+    let aiCalled = false;
+    const toasts = [];
+    const api = loadGenerateArticle(src, {
+      IA_AI: { hasAIKey: () => false },
+      PROVIDERS: { anthropic: { keyName: "Anthropic API key" } },
+      imported: impArr, toast: (m)=>toasts.push(m),
+    }, async () => { aiCalled = true; return ""; });
+    await api.generateArticle("imported", "i0");
+    assert.strictEqual(aiCalled, false);
+    assert.strictEqual(impArr[0].research, undefined);
+    assert.ok(toasts.length && /Anthropic API key/.test(toasts[0]) && /Settings/.test(toasts[0]));
   });
 
   t(label + ": generateArticle is a no-op for an unknown card id", async () => {
@@ -113,10 +131,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows the initial button when no article exists yet", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "esc", "domain",
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Set(), new Set(), new Set(), (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const out = researchPanelHTML("imported", { id: "i0" });
     assert.match(out, /generateArticle\('imported','i0'\)/);
     assert.match(out, /Research/);
@@ -124,21 +142,32 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows a loading state while busy and no article exists yet", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "esc", "domain",
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Set(["imported:i0"]), new Set(), new Set(), (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Map([["imported:i0", "article"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const out = researchPanelHTML("imported", { id: "i0" });
     assert.doesNotMatch(out, /generateArticle\('imported','i0'\)/);
     assert.match(out, /esearching/);
   });
 
-  t(label + ": researchPanelHTML shows the article, its sources, and a Regenerate/Copy row once generated", () => {
+  t(label + ": researchPanelHTML shows 'Answering' (not 'Researching') while a Q&A call is busy on a card with no article yet (final review Minor #5)", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "esc", "domain",
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Set(), new Set(), new Set(), (s)=>s, (u)=>u.replace(/^https?:\/\//,"").split("/")[0]);
+    const researchPanelHTML = factory(new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const out = researchPanelHTML("imported", { id: "i0" });
+    assert.doesNotMatch(out, /esearching/);
+    assert.match(out, /nswering/);
+  });
+
+  t(label + ": researchPanelHTML shows the article, its sources, and a Regenerate/Copy row once generated", () => {
+    const factory = new Function(
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, (u)=>u.replace(/^https?:\/\//,"").split("/")[0]);
     const it = { id: "i0", research: { article: { text: "Short article body.", sources: ["https://example.com/a"], generatedAt: 1 }, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /Short article body\./);
@@ -146,6 +175,36 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(out, /copyArticleText\('imported','i0'\)/);
     assert.match(out, /generateArticle\('imported','i0'\)/);   // Regenerate reuses generateArticle
     assert.match(out, /Regenerate/);
+  });
+
+  t(label + ": researchPanelHTML renders an open article edit from _articleDrafts, not from the stored (stale) article text (final review Important #2)", () => {
+    const factory = new Function(
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(
+      new Map(), new Set(["imported:i0"]), new Set(),
+      { "imported:i0": "unsaved draft text the user is mid-typing" }, {},
+      (s)=>s, ()=>""
+    );
+    const it = { id: "i0", research: { article: { text: "stored article text", sources: [], generatedAt: 1 }, qa: [] } };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /unsaved draft text the user is mid-typing/);
+    assert.doesNotMatch(out, /stored article text/);
+  });
+
+  t(label + ": researchPanelHTML pre-fills the ask input from _qaDrafts, not empty, when a draft exists (final review Important #2)", () => {
+    const factory = new Function(
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(
+      new Map(), new Set(), new Set(), {}, { "imported:i0": "half-typed question" },
+      (s)=>s, ()=>""
+    );
+    const it = { id: "i0", research: null };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /value="half-typed question"/);
   });
 }
 

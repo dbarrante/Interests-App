@@ -24,11 +24,40 @@ function loadAskQuestion(src, state, callAI) {
     fn(src, "parseResearchResponse"), fn(src, "askQuestion"),
   ].join("\n");
   const factory = new Function(
-    "S", "imported", "saved", "callAI", "toast", "renderTabsView", "Store", "document",
+    "S", "IA_AI", "PROVIDERS", "imported", "saved", "callAI", "toast", "renderTabsView", "Store", "document",
     body + "\nreturn { askQuestion: askQuestion, getBusy: function(){ return _researchBusy; } };"
   );
   return factory(
-    state.S || { provider: "anthropic" }, state.imported || [], state.saved || [],
+    state.S || { provider: "anthropic" },
+    state.IA_AI || { hasAIKey: () => true },
+    state.PROVIDERS || { anthropic: { keyName: "Anthropic API key" } },
+    state.imported || [], state.saved || [],
+    callAI, state.toast || (()=>{}), state.renderTabsView || (()=>{}),
+    state.Store || { putCards: ()=>{}, putSaved: ()=>{} },
+    state.document || { getElementById: () => ({ value: state.question != null ? state.question : "How much does it cost?" }) }
+  );
+}
+
+// Loads generateArticle AND askQuestion together, sharing the same _researchBusy
+// map — this is the only way to actually test the shared-busy-key serialization
+// the design deliberately relies on (a card can't run both AI calls at once).
+function loadBoth(src, state, callAI) {
+  const body = [
+    src.match(/const RESEARCH_PROVIDERS[^;]+;/)[0],
+    src.match(/let _researchBusy[^;]+;/)[0],
+    fn(src, "hasResearchProvider"), fn(src, "_researchCard"),
+    fn(src, "buildArticlePrompt"), fn(src, "buildQuestionPrompt"),
+    fn(src, "parseResearchResponse"), fn(src, "generateArticle"), fn(src, "askQuestion"),
+  ].join("\n");
+  const factory = new Function(
+    "S", "IA_AI", "PROVIDERS", "imported", "saved", "callAI", "toast", "renderTabsView", "Store", "document",
+    body + "\nreturn { generateArticle: generateArticle, askQuestion: askQuestion, getBusy: function(){ return _researchBusy; } };"
+  );
+  return factory(
+    state.S || { provider: "anthropic" },
+    state.IA_AI || { hasAIKey: () => true },
+    state.PROVIDERS || { anthropic: { keyName: "Anthropic API key" } },
+    state.imported || [], state.saved || [],
     callAI, state.toast || (()=>{}), state.renderTabsView || (()=>{}),
     state.Store || { putCards: ()=>{}, putSaved: ()=>{} },
     state.document || { getElementById: () => ({ value: state.question != null ? state.question : "How much does it cost?" }) }
@@ -79,6 +108,39 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(toasts.length && /provider/i.test(toasts[0]));
   });
 
+  t(label + ": askQuestion refuses when no API key is configured for a capable provider (final review Important #1)", async () => {
+    const impArr = [{ id: "i0", title: "X" }];
+    let aiCalled = false;
+    const toasts = [];
+    const api = loadAskQuestion(src, {
+      IA_AI: { hasAIKey: () => false },
+      PROVIDERS: { anthropic: { keyName: "Anthropic API key" } },
+      imported: impArr, toast: (m)=>toasts.push(m),
+    }, async () => { aiCalled = true; return ""; });
+    await api.askQuestion("imported", "i0");
+    assert.strictEqual(aiCalled, false);
+    assert.ok(toasts.length && /Anthropic API key/.test(toasts[0]) && /Settings/.test(toasts[0]));
+  });
+
+  t(label + ": generateArticle and askQuestion on the SAME card serialize through the shared busy key (final review Recommendation #9a)", async () => {
+    const impArr = [{ id: "i0", title: "Ferrofluid displays" }];
+    let articleCallCount = 0, qaCallCount = 0;
+    let resolveArticle;
+    const articlePromise = new Promise(r => { resolveArticle = r; });
+    const api = loadBoth(src, { imported: impArr }, (prompt) => {
+      if(/Research and write/.test(prompt)){ articleCallCount++; return articlePromise; }
+      qaCallCount++; return Promise.resolve("An answer.\n\nSOURCES:\nhttps://example.com/a");
+    });
+    const p1 = api.generateArticle("imported", "i0");
+    const p2 = api.askQuestion("imported", "i0");   // fired while the article call is still in flight
+    resolveArticle("Article body.\n\nSOURCES:\nhttps://example.com/b");
+    await Promise.all([p1, p2]);
+    assert.strictEqual(articleCallCount, 1);
+    assert.strictEqual(qaCallCount, 0, "askQuestion must be dropped while generateArticle is busy on the same card — they share one busy key by design");
+    assert.ok(impArr[0].research.article, "the article call that DID run must still have completed normally");
+    assert.strictEqual((impArr[0].research.qa||[]).length, 0, "the dropped Q&A call must not have appended anything");
+  });
+
   t(label + ": askQuestion discards its result if the card was deleted while the AI call was in flight", async () => {
     const impArr = [{ id: "i0", title: "X" }];
     const calls = [];
@@ -121,10 +183,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML renders the ask input and every existing Q&A entry with a Delete button", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "esc", "domain",
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Set(), new Set(), new Set(), (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: null, qa: [{ question: "How much?", answer: "$200", sources: [], answeredAt: 1 }] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /id="qaInput_imported_i0"/);
@@ -136,10 +198,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML disables the ask input/button while busy", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "esc", "domain",
+      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Set(["imported:i0"]), new Set(), new Set(), (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: null, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /id="qaInput_imported_i0"[^>]*disabled/);
