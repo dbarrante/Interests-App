@@ -146,6 +146,21 @@ function listen(app) {
       })).json();
       assert.strictEqual(r.ok, true);
       assert.strictEqual(counts(ctx.db).cards, 1, "ctx.db rebound to restored 1-card store");
+
+      // The pre-restore safety snapshot is the ONLY way back from a mistaken
+      // restore, so it must contain the state that was live a moment ago (2
+      // cards) — not an empty or stale file. It is written by stageRestore,
+      // which has no db handle and therefore copies interests.db as-is, so the
+      // route must flush the WAL first; without that checkpoint this snapshot
+      // silently loses every write still sitting in the -wal sidecar (on a
+      // young store, that is the entire database, schema included).
+      const bdir2 = require("../core/backup.js").dropboxBackupDir();
+      const snaps = fs.readdirSync(bdir2).filter((n) => n.indexOf("interests-backup-before-restore-") === 0);
+      assert.strictEqual(snaps.length, 1, "exactly one pre-restore safety snapshot");
+      const snapDb = openDb(path.join(bdir2, snaps[0]));
+      assert.strictEqual(counts(snapDb).cards, 2,
+        "the safety snapshot must capture the PRE-restore live store (2 cards), not a WAL-lagged copy");
+      snapDb.close();
     });
 
     await run(t("GET /api/store-location reports path + counts"), async () => {

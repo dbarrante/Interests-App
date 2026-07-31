@@ -219,8 +219,8 @@ function createServer(ctx) {
     res.json({ ok: true, required: !!cfg.extensionPairingRequired });
   });
 
-  // NOTE: do NOT destructure ctx.db/ctx.storeDir into locals here — backup.restore()
-  // and backup.moveStore() close and rebind ctx.db (and repoint ctx.storeDir) at
+  // NOTE: do NOT destructure ctx.db/ctx.storeDir into locals here — backup's
+  // swapInStagedRestore() and moveStore() close and rebind ctx.db (and repoint ctx.storeDir) at
   // runtime, so every route/helper below must read ctx.db / ctx.storeDir fresh at
   // request time, not a value captured once at server-creation time.
 
@@ -719,13 +719,30 @@ function createServer(ctx) {
     return backup.listBackups().some((b) => b.name === name);
   }
 
-  app.post("/api/restore", (req, res) => {
+  // Two steps, deliberately split across threads. Staging (verify the backup,
+  // safety-snapshot the live store, copy the incoming content aside) is the
+  // slow part and touches no db handle, so it goes to the store worker. The
+  // swap (close db, rename staged content into place, reopen) ALWAYS runs here
+  // on the real ctx regardless of whether staging went through the worker: it
+  // is cheap (renames, not copies) and it needs the actual live ctx.db /
+  // ctx.reopen, which no worker call can provide.
+  app.post("/api/restore", async (req, res) => {
     const name = req.body && req.body.name;
     if (!isAllowedBackupName(name)) {
       return res.status(400).json({ ok: false, error: "invalid backup name" });
     }
     try {
-      const out = backup.restore(name, ctx);   // restore rebinds ctx.db on success
+      // Flush the WAL into interests.db FIRST. stageRestore has no db handle by
+      // design (that is what lets it run off-thread), so its pre-restore safety
+      // snapshot copies the interests.db file as-is — and in WAL mode the most
+      // recent committed writes are still in the -wal sidecar. Without this the
+      // snapshot that exists to make a mistaken restore recoverable would
+      // silently omit them. Same PRAGMA moveStore already uses before its copy.
+      try { ctx.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) {}
+      const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.restore);
+      const staged = usingWorker ? await ctx.storeWorker.restore(ctx.storeDir, name) : backup.stageRestore(name, ctx.storeDir);
+      if (!staged.ok) return res.json(staged);
+      const out = backup.swapInStagedRestore(staged.stageFolder, ctx);   // rebinds ctx.db
       res.json(out);
     } catch (e) {
       console.error("restore failed:", e);

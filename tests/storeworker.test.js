@@ -160,6 +160,50 @@ async function run(name, fn) {
     assert.ok(fs.existsSync(path.join(storeDir, "interests.db")), "old store files left in place");
   });
 
+  await run("restore job stages+verifies off-thread, main thread does the fast swap", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-restore-"));
+    const storeDir = path.join(root, "store"); fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-restore-dest-"));
+
+    // Sandbox dropboxBackupDir() via config.backupDir, NOT by monkeypatching
+    // backup.detectDropboxRoot — see the backup-job test above for why that
+    // technique is inert AND cannot cross the thread boundary. It matters even
+    // more here: the restore job WRITES a pre-restore safety snapshot into the
+    // backups folder and then rotates that family, so an unsandboxed run would
+    // both write to and DELETE from the real Dropbox backups.
+    const orig = config.loadConfig();
+    config.saveConfig(Object.assign({}, orig, { backupDir: backupRoot }));
+    try {
+      const backupMod = require("../core/backup.js");
+      const d1 = db.openDb(storeDir);
+      db.upsertCard(d1, { id: "c1", url: "http://x/1", ts: 1 });
+      const made = backupMod.runBackup(d1, storeDir);
+      // Mutate the live store AFTER the backup, so a correct restore must roll
+      // it back to the 1-card state rather than being a no-op.
+      db.upsertCard(d1, { id: "c2", url: "http://x/2", ts: 2 });
+      d1.close();
+
+      const storeWorker = createStoreWorker(storeDir);
+      const staged = await storeWorker.restore(storeDir, made.name);
+      assert.strictEqual(staged.ok, true, "restore job must succeed: " + (staged.error || ""));
+      assert.ok(fs.existsSync(path.join(staged.stageFolder, "interests.db")),
+        "the worker staged real content the main thread can now swap in");
+      assert.ok(fs.readdirSync(backupRoot).some((n) => n.indexOf("interests-backup-before-restore-") === 0),
+        "the worker took the pre-restore safety snapshot under the sandboxed backupRoot, proving the sandbox took");
+
+      // The swap is main-thread-only: it needs the real ctx.db/ctx.reopen.
+      const ctx = { db: db.openDb(storeDir), storeDir, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = db.openDb(ctx.storeDir); return ctx.db; } };
+      const out = backupMod.swapInStagedRestore(staged.stageFolder, ctx);
+      assert.strictEqual(out.ok, true, "swap must succeed: " + (out.error || ""));
+      const ids = db.allCards(ctx.db).map((c) => c.id);
+      assert.ok(ids.indexOf("c1") >= 0, "restored content present");
+      assert.ok(ids.indexOf("c2") < 0, "the post-backup live card must be gone — a restore that leaves it is a no-op");
+      ctx.db.close();
+    } finally {
+      config.saveConfig(orig || {});
+    }
+  });
+
   console.log("storeworker: " + pass + " passed, " + fail + " failed");
   if (fail) process.exitCode = 1;
 })();

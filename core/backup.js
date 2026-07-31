@@ -1143,7 +1143,29 @@ function freezeMirrorForRestore() {
   return freezeName;
 }
 
-function restore(name, ctx) {
+// Stage a restore off the main thread: freeze the mirror if needed, verify the
+// source backup, take the pre-restore safety snapshot of the CURRENT live
+// store, and stage the incoming backup's db+images into a scratch folder next
+// to storeDir.
+//
+// This is ALL of the slow work, and it is deliberately PURE, PATH-BASED I/O:
+// it takes a storeDir string, never a ctx, and never opens, reads, writes or
+// closes a live database handle. That is what makes it safe to run inside a
+// worker thread (see core/storeworker.js) — restore used to do the copy
+// synchronously on the Electron main process with ctx.db closed throughout,
+// which froze the native window for the whole image-library copy.
+//
+// Nothing here mutates the live store. If any step fails, the live store is
+// exactly as it was and the caller simply never gets a stageFolder to swap in.
+//
+// CALLER CONTRACT: flush the live db's WAL (PRAGMA wal_checkpoint(TRUNCATE))
+// before calling this. Having no db handle is exactly what makes this safe to
+// run off-thread, but it also means the pre-restore safety snapshot below can
+// only copy what is IN the interests.db file — in WAL mode recent writes (and,
+// on a freshly created store, the schema itself) live in the -wal sidecar, so
+// an unflushed snapshot silently under-captures the state it exists to
+// preserve. core/server.js's /api/restore route does the checkpoint.
+function stageRestore(name, storeDir) {
   if (!isValidBackupName(name)) return { ok: false };
   // The mirror is a moving target — never read it directly across a
   // multi-step restore. Freeze it first; restore from the frozen copy instead
@@ -1160,14 +1182,65 @@ function restore(name, ctx) {
   // backups folder, and every early return before this fix leaked one
   // (freeze folders were only ever rotated after a FULLY successful restore).
   try {
-    return restoreFromFolder(effectiveName, ctx);
+    const backupFolder = path.join(dropboxBackupDir(), effectiveName);
+    let hasDb = false;
+    try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }
+    if (!hasDb) return { ok: false };
+    const backupMeta = readMeta(backupFolder);
+    // Verify the FOLDER we are actually about to read (backupFolder), not a
+    // name-derived re-lookup — verifyBackup(name, ...) re-joins `name` onto the
+    // backup root itself, which for the mirror case is MIRROR_NAME again (the
+    // live, still-mutable folder), silently undoing the freeze above.
+    if (!backupMeta || !verifyBackupFolder(backupFolder, backupMeta._counts)) return { ok: false, error: "backup not verified" };
+
+    // 1) safety snapshot of the live store (non-dated name → never auto-rotated).
+    // If snapshotting the live db FAILS, abort BEFORE staging anything — a
+    // restore that can't first preserve current data must not proceed at all.
+    // It lives here, not on the main thread, because it does its own
+    // full-image-library copy exactly like the staging copy below does.
+    const snapName = "interests-backup-before-restore-" + Date.now();
+    const snapFolder = path.join(dropboxBackupDir(), snapName);
+    fs.mkdirSync(path.join(snapFolder, "images"), { recursive: true });
+    try {
+      fs.copyFileSync(path.join(storeDir, "interests.db"), path.join(snapFolder, "interests.db"));
+    } catch (e) {
+      return { ok: false, error: "safety snapshot failed" };
+    }
+    overlayImages(path.join(storeDir, "images"), path.join(snapFolder, "images"));
+
+    // 2) stage the incoming backup on LOCAL disk next to the live store (not
+    // inside the Dropbox-synced backups folder) so the swap step is a fast
+    // same-volume rename, not a slow cross-location copy, and is immune to the
+    // Dropbox-sync lock class documented on renameSyncWithRetry above. A dot
+    // prefix keeps it out of the way; pid+timestamp keeps two concurrent
+    // attempts (or a leftover from a crash) from colliding.
+    const token = process.pid + "-" + Date.now();
+    const stageFolder = path.join(path.dirname(storeDir), "." + path.basename(storeDir) + ".restage-" + token);
+    fs.mkdirSync(path.join(stageFolder, "images"), { recursive: true });
+    fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(stageFolder, "interests.db"));
+    // Copy exactly the images the backup's own verified manifest lists.
+    // verifyBackupFolder above already proved the folder's on-disk .jpg set is
+    // exactly _images (same names, sizes and hashes), so this is equivalent to
+    // the old blanket overlayImages sweep, minus the re-read.
+    const ids = (backupMeta._images || []).map(function (m) { return String(m.name || "").replace(/\.jpg$/, ""); });
+    const manifest = copyImagesAndBuildManifest(imagesDir(backupFolder), path.join(stageFolder, "images"), ids);
+    // 3) verify the STAGED copy before it is allowed anywhere near the live
+    // store. Anything short of a complete, integrity-checked stage is thrown
+    // away here rather than swapped in.
+    if (manifest.length !== (backupMeta._counts.images | 0) || !verifyDbOnly(path.join(stageFolder, "interests.db"), backupMeta._counts)) {
+      try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
+      return { ok: false, error: "staged restore failed to verify" };
+    }
+    return { ok: true, stageFolder: stageFolder };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
   } finally {
     // Delete THIS restore's freeze folder outright rather than rotating to a
     // keep window: rotateUnverifiedSnapshots keeps the NEWEST, which is exactly
     // the one just created, so a keep of 1 left a near-full image-library copy
-    // behind after every mirror restore. The live store is already whole at
-    // this point (restoreFromFolder took its own before-restore safety
-    // snapshot), so this copy has no remaining value.
+    // behind after every mirror restore. The live store is untouched and the
+    // before-restore safety snapshot is already written at this point, so this
+    // copy has no remaining value.
     if (didFreeze) {
       try { fs.rmSync(path.join(dropboxBackupDir(), effectiveName), { recursive: true, force: true }); } catch (e) {}
       // Defense in depth: sweep any freeze folders orphaned by an earlier crash.
@@ -1176,53 +1249,49 @@ function restore(name, ctx) {
   }
 }
 
-function restoreFromFolder(effectiveName, ctx) {
-  const backupFolder = path.join(dropboxBackupDir(), effectiveName);
-  let hasDb = false;
-  try { hasDb = fs.statSync(path.join(backupFolder, "interests.db")).isFile(); } catch (e) { hasDb = false; }
-  if (!hasDb) return { ok: false };
-  const backupMeta = readMeta(backupFolder);
-  // Verify the FOLDER we are actually about to read (backupFolder), not a
-  // name-derived re-lookup — verifyBackup(name, ...) re-joins `name` onto the
-  // backup root itself, which for the mirror case is MIRROR_NAME again (the
-  // live, still-mutable folder), silently undoing the freeze above.
-  if (!backupMeta || !verifyBackupFolder(backupFolder, backupMeta._counts)) return { ok: false, error: "backup not verified" };
-
-  // 1) safety snapshot of the live store (non-dated name → never auto-rotated).
-  // If snapshotting the live db FAILS, abort BEFORE overwriting the live store —
-  // a restore that can't first preserve current data must not destroy it.
-  const snapName = "interests-backup-before-restore-" + Date.now();
-  const snapFolder = path.join(dropboxBackupDir(), snapName);
-  fs.mkdirSync(path.join(snapFolder, "images"), { recursive: true });
-  try {
-    fs.copyFileSync(path.join(ctx.storeDir, "interests.db"), path.join(snapFolder, "interests.db"));
-  } catch (e) {
-    return { ok: false, error: "safety snapshot failed" };
-  }
-  overlayImages(path.join(ctx.storeDir, "images"), path.join(snapFolder, "images"));
-
-  // 2) close the live db so the file can be replaced (Windows holds an exclusive handle)
+// The ONLY main-thread-only step: close ctx.db, swap the already-verified
+// staged content into place via fast directory renames (not copies — the slow
+// work already happened in stageRestore), reopen ctx.db. The displaced OLD
+// live content is renamed aside and kept until the swap is confirmed (the same
+// "keep the displaced copy until the replacement verifies" posture runBackup's
+// own publish step uses), so a failure here rolls the live store back to
+// exactly what it was and leaves ctx.db a live, usable handle.
+function swapInStagedRestore(stageFolder, ctx) {
+  // close the live db so the file can be replaced (Windows holds an exclusive handle)
   try { ctx.db.close(); } catch (e) {}
   // also drop WAL/SHM sidecars so the restored db isn't shadowed by stale WAL pages
   for (const ext of ["-wal", "-shm"]) { try { fs.rmSync(path.join(ctx.storeDir, "interests.db" + ext), { force: true }); } catch (e) {} }
+  // A store with no images/ dir yet is legitimate (nothing has been captured).
+  // Without this the rename below would hit a non-transient ENOENT and refuse
+  // an otherwise perfectly good restore; the old copy-based swap tolerated it.
+  try { fs.mkdirSync(path.join(ctx.storeDir, "images"), { recursive: true }); } catch (e) {}
 
-  // 3) swap backup db + images into the live store. The live state is already
-  // safety-snapshotted above, so clear the live images/ first (drop orphans from the
-  // replaced db) and then overlay the backup's images — the live store ends up an
-  // exact copy of the backup, not a union with stale images.
+  // Renaming the live content aside (rather than deleting it) is what makes the
+  // failure path recoverable: until the very last rename lands, the original
+  // db + images are one rename away from being back.
+  const oldAside = stageFolder + ".old";
   try {
-    fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
-    const liveImages = path.join(ctx.storeDir, "images");
-    try { fs.rmSync(liveImages, { recursive: true, force: true }); } catch (e) {}
-    overlayImages(path.join(backupFolder, "images"), liveImages);
+    fs.mkdirSync(oldAside, { recursive: true });
+    renameSyncWithRetry(path.join(ctx.storeDir, "interests.db"), path.join(oldAside, "interests.db"));
+    renameSyncWithRetry(path.join(ctx.storeDir, "images"), path.join(oldAside, "images"));
+    renameSyncWithRetry(path.join(stageFolder, "interests.db"), path.join(ctx.storeDir, "interests.db"));
+    renameSyncWithRetry(path.join(stageFolder, "images"), path.join(ctx.storeDir, "images"));
   } catch (e) {
-    // Swap failed (locked file, online-only placeholder, disk full). The live db
-    // file is still intact on disk — reopen it so the service keeps serving.
+    // Roll the ORIGINAL live content back into place. rename replaces an
+    // existing destination on both Windows and POSIX, so this is correct even
+    // if the staged db already landed before the staged images failed.
+    try { renameSyncWithRetry(path.join(oldAside, "interests.db"), path.join(ctx.storeDir, "interests.db")); } catch (e2) {}
+    try { renameSyncWithRetry(path.join(oldAside, "images"), path.join(ctx.storeDir, "images")); } catch (e2) {}
+    // Deliberately leave stageFolder and oldAside on disk: if the rollback
+    // itself was partial, they are the only remaining copies of that content.
     try { ctx.db = ctx.reopen(); } catch (e2) {}
     return { ok: false, error: "restore swap failed: " + (e && e.message) };
   }
+  // Confirmed: the live store is now an exact copy of the backup (the old
+  // images went aside wholesale, so no orphan from the replaced db survives).
+  try { fs.rmSync(oldAside, { recursive: true, force: true }); } catch (e) {}
+  try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
 
-  // 4) reopen
   ctx.db = ctx.reopen();
   // A restore is a DELIBERATE store transition — re-baseline the boot-guard's
   // last-known counts so restoring an intentionally smaller/older backup does
@@ -1273,4 +1342,4 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, restore, moveStore, drainBackupBacklog, _timing: timing };
+module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, _timing: timing };

@@ -692,11 +692,11 @@ t("freezeMirrorForRestore refuses an image corrupted in place at the same byte l
     assert.strictEqual(bad.length, orig.length);
     fs.writeFileSync(img, bad);
 
-    const ctx = { db: db, storeDir: store, reopen: function () { return openDb(store); } };
-    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    const r = backup.stageRestore(backup.MIRROR_NAME, store);
     assert.strictEqual(r.ok, false, "a corrupted mirror image must not be restored into the live store");
     assert.ok(/does not match the mirror's own manifest hash/.test(r.error || ""), "and must say why: " + r.error);
-    try { ctx.db.close(); } catch (e) {}
+    assert.strictEqual(counts(db).cards, 3, "live store untouched by a refused stageRestore");
+    try { db.close(); } catch (e) {}
   });
 });
 /* ---- the escape hatch (data-safety review 2026-07-26, BLOCKING) ----
@@ -796,15 +796,16 @@ t("restore leaves no interests-mirror-freeze-* folder behind, on success OR fail
     backup.updateMirror(db, store);
 
     const ctx = { db: db, storeDir: store, reopen: function () { return openDb(store); } };
-    const ok = backup.restore(backup.MIRROR_NAME, ctx);
+    const ok = backup.stageRestore(backup.MIRROR_NAME, store);
     assert.strictEqual(ok.ok, true, "sanity: the mirror restore itself must succeed");
+    assert.strictEqual(backup.swapInStagedRestore(ok.stageFolder, ctx).ok, true, "sanity: the swap must succeed too");
     assert.deepStrictEqual(
       fs.readdirSync(bdir).filter(n => /^interests-mirror-freeze-/.test(n)), [],
       "the freeze copy is a near-full image-library duplicate in the Dropbox-synced folder — it must not survive a successful restore");
 
     // And on a failure path: a torn mirror is refused before any copy is made.
     fs.rmSync(path.join(bdir, backup.MIRROR_NAME, "meta.json"), { force: true });
-    const bad = backup.restore(backup.MIRROR_NAME, ctx);
+    const bad = backup.stageRestore(backup.MIRROR_NAME, store);
     assert.strictEqual(bad.ok, false);
     assert.deepStrictEqual(
       fs.readdirSync(bdir).filter(n => /^interests-mirror-freeze-/.test(n)), [],
@@ -904,7 +905,9 @@ t("restore(MIRROR_NAME) freezes the mirror first and restores correctly from the
     assert.strictEqual(counts(db).cards, 2);
 
     const ctx = { db, storeDir: store, reopen: () => openDb(store) };
-    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    const staged = backup.stageRestore(backup.MIRROR_NAME, store);
+    assert.strictEqual(staged.ok, true, "error: " + (staged.error || ""));
+    const r = backup.swapInStagedRestore(staged.stageFolder, ctx);
     assert.strictEqual(r.ok, true, "error: " + (r.error || ""));
     assert.strictEqual(counts(ctx.db).cards, 1, "must restore to the mirror's 1-card state, not the mutated 2-card live state");
     ctx.db.close();
@@ -916,7 +919,7 @@ t("restore(MIRROR_NAME) fails closed (does not touch the live store) when the mi
     const db = openDb(store);
     upsertCard(db, { id: "nm1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:nm1" });
     const ctx = { db, storeDir: store, reopen: () => openDb(store) };
-    const r = backup.restore(backup.MIRROR_NAME, ctx);
+    const r = backup.stageRestore(backup.MIRROR_NAME, store);
     assert.strictEqual(r.ok, false, "no mirror has ever been written — restore must fail, not crash or touch the live store");
     assert.strictEqual(counts(ctx.db).cards, 1, "live store must be completely untouched");
     ctx.db.close();
@@ -1404,134 +1407,190 @@ t("rotate keeps an older backup that itself fails verification (never delete a g
     assert.deepStrictEqual(left, ["interests-backup-2026-06-18", "interests-backup-2026-06-19", "interests-backup-2026-06-20"]);
   });
 });
-
-/* ---- restore (safety snapshot then swap) ---- */
-t("restore snapshots current store, swaps backup db+images in, keeps live store intact on missing backup", () => {
+/* ---- restore (stage off-thread, then a fast main-thread swap) ----
+   restore(name, ctx) used to be ONE synchronous call that verified, safety-
+   snapshotted, and overwrote the live store in place while ctx.db was closed —
+   inherently main-thread-blocking for the whole copy. It is now split: the slow,
+   ctx-free, path-only work (verify + safety snapshot + stage) lives in
+   stageRestore(name, storeDir) and can run in a worker; only the fast rename
+   swap (swapInStagedRestore) needs the real ctx. The safety properties asserted
+   here are the SAME ones the old single-call tests asserted. */
+t("stageRestore verifies the source backup and stages it next to the live store, without touching ctx.db", () => {
   withBackupDir(function (bdir) {
-    // live store with ONE card + image
     const store = newStore();
-    let db = openDb(store);
-    upsertCard(db, { id: "live", url: "https://x/live", platform: "fb", cat: "Saved", ts: 1, img: "idb:live" });
-    images.putImg(store, "live", TINY_JPG);
+    const db1 = openDb(store);
+    upsertCard(db1, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const made = backup.runBackup(db1, store);
+    db1.close();
 
-    // a backup folder representing a DIFFERENT state (two cards, two images)
-    const bkStore = newStore();
-    let bdb = openDb(bkStore);
-    upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
-    upsertCard(bdb, { id: "b", url: "https://x/b", platform: "fb", cat: "Saved", ts: 2, img: "idb:b" });
-    images.putImg(bkStore, "a", TINY_JPG);
-    images.putImg(bkStore, "b", TINY_JPG);
-    bdb.close();
-    const res = backup.runBackup(openDb(bkStore), bkStore); // writes interests-backup-<today>
-    const backupName = res.name;
+    // Change the live store after the backup, so we can tell restore actually
+    // staged the OLD (backed-up) content, not the current live content.
+    const db2 = openDb(store);
+    upsertCard(db2, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2 });
 
-    // ctx with a reopen closure
-    const ctx = {
-      db, storeDir: store,
-      getStorePath: function () { return store; },
-      setStorePath: function () {},
-      reopen: function () { return openDb(store); }
-    };
+    // missing-backup guard: a well-formed but nonexistent name stages nothing
+    // and reports failure with no error string (the route relays this verbatim).
+    assert.deepStrictEqual(backup.stageRestore("interests-backup-2099-01-01", store), { ok: false });
+    assert.strictEqual(images.imageCount(store), 1, "live images untouched on a bad restore");
 
-    // missing-backup guard: live store untouched
-    assert.deepStrictEqual(backup.restore("interests-backup-2099-01-01", ctx), { ok: false });
-    assert.strictEqual(images.imageCount(store), 1, "live images untouched on bad restore");
+    // stageRestore's caller contract: flush the WAL first. It holds no db
+    // handle by design, so an unflushed live store would have its most recent
+    // writes (in WAL mode, on a new store, its whole schema) sitting in the
+    // -wal sidecar where the safety snapshot's plain file copy cannot see them.
+    db2.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const staged = backup.stageRestore(made.name, store);
+    assert.strictEqual(staged.ok, true, "stageRestore must succeed: " + (staged.error || ""));
+    assert.ok(fs.existsSync(path.join(staged.stageFolder, "interests.db")), "staged db present");
+    assert.ok(fs.existsSync(path.join(staged.stageFolder, "images", "c1.jpg")), "staged image present");
+    // Staged NEXT TO the live store, not inside the Dropbox-synced backups
+    // folder — that is what makes the swap a same-volume rename.
+    assert.strictEqual(path.dirname(staged.stageFolder), path.dirname(store), "staged on the store's own volume");
 
-    // real restore
-    const out = backup.restore(backupName, ctx);
-    assert.strictEqual(out.ok, true);
-    // live db now has the backup's two cards
-    assert.strictEqual(counts(ctx.db).cards, 2);
-    assert.strictEqual(images.imageCount(store), 2, "backup images overlaid");
-    // safety snapshot exists and is NOT a rotatable dated name
+    // The live store must be completely untouched by stageRestore.
+    const liveCounts = counts(db2);
+    assert.strictEqual(liveCounts.cards, 2, "live store unchanged by stageRestore");
+    assert.ok(fs.existsSync(path.join(store, "interests.db")), "live db still in place");
+    assert.strictEqual(images.imageCount(store), 1, "live images still in place");
+
+    // The pre-restore safety snapshot of the CURRENT live store is taken by
+    // stageRestore itself, BEFORE anything can overwrite the live store, and
+    // carries a name rotation can never age out.
     const snaps = fs.readdirSync(bdir).filter(function (n) { return n.indexOf("interests-backup-before-restore-") === 0; });
     assert.strictEqual(snaps.length, 1, "one pre-restore safety snapshot");
     assert.strictEqual(backup.pickBackupsToDelete([snaps[0]], 0).length, 0, "snapshot never rotated");
+    const snapDb = openDb(path.join(bdir, snaps[0]));
+    assert.strictEqual(counts(snapDb).cards, 2, "the safety snapshot captured the PRE-restore live state (both cards)");
+    snapDb.close();
+
+    db2.close();
+    fs.rmSync(staged.stageFolder, { recursive: true, force: true });
+  });
+});
+
+t("swapInStagedRestore closes db, swaps in the staged content, reopens db", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db1 = openDb(store);
+    upsertCard(db1, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const made = backup.runBackup(db1, store);
+    db1.close();
+
+    const db2 = openDb(store);
+    upsertCard(db2, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "idb:c2" });
+    images.putImg(store, "c2", TINY_JPG);
+    const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const staged = backup.stageRestore(made.name, store);
+    assert.strictEqual(staged.ok, true);
+    const swapped = backup.swapInStagedRestore(staged.stageFolder, ctx);
+    assert.strictEqual(swapped.ok, true, "swap must succeed: " + (swapped.error || ""));
+    const restoredCounts = counts(ctx.db);
+    assert.strictEqual(restoredCounts.cards, 1, "live store now reflects the restored (backed-up) content, not the pre-restore c2 card");
+    // The live store ends up an EXACT copy of the backup, not a union with the
+    // stale c2 image the replaced db no longer references.
+    assert.strictEqual(images.imageCount(store), 1, "orphan image from the replaced db must not survive the swap");
+    assert.ok(fs.existsSync(path.join(store, "images", "c1.jpg")), "the backup's image is in the live store");
+    // Neither the staged scratch folder nor the displaced-old holding folder
+    // may survive a SUCCESSFUL swap (each is a near-full image-library copy).
+    assert.strictEqual(fs.existsSync(staged.stageFolder), false, "stage folder cleaned up on success");
+    assert.strictEqual(fs.existsSync(staged.stageFolder + ".old"), false, "displaced-old folder cleaned up on success");
     ctx.db.close();
   });
 });
 
-t("restore ABORTS before overwriting the live store if the safety snapshot fails", () => {
-  withBackupDir(function (bdir) {
-    // A valid backup folder to restore FROM (two cards/images).
+t("restore ABORTS before overwriting the live store if stageRestore's safety snapshot fails", () => {
+  withBackupDir(function () {
+    // A valid backup folder to restore FROM (two cards + images), built in its
+    // own store so the live store below can be a distinct, incomplete one.
     const bkStore = newStore();
-    let bdb = openDb(bkStore);
+    const bdb = openDb(bkStore);
     upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
     upsertCard(bdb, { id: "b", url: "https://x/b", platform: "fb", cat: "Saved", ts: 2, img: "idb:b" });
     images.putImg(bkStore, "a", TINY_JPG);
     images.putImg(bkStore, "b", TINY_JPG);
+    const made = backup.runBackup(bdb, bkStore);
     bdb.close();
-    const backupName = backup.runBackup(openDb(bkStore), bkStore).name;
 
-    // ctx whose storeDir has NO interests.db on disk → copying the live db for the
-    // safety snapshot throws ENOENT. restore must abort before swapping anything in.
-    const liveStore = newStore();  // images/ exists, but no interests.db file
-    fs.writeFileSync(path.join(liveStore, "images", "sentinel.jpg"), "keep");
-    const ctx = {
-      db: { close: function () {}, exec: function () {} },
-      storeDir: liveStore,
-      getStorePath: function () { return liveStore; },
-      setStorePath: function () {},
-      reopen: function () { throw new Error("reopen must NOT be called on aborted restore"); }
+    // Live store whose interests.db copy will fail: stageRestore must abort
+    // BEFORE staging anything, and must never touch the live store.
+    const store = newStore();
+    const db2 = openDb(store);
+    upsertCard(db2, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    fs.writeFileSync(path.join(store, "images", "sentinel.jpg"), "keep");
+
+    const originalCopy = fs.copyFileSync;
+    let copyCalls = 0;
+    fs.copyFileSync = function (src, dst) {
+      // Fail specifically on the pre-restore safety-snapshot copy (the FIRST
+      // copyFileSync call inside stageRestore), not the later staging copy.
+      copyCalls++;
+      if (copyCalls === 1) throw new Error("simulated disk full");
+      return originalCopy.apply(fs, arguments);
     };
-
-    const out = backup.restore(backupName, ctx);
-    assert.deepStrictEqual(out, { ok: false, error: "safety snapshot failed" });
-    // live store NOT overwritten: no restored interests.db, sentinel image intact,
-    // backup's images NOT copied in.
-    assert.strictEqual(fs.existsSync(path.join(liveStore, "interests.db")), false, "live db not created by aborted restore");
-    assert.strictEqual(fs.existsSync(path.join(liveStore, "images", "sentinel.jpg")), true, "live images untouched");
-    assert.strictEqual(images.imageCount(liveStore), 1, "no backup images overlaid");
+    let staged;
+    try {
+      staged = backup.stageRestore(made.name, store);
+    } finally {
+      fs.copyFileSync = originalCopy;
+    }
+    assert.strictEqual(staged.ok, false);
+    assert.match(staged.error, /safety snapshot failed/);
+    assert.strictEqual(staged.stageFolder, undefined, "nothing may be staged when the safety snapshot fails");
+    const liveCounts = counts(db2);
+    assert.strictEqual(liveCounts.cards, 1, "live store untouched when the safety snapshot fails");
+    assert.strictEqual(fs.existsSync(path.join(store, "images", "sentinel.jpg")), true, "live images untouched");
+    assert.strictEqual(fs.existsSync(path.join(store, "images", "a.jpg")), false, "no backup images overlaid");
+    // Scoped to THIS store's own basename: every newStore() lives directly in
+    // os.tmpdir(), so an unscoped sweep also picks up other tests' (and earlier
+    // runs') stage folders.
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(store)).filter(function (n) { return n.indexOf("." + path.basename(store) + ".restage-") === 0; }), [],
+      "no stage folder left behind next to the live store");
+    db2.close();
   });
 });
 
-t("restore recovers ctx.db to a live handle when the swap step throws mid-restore", () => {
-  withBackupDir(function (bdir) {
-    // live store with ONE card + image
+t("swapInStagedRestore recovers ctx.db to a live handle when the swap step throws mid-restore", () => {
+  withBackupDir(function () {
     const store = newStore();
-    let db = openDb(store);
-    upsertCard(db, { id: "live", url: "https://x/live", platform: "fb", cat: "Saved", ts: 1, img: "idb:live" });
-    images.putImg(store, "live", TINY_JPG);
+    const db1 = openDb(store);
+    upsertCard(db1, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1 });
+    const made = backup.runBackup(db1, store);
+    db1.close();
+    const db2 = openDb(store);
+    // A card written AFTER the backup: the ORIGINAL live content, which a
+    // failed swap must put back exactly as it was.
+    upsertCard(db2, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2 });
+    const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+    const staged = backup.stageRestore(made.name, store);
+    assert.strictEqual(staged.ok, true);
 
-    // a valid backup folder to restore FROM (must stay VALID — restore() validates
-    // isFile() on the backup's interests.db before doing anything else, so a
-    // corrupted backup would abort at that guard and never reach the swap step).
-    const bkStore = newStore();
-    let bdb = openDb(bkStore);
-    upsertCard(bdb, { id: "a", url: "https://x/a", platform: "fb", cat: "Saved", ts: 1, img: "idb:a" });
-    images.putImg(bkStore, "a", TINY_JPG);
-    bdb.close();
-    const backupName = backup.runBackup(openDb(bkStore), bkStore).name;
-    const backupDbPath = path.join(bdir, backupName, "interests.db");
-
-    const ctx = {
-      db, storeDir: store,
-      getStorePath: function () { return store; },
-      setStorePath: function () {},
-      reopen: function () { return openDb(store); }
+    // Fail ONLY the "rename staged content into place" step: the source must be
+    // INSIDE the stage folder. Deliberately NOT a match on the displaced-old
+    // holding folder (stageFolder + ".old"), whose renames are the rollback —
+    // breaking those too would let this test pass while the live store was left
+    // gutted, which is exactly the failure it exists to catch.
+    const originalRename = fs.renameSync;
+    fs.renameSync = function (src, dst) {
+      if (String(src).indexOf(staged.stageFolder + path.sep) === 0) {
+        throw new Error("simulated rename failure");
+      }
+      return originalRename.apply(fs, arguments);
     };
-
-    // Simulate a locked/online-only file at the EXACT line of step 3 (the swap):
-    // temporarily wrap fs.copyFileSync so it throws only when copying FROM the
-    // backup folder (the swap copy), leaving every other copyFileSync call
-    // (safety snapshot, runBackup, etc.) unaffected. Always restore the original.
-    const origCopyFileSync = fs.copyFileSync;
-    fs.copyFileSync = function (src, dst) {
-      if (src === backupDbPath) throw new Error("simulated locked/online-only file");
-      return origCopyFileSync.apply(fs, arguments);
-    };
-    let out;
+    let swapped;
     try {
-      out = backup.restore(backupName, ctx);
+      swapped = backup.swapInStagedRestore(staged.stageFolder, ctx);
     } finally {
-      fs.copyFileSync = origCopyFileSync;
+      fs.renameSync = originalRename;
     }
-
-    assert.strictEqual(out.ok, false, "restore reports failure, does not throw");
-    // ctx.db must be a LIVE handle again (not left closed) — routes read ctx.db
-    // at request time (Task 1), so a reopened handle is all that's needed to recover.
-    const row = ctx.db.prepare("SELECT COUNT(*) n FROM cards").get();
-    assert.ok(row && typeof row.n === "number", "ctx.db usable after failed restore");
+    assert.strictEqual(swapped.ok, false);
+    assert.ok(ctx.db && typeof ctx.db.prepare === "function", "ctx.db must be a live, usable handle after a failed swap, not left closed");
+    // The whole point of staging: a failed swap leaves the ORIGINAL live store,
+    // not a half-swapped one.
+    assert.strictEqual(counts(ctx.db).cards, 2, "the ORIGINAL live content must be back in place after a failed swap");
+    assert.ok(fs.existsSync(path.join(store, "images")), "live images dir restored by the rollback");
     ctx.db.close();
   });
 });

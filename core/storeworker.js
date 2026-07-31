@@ -27,31 +27,41 @@ if (!isMainThread) {
   const job = workerData || {};
   let result;
   try {
-    const ctx = buildContext(job.storeDir);
-    try {
-      if (job.op === "publish") {
-        sync.publishSnapshot(ctx, job.syncDir, job.deviceId, job.deviceLabel);
-        result = { ok: true };
-      } else if (job.op === "backup") {
-        const backup = require("./backup");
-        const out = backup.runBackup(ctx.db, job.storeDir, { safety: !!job.safety });
-        const verified = backup.verifyBackup(out.name, out.counts);
-        if (verified && !job.safety && job.keep) backup.rotate(job.keep);
-        result = { ok: true, verified, name: out.name, counts: out.counts };
-      } else if (job.op === "movestore") {
-        const backup = require("./backup");
-        result = backup.moveStore(job.target, ctx);
-      } else {
-        // backupFn isn't serializable across the thread boundary; noBackup is
-        // the test hook (production omits it and keeps the real safety backup).
-        const r = sync.runSync(ctx, { syncDir: job.syncDir, deviceId: job.deviceId, deviceLabel: job.deviceLabel, publish: job.publish !== false, backupFn: job.noBackup ? function () {} : undefined });
-        // backupError must cross the thread boundary: production prefers this
-        // worker over the direct path, so dropping it here made the manual
-        // sync's "merge was skipped" toast permanently unreachable.
-        result = { ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers, peersSkipped: r.peersSkipped, publishSkipped: r.publishSkipped };
+    if (job.op === "restore") {
+      // Deliberately OUTSIDE buildContext: stageRestore is pure, path-based
+      // I/O and must never touch a live database handle. buildContext opens the
+      // live store (db.openDb sets journal_mode=WAL, a write to the db file),
+      // which would mutate the very store this job is only supposed to read and
+      // snapshot. No ctx is built, so there is none to close either.
+      const backup = require("./backup");
+      result = backup.stageRestore(job.name, job.storeDir);
+    } else {
+      const ctx = buildContext(job.storeDir);
+      try {
+        if (job.op === "publish") {
+          sync.publishSnapshot(ctx, job.syncDir, job.deviceId, job.deviceLabel);
+          result = { ok: true };
+        } else if (job.op === "backup") {
+          const backup = require("./backup");
+          const out = backup.runBackup(ctx.db, job.storeDir, { safety: !!job.safety });
+          const verified = backup.verifyBackup(out.name, out.counts);
+          if (verified && !job.safety && job.keep) backup.rotate(job.keep);
+          result = { ok: true, verified, name: out.name, counts: out.counts };
+        } else if (job.op === "movestore") {
+          const backup = require("./backup");
+          result = backup.moveStore(job.target, ctx);
+        } else {
+          // backupFn isn't serializable across the thread boundary; noBackup is
+          // the test hook (production omits it and keeps the real safety backup).
+          const r = sync.runSync(ctx, { syncDir: job.syncDir, deviceId: job.deviceId, deviceLabel: job.deviceLabel, publish: job.publish !== false, backupFn: job.noBackup ? function () {} : undefined });
+          // backupError must cross the thread boundary: production prefers this
+          // worker over the direct path, so dropping it here made the manual
+          // sync's "merge was skipped" toast permanently unreachable.
+          result = { ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers, peersSkipped: r.peersSkipped, publishSkipped: r.publishSkipped };
+        }
+      } finally {
+        try { ctx.db.close(); } catch (e) { /* already closed / never opened */ }
       }
-    } finally {
-      try { ctx.db.close(); } catch (e) { /* already closed / never opened */ }
     }
   } catch (e) {
     result = { ok: false, error: (e && e.message) || String(e) };
@@ -111,6 +121,15 @@ if (!isMainThread) {
       },
       moveStore(storeDir, target) {
         return exclusive({ op: "movestore", storeDir, target });
+      },
+      // Runs ONLY the staging half of a restore (backup.stageRestore): verify,
+      // safety-snapshot the live store, stage the incoming content. Resolves
+      // the STAGED result ({ok, stageFolder}), NOT a finished restore — the
+      // caller must then run backup.swapInStagedRestore(stageFolder, ctx) on
+      // the main thread, which is the only part that needs the real ctx.db /
+      // ctx.reopen and is cheap (renames, not copies).
+      restore(storeDir, name) {
+        return exclusive({ op: "restore", storeDir, name });
       },
       setStoreDir(newStoreDir) { currentStoreDir = newStoreDir; },
     };
