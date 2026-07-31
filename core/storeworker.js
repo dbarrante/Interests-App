@@ -33,7 +33,12 @@ if (!isMainThread) {
         sync.publishSnapshot(ctx, job.syncDir, job.deviceId, job.deviceLabel);
         result = { ok: true };
       } else {
+        // backupFn isn't serializable across the thread boundary; noBackup is
+        // the test hook (production omits it and keeps the real safety backup).
         const r = sync.runSync(ctx, { syncDir: job.syncDir, deviceId: job.deviceId, deviceLabel: job.deviceLabel, publish: job.publish !== false, backupFn: job.noBackup ? function () {} : undefined });
+        // backupError must cross the thread boundary: production prefers this
+        // worker over the direct path, so dropping it here made the manual
+        // sync's "merge was skipped" toast permanently unreachable.
         result = { ok: true, changed: r.changed, conflicts: r.conflicts, backupError: r.backupError || null, peers: r.peers, peersSkipped: r.peersSkipped, publishSkipped: r.publishSkipped };
       }
     } finally {
