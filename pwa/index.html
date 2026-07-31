@@ -793,8 +793,9 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <h3>Backup &amp; restore</h3>
         <div class="hint" style="margin-bottom:10px">Full backups — imported items, likes, saves, tags, captured images &amp; descriptions, your profile, settings, and learning history — are written and verified by the app into its backups folder, so you can roll back.</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-primary" onclick="backupNow()">&#128190; Back up now</button>
+          <button class="btn btn-primary" id="backupNowBtn" onclick="backupNow()">&#128190; Back up now</button>
           <button class="btn btn-ghost" id="moveDataBtn" onclick="moveDataLocation()" title="Copy the database + images to a new folder, verify, then switch to it. The old copy is kept until verified.">Move data location…</button>
+          <span id="storeOpIndicator"></span>
         </div>
         <div id="durStatus" class="hint" style="margin-top:10px;line-height:1.7"></div>
         <label style="margin-top:16px;display:block">Auto-backup</label>
@@ -809,7 +810,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
         <input type="number" id="backupRetainCount" min="1" max="30" step="1" style="width:80px">
         <div class="hint">How many verified backups to keep before older ones are rotated out. Duplicate-cleanup safety snapshots are separate and always keep the 2 most recent.</div>
         <label style="margin-top:16px;display:block">Restore</label>
-        <button class="btn btn-primary" onclick="restoreLatest()">&#8617; Restore latest backup</button>
+        <button class="btn btn-primary" id="restoreLatestBtn" onclick="restoreLatest()">&#8617; Restore latest backup</button>
         <div id="backupList"></div>
         <div class="hint" id="secPwaRecovery" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <b>PWA pre-sync recovery</b>
@@ -1440,7 +1441,16 @@ function hideBusyOverlay(){ const o = document.getElementById("busyOverlay"); if
 // Shared backup core: write a full, image-bearing backup to the connected folder
 // (rotated + verified) if connected, else download it. Returns true on success.
 // manual=true shows the progress overlay (auto-backups stay silent/non-blocking).
-async function backupNow(){ return doBackup(true); }
+async function backupNow(){
+  _storeOpInFlight = "backup";
+  renderStoreOpIndicator();
+  try{
+    return await doBackup(true);
+  } finally {
+    _storeOpInFlight = null;
+    renderStoreOpIndicator();
+  }
+}
 async function doBackup(manual){
   try{
     const res = await Store.backupNow({keep: S.backupRetainCount||3});   // {ok,verified,name,counts}
@@ -1643,25 +1653,37 @@ function restoreData(ev){
 async function restoreFromList(name){
   if(!name) return;
   if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return;
+  _storeOpInFlight = "restore";
+  renderStoreOpIndicator();
   try{
     const result = await Store.restore(name);
     if(!result || result.ok !== true) throw new Error((result && result.reason) || "restore was not verified");
     toast("Restored from "+name+" — reloading");
     setTimeout(()=>location.reload(), 600);
-  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); }
+  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); } finally {
+    _storeOpInFlight = null;
+    renderStoreOpIndicator();
+  }
 }
 async function restoreLatest(){
-  const list = await Store.listBackups();
-  if(!list || !list.length){ toast("No backups found"); return; }
-  // Prefer a real dated backup -- the thing "Backups to retain" actually
-  // governs -- over the rolling mirror or a reactive safety snapshot; those
-  // are internal recovery points, not one of the user's retained backups.
-  // list[0] can be the rolling mirror (it sorts by wall-clock time, so it's
-  // routinely "newer" than the freshest dated snapshot) — but it's rewritten
-  // in place every few minutes, not a point-in-time recovery point, so the
-  // "restore latest" button must skip it and land on a real dated backup.
-  const target = list.find(b=>!b.mirror && !b.safety) || list.find(b=>!b.mirror) || list[0];
-  return restoreFromList(target.name);
+  _storeOpInFlight = "restore";
+  renderStoreOpIndicator();
+  try{
+    const list = await Store.listBackups();
+    if(!list || !list.length){ toast("No backups found"); return; }
+    // Prefer a real dated backup -- the thing "Backups to retain" actually
+    // governs -- over the rolling mirror or a reactive safety snapshot; those
+    // are internal recovery points, not one of the user's retained backups.
+    // list[0] can be the rolling mirror (it sorts by wall-clock time, so it's
+    // routinely "newer" than the freshest dated snapshot) — but it's rewritten
+    // in place every few minutes, not a point-in-time recovery point, so the
+    // "restore latest" button must skip it and land on a real dated backup.
+    const target = list.find(b=>!b.mirror && !b.safety) || list.find(b=>!b.mirror) || list[0];
+    return await restoreFromList(target.name);
+  } finally {
+    _storeOpInFlight = null;
+    renderStoreOpIndicator();
+  }
 }
 async function renderBackupList(){
   const host = document.getElementById("backupList");
@@ -1693,12 +1715,17 @@ async function moveDataLocation(){
   else { target = prompt("Move the data store to a new folder.\nCurrent: " + (cur.path||"(unknown)") + "\n\nEnter the FULL path of the new folder:", cur.path||""); }
   if(!target || target === cur.path) return;
   toast("Moving data store… (the old copy is kept until the move verifies)");
+  _storeOpInFlight = "move";
+  renderStoreOpIndicator();
   try{
     const res = await Store.moveStore(target);
     if(res && res.ok===false){ toast(res.reason || "Move not available"); return; }
     toast("Data store moved to " + (res.path||target));
     try{ await storageHealthCheck(); }catch(e){}
-  }catch(e){ toast("Move failed: " + (e&&e.message||e)); }
+  }catch(e){ toast("Move failed: " + (e&&e.message||e)); } finally {
+    _storeOpInFlight = null;
+    renderStoreOpIndicator();
+  }
 }
 
 async function renderSyncStatus(){
@@ -1869,6 +1896,25 @@ function renderSyncIndicator(){
   el.className = "sync-chip sync-"+v.cls;
   el.title = v.title;
   el.innerHTML = (v.spin?'<span class="spin sync-spin"></span>':'<span class="sync-dot"></span>')+'<span class="sync-chip-text"> '+esc(v.text)+'</span>';
+}
+// "Operation in progress" indicator for backup/restore/move-store (Task 5).
+// Those three now run on a worker thread (Tasks 2-4) instead of freezing the
+// window, so a click needs its own feedback instead of relying on the old
+// freeze. storeOpIndicatorHTML is PURE (unit-tested without a DOM) and reuses
+// the sync indicator's exact .sync-chip/.spin/.sync-spin/.sync-chip-text
+// markup -- no new visual language.
+let _storeOpInFlight = null;   // null | "backup" | "restore" | "move" -- which store-mutating op (if any) is currently awaiting its response
+function storeOpIndicatorHTML(){
+  if(!_storeOpInFlight) return "";
+  const label = _storeOpInFlight==="backup" ? "Backing up…" : (_storeOpInFlight==="restore" ? "Restoring…" : "Moving store…");
+  return '<span class="sync-chip sync-syncing" title="'+label+'"><span class="spin sync-spin"></span><span class="sync-chip-text"> '+label+'</span></span>';
+}
+function renderStoreOpIndicator(){
+  const el = document.getElementById("storeOpIndicator"); if(el) el.innerHTML = storeOpIndicatorHTML();
+  const busy = !!_storeOpInFlight;
+  const b1 = document.getElementById("backupNowBtn"); if(b1) b1.disabled = busy;
+  const b2 = document.getElementById("restoreLatestBtn"); if(b2) b2.disabled = busy;
+  const b3 = document.getElementById("moveDataBtn"); if(b3) b3.disabled = busy;
 }
 async function refreshSyncIndicatorState(){
   let st=null, last=null;
