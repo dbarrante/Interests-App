@@ -1483,12 +1483,14 @@ function showDurabilityBanner(folder){
     ? "⚠ Automatic backups are due — back up now to be safe."
     : "⚠ The app service isn't reachable — backups can't run right now.";
   b.innerHTML = "<span>" + msg + "</span><button class=\"btn btn-primary\" style=\"padding:6px 14px\">Back up now</button>";
-  // Only dismiss the banner once backupNow() actually reports a result --
+  // Only dismiss the banner once backupNow() actually reports success --
   // it resolves to undefined both when the re-entrancy guard rejected the
   // click (another op already in flight) and when the backup itself threw,
-  // and dismissing an "automatic backups are due" warning in either of
-  // those cases would hide a real problem behind a false all-clear.
-  b.querySelector("button").onclick = function(){ backupNow().then(function(res){ if(res) b.remove(); }); };
+  // and it resolves a truthy {ok:false,...} on documented failure paths
+  // (missing db, verification failure, etc). Dismissing an "automatic
+  // backups are due" warning in any of those cases would hide a real
+  // problem behind a false all-clear.
+  b.querySelector("button").onclick = function(){ backupNow().then(function(res){ if(res && res.ok!==false) b.remove(); }); };
   const main = document.querySelector("main"); if(main) main.prepend(b);
 }
 async function renderDurabilityStatus(health){
