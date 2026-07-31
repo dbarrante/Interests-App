@@ -17,7 +17,7 @@ const FNS = [
   "generateArticle", "copyArticleText", "toggleArticleExpanded",
   "toggleArticleEdit", "saveArticleEdit",
   "askQuestion", "deleteQaEntry",
-  "researchPanelHTML",
+  "researchPanelHTML", "toggleResearchPanel",
 ];
 
 for (const name of FNS) {

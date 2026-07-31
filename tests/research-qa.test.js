@@ -183,10 +183,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML renders the ask input and every existing Q&A entry with a Delete button", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: null, qa: [{ question: "How much?", answer: "$200", sources: [], answeredAt: 1 }] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /id="qaInput_imported_i0"/);
@@ -198,10 +198,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML disables the ask input/button while busy", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: null, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /id="qaInput_imported_i0"[^>]*disabled/);

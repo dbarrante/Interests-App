@@ -131,10 +131,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows the initial button when no article exists yet", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const out = researchPanelHTML("imported", { id: "i0" });
     assert.match(out, /generateArticle\('imported','i0'\)/);
     assert.match(out, /Research/);
@@ -142,10 +142,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows a loading state while busy and no article exists yet", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map([["imported:i0", "article"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map([["imported:i0", "article"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const out = researchPanelHTML("imported", { id: "i0" });
     assert.doesNotMatch(out, /generateArticle\('imported','i0'\)/);
     assert.match(out, /esearching/);
@@ -153,10 +153,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows 'Answering' (not 'Researching') while a Q&A call is busy on a card with no article yet (final review Minor #5)", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map([["imported:i0", "qa"]]), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const out = researchPanelHTML("imported", { id: "i0" });
     assert.doesNotMatch(out, /esearching/);
     assert.match(out, /nswering/);
@@ -164,10 +164,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML shows the article, its sources, and a Regenerate/Copy row once generated", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, (u)=>u.replace(/^https?:\/\//,"").split("/")[0]);
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, (u)=>u.replace(/^https?:\/\//,"").split("/")[0]);
     const it = { id: "i0", research: { article: { text: "Short article body.", sources: ["https://example.com/a"], generatedAt: 1 }, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /Short article body\./);
@@ -179,11 +179,11 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML renders an open article edit from _articleDrafts, not from the stored (stale) article text (final review Important #2)", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
     const researchPanelHTML = factory(
-      new Map(), new Set(["imported:i0"]), new Set(),
+      new Set(), new Map(), new Set(["imported:i0"]), new Set(),
       { "imported:i0": "unsaved draft text the user is mid-typing" }, {},
       (s)=>s, ()=>""
     );
@@ -195,16 +195,69 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML pre-fills the ask input from _qaDrafts, not empty, when a draft exists (final review Important #2)", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
     const researchPanelHTML = factory(
-      new Map(), new Set(), new Set(), {}, { "imported:i0": "half-typed question" },
+      new Set(), new Map(), new Set(), new Set(), {}, { "imported:i0": "half-typed question" },
       (s)=>s, ()=>""
     );
     const it = { id: "i0", research: null };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /value="half-typed question"/);
+  });
+
+  t(label + ": toggleResearchPanel adds/removes the scope:id key and re-renders (user feedback)", () => {
+    const calls = [];
+    const factory = new Function(
+      "_panelCollapsed", "renderTabsView",
+      fn(src, "toggleResearchPanel") + "\nreturn toggleResearchPanel;"
+    );
+    const collapsed = new Set();
+    const toggleResearchPanel = factory(collapsed, ()=>calls.push("render"));
+    toggleResearchPanel("imported", "i0");
+    assert.ok(collapsed.has("imported:i0"));
+    toggleResearchPanel("imported", "i0");
+    assert.ok(!collapsed.has("imported:i0"));
+    assert.strictEqual(calls.length, 2);
+  });
+
+  t(label + ": researchPanelHTML renders only the header (no article/Q&A content) when the panel is collapsed (user feedback)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(["imported:i0"]), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: { article: { text: "Article body that should be hidden.", sources: [], generatedAt: 1 }, qa: [{ question: "Q that should be hidden", answer: "A", sources: [], answeredAt: 1 }] } };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /toggleResearchPanel\('imported','i0'\)/);
+    assert.doesNotMatch(out, /Article body that should be hidden\./);
+    assert.doesNotMatch(out, /Q that should be hidden/);
+    assert.doesNotMatch(out, /qaInput_imported_i0/);
+  });
+
+  t(label + ": researchPanelHTML renders the full panel (header plus content) when not collapsed (user feedback)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: null };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /toggleResearchPanel\('imported','i0'\)/);
+    assert.match(out, /generateArticle\('imported','i0'\)/);
+    assert.match(out, /qaInput_imported_i0/);
+  });
+
+  t(label + ": the ask-a-question input submits on Enter, not just via the Ask button (user feedback)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: null };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /onkeydown="if\(event\.key==='Enter'\)askQuestion\('imported','i0'\)"/);
   });
 }
 

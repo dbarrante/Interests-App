@@ -73,10 +73,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML renders a textarea (wired to save its live value into _articleDrafts) and Save/Cancel when editing", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map(), new Set(["imported:i0"]), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(["imported:i0"]), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: { text: "Editable body.", sources: [], generatedAt: 1 }, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /<textarea id="artEdit_imported_i0" oninput="_articleDrafts\['imported:i0'\]=this\.value">Editable body\.<\/textarea>/);
@@ -87,10 +87,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": researchPanelHTML's view mode (not editing) offers an Edit button alongside Copy/Regenerate", () => {
     const factory = new Function(
-      "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
       fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
     );
-    const researchPanelHTML = factory(new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
     const it = { id: "i0", research: { article: { text: "Body.", sources: [], generatedAt: 1 }, qa: [] } };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /toggleArticleEdit\('imported','i0'\)/);

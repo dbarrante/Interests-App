@@ -492,6 +492,7 @@ body.reader-locked{overflow:hidden}
 .addtab-menu{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;margin-left:8px;vertical-align:top}
 .research-unit{break-inside:avoid}
 .research-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.research-panel-head{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;cursor:pointer;margin-bottom:6px}
 .research-article-text{white-space:pre-wrap;font-size:13.5px;line-height:1.5}
 .research-qa{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);font-size:13.5px}
 .research-q{margin-bottom:4px}
@@ -3754,8 +3755,17 @@ function copyArticleText(scope, id){
 // (renderTabsView gates this on t.reserved) — every button here is therefore only
 // ever reachable while curTab==="tabs", so handlers re-render via renderTabsView()
 // directly, same as openTabSuggest/tabSugAccept/removeTabPicksFromTab (Plan 2).
+let _panelCollapsed = new Set();   // "scope:id" keys where the whole research panel (article + Q&A) is collapsed to just its header
+function toggleResearchPanel(scope, id){
+  const key = scope+":"+id;
+  _panelCollapsed.has(key) ? _panelCollapsed.delete(key) : _panelCollapsed.add(key);
+  renderTabsView();
+}
 function researchPanelHTML(scope, it){
   const key = scope+":"+it.id;
+  const collapsed = _panelCollapsed.has(key);
+  const panelHead = `<div class="research-panel-head" onclick="toggleResearchPanel('${scope}','${it.id}')">${collapsed?"&#9656;":"&#9662;"} Research &amp; Q&amp;A</div>`;
+  if(collapsed) return `<div class="research-panel">${panelHead}</div>`;
   const busyOp = _researchBusy.get(key);   // undefined | "article" | "qa"
   const busy = !!busyOp;
   const art = it.research && it.research.article;
@@ -3804,9 +3814,10 @@ function researchPanelHTML(scope, it){
     </div>`;
   }).join("");
   return `<div class="research-panel">
+    ${panelHead}
     ${articleHtml}
     <div class="research-qa-ask" style="display:flex;gap:8px;margin-top:10px">
-      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" value="${esc(qaDraft)}" oninput="_qaDrafts['${key}']=this.value" ${busy?"disabled":""}>
+      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" value="${esc(qaDraft)}" oninput="_qaDrafts['${key}']=this.value" onkeydown="if(event.key==='Enter')askQuestion('${scope}','${it.id}')" ${busy?"disabled":""}>
       <button ${busy?"disabled":""} onclick="askQuestion('${scope}','${it.id}')">${busy?"…":"Ask"}</button>
     </div>
     ${qaList}
