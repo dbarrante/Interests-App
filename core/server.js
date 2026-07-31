@@ -623,7 +623,7 @@ function createServer(ctx) {
   });
 
   // One-time legacy backup import. READ-ONLY on srcDir.
-  app.post("/api/import", (req, res) => {
+  app.post("/api/import", async (req, res) => {
     let srcDir = req.body && req.body.srcDir;
     if (!srcDir || typeof srcDir !== "string" || !path.isAbsolute(srcDir)) {
       return res.status(400).json({ error: "absolute srcDir required" });
@@ -642,7 +642,10 @@ function createServer(ctx) {
       // refuse exactly the degraded store a user is most likely trying to
       // recover FROM by re-importing, and would do so with no override.
       let safety;
-      try { safety = backup.runBackup(ctx.db, ctx.storeDir, { safety: true }); }
+      try {
+        const runner = (ctx.storeWorker && ctx.storeWorker.runBackup) ? ctx.storeWorker : { runBackup: (storeDir, opts) => Promise.resolve(backup.runBackup(ctx.db, storeDir, opts)) };
+        safety = await runner.runBackup(ctx.storeDir, { safety: true });
+      }
       catch (e) { e.code = "SAFETY_BACKUP_FAILED"; throw e; }
       if (!safety || !backup.verifyBackup(safety.name, safety.counts)) {
         return res.status(409).json({ error: "safety backup not verified" });
@@ -658,20 +661,35 @@ function createServer(ctx) {
   });
 
   // ---- backup / restore / health ----
-  app.post("/api/backup", (req, res) => {
+  app.post("/api/backup", async (req, res) => {
     try {
       const safety = !!(req.body && req.body.safety);
-      const out = backup.runBackup(ctx.db, ctx.storeDir, { safety });
-      const verified = backup.verifyBackup(out.name, out.counts);
-      if (verified && !safety) {
-        // Client sends its ia_settings.backupRetainCount; clamp against a
-        // client-controlled value the same way — never trust it blindly.
-        let keep = Number(req.body && req.body.keep);
-        if (!Number.isFinite(keep) || keep < 1) keep = 3;
-        keep = Math.min(Math.floor(keep), 30);
-        backup.rotate(keep); // cleanup snapshots are unique and never auto-rotated
+      let keep = Number(req.body && req.body.keep);
+      if (!Number.isFinite(keep) || keep < 1) keep = 3;
+      keep = Math.min(Math.floor(keep), 30);
+      const runner = (ctx.storeWorker && ctx.storeWorker.runBackup) ? ctx.storeWorker : { runBackup: (storeDir, opts) => Promise.resolve((function () {
+        const out = backup.runBackup(ctx.db, storeDir, { safety: opts.safety });
+        const verified = backup.verifyBackup(out.name, out.counts);
+        if (verified && !opts.safety && opts.keep) backup.rotate(opts.keep);
+        return { ok: true, verified, name: out.name, counts: out.counts };
+      })()) };
+      const out = await runner.runBackup(ctx.storeDir, { safety, keep });
+      if (out && out.ok === false) {
+        // The façade NEVER rejects (core/storeworker.js) — a worker-side
+        // failure (e.g. the store-sanity refusal) resolves {ok:false, error}
+        // instead of throwing, so it must be classified here exactly like the
+        // direct path's catch below does. Without this, a genuine backup
+        // failure silently returned HTTP 200 with {ok:false} and the one
+        // backup failure a user can act on (see comment below) never reached
+        // the client as the 409 it always used to be.
+        console.error("backup failed:", out.error);
+        const msg = out.error || "";
+        if (/images dir is missing|expects \d+ images but only/.test(msg)) {
+          return res.status(409).json({ ok: false, error: msg });
+        }
+        return res.status(500).json({ ok: false, error: "backup failed" });
       }
-      res.json({ ok: true, verified, name: out.name, counts: out.counts });
+      res.json(out);
     } catch (e) {
       console.error("backup failed:", e);
       // The store-sanity refusal is the one backup failure a user can act on

@@ -32,6 +32,12 @@ if (!isMainThread) {
       if (job.op === "publish") {
         sync.publishSnapshot(ctx, job.syncDir, job.deviceId, job.deviceLabel);
         result = { ok: true };
+      } else if (job.op === "backup") {
+        const backup = require("./backup");
+        const out = backup.runBackup(ctx.db, job.storeDir, { safety: !!job.safety });
+        const verified = backup.verifyBackup(out.name, out.counts);
+        if (verified && !job.safety && job.keep) backup.rotate(job.keep);
+        result = { ok: true, verified, name: out.name, counts: out.counts };
       } else {
         // backupFn isn't serializable across the thread boundary; noBackup is
         // the test hook (production omits it and keeps the real safety backup).
@@ -82,6 +88,10 @@ if (!isMainThread) {
       },
       publishSnapshot(_ctx, syncDir, deviceId, deviceLabel) {
         return exclusive({ op: "publish", storeDir, syncDir, deviceId, deviceLabel });
+      },
+      runBackup(storeDir, opts) {
+        opts = opts || {};
+        return exclusive({ op: "backup", storeDir, safety: !!opts.safety, keep: opts.keep });
       },
     };
   }
