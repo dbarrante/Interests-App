@@ -1196,11 +1196,12 @@ function freezeMirrorForRestore() {
 // a data-loss bug into a liveness failure where a restore can never succeed.
 //
 // THE LOAD-BEARING PROPERTY: this compares kv rows BY VALUE, not by "was this
-// row written". captureQueue.claim() rewrites byte-identical JSON on every idle
-// poll (core/capture-queue.js — it writes whenever the queue is non-empty, even
-// when nothing was claimable), and web/index.html's persistAll() re-saves all
-// eight of its arrays on every user action whether or not they changed. A
-// write-EVENT trigger would abort spuriously on both; a value compare does not.
+// row written". core/capture-queue.js writes the mailbox row on every idle
+// drain poll whenever the queue is non-empty, and web/index.html's persistAll()
+// re-saves all eight of its arrays on every user action whether or not they
+// changed. A write-EVENT trigger would abort spuriously on both.
+//
+// Value alone is not enough for the mailbox, though — see captureQueueDigest.
 //
 // Included, and why each is durable user data with no self-heal:
 //   ia_capture_queue — the extension capture mailbox. Captures sitting undrained
@@ -1222,6 +1223,38 @@ const WITNESSED_KV_KEYS = [
   "ia_capture_queue",
   "ia_hidden", "ia_clicks", "ia_likes", "ia_disliked", "ia_shown", "ia_seen", "ia_spool",
 ];
+// ia_capture_queue is digested by PAYLOAD IDENTITY (queueId + the capture
+// itself) rather than by the raw row, because the row carries lease metadata
+// that churns without any data being at risk. captureQueue.claim() — which
+// web/index.html runs every 3s — assigns a FRESH random leaseId to every entry
+// that is unleased or whose lease expired, so the raw row is byte-identical
+// only while ALL entries are leased and unexpired. Measured: a claim over one
+// just-enqueued capture changes the row; the next claim does not.
+//
+// Without this, a capture merely PENDING at witness-capture time would abort
+// every restore on the next 3s poll, and one the UI claims but never acks would
+// re-lease every 5 minutes and abort restores indefinitely — the "restore can
+// never succeed" liveness failure this targeted list exists to avoid. Such a
+// capture predates staging, so it IS in the pre-restore safety snapshot; it is
+// exactly the content the user asked the restore to replace, not the
+// arrived-during-staging write F1 is about.
+//
+// What still trips it: a new enqueue (a new queueId appears) and an ack (a
+// queueId disappears) — both real changes to what is in the mailbox.
+// Anything unparseable or not in the envelope shape falls back to the raw
+// value, which is the stricter compare, so a corrupt or legacy mailbox stays
+// fail-closed.
+function captureQueueDigest(raw) {
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (e) { return null; }
+  if (!Array.isArray(parsed)) return null;
+  const parts = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || item._queueEntry !== 1 || typeof item.queueId !== "string") return null;
+    try { parts.push(item.queueId + ":" + JSON.stringify(item.capture)); } catch (e) { return null; }
+  }
+  return parts.join("\n");
+}
 // A digest rather than the raw values: the witness crosses the worker boundary
 // by structured clone, and ia_capture_queue alone is allowed up to 64MB.
 // Absent (no row) and present-but-empty are distinguished — jsonKvEndpoints
@@ -1230,7 +1263,13 @@ function kvWitness(db) {
   const out = {};
   for (const key of WITNESSED_KV_KEYS) {
     const raw = getKV(db, key);
-    out[key] = raw == null ? "-" : ("h" + crypto.createHash("sha1").update(String(raw)).digest("hex"));
+    if (raw == null) { out[key] = "-"; continue; }
+    let material = String(raw);
+    if (key === "ia_capture_queue") {
+      const identity = captureQueueDigest(material);
+      if (identity !== null) material = "id\n" + identity;
+    }
+    out[key] = "h" + crypto.createHash("sha1").update(material).digest("hex");
   }
   return out;
 }

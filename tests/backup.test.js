@@ -1852,6 +1852,58 @@ t("swapInStagedRestore still SUCCEEDS when only operational kv rows churned duri
   });
 });
 
+/* The mailbox's own liveness half. captureQueue.claim() — which web/index.html
+   runs every 3 seconds — assigns a FRESH random leaseId to every entry that is
+   unleased or whose lease expired, so the RAW kv row changes on an idle poll
+   whenever a capture is merely PENDING. Digesting that row by value would abort
+   every restore started with a non-empty mailbox, and a capture the UI claims
+   but never acks would re-lease every 5 minutes and abort restores forever.
+   Such a capture predates staging and IS in the pre-restore safety snapshot; it
+   is content the user asked the restore to replace, not the arrived-during-
+   staging write F1 is about. Hence the payload-identity digest. */
+t("swapInStagedRestore still SUCCEEDS when the drain poll merely re-leases a capture pending since before staging", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 2; i++) {
+      upsertCard(db, { id: "ls" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:ls" + i });
+      images.putImg(store, "ls" + i, TINY_JPG);
+    }
+    const made = backup.runBackup(db, store);
+    upsertCard(db, { id: "extra", url: "https://x/extra", platform: "fb", cat: "Saved", ts: 9 });   // so the restore is a real change
+    // Pending BEFORE the witness is captured — this is the case that must not abort.
+    captureQueue.enqueue(db, { url: "https://x/pending-before", title: "waiting to be drained" });
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const witness = backup.storeWitness(ctx.db, store);
+    const rawBefore = getKV(ctx.db, "ia_capture_queue");
+
+    let injected = false, rawAfter = null;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (!injected && String(p).indexOf(".restage-") >= 0 && String(p).indexOf("ls1.jpg") >= 0) {
+        injected = true;
+        captureQueue.claim(ctx.db);   // exactly what the 3s drainCaptures poll does
+        rawAfter = getKV(ctx.db, "ia_capture_queue");
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.strictEqual(injected, true, "the mid-staging claim must actually have fired, or this test proves nothing");
+    assert.notStrictEqual(rawAfter, rawBefore,
+      "the claim must actually have CHANGED the raw kv row (a fresh leaseId) — otherwise a raw-value witness would pass this test vacuously");
+
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(swapped.ok, true, "a lease renewal carries no new data and must NOT abort the restore: " + (swapped.error || ""));
+    assert.strictEqual(counts(ctx.db).cards, 2, "and the restore must actually have applied");
+    ctx.db.close();
+  });
+});
+
 t("swapInStagedRestore fails closed when handed no write-witness", () => {
   withBackupDir(function () {
     const store = newStore();
