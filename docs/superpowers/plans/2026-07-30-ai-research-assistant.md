@@ -277,6 +277,7 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 function loadGenerateArticle(src, state, callAI) {
   const body = [
     src.match(/const RESEARCH_PROVIDERS[^;]+;/)[0],
+    src.match(/let _researchBusy[^;]+;/)[0],
     fn(src, "hasResearchProvider"), fn(src, "_researchCard"), fn(src, "buildArticlePrompt"),
     fn(src, "parseResearchResponse"), fn(src, "generateArticle"),
   ].join("\n");
@@ -804,6 +805,7 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 function loadAskQuestion(src, state, callAI) {
   const body = [
     src.match(/const RESEARCH_PROVIDERS[^;]+;/)[0],
+    src.match(/let _researchBusy[^;]+;/)[0],
     fn(src, "hasResearchProvider"), fn(src, "_researchCard"), fn(src, "buildQuestionPrompt"),
     fn(src, "parseResearchResponse"), fn(src, "askQuestion"),
   ].join("\n");

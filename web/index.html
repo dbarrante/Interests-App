@@ -463,6 +463,8 @@ body.reader-locked{overflow:hidden}
 .tp-tabs-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:4px 10px 2px}
 .tp-tabs{display:flex;flex-direction:column;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:4px}
 .addtab-menu{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;margin-left:8px;vertical-align:top}
+.research-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.research-article-text{white-space:pre-wrap;font-size:13.5px;line-height:1.5}
 /* AutoTag (AI) suggestions */
 .tp-head{font-size:12px;font-weight:700;color:var(--muted);padding:4px 6px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .tp-hint{font-weight:600;opacity:.75;font-size:11px}
@@ -3468,7 +3470,8 @@ function renderTabsView(){
           // BEFORE rendering the card, or impCardHTML bakes in a blank data-id/
           // _hoverCardId for this pass (self-heals next render, but no reason to).
           if(r.kind==="imported" && !r.it.id){ r.it.id=newId(); Store.putCards(imported); }
-          const inner = r.kind==="saved" ? cardHTML(r.it,"saved",t.tag) : impCardHTML(r.it,r.idx,t.tag);
+          let inner = r.kind==="saved" ? cardHTML(r.it,"saved",t.tag) : impCardHTML(r.it,r.idx,t.tag);
+          if(t.reserved) inner += researchPanelHTML(r.kind, r.it);
           const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
@@ -3616,6 +3619,76 @@ function parseResearchResponse(text){
     if(u && !seen.has(u)){ seen.add(u); sources.push(u); if(sources.length>=10) break; }
   }
   return { text: body, sources: sources };
+}
+let _researchBusy = new Set();   // "scope:id" keys currently mid an AI call (article gen/regen or Q&A — Task 4)
+let _articleExpanded = new Set();   // "scope:id" keys with the full article shown (vs. a truncated preview)
+async function generateArticle(scope, id){
+  if(!_researchCard(scope, id)) return;
+  if(!hasResearchProvider()){ toast("Article research needs a web-search-capable provider (Claude, ChatGPT, Gemini, or OpenRouter) — switch in Settings", 6000); return; }
+  const key = scope+":"+id;
+  if(_researchBusy.has(key)) return;
+  const promptIt = _researchCard(scope, id);
+  _researchBusy.add(key);
+  renderTabsView();
+  try{
+    const text = await callAI(buildArticlePrompt(promptIt), {webSearch:true});
+    const parsed = parseResearchResponse(text);
+    // Re-resolve by id, not the captured `promptIt` reference — the card may have
+    // been deleted (✕) or untagged (Remove from tab) while this call was in flight.
+    const it = _researchCard(scope, id);
+    if(it){
+      if(!it.research) it.research = {article:null, qa:[]};
+      it.research.article = {text:parsed.text, sources:parsed.sources, generatedAt:Date.now()};
+      if(scope==="saved") Store.putSaved(saved); else Store.putCards(imported);
+      toast("Article generated");
+    }
+  }catch(e){
+    toast("Couldn't generate article: "+(e&&e.message||e));
+  }finally{
+    _researchBusy.delete(key);
+    renderTabsView();
+  }
+}
+function copyArticleText(scope, id){
+  const it = _researchCard(scope, id); if(!it || !it.research || !it.research.article) return;
+  navigator.clipboard.writeText(it.research.article.text).then(
+    ()=>toast("Article copied"),
+    ()=>toast("Couldn't copy — clipboard access denied")
+  );
+}
+// Appended below a card's own markup inside the reserved AI tab ONLY
+// (renderTabsView gates this on t.reserved) — every button here is therefore only
+// ever reachable while curTab==="tabs", so handlers re-render via renderTabsView()
+// directly, same as openTabSuggest/tabSugAccept/removeTabPicksFromTab (Plan 2).
+function researchPanelHTML(scope, it){
+  const key = scope+":"+it.id;
+  const busy = _researchBusy.has(key);
+  const art = it.research && it.research.article;
+  let articleHtml;
+  if(!art){
+    articleHtml = busy
+      ? `<div class="hint">Researching…</div>`
+      : `<button onclick="generateArticle('${scope}','${it.id}')">&#128221; Research &amp; draft article</button>`;
+  } else {
+    const expanded = _articleExpanded.has(key);
+    const long = art.text.length>240;
+    const preview = long && !expanded ? art.text.slice(0,240)+"…" : art.text;
+    articleHtml = `<div class="research-article">
+      <div class="research-article-text">${esc(preview)}</div>
+      ${long?`<button class="btn-ghost" onclick="toggleArticleExpanded('${scope}','${it.id}')">${expanded?"Show less":"Show full article"}</button>`:""}
+      ${art.sources.length?`<div class="hint">Sources: ${art.sources.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(domain(u)||u)}</a>`).join(", ")}</div>`:""}
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn-ghost" onclick="copyArticleText('${scope}','${it.id}')">Copy</button>
+        <button class="btn-ghost" ${busy?"disabled":""} onclick="generateArticle('${scope}','${it.id}')">${busy?"Regenerating…":"&#8635; Regenerate"}</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="research-panel">${articleHtml}</div>`;
+}
+function toggleArticleExpanded(scope, id){
+  const key = scope+":"+id;
+  _articleExpanded.has(key) ? _articleExpanded.delete(key) : _articleExpanded.add(key);
+  renderTabsView();
 }
 function removeTabPicksFromTab(){
   const t = tabs.find(x=>x.id===openTabId); if(!t || !tabSelPicks.size) return;
