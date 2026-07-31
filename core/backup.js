@@ -519,7 +519,15 @@ function runBackup(db, storeDir, opts) {
       throw publishError;
     }
     if (displaced) {
-      fs.rmSync(previousRoot, { recursive: true, force: true });
+      // The new backup already published and verified above — removing the
+      // displaced old copy is pure cleanup, not safety-critical. A transient
+      // Dropbox lock here (EPERM/EBUSY/EACCES, the same class documented on
+      // renameSyncWithRetry above) must not fail the whole backup call when
+      // the backup itself already succeeded: swallow it and let
+      // sweepOrphanedArtifacts's own next-call check (it already verifies the
+      // canonical replacement before deleting) pick this exact leftover up.
+      try { fs.rmSync(previousRoot, { recursive: true, force: true }); }
+      catch (e) { console.warn("backup: displaced-copy cleanup deferred to next sweep (" + (e && e.code) + ")"); }
       displaced = false;
     }
   } catch (e) {

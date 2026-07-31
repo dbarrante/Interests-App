@@ -1226,6 +1226,52 @@ t("runBackup gives up and rolls back after the publish rename keeps failing with
   });
 });
 
+t("runBackup does not fail when removing the displaced previous backup hits a transient lock (live-testing regression 2026-07-31)", () => {
+  // The new backup is already published and verified by the time this cleanup
+  // runs — a transient Dropbox lock (EPERM/EBUSY/EACCES) on removing the now-
+  // redundant displaced copy must not fail the whole call and must not be
+  // reported to the user as "backup failed" when the backup itself succeeded.
+  // sweepOrphanedArtifacts (already exercised by the reconcile test below)
+  // picks up any leftover on the next call, so this is pure cleanup, not
+  // safety-critical to do synchronously here.
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    const first = backup.runBackup(db, store);   // creates today's dated backup
+
+    let rmAttempted = false;
+    const originalRm = fs.rmSync;
+    fs.rmSync = function (target) {
+      if (String(target).indexOf(".previous-") >= 0) {
+        rmAttempted = true;
+        const e = new Error("simulated Dropbox sync lock"); e.code = "EPERM"; throw e;
+      }
+      return originalRm.apply(fs, arguments);
+    };
+    let second;
+    try {
+      second = backup.runBackup(db, store);   // same dateStamp -> displaces `first`, cleanup hits the mocked lock
+    } finally {
+      fs.rmSync = originalRm;
+    }
+
+    assert.ok(rmAttempted, "the mocked rmSync on the displaced previous backup must actually have been exercised");
+    assert.strictEqual(backup.verifyBackup(second.name, second.counts), true, "the NEW backup must still be published and verified even though its old-copy cleanup failed");
+    assert.strictEqual(first.name, second.name, "sanity: both calls landed the same dateStamp'd backup name, so the second really did displace the first");
+
+    const root = backup.dropboxBackupDir();
+    const leftoverBefore = fs.readdirSync(root).filter((n) => n.indexOf(".previous-") >= 0);
+    assert.strictEqual(leftoverBefore.length, 1, "the failed cleanup must actually have left the orphan on disk (not silently no-op'd)");
+
+    backup.runBackup(db, store);   // a real (unmocked) third call — sweepOrphanedArtifacts must self-heal the leftover
+    const leftoverAfter = fs.readdirSync(root).filter((n) => n.indexOf(".previous-") >= 0);
+    assert.strictEqual(leftoverAfter.length, 0, "the orphan left by the failed cleanup must be swept once its replacement re-verifies on the next call");
+    db.close();
+  });
+});
+
 t("runBackup reconciles a verified backup displaced by an interrupted publish", () => {
   withBackupDir(function () {
     const store = newStore();
