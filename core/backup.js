@@ -1173,6 +1173,7 @@ function stageRestore(name, storeDir) {
   // stays MIRROR_NAME; only the folder actually read from changes.
   let effectiveName = name;
   let didFreeze = false;
+  let stagedSoFar = null;   // set once the stage folder exists; see the catch below
   if (name === MIRROR_NAME) {
     try { effectiveName = freezeMirrorForRestore(); didFreeze = true; }
     catch (e) { return { ok: false, error: "mirror freeze failed: " + (e && e.message || e) }; }
@@ -1216,6 +1217,7 @@ function stageRestore(name, storeDir) {
     // attempts (or a leftover from a crash) from colliding.
     const token = process.pid + "-" + Date.now();
     const stageFolder = path.join(path.dirname(storeDir), "." + path.basename(storeDir) + ".restage-" + token);
+    stagedSoFar = stageFolder;
     fs.mkdirSync(path.join(stageFolder, "images"), { recursive: true });
     fs.copyFileSync(path.join(backupFolder, "interests.db"), path.join(stageFolder, "interests.db"));
     // Copy exactly the images the backup's own verified manifest lists.
@@ -1231,8 +1233,14 @@ function stageRestore(name, storeDir) {
       try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
       return { ok: false, error: "staged restore failed to verify" };
     }
+    stagedSoFar = null;   // handed to the caller — no longer ours to clean up
     return { ok: true, stageFolder: stageFolder };
   } catch (e) {
+    // A stage folder abandoned mid-copy is a near-full copy of the user's
+    // library (db + images) sitting next to the live store where NOTHING
+    // sweeps it — sweepOrphanedArtifacts only scans the backup root. Clean it
+    // up on the throw path too, not just the verify-failure path above.
+    if (stagedSoFar) { try { fs.rmSync(stagedSoFar, { recursive: true, force: true }); } catch (e2) {} }
     return { ok: false, error: (e && e.message) || String(e) };
   } finally {
     // Delete THIS restore's freeze folder outright rather than rotating to a
@@ -1287,12 +1295,21 @@ function swapInStagedRestore(stageFolder, ctx) {
     try { ctx.db = ctx.reopen(); } catch (e2) {}
     return { ok: false, error: "restore swap failed: " + (e && e.message) };
   }
+  // Reopen BEFORE discarding the displaced originals. If reopening throws (an
+  // AV scanner or a transient EBUSY on the just-renamed file), deleting first
+  // would have thrown away the only copies of the pre-restore store while
+  // leaving ctx.db closed. Keep both holding folders in that case so the state
+  // is still recoverable by hand, and report it rather than throwing.
+  try {
+    ctx.db = ctx.reopen();
+  } catch (e) {
+    return { ok: false, error: "restore swapped in but reopening the store failed (pre-restore content kept at " + oldAside + "): " + ((e && e.message) || e) };
+  }
   // Confirmed: the live store is now an exact copy of the backup (the old
   // images went aside wholesale, so no orphan from the replaced db survives).
   try { fs.rmSync(oldAside, { recursive: true, force: true }); } catch (e) {}
   try { fs.rmSync(stageFolder, { recursive: true, force: true }); } catch (e) {}
 
-  ctx.db = ctx.reopen();
   // A restore is a DELIBERATE store transition — re-baseline the boot-guard's
   // last-known counts so restoring an intentionally smaller/older backup does
   // not trip the collapsed-counts dialog on next launch (false-positive

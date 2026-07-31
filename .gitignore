@@ -16,6 +16,11 @@ saves-*.json
 interests-backup-*
 interests-snapshot-*
 interests-mirror*
+# Restore staging/holding folders (core/backup.js stageRestore/swapInStagedRestore).
+# They sit NEXT TO the live store, which on a source run is ./data — so a crash
+# mid-restore can leave a full copy of the user's db (settings + API keys) and
+# image library in the repo root. Never committable.
+.*.restage-*
 .superpowers/
 .worktrees/
 _livecapture/

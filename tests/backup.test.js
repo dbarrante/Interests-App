@@ -1560,9 +1560,13 @@ t("swapInStagedRestore recovers ctx.db to a live handle when the swap step throw
     const made = backup.runBackup(db1, store);
     db1.close();
     const db2 = openDb(store);
-    // A card written AFTER the backup: the ORIGINAL live content, which a
-    // failed swap must put back exactly as it was.
-    upsertCard(db2, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2 });
+    // A card + image written AFTER the backup: the ORIGINAL live content,
+    // which a failed swap must put back exactly as it was. The image matters —
+    // an existsSync() on images/ alone cannot tell "rolled back with every
+    // image" apart from "rolled back empty".
+    upsertCard(db2, { id: "c2", url: "https://x/2", platform: "fb", cat: "Saved", ts: 2, img: "idb:c2" });
+    images.putImg(store, "c2", TINY_JPG);
+    db2.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     const ctx = { db: db2, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
     const staged = backup.stageRestore(made.name, store);
     assert.strictEqual(staged.ok, true);
@@ -1590,8 +1594,49 @@ t("swapInStagedRestore recovers ctx.db to a live handle when the swap step throw
     // The whole point of staging: a failed swap leaves the ORIGINAL live store,
     // not a half-swapped one.
     assert.strictEqual(counts(ctx.db).cards, 2, "the ORIGINAL live content must be back in place after a failed swap");
-    assert.ok(fs.existsSync(path.join(store, "images")), "live images dir restored by the rollback");
+    assert.ok(fs.existsSync(path.join(store, "images", "c2.jpg")),
+      "the rollback must bring the original IMAGES back, not just recreate an empty images dir");
     ctx.db.close();
+  });
+});
+
+t("stageRestore cleans up its own stage folder when the staging copy throws mid-way", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db1 = openDb(store);
+    for (let i = 0; i < 3; i++) {
+      upsertCard(db1, { id: "sc" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:sc" + i });
+      images.putImg(store, "sc" + i, TINY_JPG);
+    }
+    const made = backup.runBackup(db1, store);
+    db1.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+    // Blow up DURING the staging image copy — after the stage folder exists.
+    // An abandoned stage folder is a near-full copy of the user's library (db
+    // + images) sitting next to the live store, and NOTHING sweeps it:
+    // sweepOrphanedArtifacts only scans the backup root.
+    // Hook the WRITE side, not the read: verifyBackupFolder re-hashes every
+    // backup image through fs.readFileSync first, so a read-side hook fires
+    // during verification instead — before any stage folder exists — and the
+    // test would pass without ever exercising the cleanup it exists to check.
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (String(p).indexOf(".restage-") >= 0 && String(p).indexOf("sc1.jpg") >= 0) throw new Error("EIO simulated mid-copy");
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try {
+      staged = backup.stageRestore(made.name, store);
+    } finally {
+      fs.writeFileSync = originalWriteFile;
+    }
+
+    assert.strictEqual(staged.ok, false, "a mid-copy failure must not report success");
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(store)).filter(function (n) { return n.indexOf("." + path.basename(store) + ".restage-") === 0; }), [],
+      "the half-written stage folder must not be left next to the live store");
+    assert.strictEqual(counts(db1).cards, 3, "live store untouched");
+    db1.close();
   });
 });
 

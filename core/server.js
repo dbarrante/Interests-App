@@ -738,7 +738,13 @@ function createServer(ctx) {
       // recent committed writes are still in the -wal sidecar. Without this the
       // snapshot that exists to make a mistaken restore recoverable would
       // silently omit them. Same PRAGMA moveStore already uses before its copy.
-      try { ctx.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) {}
+      // A BUSY checkpoint does NOT throw — it returns {busy:1, checkpointed:0}
+      // and leaves the frames in the sidecar, so exec()+catch would silently
+      // hand stageRestore the same lagging file it is supposed to prevent.
+      try {
+        const cp = ctx.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+        if (cp && cp.busy) console.error("restore: WAL checkpoint reported busy — the pre-restore safety snapshot may lag the live store", cp);
+      } catch (e) { console.error("restore: WAL checkpoint failed:", (e && e.message) || e); }
       const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.restore);
       const staged = usingWorker ? await ctx.storeWorker.restore(ctx.storeDir, name) : backup.stageRestore(name, ctx.storeDir);
       if (!staged.ok) return res.json(staged);
