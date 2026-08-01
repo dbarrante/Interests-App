@@ -1463,7 +1463,12 @@ async function doBackup(manual){
   try{
     const res = await Store.backupNow({keep: S.backupRetainCount||3});   // {ok,verified,name,counts}
     if(res && res.ok===false){
-      if(manual) toast(res.reason || "Backup not available");
+      // res.error, not res.reason: /api/backup returns {ok:false,error} (and a
+      // 409 for the one actionable failure — an incomplete images folder, often
+      // undownloaded Dropbox placeholders — which core/server.js deliberately
+      // relays verbatim so the user can act on it). Nothing in core/ has ever
+      // emitted `reason`, so this always showed the generic fallback instead.
+      if(manual) toast(res.error || "Backup not available", 8000);
       return res;
     }
     const counts = res && res.counts ? res.counts : {imported:imported.length, saved:saved.length, images:0};
@@ -1674,11 +1679,18 @@ async function restoreByName(name){
   if(!confirm("Restore from "+name+"? A safety snapshot of your current data is taken first.")) return false;
   try{
     const result = await Store.restore(name);
-    if(!result || result.ok !== true) throw new Error((result && result.reason) || "restore was not verified");
+    // result.error, not result.reason: /api/restore relays core/backup.js's
+    // return objects verbatim and they carry `error` (nothing in core/ has ever
+    // emitted `reason`). This matters because the write-witness abort — "the app
+    // wrote to your library while the restore was being prepared… please run the
+    // restore again" — is now a ROUTINE outcome (staging runs off-thread for
+    // minutes and any capture/rating/tag write during it aborts the swap), and
+    // reading the wrong field replaced that actionable text with a generic one.
+    if(!result || result.ok !== true) throw new Error((result && result.error) || "restore was not verified");
     toast("Restored from "+name+" — reloading");
     setTimeout(()=>location.reload(), 600);
     return true;
-  }catch(e){ toast("Restore failed: "+(e&&e.message||e)); return false; }
+  }catch(e){ toast("Restore failed: "+(e&&e.message||e), 10000); return false; }
 }
 async function restoreFromList(name){
   if(!name) return;
@@ -1762,7 +1774,11 @@ async function moveDataLocation(){
     if(!target || target === cur.path) return;
     toast("Moving data store… (the old copy is kept until the move verifies)");
     const res = await Store.moveStore(target);
-    if(res && res.ok===false){ toast(res.reason || "Move not available"); return; }
+    // res.error, not res.reason (same field bug as restoreByName above). The
+    // move now has its own write-witness abort — "the app received new items
+    // while the data folder was being copied… please try the move again" —
+    // which is the whole point of the check, so it has to be readable.
+    if(res && res.ok===false){ toast(res.error || "Move not available", 10000); return; }
     toast("Data store moved to " + (res.path||target));
     try{ await storageHealthCheck(); }catch(e){}
   }catch(e){ toast("Move failed: " + (e&&e.message||e)); } finally {

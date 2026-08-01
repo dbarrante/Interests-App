@@ -1278,9 +1278,26 @@ function freezeMirrorForRestore() {
 //     nothing: any persistAll() that changed a real taste signal trips the
 //     witness on that signal regardless.
 const WITNESSED_KV_KEYS = [
-  "ia_capture_queue",
+  "ia_capture_queue", "ia_bstumble_feedback",
   "ia_hidden", "ia_clicks", "ia_likes", "ia_disliked", "ia_shown", "ia_seen", "ia_spool",
+  "ia_tabs",
 ];
+// ia_tabs is the user's custom tab definitions — durable, user-CREATED, written
+// only by tab CRUD (web/index.html's save("tabs", …)), and not self-healing:
+// a tab lost to a swap is gone. ia_bstumble_feedback is the extension's 👍/👎
+// vote mailbox — the same drain-on-read class as ia_capture_queue (POST
+// appends, the renderer's GET returns AND clears), so a vote that lands during
+// staging is destroyed by the swap with no copy anywhere.
+//
+// ia_bstumble_feedback is witnessed by its RAW value, not by a payload-identity
+// digest: unlike ia_capture_queue it carries NO lease metadata, so nothing
+// churns the row on its own. web/index.html's drainBrowserFeedback runs every
+// 3s, but /api/bstumble/feedback's GET only writes when the queue is NON-empty
+// (`if (q.length) setKV(…, "[]")`) — an empty mailbox is byte-stable across
+// every poll, and a drain of a non-empty one IS a real state change (the votes
+// move into ia_likes/ia_hidden, themselves witnessed). It also self-clears:
+// once drained the row is "[]" and stays put, so this cannot wedge a restore
+// the way an unconditional re-lease could.
 // ia_capture_queue is digested by PAYLOAD IDENTITY (queueId + the capture
 // itself) rather than by the raw row, because the row carries lease metadata
 // that churns without any data being at risk. captureQueue.claim() — which
@@ -1650,7 +1667,26 @@ function swapInStagedRestore(staged, ctx) {
 // Move the live store to `target`: copy db + images, VERIFY counts at the target,
 // and only then repoint the %APPDATA% pointer + reopen. The old copy is left intact
 // until (and after) verification, so an interrupted/failed move never loses data.
-function moveStore(target, ctx) {
+//
+// opts.persistPointer (default TRUE — the direct, main-thread path in
+// core/server.js keeps behaving exactly as it always has) controls step 3.
+// Pass FALSE when running inside core/storeworker.js's worker thread: the ctx
+// there is a THROWAWAY built per-run and closed when the thread exits, but
+// setStorePath writes the app's ONE durable %APPDATA% store pointer, which is
+// process-wide, not ctx-scoped. Persisting it from the worker meant a move
+// whose ctx.reopen() then threw (a transient EBUSY/AV lock on the just-written
+// db) resolved {ok:false} — the route correctly declined to repoint the REAL
+// ctx, so the running app kept serving the OLD store, while the durable
+// pointer already said `target`: the next launch silently opened the new store
+// and every write made in between was gone. With persistPointer:false the
+// route is the SOLE writer of that pointer (core/server.js's
+// /api/store-location/move), and only after the new location has proven it
+// opens.
+//
+// NOTE: the copy+verify above step 3 is unaffected — verification still opens
+// the target db and compares counts, so `false` only skips the repoint.
+function moveStore(target, ctx, opts) {
+  const persistPointer = !opts || opts.persistPointer !== false;
   const c = counts(ctx.db);
   const srcCounts = { imported: c.cards | 0, saved: c.saved | 0, images: imageCount(ctx.storeDir) | 0 };
 
@@ -1677,7 +1713,10 @@ function moveStore(target, ctx) {
     return { ok: false, path: ctx.storeDir };
   }
 
-  // 3) verified → repoint + reopen; OLD store files are left on disk
+  // 3) verified → repoint + reopen; OLD store files are left on disk.
+  // Skipped entirely under persistPointer:false — the caller (the route, on the
+  // main thread) owns both the durable pointer and the real ctx in that mode.
+  if (!persistPointer) return { ok: true, path: target };
   try { ctx.db.close(); } catch (e) {}
   setStorePath(target);
   ctx.storeDir = target;
@@ -1685,4 +1724,7 @@ function moveStore(target, ctx) {
   return { ok: true, path: target };
 }
 
-module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, storeWitness, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, sweepOrphanedStageFolders, _timing: timing };
+// witnessMatches is exported for /api/store-location/move: the move's
+// write-witness re-check happens in the ROUTE (the only place holding the real
+// ctx.db), exactly as restore's happens inside swapInStagedRestore.
+module.exports = { updateMirror, ensureBackupBeforeMerge, newestDatedSnapshotTime, MIRROR_NAME, FULL_SNAPSHOT_INTERVAL_MS, detectDropboxRoot, pickBackupsToDelete, backupCountsMatch, dropboxBackupDir, changedImageIds, runBackup, listBackups, verifyBackup, rotate, storeWitness, witnessMatches, stageRestore, swapInStagedRestore, moveStore, drainBackupBacklog, sweepOrphanedStageFolders, _timing: timing };

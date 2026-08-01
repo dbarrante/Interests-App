@@ -17,7 +17,9 @@
 // ONE queue serializes ALL FIVE job types against each other (sync run, sync
 // publish, backup, restore, movestore) — not just within their own type. A
 // restore must never run concurrently with a sync merge; both mutate the
-// same ctx.db/storeDir.
+// same ctx.db/storeDir. The slot spans the WHOLE operation, including the
+// main-thread continuation (restore's swap, move's repoint) that runs after
+// the worker exits — see exclusive() below.
 const { Worker, isMainThread, parentPort, workerData } = require("worker_threads");
 
 if (!isMainThread) {
@@ -52,7 +54,20 @@ if (!isMainThread) {
           result = { ok: true, verified, name: out.name, counts: out.counts };
         } else if (job.op === "movestore") {
           const backup = require("./backup");
-          result = backup.moveStore(job.target, ctx);
+          // persistPointer:false — this ctx is a THROWAWAY built inside the
+          // worker thread, but setStorePath writes the app's ONE durable
+          // %APPDATA% store pointer, which is process-wide, not ctx-scoped.
+          // Persisting it here meant a move whose ctx.reopen() then threw (a
+          // transient EBUSY/AV lock on the just-written db) resolved
+          // {ok:false} — the route correctly declined to repoint the REAL
+          // ctx, so the running app kept serving the OLD store, while the
+          // durable pointer already said `target`: the next launch silently
+          // opened the new store and every write made in between was gone.
+          // The ROUTE is now the sole writer of that pointer (it runs the
+          // repoint as this job's `after` continuation, inside the same
+          // exclusivity slot), and only after the new location has proven it
+          // opens. See core/backup.js moveStore's opts documentation.
+          result = backup.moveStore(job.target, ctx, { persistPointer: false });
         } else {
           // backupFn isn't serializable across the thread boundary; noBackup is
           // the test hook (production omits it and keeps the real safety backup).
@@ -104,41 +119,86 @@ if (!isMainThread) {
     // on every call, shadowing this closure via their own per-call parameter.)
     let currentStoreDir = storeDir;
     let inFlight = null;
-    function exclusive(job) {
-      if (inFlight) return inFlight.then(() => exclusive(job));
-      const p = runJob(job).finally(() => { if (inFlight === p) inFlight = null; });
+    // `job` is either a job object or a THUNK returning one. A thunk is
+    // evaluated only once this call actually owns the slot, which is what makes
+    // a queued job read state (currentStoreDir) as of its EXEC time rather than
+    // its BUILD time. Building the object eagerly at call time — as this did —
+    // meant a sync/publish queued behind a store move captured the pre-move
+    // directory and then merged/published against the abandoned store, because
+    // the recursive re-dispatch below re-passes the already-frozen object.
+    //
+    // `after` is the operation's MAIN-THREAD continuation (restore's swap,
+    // move's repoint): the destructive half that only the route can run,
+    // because only the route holds the real ctx. It runs on the job's result
+    // BEFORE the slot is released, so the exclusivity window spans the WHOLE
+    // operation, not just the worker half. Without it the swap/repoint ran in
+    // the route's own continuation, OUTSIDE the queue, and stayed safe only by
+    // accident of promise-reaction ordering — one inserted `await` between a
+    // worker resolving and its swap would have let the next queued job spawn
+    // its worker against a store mid-swap.
+    //
+    // An `after` that THROWS resolves {ok:false} rather than rejecting: the
+    // façade's documented contract is that it never rejects, and — more
+    // importantly — a rejected inFlight would otherwise propagate through the
+    // queued `.then()` below and strand every job behind it.
+    function exclusive(job, after) {
+      if (inFlight) {
+        const next = function () { return exclusive(job, after); };
+        // Both handlers: the queue must drain on a settled predecessor
+        // regardless of how it settled.
+        return inFlight.then(next, next);
+      }
+      const spec = (typeof job === "function") ? job() : job;
+      const p = runJob(spec)
+        .then(function (r) { return after ? after(r) : r; })
+        .catch(function (e) { return { ok: false, error: (e && e.message) || String(e) }; })
+        .finally(function () { if (inFlight === p) inFlight = null; });
       inFlight = p;
       return p;
     }
     return {
       defaultSyncDir: syncMod.defaultSyncDir,
+      // THUNKS, not objects: currentStoreDir must be read when this job reaches
+      // the front of the queue, not when it was enqueued — a tick queued behind
+      // an in-flight store move would otherwise target the pre-move directory.
       runSync(_ctx, opts) {
-        return exclusive({ op: "run", storeDir: currentStoreDir, syncDir: opts.syncDir, deviceId: opts.deviceId, deviceLabel: opts.deviceLabel, publish: opts.publish, noBackup: !!opts.noBackup });
+        return exclusive(function () { return { op: "run", storeDir: currentStoreDir, syncDir: opts.syncDir, deviceId: opts.deviceId, deviceLabel: opts.deviceLabel, publish: opts.publish, noBackup: !!opts.noBackup }; });
       },
       publishSnapshot(_ctx, syncDir, deviceId, deviceLabel) {
-        return exclusive({ op: "publish", storeDir: currentStoreDir, syncDir, deviceId, deviceLabel });
+        return exclusive(function () { return { op: "publish", storeDir: currentStoreDir, syncDir, deviceId, deviceLabel }; });
       },
       runBackup(storeDir, opts) {
         opts = opts || {};
         return exclusive({ op: "backup", storeDir, safety: !!opts.safety, keep: opts.keep });
       },
-      moveStore(storeDir, target) {
-        return exclusive({ op: "movestore", storeDir, target });
+      // `after` is /api/store-location/move's main-thread continuation: the
+      // write-witness re-check and the ctx/pointer repoint. Passing it here
+      // (rather than running it after awaiting this promise) is what keeps the
+      // repoint INSIDE the exclusivity slot — no other job may spawn its worker
+      // until currentStoreDir/ctx.storeDir have both been repointed.
+      moveStore(storeDir, target, after) {
+        return exclusive({ op: "movestore", storeDir, target }, after);
       },
-      // Runs ONLY the staging half of a restore (backup.stageRestore): verify,
-      // safety-snapshot the live store, stage the incoming content. Resolves
-      // the STAGED result ({ok, stageFolder, snapshotFolder, witness, storeDir}),
-      // NOT a finished restore — the caller must then run
-      // backup.swapInStagedRestore(staged, ctx) on the main thread, which is
-      // the only part that needs the real ctx.db / ctx.reopen and is cheap
-      // (renames, not copies). `witness` is backup.storeWitness(ctx.db,
-      // storeDir) read on the main thread just before this call; it rides
-      // through the worker untouched so the swap can prove nothing was written
-      // to the live store meanwhile. runJob resolves the worker's result object
-      // WHOLESALE — do not reshape it into a field list here: dropping storeDir
-      // would make swapInStagedRestore refuse every worker-path restore.
-      restore(storeDir, name, witness) {
-        return exclusive({ op: "restore", storeDir, name, witness });
+      // Runs the staging half of a restore (backup.stageRestore) on the worker:
+      // verify, safety-snapshot the live store, stage the incoming content. The
+      // STAGED result ({ok, stageFolder, snapshotFolder, witness, storeDir}) is
+      // then handed to `after` — /api/restore's main-thread continuation, which
+      // runs backup.swapInStagedRestore(staged, ctx): the only part that needs
+      // the real ctx.db / ctx.reopen, and cheap (renames, not copies).
+      //
+      // `after` runs INSIDE the exclusivity slot, so no other job can spawn its
+      // worker while the store is mid-swap. Without it the swap ran in the
+      // route's own continuation, outside the queue. This promise therefore
+      // resolves the SWAP's result, not the staged one.
+      //
+      // `witness` is backup.storeWitness(ctx.db, storeDir) read on the main
+      // thread just before this call; it rides through the worker untouched so
+      // the swap can prove nothing was written to the live store meanwhile.
+      // runJob resolves the worker's result object WHOLESALE — do not reshape
+      // it into a field list here: dropping storeDir would make
+      // swapInStagedRestore refuse every worker-path restore.
+      restore(storeDir, name, witness, after) {
+        return exclusive({ op: "restore", storeDir, name, witness }, after);
       },
       setStoreDir(newStoreDir) { currentStoreDir = newStoreDir; },
     };

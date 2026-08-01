@@ -725,7 +725,10 @@ function createServer(ctx) {
   // swap (close db, rename staged content into place, reopen) ALWAYS runs here
   // on the real ctx regardless of whether staging went through the worker: it
   // is cheap (renames, not copies) and it needs the actual live ctx.db /
-  // ctx.reopen, which no worker call can provide.
+  // ctx.reopen, which no worker call can provide. On the worker path the swap
+  // is handed to the worker façade as the job's `after` continuation so it runs
+  // INSIDE the shared exclusivity slot — the queue must not release until the
+  // whole restore, swap included, is done.
   app.post("/api/restore", async (req, res) => {
     const name = req.body && req.body.name;
     if (!isAllowedBackupName(name)) {
@@ -754,9 +757,25 @@ function createServer(ctx) {
       // refuses rather than discarding anything written meanwhile.
       const witness = backup.storeWitness(ctx.db, ctx.storeDir);
       const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.restore);
-      const staged = usingWorker ? await ctx.storeWorker.restore(ctx.storeDir, name, witness) : backup.stageRestore(name, ctx.storeDir, witness);
-      if (!staged.ok) return res.json(staged);
-      const out = backup.swapInStagedRestore(staged, ctx);   // rebinds ctx.db
+      // The swap step. DELIBERATELY SYNCHRONOUS — no await, no async, anywhere
+      // inside it. Two separate invariants depend on that: swapInStagedRestore's
+      // own write-witness re-check is only meaningful as straight-line code, and
+      // this runs as the storeWorker job's `after` continuation, holding the
+      // shared exclusivity slot until it returns. An `await` here would both
+      // reopen the witness race and let the next queued job (a sync merge, a
+      // backup) spawn its worker against a store mid-swap.
+      const applySwap = function (staged) {
+        // A failed staging is relayed verbatim — callers match on that exact
+        // shape ({ok:false} / {ok:false,error}).
+        if (!staged || !staged.ok) return staged;
+        return backup.swapInStagedRestore(staged, ctx);   // rebinds ctx.db
+      };
+      // Worker path: the swap travels INTO the queue as the job's continuation,
+      // so this promise resolves the finished restore. Direct path: everything
+      // is synchronous on this thread already, so nothing can interleave.
+      const out = usingWorker
+        ? await ctx.storeWorker.restore(ctx.storeDir, name, witness, applySwap)
+        : applySwap(backup.stageRestore(name, ctx.storeDir, witness));
       res.json(out);
     } catch (e) {
       console.error("restore failed:", e);
@@ -814,25 +833,77 @@ function createServer(ctx) {
     target = path.resolve(target);
     try {
       const usingWorker = !!(ctx.storeWorker && ctx.storeWorker.moveStore);
-      const runner = usingWorker ? ctx.storeWorker : { moveStore: (storeDir, t) => Promise.resolve(backup.moveStore(t, ctx)) };
-      const out = await runner.moveStore(ctx.storeDir, target);
-      // The worker path's own internal ctx is a throwaway (closed inside the
-      // worker thread) and never repoints anything — only the main thread's
-      // real ctx can be safely repointed, so that happens here, once the
-      // worker confirms success. The no-worker fallback calls
-      // backup.moveStore(t, ctx) against the REAL ctx directly (exactly as
-      // today) and already repoints it internally — guard against
-      // double-repointing that path.
-      if (usingWorker && out.ok) {
-        ctx.setStorePath(target); ctx.storeDir = target; ctx.db = ctx.reopen();
+      // No-worker fallback: backup.moveStore runs to completion SYNCHRONOUSLY
+      // on this thread, so nothing can write to the store between its counts
+      // read and its repoint — no write-witness is needed, and it repoints the
+      // REAL ctx (and persists the pointer) internally, exactly as it always
+      // has. Kept as a separate early return so that path stays byte-identical.
+      if (!usingWorker) {
+        const direct = backup.moveStore(target, ctx);
+        return res.json({ ok: direct.ok, path: ctx.storeDir, error: direct.error });
+      }
+
+      // ---- WORKER PATH ------------------------------------------------------
+      // WRITE-WITNESS (mirrors /api/restore's). The copy now runs off-thread and
+      // can take minutes on a large image library, during which this route's
+      // `await` leaves the event loop free to serve capture / auto-import / tag
+      // / settings writes through ctx.db. Those land ONLY in the source
+      // directory. moveStore's own srcCounts-vs-targetCounts check proves copy
+      // FIDELITY, not CURRENCY — and a count-neutral write (a tag edit, an
+      // ia_settings change, a capture-queue enqueue) passes it untouched, so
+      // repointing anyway silently drops that write from what the app serves.
+      const witness = backup.storeWitness(ctx.db, ctx.storeDir);
+      const out = await ctx.storeWorker.moveStore(ctx.storeDir, target, function (r) {
+        // ---- MAIN-THREAD CONTINUATION -------------------------------------
+        // Runs inside the storeWorker's exclusivity slot (no other store job can
+        // start until it returns) and is DELIBERATELY SYNCHRONOUS end to end:
+        // an inserted `await` between the re-check and the repoint below would
+        // reopen exactly the window the witness exists to close.
+        if (!r || !r.ok) return r;
+        let now = null;
+        try { now = backup.storeWitness(ctx.db, ctx.storeDir); } catch (e) { now = null; }   // unreadable → treat as changed
+        if (!backup.witnessMatches(witness, now)) {
+          // Refuse — and deliberately leave the worker's copied target
+          // directory in place. Unlike restore's abort this cannot latch:
+          // moveStore never destroys the source, so a refusal just means the
+          // app keeps serving exactly what it was already serving, with the
+          // durable pointer untouched. The user can simply click Move again.
+          return { ok: false, path: ctx.storeDir, error: "move aborted: the app received new items while the data folder was being copied, and switching over now would discard them — nothing was changed, please try the move again" };
+        }
+        // Repoint. Order matters: PROVE the new location opens before writing
+        // the durable %APPDATA% pointer. The reverse order is what made a
+        // transient EBUSY/AV lock on the just-copied db leave the pointer
+        // saying `target` while the app kept serving the source — a split-brain
+        // that silently discarded every write made before the next launch.
+        const prev = ctx.storeDir;
+        try {
+          ctx.storeDir = target;
+          ctx.db = ctx.reopen();
+        } catch (e) {
+          ctx.storeDir = prev;
+          try { ctx.db = ctx.reopen(); } catch (e2) {}
+          return { ok: false, path: ctx.storeDir, error: "move aborted: the copy verified but the store could not be opened at its new location — nothing was changed, please try the move again (" + ((e && e.message) || e) + ")" };
+        }
+        try {
+          ctx.setStorePath(target);
+        } catch (e) {
+          // Pointer write failed AFTER the live handle moved: roll the live ctx
+          // back so the running app and the durable pointer agree again.
+          ctx.storeDir = prev;
+          try { ctx.db = ctx.reopen(); } catch (e2) {}
+          return { ok: false, path: ctx.storeDir, error: "move aborted: the new data folder could not be recorded — nothing was changed, please try the move again (" + ((e && e.message) || e) + ")" };
+        }
         // The storeWorker object is the SAME one startSyncTimers holds (main.js
         // hands ctx.storeWorker and the timer's `sync` the identical reference)
         // and its runSync/publishSnapshot read an internal currentStoreDir, not
         // ctx.storeDir — without this repoint the next periodic sync tick would
-        // silently keep targeting the OLD, abandoned store directory.
-        if (ctx.storeWorker && ctx.storeWorker.setStoreDir) ctx.storeWorker.setStoreDir(target);
-      }
-      res.json({ ok: out.ok, path: ctx.storeDir });
+        // silently keep targeting the OLD, abandoned store directory. It lands
+        // here, inside the slot, so a sync already QUEUED behind this move
+        // builds its job from the repointed value.
+        if (ctx.storeWorker.setStoreDir) ctx.storeWorker.setStoreDir(target);
+        return { ok: true, path: target };
+      });
+      res.json({ ok: out.ok, path: ctx.storeDir, error: out.error });
     } catch (e) {
       console.error("store move failed:", e);
       res.status(500).json({ ok: false, path: ctx.storeDir, error: "move failed" });

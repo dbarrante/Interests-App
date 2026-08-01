@@ -1904,6 +1904,116 @@ t("swapInStagedRestore still SUCCEEDS when the drain poll merely re-leases a cap
   });
 });
 
+/* Final review F4: two durable, non-self-healing, user-created kv keys the
+   witness allowlist still missed. ia_tabs is the user's custom tab definitions
+   (written only by tab CRUD; a tab lost to a swap is gone). ia_bstumble_feedback
+   is the extension's 👍/👎 vote mailbox — the same drain-on-read class as
+   ia_capture_queue, so a vote landing during staging exists nowhere else on
+   disk. Both are COUNT-NEUTRAL: no card, saved, image or ia_mutation_revision
+   moves, so every other witness dimension passes and only the kv map can
+   notice. */
+t("swapInStagedRestore ABORTS on an ia_tabs / ia_bstumble_feedback write during staging (F4)", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 2; i++) {
+      upsertCard(db, { id: "f4" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:f4" + i });
+      images.putImg(store, "f4" + i, TINY_JPG);
+    }
+    // Pre-existing tab list, so the interleaved write CHANGES a row rather than
+    // creating one (the harder case for a value compare to notice).
+    setKV(db, "ia_tabs", JSON.stringify([{ id: "t0", name: "AI", tag: "__ai__", reserved: true }]));
+    const made = backup.runBackup(db, store);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const witness = backup.storeWitness(ctx.db, store);
+    let injected = false;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (!injected && String(p).indexOf(".restage-") >= 0 && String(p).indexOf("f41.jpg") >= 0) {
+        injected = true;
+        // The user pins a new tab while the restore stages (web/index.html's
+        // createTab -> save("tabs", tabs)).
+        setKV(ctx.db, "ia_tabs", JSON.stringify([
+          { id: "t0", name: "AI", tag: "__ai__", reserved: true },
+          { id: "t1", name: "Reading", tag: "reading" },
+        ]));
+        // A browser-stumble vote arrives from the extension (POST
+        // /api/bstumble/feedback) — undrained, so it exists nowhere else.
+        setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify([{ url: "https://x/voted", vote: 1 }]));
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.strictEqual(injected, true, "the mid-staging write must actually have fired, or this test proves nothing");
+    assert.strictEqual(staged.ok, true, "staging itself still succeeds — refusing is the swap's job: " + (staged.error || ""));
+    // State the gap as an assertion: if this ever fails, the test has stopped
+    // covering the kv shape and is passing on some other dimension instead.
+    const after = backup.storeWitness(ctx.db, store);
+    assert.strictEqual(after.rev, witness.rev, "ia_mutation_revision must NOT move for these writes — that is the gap under test");
+    assert.strictEqual(after.cards, witness.cards, "no card was written");
+    assert.strictEqual(after.saved, witness.saved, "no saved item was written");
+    assert.strictEqual(after.images, witness.images, "no image file was written");
+
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(swapped.ok, false, "the swap MUST abort rather than discard the tab and the vote");
+    const tabs = JSON.parse(getKV(ctx.db, "ia_tabs") || "[]");
+    assert.strictEqual(tabs.length, 2, "the tab created DURING staging must still be in the live store");
+    const votes = JSON.parse(getKV(ctx.db, "ia_bstumble_feedback") || "[]");
+    assert.strictEqual(votes.length, 1, "the vote that arrived DURING staging must still be in the live store");
+    ctx.db.close();
+  });
+});
+
+/* The liveness half for ia_bstumble_feedback: it is witnessed by its RAW value
+   rather than a payload-identity digest (unlike ia_capture_queue) because it
+   carries no lease metadata and nothing churns it on its own. The renderer's
+   3s drain poll only WRITES when the mailbox is non-empty
+   (`if (q.length) setKV(…, "[]")` in core/server.js), so an empty mailbox is
+   byte-stable across every poll and cannot wedge a restore. */
+t("swapInStagedRestore still SUCCEEDS when the 3s feedback drain poll finds an EMPTY mailbox", () => {
+  withBackupDir(function () {
+    const store = newStore();
+    const db = openDb(store);
+    for (let i = 0; i < 2; i++) {
+      upsertCard(db, { id: "fb" + i, url: "https://x/" + i, platform: "fb", cat: "Saved", ts: i, img: "idb:fb" + i });
+      images.putImg(store, "fb" + i, TINY_JPG);
+    }
+    setKV(db, "ia_bstumble_feedback", JSON.stringify([]));   // already drained
+    const made = backup.runBackup(db, store);
+    upsertCard(db, { id: "extra", url: "https://x/extra", platform: "fb", cat: "Saved", ts: 9 });   // so the restore is a real change
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const ctx = { db: db, storeDir: store, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = openDb(ctx.storeDir); return ctx.db; } };
+
+    const witness = backup.storeWitness(ctx.db, store);
+    let polls = 0;
+    const originalWriteFile = fs.writeFileSync;
+    fs.writeFileSync = function (p) {
+      if (String(p).indexOf(".restage-") >= 0 && String(p).indexOf(".jpg") >= 0) {
+        // Exactly what GET /api/bstumble/feedback does on an empty mailbox: read,
+        // and write NOTHING.
+        polls++;
+        const q = JSON.parse(getKV(ctx.db, "ia_bstumble_feedback") || "[]");
+        if (q.length) setKV(ctx.db, "ia_bstumble_feedback", JSON.stringify([]));
+      }
+      return originalWriteFile.apply(fs, arguments);
+    };
+    let staged;
+    try { staged = backup.stageRestore(made.name, store, witness); }
+    finally { fs.writeFileSync = originalWriteFile; }
+
+    assert.ok(polls > 0, "the drain poll must actually have fired, or this test proves nothing");
+    const swapped = backup.swapInStagedRestore(staged, ctx);
+    assert.strictEqual(swapped.ok, true, "an idle drain poll must NOT abort a restore: " + (swapped.error || ""));
+    assert.strictEqual(counts(ctx.db).cards, 2, "and the restore must actually have applied");
+    ctx.db.close();
+  });
+});
+
 t("swapInStagedRestore fails closed when handed no write-witness", () => {
   withBackupDir(function () {
     const store = newStore();

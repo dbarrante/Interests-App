@@ -217,6 +217,126 @@ async function run(name, fn) {
     }
   });
 
+  // ---- CROSS-JOB-TYPE exclusivity (final review, F2/F6) --------------------
+  // The plan's Global Constraint is that ALL FIVE job types serialize against
+  // each other for ANY pairing — and, critically, that the slot is held for the
+  // WHOLE operation: restore's swap and move's repoint run on the MAIN thread,
+  // after the worker exits, and are the actually-destructive halves. Until F2
+  // they ran in the route's own continuation, OUTSIDE the queue, and stayed
+  // safe only by accident of promise-reaction ordering. The pre-existing
+  // "concurrent calls serialize" test above is SAME-type (two syncs) and would
+  // not have noticed. These two are the ones that would.
+  await run("cross-job-type: a queued publish cannot start until the previous MOVE's main-thread repoint has finished", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-xjob-move-"));
+    const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+    const storeDir = path.join(root, "store"); fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });
+    const target = path.join(root, "moved");
+    const d = db.openDb(storeDir);
+    db.upsertCard(d, { id: "beforeMove", url: "http://x/1", ts: 1 });
+    d.close();
+
+    const storeWorker = createStoreWorker(storeDir);
+    const order = [];
+    // Stands in for /api/store-location/move's main-thread continuation. The
+    // real one is synchronous; an ASYNC one here is the stronger test — it
+    // proves the slot is held across a Promise-returning `after` too, and it
+    // widens the window that an early-releasing queue would race through into
+    // something deterministic rather than timing-dependent.
+    const movePromise = storeWorker.moveStore(storeDir, target, async function (r) {
+      order.push("move:worker-done");
+      await new Promise((res) => setTimeout(res, 150));
+      // The repoint, in two observable halves: content only the post-repoint
+      // store has, and the façade's own storeDir.
+      const dd = db.openDb(target);
+      db.upsertCard(dd, { id: "duringRepoint", url: "http://x/2", ts: 2 });
+      dd.close();
+      storeWorker.setStoreDir(target);
+      order.push("move:repoint-done");
+      return r;
+    });
+    // Queued behind the move — a DIFFERENT job type.
+    const publishPromise = storeWorker.publishSnapshot(null, syncDir, "dev1", "Dev1")
+      .then(function (r) { order.push("publish:done"); return r; });
+
+    const [mv, pub] = await Promise.all([movePromise, publishPromise]);
+    assert.strictEqual(mv.ok, true, "move must succeed: " + (mv.error || ""));
+    assert.strictEqual(pub.ok, true, "queued publish must succeed: " + (pub.error || ""));
+    assert.deepStrictEqual(order, ["move:worker-done", "move:repoint-done", "publish:done"],
+      "the publish must not complete until the move's ENTIRE operation — repoint included — is done");
+
+    const snap = JSON.parse(fs.readFileSync(path.join(syncDir, "dev1", "snapshot.json"), "utf8"));
+    // Two independent proofs that the publish job did not merely finish late,
+    // but did not START until the repoint landed:
+    //  * duringRepoint was written INSIDE the after callback. A publish that
+    //    spawned its worker when the move's WORKER exited would have read the
+    //    store before that write existed.
+    //  * setStoreDir(target) also happened inside it, and the job spec is built
+    //    from currentStoreDir at EXEC time — a spec frozen at enqueue time (as
+    //    it was before F2) would still name the pre-move directory.
+    assert.ok(snap.cards.some((c) => c.id === "duringRepoint"),
+      "the queued publish must see content written during the move's main-thread repoint step");
+    assert.ok(snap.cards.some((c) => c.id === "beforeMove"),
+      "…and the moved content, i.e. it published the NEW store, not the abandoned one");
+  });
+
+  await run("cross-job-type: backup → restore(+swap) → sync publish run strictly one at a time, and the publish sees the POST-SWAP store", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-xjob-restore-"));
+    const syncDir = path.join(root, "sync"); fs.mkdirSync(syncDir, { recursive: true });
+    const storeDir = path.join(root, "store"); fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-xjob-dest-"));
+    // Sandbox dropboxBackupDir() via config.backupDir — see the backup-job test
+    // above for why monkeypatching detectDropboxRoot cannot work here.
+    const orig = config.loadConfig();
+    config.saveConfig(Object.assign({}, orig, { backupDir: backupRoot }));
+    try {
+      const backupMod = require("../core/backup.js");
+      const d1 = db.openDb(storeDir);
+      db.upsertCard(d1, { id: "inBackup", url: "http://x/1", ts: 1 });
+      const made = backupMod.runBackup(d1, storeDir);
+      db.upsertCard(d1, { id: "afterBackup", url: "http://x/2", ts: 2 });
+      const witness = backupMod.storeWitness(d1, storeDir);
+      d1.close();
+
+      const ctx = { db: db.openDb(storeDir), storeDir, reopen: function () { try { ctx.db.close(); } catch (e) {} ctx.db = db.openDb(ctx.storeDir); return ctx.db; } };
+      const storeWorker = createStoreWorker(storeDir);
+      const order = [];
+      // safety:true deliberately: a NON-safety backup would write to the SAME
+      // dated name as `made` and overwrite it with the current (post-mutation)
+      // live store, which would make the restore below a no-op. It also skips
+      // rotate(), which could otherwise prune the backup under test.
+      const p1 = storeWorker.runBackup(storeDir, { safety: true })
+        .then(function (r) { order.push("backup"); return r; });
+      // Queued behind the backup. Its `after` is /api/restore's continuation.
+      const p2 = storeWorker.restore(storeDir, made.name, witness, async function (staged) {
+        order.push("restore:staged");
+        await new Promise((res) => setTimeout(res, 150));
+        const swapped = backupMod.swapInStagedRestore(staged, ctx);
+        order.push("restore:swapped");
+        return swapped;
+      }).then(function (r) { order.push("restore"); return r; });
+      // Queued behind the restore. A third job type again.
+      const p3 = storeWorker.publishSnapshot(null, syncDir, "dev1", "Dev1")
+        .then(function (r) { order.push("publish"); return r; });
+
+      const [b, rest, pub] = await Promise.all([p1, p2, p3]);
+      assert.strictEqual(b.ok, true, "backup: " + (b.error || ""));
+      assert.strictEqual(rest.ok, true, "restore (staged+swapped): " + (rest.error || ""));
+      assert.strictEqual(pub.ok, true, "publish: " + (pub.error || ""));
+      assert.deepStrictEqual(order, ["backup", "restore:staged", "restore:swapped", "restore", "publish"],
+        "strict FIFO across three DIFFERENT job types, with the restore's main-thread swap inside the slot");
+
+      const snap = JSON.parse(fs.readFileSync(path.join(syncDir, "dev1", "snapshot.json"), "utf8"));
+      // The behavioural proof: a publish that started before the swap would
+      // have read the pre-restore store and carried afterBackup with it.
+      assert.ok(snap.cards.some((c) => c.id === "inBackup"), "publish sees the restored content");
+      assert.ok(!snap.cards.some((c) => c.id === "afterBackup"),
+        "the queued publish must not have read the store before the restore's swap replaced it");
+      try { ctx.db.close(); } catch (e) {}
+    } finally {
+      config.saveConfig(orig || {});
+    }
+  });
+
   console.log("storeworker: " + pass + " passed, " + fail + " failed");
   if (fail) process.exitCode = 1;
 })();
