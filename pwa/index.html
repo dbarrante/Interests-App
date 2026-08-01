@@ -1463,12 +1463,13 @@ async function doBackup(manual){
   try{
     const res = await Store.backupNow({keep: S.backupRetainCount||3});   // {ok,verified,name,counts}
     if(res && res.ok===false){
-      // res.error, not res.reason: /api/backup returns {ok:false,error} (and a
-      // 409 for the one actionable failure — an incomplete images folder, often
-      // undownloaded Dropbox placeholders — which core/server.js deliberately
-      // relays verbatim so the user can act on it). Nothing in core/ has ever
-      // emitted `reason`, so this always showed the generic fallback instead.
-      if(manual) toast(res.error || "Backup not available", 8000);
+      // Check res.error before res.reason: /api/backup returns {ok:false,error}
+      // (and a 409 for the one actionable failure — an incomplete images
+      // folder, often undownloaded Dropbox placeholders — which core/server.js
+      // deliberately relays verbatim so the user can act on it). The res.reason
+      // fallback is for pwa/storage-pwa.js's iPad stub, which is desktop-only
+      // and reports {ok:false,reason:"Not applicable on iPad…"} instead.
+      if(manual) toast(res.error || res.reason || "Backup not available", 8000);
       return res;
     }
     const counts = res && res.counts ? res.counts : {imported:imported.length, saved:saved.length, images:0};
@@ -1774,11 +1775,12 @@ async function moveDataLocation(){
     if(!target || target === cur.path) return;
     toast("Moving data store… (the old copy is kept until the move verifies)");
     const res = await Store.moveStore(target);
-    // res.error, not res.reason (same field bug as restoreByName above). The
-    // move now has its own write-witness abort — "the app received new items
+    // Check res.error before res.reason (same as doBackup above). The move
+    // now has its own write-witness abort — "the app received new items
     // while the data folder was being copied… please try the move again" —
-    // which is the whole point of the check, so it has to be readable.
-    if(res && res.ok===false){ toast(res.error || "Move not available", 10000); return; }
+    // which is the whole point of the check, so it has to be readable. The
+    // res.reason fallback covers pwa/storage-pwa.js's iPad stub instead.
+    if(res && res.ok===false){ toast(res.error || res.reason || "Move not available", 10000); return; }
     toast("Data store moved to " + (res.path||target));
     try{ await storageHealthCheck(); }catch(e){}
   }catch(e){ toast("Move failed: " + (e&&e.message||e)); } finally {

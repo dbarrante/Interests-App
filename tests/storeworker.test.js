@@ -337,6 +337,52 @@ async function run(name, fn) {
     }
   });
 
+  // ---- queue-wedge regression (final-review fix wave, 50c141a) -------------
+  // exclusive()'s `.catch` sits BEFORE `.finally` specifically so that an
+  // `after` callback which throws still resolves {ok:false} (per the façade's
+  // documented never-rejects contract) instead of leaving `p` a rejected
+  // promise. Verified by temporarily commenting out the `.catch` in
+  // core/storeworker.js and confirming this test fails: without it, `await`ing
+  // the throwing call's result (r1 below) rejects instead of resolving
+  // {ok:false} — and every caller of this façade (core/server.js's routes)
+  // relies on the never-rejects contract to avoid an unhandled rejection
+  // (Node's default policy there is to terminate the process), which would
+  // take down every future store operation with it, not just this one. The
+  // fix was restored afterward and this test re-confirmed green.
+  await run("exclusive(): an `after` that throws synchronously resolves {ok:false} and does not strand the queue", async () => {
+    const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ia-wrk-wedge-"));
+    fs.mkdirSync(path.join(storeDir, "images"), { recursive: true });
+    const storeWorker = createStoreWorker(storeDir);
+
+    // An invalid backup name is the cheapest real job: stageRestore resolves
+    // {ok:false} immediately with no ctx/db work, but `after` still runs on
+    // that result -- which is all this test needs to trigger the throw.
+    const badRestore = (after) => storeWorker.restore(
+      storeDir, "definitely-not-a-backup", { rev: 0, cards: 0, saved: 0, images: 0, kv: {} }, after
+    );
+
+    // NOT awaited between p1 and p2 -- p2 is genuinely queued behind p1's slot.
+    const p1 = badRestore(function () { throw new Error("boom-from-after"); });
+    const p2 = badRestore(null);
+
+    const r1 = await p1;
+    assert.strictEqual(r1.ok, false, "a throwing `after` must resolve {ok:false}, not hang or reject");
+
+    const r2 = await Promise.race([
+      p2, new Promise((res) => setTimeout(() => res("TIMEOUT-QUEUE-WEDGED"), 5000)),
+    ]);
+    assert.notStrictEqual(r2, "TIMEOUT-QUEUE-WEDGED",
+      "the job queued behind the throwing `after` must still settle, not hang forever");
+
+    // A THIRD job, queued only now (after p1/p2 have already settled), proves
+    // the slot itself is reusable -- not merely that p2 happened to drain.
+    const r3 = await Promise.race([
+      badRestore(null), new Promise((res) => setTimeout(() => res("TIMEOUT"), 5000)),
+    ]);
+    assert.notStrictEqual(r3, "TIMEOUT",
+      "a job queued fresh after the throw must still run -- the queue must not be permanently stranded");
+  });
+
   console.log("storeworker: " + pass + " passed, " + fail + " failed");
   if (fail) process.exitCode = 1;
 })();

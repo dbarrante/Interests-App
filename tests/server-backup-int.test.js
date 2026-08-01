@@ -243,6 +243,28 @@ function listen(app) {
       assert.strictEqual(getImgResp.status, 200, "GET /api/img must find the image at the new store dir");
     });
 
+    await run(t("POST /api/store-location/move (no-worker fallback) relays an actionable error on count mismatch, not a bare {ok:false}"), async () => {
+      // ctx here has no ctx.storeWorker, so this route takes the synchronous
+      // no-worker fallback branch (backup.moveStore(t, ctx) called directly).
+      // A residual leftover file in the target — as if left over from an
+      // earlier aborted/failed move — makes backup.moveStore's post-copy
+      // count check fail, and this test confirms the route actually relays
+      // that failure's `error` field instead of leaving it undefined.
+      const preMoveDir = ctx.storeDir;
+      const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-srvbk-mv3-"));
+      fs.mkdirSync(path.join(target, "images"), { recursive: true });
+      fs.writeFileSync(path.join(target, "images", "leftover.jpg"), "residue from an earlier attempt");
+
+      const r = await (await fetch(base + "/api/store-location/move", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target })
+      })).json();
+      assert.strictEqual(r.ok, false, "count mismatch → not ok");
+      assert.ok(r.error && typeof r.error === "string" && r.error.length > 0, "route relays an actionable error string");
+      assert.ok(r.error.indexOf(target) !== -1, "error names the offending target");
+      assert.strictEqual(ctx.storeDir, preMoveDir, "refused move must not repoint ctx");
+    });
+
     await new Promise(function (res) { srv.close(res); });
     try { ctx.db.close(); } catch (e) {}
   } finally {

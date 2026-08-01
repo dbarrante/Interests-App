@@ -1707,10 +1707,10 @@ function moveStore(target, ctx, opts) {
     const tc = counts(tdb);
     const targetCounts = { imported: tc.cards | 0, saved: tc.saved | 0, images: imageCount(target) | 0 };
     tdb.close(); tdb = null;
-    if (!backupCountsMatch(srcCounts, targetCounts)) return { ok: false, path: ctx.storeDir };
+    if (!backupCountsMatch(srcCounts, targetCounts)) return { ok: false, path: ctx.storeDir, error: "the copy at " + target + " does not match the current data (it may be left over from an earlier attempt) — choose an empty folder, or delete " + target + " and try again" };
   } catch (e) {
     if (tdb) { try { tdb.close(); } catch (e2) {} }
-    return { ok: false, path: ctx.storeDir };
+    return { ok: false, path: ctx.storeDir, error: "move failed: " + ((e && e.message) || String(e)) };
   }
 
   // 3) verified → repoint + reopen; OLD store files are left on disk.

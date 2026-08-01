@@ -146,7 +146,7 @@ function makeCtx(store, onWorkerDone) {
     try { ctx.db.close(); } catch (e) {}
   });
 
-  await run("F1/F4: a COUNT-NEUTRAL write during the copy aborts the move instead of being silently dropped", async () => {
+  await run("F1/F4: a COUNT-NEUTRAL write that lands after the worker's copy completes but before the route repoints aborts the move instead of being silently dropped", async () => {
     const store = newStore();
     let ctx = null;
     // Injected at the exact instant the worker's copy finished and before the

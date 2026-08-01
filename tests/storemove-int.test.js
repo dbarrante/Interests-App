@@ -99,6 +99,43 @@ t("moveStore on a bad target does NOT repoint and keeps both copies", () => {
     assert.strictEqual(ctx.storeDir, store, "ctx.storeDir unchanged");
     assert.strictEqual(config.getStorePath(), store, "pointer unchanged");
     assert.strictEqual(images.imageCount(store), 1, "source intact");
+    assert.ok(res.error && typeof res.error === "string" && res.error.length > 0, "catch-block failure carries an actionable error string");
+    ctx.db.close();
+  } finally {
+    config.saveConfig(orig || {});
+  }
+});
+
+t("moveStore on a target with a residual leftover copy (count mismatch) fails with an actionable error, not a bare {ok:false}", () => {
+  const orig = config.loadConfig();
+  try {
+    const store = newStore();
+    let db = openDb(store);
+    upsertCard(db, { id: "c1", url: "https://x/1", platform: "fb", cat: "Saved", ts: 1, img: "idb:c1" });
+    images.putImg(store, "c1", TINY_JPG);
+    config.setStorePath(store);
+
+    // target already has a leftover image from an earlier aborted/failed move
+    // attempt. The copy step overwrites the db and copies the current source's
+    // images in, but never CLEARS a pre-existing target — so the stray file
+    // survives the copy and makes targetCounts.images disagree with
+    // srcCounts.images, tripping the post-copy verify.
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "ia-mv-residual-"));
+    fs.mkdirSync(path.join(target, "images"), { recursive: true });
+    fs.writeFileSync(path.join(target, "images", "leftover.jpg"), "not a real image, just residue");
+
+    const ctx = {
+      db, storeDir: store,
+      getStorePath: function () { return store; },
+      setStorePath: config.setStorePath,
+      reopen: function () { return openDb(ctx.storeDir); }
+    };
+    const res = backup.moveStore(target, ctx);
+    assert.strictEqual(res.ok, false, "count mismatch → not ok");
+    assert.strictEqual(ctx.storeDir, store, "ctx.storeDir unchanged");
+    assert.strictEqual(config.getStorePath(), store, "pointer unchanged");
+    assert.ok(res.error && typeof res.error === "string" && res.error.length > 0, "count-mismatch failure carries an actionable error string");
+    assert.ok(res.error.indexOf(target) !== -1, "error names the offending target so the user can act on it");
     ctx.db.close();
   } finally {
     config.saveConfig(orig || {});
