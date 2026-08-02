@@ -14,10 +14,10 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
   const ctx = buildContext(tmpStore());
   const { s: core, port } = await listen(createServer(ctx));
 
-  await t("GET with nothing set -> hasToken:false, hasParent:false", async () => {
+  await t("GET with nothing set -> hasToken:false, hasParent:false, parentPageId:''", async () => {
     config.setNotionConfig({ token: "", parentPageId: "" });
     const r = await req(port, "GET", "/api/notion-config");
-    assert.deepStrictEqual(r.json, { hasToken: false, hasParent: false });
+    assert.deepStrictEqual(r.json, { hasToken: false, hasParent: false, parentPageId: "" });
   });
   await t("POST sets both, response never echoes the raw values", async () => {
     const r = await req(port, "POST", "/api/notion-config", { token: "secret_x", parentPageId: "page1" });
@@ -27,9 +27,10 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.ok(!("token" in r.json), "must not echo the token");
     assert.ok(!("parentPageId" in r.json), "must not echo the parent page id");
   });
-  await t("GET after POST reflects hasToken/hasParent, still never echoes values", async () => {
+  await t("GET after POST reflects hasToken/hasParent and echoes parentPageId (not a secret) but never the token", async () => {
     const r = await req(port, "GET", "/api/notion-config");
-    assert.deepStrictEqual(r.json, { hasToken: true, hasParent: true });
+    assert.deepStrictEqual(r.json, { hasToken: true, hasParent: true, parentPageId: "page1" });
+    assert.ok(!("token" in r.json), "must never echo the token itself");
   });
   await t("POST with only parentPageId in the body leaves the previously-set token untouched (key omitted, not cleared)", async () => {
     config.setNotionConfig({ token: "secret_z", parentPageId: "old-page" });

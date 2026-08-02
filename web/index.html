@@ -663,16 +663,17 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
             <button class="btn btn-primary" onclick="saveSafeBrowsingKey()">Save</button>
           </div>
         </div>
-        <div id="notionExportBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
-          <label style="font-weight:600">Notion export <span id="notionStatus" class="hint"></span></label>
-          <div class="hint">Export a card's research to Notion as a new page — <a href="#" onclick="showGuide('notionkey');return false"><b>step-by-step instructions</b></a>. Desktop app only.</div>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <input type="password" id="notionToken" placeholder="Paste your Notion integration secret…" style="flex:1">
-          </div>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <input type="text" id="notionParentPage" placeholder="Parent page ID (from the page's Notion URL)…" style="flex:1">
-            <button class="btn btn-primary" onclick="saveNotionConfig()">Save</button>
-          </div>
+      </div>
+
+      <div class="sec" id="notionExportBlock">
+        <h3>Notion export <span id="notionStatus" class="hint"></span></h3>
+        <div class="hint" style="margin-bottom:10px">Export a card's research to Notion as a new page — <a href="#" onclick="showGuide('notionkey');return false"><b>step-by-step instructions</b></a>. Desktop app only.</div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <input type="password" id="notionToken" placeholder="Paste your Notion integration secret…" style="flex:1">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <input type="text" id="notionParentPage" placeholder="Parent page ID (from the page's Notion URL)…" style="flex:1">
+          <button class="btn btn-primary" onclick="saveNotionConfig()">Save</button>
         </div>
       </div>
 
@@ -2228,6 +2229,12 @@ async function loadNotionStatus(){
   try { status = await Store.getNotionStatus(); } catch(e){ const el0=document.getElementById("notionStatus"); if(el0) el0.textContent=""; return; }
   const tokInp = document.getElementById("notionToken");
   if (tokInp && status.hasToken && !tokInp.value) tokInp.value = NOTION_MASK;
+  // parentPageId isn't a secret (it's visible in the target page's own Notion
+  // URL), so unlike the token it's safe to pre-fill with the real value — and
+  // it must be, otherwise a later save that only rotates the token would
+  // re-send this field as "" and silently wipe the real stored page id.
+  const pageInp = document.getElementById("notionParentPage");
+  if (pageInp && status.parentPageId && !pageInp.value) pageInp.value = status.parentPageId;
   const el = document.getElementById("notionStatus");
   if (el) el.textContent = status.hasToken && status.hasParent ? "— configured" : status.hasToken ? "— missing parent page" : status.hasParent ? "— missing secret" : "— not set";
 }

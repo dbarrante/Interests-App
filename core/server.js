@@ -1097,7 +1097,12 @@ function createServer(ctx) {
 
   app.get("/api/notion-config", (req, res) => {
     const c = config.getNotionConfig();
-    res.json({ hasToken: !!c.token, hasParent: !!c.parentPageId });
+    // parentPageId is not a secret (it's visible in the target page's own Notion
+    // URL) so it's safe to echo back — unlike the token, which stays write-only.
+    // Without this the Settings UI can never pre-fill the parent-page field, so
+    // a later save that only rotates the token would silently re-send an empty
+    // parentPageId and wipe the real one (Task 5 review fix).
+    res.json({ hasToken: !!c.token, hasParent: !!c.parentPageId, parentPageId: c.parentPageId });
   });
 
   app.post("/api/notion-config", (req, res) => {
