@@ -28,7 +28,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const savedArr = [{ id: "s0", tags: [], title: "Candidate B", desc: "" }];
     const body = [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab")].join("\n");
     const factory = new Function(
-      "imported", "saved", "cardHasTag", "callAI", "newId", "Store",
+      "imported", "saved", "cardHasTag", "callAI", "newId", "Store", "filterCat", "CATS", "save",
       body + "\nreturn aiSuggestCardsForTab;"
     );
     let sentPrompt = "";
@@ -38,7 +38,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
       async (prompt) => { sentPrompt = prompt; return "[0,1]"; },   // both remaining candidates picked
       () => "gen_" + (nextId++),
-      { putCards: () => {} }
+      { putCards: () => {} },
+      "", [], () => {}
     );
     const picks = await aiSuggestCardsForTab({ name: "STL files", tag: "stl files" });
     assert.ok(!sentPrompt.includes("Already in"), "the already-tagged card must not be sent as a candidate");
@@ -47,10 +48,39 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(picks.some(p=>p.title==="Candidate B" && p.scope==="saved"));
   });
 
+  t(label + ": aiSuggestCardsForTab's exclusion set is NOT narrowed by an active category filter (Task 1 regression)", () => {
+    // Task 1 taught tabsFilteredList to narrow by filterCat for DISPLAY. That
+    // narrowing must never leak into aiSuggestCardsForTab's "already in this tab"
+    // membership check — if it did, an already-tagged card sitting in a category
+    // other than the active filter would silently drop out of the exclusion set
+    // and get offered back to the AI as a candidate to re-add.
+    const importedArr = [{ id: "i-existing", tags: ["stl files"], title: "Already in", category: "Work initiatives" }];
+    const savedArr = [];
+    const CATS = [{ key: "personal", name: "Personal projects & hobbies" }, { key: "work", name: "Work initiatives" }];
+    const body = [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab")].join("\n");
+    const factory = new Function(
+      "imported", "saved", "cardHasTag", "callAI", "newId", "Store", "filterCat", "CATS", "save",
+      body + "\nreturn aiSuggestCardsForTab;"
+    );
+    const aiSuggestCardsForTab = factory(
+      importedArr, savedArr,
+      (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
+      async () => { throw new Error("must not be called — nothing left to suggest"); },
+      () => "gen_id",
+      { putCards: () => {} },
+      "personal", CATS, () => {}   // filterCat="personal" — the already-tagged card is in "work"
+    );
+    return assert.rejects(
+      () => aiSuggestCardsForTab({ name: "STL files", tag: "stl files" }),
+      /Nothing left to suggest/,
+      "the already-tagged card (in a different category than the active filter) must still be excluded"
+    );
+  });
+
   t(label + ": aiSuggestCardsForTab throws a clear error when the AI returns nothing parseable", async () => {
     const body = [fn(src, "tabsFilteredList"), fn(src, "aiSuggestCardsForTab")].join("\n");
     const factory = new Function(
-      "imported", "saved", "cardHasTag", "callAI", "newId", "Store",
+      "imported", "saved", "cardHasTag", "callAI", "newId", "Store", "filterCat", "CATS", "save",
       body + "\nreturn aiSuggestCardsForTab;"
     );
     const aiSuggestCardsForTab = factory(
@@ -58,7 +88,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
       async () => "not json at all",
       () => "gen_id",
-      { putCards: () => {} }
+      { putCards: () => {} },
+      "", [], () => {}
     );
     await assert.rejects(() => aiSuggestCardsForTab({ name: "STL files", tag: "stl files" }));
   });
@@ -105,7 +136,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const factory = new Function(
       "tabs", "openTabId", "imported", "saved", "cardHasTag",
       "IA_AI", "PROVIDERS", "S", "toast", "renderTabsView", "newId", "Store",
-      "_tabSug", "_tabSugErr", "_tabSugLoading",
+      "_tabSug", "_tabSugErr", "_tabSugLoading", "filterCat", "CATS", "save",
       body + "\nreturn { run: openTabSuggest, getTabSug: () => _tabSug, getOpenTabId: () => openTabId };"
     );
     const importedArr = [{ id: "i0", tags: [], title: "Candidate", desc: "" }];
@@ -114,7 +145,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       importedArr, [], (it,tag)=>!!(it&&it.tags&&it.tags.includes(tag)),
       { hasAIKey: () => true }, { p: { keyName: "key" } }, { provider: "p" },
       () => {}, () => {}, () => "gen_id", { putCards: () => {} },
-      [], "", false
+      [], "", false, "", [], () => {}
     );
     api.run();
     await new Promise(r => setTimeout(r, 0));   // let the pending promise chain settle

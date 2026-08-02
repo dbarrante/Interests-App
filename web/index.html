@@ -1046,6 +1046,7 @@ function setView(v){
   renderCatBar();
   if(curTab==="saved") renderSaved();
   else if(curTab==="imported") renderImported();
+  else if(curTab==="tabs") renderTabsView();
 }
 function gridClass(){ return "masonry m-"+viewMode; }
 function showTab(t, deferStumble){
@@ -1056,7 +1057,7 @@ function showTab(t, deferStumble){
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===t));
   ["stumble","saved","imported","settings","tabs"].forEach(v=>document.getElementById("view-"+v).style.display = v===t?"":"none");
   window.scrollTo(0,0);   // land at the top of every tab — don't inherit the previous tab's scroll depth
-  document.getElementById("catBar").style.display = (t==="settings"||t==="tabs")?"none":"";
+  document.getElementById("catBar").style.display = t==="settings"?"none":"";
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
@@ -1226,7 +1227,7 @@ function setFilter(k){
   save("fcat", k);
   mobileFilterOpen = false;
   renderCatBar();
-  if(curTab==="saved") renderSaved(); else if(curTab==="stumble") renderStumble();
+  if(curTab==="saved") renderSaved(); else if(curTab==="stumble") renderStumble(); else if(curTab==="tabs") renderTabsView();
 }
 function toggleNewsOnly(){
   stNewsOnly = !stNewsOnly; save("stnewsonly", stNewsOnly);
@@ -3498,7 +3499,10 @@ function tabsFilteredList(tag){
   const list = [];
   imported.forEach((it,idx)=>{ if(cardHasTag(it,tag)) list.push({kind:"imported", it, idx}); });
   saved.forEach(it=>{ if(it && cardHasTag(it,tag)) list.push({kind:"saved", it}); });
-  return list;
+  if(!filterCat) return list;
+  const c = CATS.find(c=>c.key===filterCat);
+  if(!c){ filterCat=""; save("fcat",""); return list; }
+  return list.filter(r=>r.it.category===c.name);
 }
 function openTab(id){
   openTabId = id;
@@ -3572,7 +3576,7 @@ function renderTabsView(){
   } else {
     const list = tabsFilteredList(t.tag);
     gridHtml = !list.length
-      ? `<div class="empty"><h2>Nothing in "${esc(t.name)}" yet</h2><p>Add cards from Saved or Imported using the tag picker's Tabs section.</p></div>`
+      ? `<div class="empty"><h2>Nothing in "${esc(t.name)}"${filterCat?" in this category":" yet"}</h2><p>${filterCat?"Clear the category filter above to see everything in this tab.":"Add cards from Saved or Imported using the tag picker's Tabs section."}</p></div>`
       : `<div class="${gridClass()}">${list.map(r=>{
           // Imported identity is the card's stable id, NOT its array index — a pick
           // made now must still resolve to the right card even if something else
@@ -3988,7 +3992,14 @@ async function aiSuggestCardsForTab(tab){
   let idsAssigned=false;
   imported.forEach(it=>{ if(!it.id){ it.id=newId(); idsAssigned=true; } });
   if(idsAssigned) Store.putCards(imported);
-  const already = new Set(tabsFilteredList(tab.tag).map(r=>r.kind+":"+r.it.id));
+  // Built directly from cardHasTag, NOT tabsFilteredList — this is a membership
+  // check ("is this card already in the tab"), not a display list, so it must NOT
+  // be narrowed by the active category filter. tabsFilteredList's category
+  // narrowing would otherwise drop an already-tagged card sitting in a different
+  // category out of `already`, offering it back as a "candidate" to add.
+  const already = new Set();
+  imported.forEach(it=>{ if(cardHasTag(it,tab.tag)) already.add("imported:"+it.id); });
+  saved.forEach(it=>{ if(it && cardHasTag(it,tab.tag)) already.add("saved:"+it.id); });
   const candidates = [];
   imported.forEach(it=>{ if(!already.has("imported:"+it.id)) candidates.push({scope:"imported", identity:it.id, title:it.title, desc:it.desc}); });
   saved.forEach(it=>{ if(it && !already.has("saved:"+it.id)) candidates.push({scope:"saved", identity:it.id, title:it.title, desc:it.desc}); });

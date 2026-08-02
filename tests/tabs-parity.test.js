@@ -21,7 +21,7 @@ const FNS = [
   "toggleSelMode", "openImportedBulkTagPicker", "cardHTML", "renderSaved",
   "toggleTabSelMode", "toggleTabPick", "tabCardWrapper", "removeTabPicksFromTab", "openTabBulkTagPicker",
   "aiSuggestCardsForTab", "openTabSuggest", "tabSugToggleSel", "tabSugRemove", "tabSugAccept", "tabSuggestPanelHTML",
-  "showTab",
+  "showTab", "setFilter", "setView",
 ];
 
 for (const name of FNS) {
