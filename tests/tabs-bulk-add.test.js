@@ -36,47 +36,76 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(items[0].tags, ["STL Files"]);
   });
 
-  t(label + ": addImportedPicksToTab applies the tab's tag to every picked imported index and persists", () => {
-    const importedArr = [{ tags: [] }, { tags: [] }];
-    const calls = [];
-    const body = [fn(src, "bulkAddTag"), fn(src, "addImportedPicksToTab")].join("\n");
-    const factory = new Function(
-      "imported", "tabs", "selPicks", "Store", "toast", "renderImportedKeepFocus",
-      body + "\nreturn addImportedPicksToTab;"
-    );
-    const addImportedPicksToTab = factory(
-      importedArr, [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], new Set([1]),
-      { putCards: (arr) => calls.push(["putCards", arr]) },
-      () => calls.push("toast"), () => calls.push("render")
-    );
-    addImportedPicksToTab("t1");
-    assert.deepStrictEqual(importedArr[0].tags, []);
-    assert.deepStrictEqual(importedArr[1].tags, ["stl files"]);
-    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putCards"));
-  });
-
   t(label + ": cardHTML's saved-mode branch supports a pick-overlay when savedSelMode is on", () => {
     const body = fn(src, "cardHTML");
     assert.match(body, /savedSelMode/);
     assert.match(body, /toggleSavedPick/);
   });
 
-  t(label + ": Imported's existing select-mode bulk bar gained an Add-to-tab control", () => {
-    assert.match(src, /toggleImpAddTabMenu/);
-    assert.match(src, /addImportedPicksToTab/);
+  t(label + ": Imported's select-mode bulk bar has an Apply-tag control, not the old tab-only menu", () => {
+    const body = fn(src, "renderImported");
+    assert.match(body, /openImportedBulkTagPicker\(event\)/);
+    assert.match(body, /bulk-tag-btn/);
+    assert.doesNotMatch(body, /toggleImpAddTabMenu/);
   });
 
   t(label + ": a #savedBulkBar container exists in the static shell (both files, not just web)", () => {
     assert.match(src, /id="savedBulkBar"/);
   });
 
-  t(label + ": impAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {
+  t(label + ": openImportedBulkTagPicker opens the shared bulk picker with every picked imported item", () => {
+    const importedArr = [{ tags: [] }, { tags: [] }, { tags: [] }];
+    let openedWith = null;
     const factory = new Function(
-      "impAddTabMenuOpen", "selPicks", "tabs", "esc",
-      fn(src, "impAddTabMenuHTML") + "\nreturn impAddTabMenuHTML;"
+      "imported", "selPicks", "openBulkTagPicker",
+      fn(src, "openImportedBulkTagPicker") + "\nreturn openImportedBulkTagPicker;"
     );
-    const menu = factory(true, new Set(), [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], (s) => s);
-    assert.strictEqual(menu(), "");
+    const openImportedBulkTagPicker = factory(importedArr, new Set([0, 2]), (items) => { openedWith = items; });
+    openImportedBulkTagPicker({});
+    assert.deepStrictEqual(openedWith, [importedArr[0], importedArr[2]]);
+  });
+
+  t(label + ": openImportedBulkTagPicker does nothing when nothing is picked", () => {
+    let called = false;
+    const factory = new Function(
+      "imported", "selPicks", "openBulkTagPicker",
+      fn(src, "openImportedBulkTagPicker") + "\nreturn openImportedBulkTagPicker;"
+    );
+    const openImportedBulkTagPicker = factory([], new Set(), () => { called = true; });
+    openImportedBulkTagPicker({});
+    assert.strictEqual(called, false);
+  });
+
+  t(label + ": openImportedBulkTagPicker's onDone persists, toasts, and exits select mode", () => {
+    const importedArr = [{ tags: [] }];
+    const calls = [];
+    const factory = new Function(
+      "imported", "selPicks", "selMode", "openBulkTagPicker", "Store", "toast", "renderImportedKeepFocus",
+      fn(src, "openImportedBulkTagPicker") + "\nreturn openImportedBulkTagPicker;"
+    );
+    const openImportedBulkTagPicker = factory(
+      importedArr, new Set([0]), true,
+      (items, onDone) => onDone(1, "travel"),
+      { putCards: (arr) => calls.push(["putCards", arr]) },
+      (msg) => calls.push(["toast", msg]),
+      () => calls.push("render")
+    );
+    openImportedBulkTagPicker({});
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putCards"));
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "toast" && /travel/.test(c[1])));
+    assert.ok(calls.includes("render"));
+  });
+
+  t(label + ": the old Custom-Tab-only Imported bulk-add mechanism is fully removed", () => {
+    assert.strictEqual(extractFn(src, "addImportedPicksToTab"), null);
+    assert.strictEqual(extractFn(src, "impAddTabMenuHTML"), null);
+    assert.strictEqual(extractFn(src, "toggleImpAddTabMenu"), null);
+    assert.doesNotMatch(src, /impAddTabMenuOpen/);
+  });
+
+  t(label + ": entering the Tabs view / leaving select mode no longer reference the deleted impAddTabMenuOpen", () => {
+    assert.doesNotMatch(fn(src, "showTab"), /impAddTabMenuOpen/);
+    assert.doesNotMatch(fn(src, "toggleSelMode"), /impAddTabMenuOpen/);
   });
 
   t(label + ": openSavedBulkTagPicker opens the shared bulk picker with every picked saved item", () => {

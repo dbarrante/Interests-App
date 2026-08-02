@@ -1061,7 +1061,7 @@ function showTab(t, deferStumble){
   renderCatBar();
   if(t==="saved") renderSaved();
   if(t==="settings") renderSettings();
-  if(t==="tabs"){ selMode=false; selPicks.clear(); impAddTabMenuOpen=false; savedSelMode=false; savedSelPicks.clear(); tabSelMode=false; tabSelPicks.clear(); _tabSug=[]; _tabSugErr=""; _tabSugLoading=false; renderTabsView(); }
+  if(t==="tabs"){ selMode=false; selPicks.clear(); savedSelMode=false; savedSelPicks.clear(); tabSelMode=false; tabSelPicks.clear(); _tabSug=[]; _tabSugErr=""; _tabSugLoading=false; renderTabsView(); }
   // "NEW" badge semantics: a card is NEW if it was imported after the LAST
   // visit to the Imported tab (per-device stamp in localStorage, ia_impseen).
   // The stamp advances on each visit, so badges self-clear once seen. A
@@ -2849,7 +2849,7 @@ let impQuery = "";
 let selMode = false;
 let selPicks = new Set();
 let _openedSel = new Set();  // normalized URLs already opened via "Open" this Select session — avoids duplicate tabs on a pop-up retry
-function toggleSelMode(){ selMode=!selMode; if(!selMode){ selPicks.clear(); impAddTabMenuOpen=false; } _openedSel.clear(); renderImported(); }
+function toggleSelMode(){ selMode=!selMode; if(!selMode){ selPicks.clear(); } _openedSel.clear(); renderImported(); }
 function togglePick(idx){ selPicks.has(idx)?selPicks.delete(idx):selPicks.add(idx); renderImported(); }
 let impTag = "";           // hydrated from Store.kv in bootData()
 function setImpTag(t){ impTag = (impTag===t ? "" : t); save("itag", impTag); renderImported(); }
@@ -3048,7 +3048,7 @@ function renderImported(){
         ? `<button class="btn btn-primary" id="capSelBtn" onclick="captureSelected()" ${selPicks.size?"":"disabled"} title="Recapture the selected cards via the extension worker — every platform (Instagram, Facebook, bookmarks, YouTube, Pinterest). Each page opens briefly, is captured, and closes; the real screenshot overwrites the old image. Keep Chrome open and stay logged in.">&#128260; Recapture (${selPicks.size})</button>
            <button class="btn btn-ghost" id="fetchBtn" onclick="fetchSelectedInfo()" ${selPicks.size?"":"disabled"} title="Fetch an og:image + AI description without the extension (best for non-Facebook links)">&#11015; Fetch info (${selPicks.size})</button>
            <button class="btn btn-ghost" id="openSelBtn" onclick="openSelected()" ${selPicks.size?"":"disabled"} title="Open each selected card's link in its own browser tab. Your browser may ask to allow pop-ups the first time — allow them for this site.">&#128279; Open (${selPicks.size})</button>
-           <button class="btn btn-ghost" onclick="toggleImpAddTabMenu()" ${selPicks.size?"":"disabled"}>Add to tab &#9662;</button>${impAddTabMenuHTML()}
+           <button class="btn btn-ghost bulk-tag-btn" onclick="openImportedBulkTagPicker(event)" ${selPicks.size?"":"disabled"}>Apply tag…</button>
            <button class="btn btn-ghost" onclick="selectShown()">Select all shown</button>
            <button class="btn btn-ghost" onclick="toggleSelMode()">Done</button>`
         : `<button class="btn btn-ghost" onclick="toggleSelMode()">&#9745; Select</button>`}
@@ -3659,24 +3659,15 @@ function openSavedBulkTagPicker(ev){
     toast(n?("Tagged "+n+" card"+(n>1?"s":"")+" with "+tag):"Already tagged "+tag);
   }, ev);
 }
-let impAddTabMenuOpen = false;
-function toggleImpAddTabMenu(){ impAddTabMenuOpen=!impAddTabMenuOpen; renderImportedKeepFocus(); }
-function impAddTabMenuHTML(){
-  // Also close if the backing selection emptied out from under it (e.g.
-  // captureSelected()/fetchSelectedInfo() cleared selPicks) — otherwise the
-  // menu would stay visibly open next to a now-disabled trigger, and clicking
-  // a tab row would silently no-op.
-  if(!impAddTabMenuOpen || !selPicks.size) return "";
-  if(!tabs.length) return `<div class="addtab-menu"><div class="tp-empty">No tabs yet — create one from the Tabs nav area.</div></div>`;
-  return `<div class="addtab-menu">${tabs.map(tb=>`<button class="tp-row" onclick="addImportedPicksToTab('${tb.id}')">${tb.reserved?"&#129302; ":""}${esc(tb.name)}</button>`).join("")}</div>`;
-}
-function addImportedPicksToTab(tabId){
-  const tb = tabs.find(x=>x.id===tabId); if(!tb || !selPicks.size) return;
+function openImportedBulkTagPicker(ev){
+  if(!selPicks.size) return;
   const items = [...selPicks].map(i=>imported[i]).filter(Boolean);
-  const n = bulkAddTag(items, tb.tag);
-  Store.putCards(imported);
-  renderImportedKeepFocus();
-  toast(n?("Added "+n+" card"+(n>1?"s":"")+" to "+tb.name):"Already in "+tb.name);
+  openBulkTagPicker(items, (n,tag)=>{
+    Store.putCards(imported);
+    selMode=false; selPicks.clear();
+    renderImportedKeepFocus();
+    toast(n?("Tagged "+n+" card"+(n>1?"s":"")+" with "+tag):"Already tagged "+tag);
+  }, ev);
 }
 /* ---- bulk "Remove from tab" (inside an open tab) ---- */
 let tabSelMode = false;
