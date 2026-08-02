@@ -18,7 +18,8 @@ const FNS = [
   "positionPicker", "openTagPicker", "closeTagPicker", "tagPickerRows", "renderTagPicker",
   "filterTagPicker", "tagPickerKey", "tpHighlight", "tagPickerToggle", "tagPickerNewTag",
   "toggleTagMulti", "aiSuggestTags", "openAutoTag", "renderAutoTag", "autoToggleSel",
-  "autoRemoveSug", "autoAccept", "canonicalTag", "tagRow",
+  "autoRemoveSug", "autoAccept", "canonicalTag", "tagRow", "tabPickerRows", "bulkAddTag",
+  "openBulkTagPicker", "bulkTagPickerApply",
 ];
 
 for (const name of FNS) {

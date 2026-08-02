@@ -3605,6 +3605,7 @@ function renderTabsView(){
 // toggling one of these pills IS adding/removing that tag (reuses tagPickerToggle
 // directly via the same data-tag attribute the regular tag rows already use).
 function tabPickerRows(){
+  if(_bulkTagItems) return "";
   const it = _tagPickItem(); if(!it || !tabs.length) return "";
   const have = new Set((it.tags||[]).map(t=>t.toLowerCase()));
   const chips = tabs.map(tb=>
@@ -3622,6 +3623,27 @@ function bulkAddTag(items, tag){
     if(!it.tags.some(x=>x.toLowerCase()===tag.toLowerCase())){ it.tags.push(tag); n++; }
   });
   return n;
+}
+// ---- bulk tag picker: the SAME #tagPicker popover, retargeted to apply one
+// tag to many cards at once (Saved/Imported/Tabs multi-select), instead of
+// toggling tags on a single card. Mutually exclusive with the single-card
+// _tagPickScope/_tagPickId/_tagPickIdx state — only one mode is ever active,
+// since closeTagPicker() always resets both.
+function openBulkTagPicker(items, onDone, ev){
+  if(!items || !items.length) return;
+  _bulkTagItems = items; _bulkTagDone = onDone;
+  _tpHi=-1;
+  renderTagPicker();
+  document.getElementById("tagPicker").classList.add("open");
+  positionPicker(ev);
+  const inp=document.getElementById("tpNew"); if(inp) inp.focus();
+}
+function bulkTagPickerApply(tag){
+  tag=(tag||"").trim(); if(!tag || !_bulkTagItems) return;
+  const n = bulkAddTag(_bulkTagItems, tag);
+  const done = _bulkTagDone;
+  closeTagPicker();
+  if(done) done(n, tag);
 }
 let savedSelMode = false;
 let savedSelPicks = new Set();   // saved item ids
@@ -4025,6 +4047,8 @@ let _tagMulti = false;        // "Select multiple" is off by default each time t
 let _tpHi = -1;               // arrow-key highlighted row in the picker list
 let _autoSug = [];            // AutoTag AI suggestions: [{tag, sel}]
 let _autoErr = "";
+let _bulkTagItems = null;     // array of live card/saved objects when the picker is in bulk mode, else null
+let _bulkTagDone = null;      // (n, tag) => void — run after a bulk apply; persists + toasts + exits select mode
 function allTags(){
   const s=new Set();
   // Tab-backed tags (including the reserved AI tag) are shown in the tag picker's
@@ -4159,11 +4183,11 @@ function openTagPicker(scope, identity, ev){
   positionPicker(ev);
   const inp=document.getElementById("tpNew"); if(inp) inp.focus();
 }
-function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; _tagPickId=null; _autoSug=[]; }
+function closeTagPicker(){ const p=document.getElementById("tagPicker"); if(p) p.classList.remove("open"); _tagPickIdx=-1; _tagPickId=null; _autoSug=[]; _bulkTagItems=null; _bulkTagDone=null; }
 // build the filtered tag rows (used on open and on every keystroke)
 function tagPickerRows(query){
-  const it=_tagPickItem(); if(!it) return "";
-  const have=new Set((it.tags||[]).map(t=>t.toLowerCase()));
+  const it=_bulkTagItems ? null : _tagPickItem(); if(!_bulkTagItems && !it) return "";
+  const have=it ? new Set((it.tags||[]).map(t=>t.toLowerCase())) : new Set();
   const q=(query||"").trim().toLowerCase();
   let all=allTags();
   if(q) all=all.filter(t=>t.toLowerCase().includes(q));
@@ -4173,11 +4197,12 @@ function tagPickerRows(query){
 }
 function renderTagPicker(){
   const p=document.getElementById("tagPicker"); if(!p) return;
-  const it=_tagPickItem(); if(!it){ closeTagPicker(); return; }
-  p.innerHTML =
+  if(!_bulkTagItems){ const it=_tagPickItem(); if(!it){ closeTagPicker(); return; } }
+  const header = _bulkTagItems ? `<div class="tp-tabs-label">Apply tag to ${_bulkTagItems.length} selected</div>` : "";
+  p.innerHTML = header +
     tabPickerRows() +
     `<div class="tp-new"><input id="tpNew" placeholder="New tag…" autocomplete="off" oninput="filterTagPicker(this.value)" onkeydown="tagPickerKey(event)"><button id="tpAdd" onclick="event.stopPropagation();tagPickerNewTag()">Add</button></div>`+
-    `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`+
+    (_bulkTagItems ? "" : `<label class="tp-multi"><input type="checkbox" id="tpMulti" ${_tagMulti?"checked":""} onchange="toggleTagMulti(this.checked)"> Select multiple</label>`)+
     `<div class="tp-list">${tagPickerRows("")}</div>`;
 }
 // live-filter the list as the user types; when nothing matches, just HIGHLIGHT
@@ -4205,6 +4230,7 @@ function tpHighlight(rows){
 }
 function tagPickerToggle(btn){
   const tag=btn.getAttribute("data-tag");
+  if(_bulkTagItems){ bulkTagPickerApply(tag); return; }
   const it=_tagPickItem(); if(!it) return;
   const has=(it.tags||[]).some(t=>t.toLowerCase()===tag.toLowerCase());
   const identity=_tagPickScope==="saved"?_tagPickId:_tagPickIdx;
@@ -4214,15 +4240,16 @@ function tagPickerToggle(btn){
   else closeTagPicker();
 }
 function tagPickerNewTag(){
-  const it=_tagPickItem(); if(!it) return;
   const inp=document.getElementById("tpNew"); const tag=inp?inp.value.trim():"";
   if(!tag) return;
+  if(_bulkTagItems){ bulkTagPickerApply(tag); return; }
+  const it=_tagPickItem(); if(!it) return;
   cardAddTag(tag);
   if(_tagMulti){ renderTagPicker(); const i2=document.getElementById("tpNew"); if(i2) i2.focus(); }
   else closeTagPicker();
 }
 function toggleTagMulti(on){ _tagMulti=!!on; }   // session-only; resets to off on next open
-document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e.target.closest(".tg-add") && !e.target.closest(".tg-auto")) closeTagPicker(); });
+document.addEventListener("click", e=>{ if(!e.target.closest("#tagPicker") && !e.target.closest(".tg-add") && !e.target.closest(".tg-auto") && !e.target.closest(".bulk-tag-btn")) closeTagPicker(); });
 /* ---- AutoTag (AI tag suggestions) ---- */
 async function aiSuggestTags(it){
   const vocab=preferredVocab(30);

@@ -19,11 +19,11 @@ function fn(src, name) { const m = extractFn(src, name); assert.ok(m, name + " n
 function loadTabPickerRows(src, state){
   const body = [fn(src,"_tagPickItem"), fn(src,"tabPickerRows")].join("\n");
   const factory = new Function(
-    "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId", "tabs", "esc",
+    "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId", "tabs", "esc", "_bulkTagItems",
     body + "\nreturn tabPickerRows;"
   );
   const escFn = (s) => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-  return factory(state.imported||[], state.saved||[], state.scope||"imported", state.idx??-1, state.id??null, state.tabs||[], escFn);
+  return factory(state.imported||[], state.saved||[], state.scope||"imported", state.idx??-1, state.id??null, state.tabs||[], escFn, state.bulkTagItems||null);
 }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
@@ -58,6 +58,17 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": tabPickerRows returns an empty string when there are no tabs yet", () => {
     const importedArr = [{id:"i0", tags:[]}];
     const tabPickerRows = loadTabPickerRows(src, { imported: importedArr, scope:"imported", idx:0, tabs: [] });
+    assert.strictEqual(tabPickerRows(), "");
+  });
+
+  t(label + ": tabPickerRows returns empty string in bulk mode even when tabs exist and the picker isn't closed", () => {
+    const body = [fn(src,"_tagPickItem"), fn(src,"tabPickerRows")].join("\n");
+    const factory = new Function(
+      "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId", "tabs", "esc", "_bulkTagItems",
+      body + "\nreturn tabPickerRows;"
+    );
+    const tabsList = [{id:"1",name:"STL files",tag:"stl files",reserved:false}];
+    const tabPickerRows = factory([], [], "imported", -1, null, tabsList, (s)=>s, [{tags:[]}]);
     assert.strictEqual(tabPickerRows(), "");
   });
 
