@@ -702,6 +702,17 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
             <button class="btn btn-primary" onclick="saveSafeBrowsingKey()">Save</button>
           </div>
         </div>
+        <div id="notionExportBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Notion export <span id="notionStatus" class="hint"></span></label>
+          <div class="hint">Export a card's research to Notion as a new page — <a href="#" onclick="showGuide('notionkey');return false"><b>step-by-step instructions</b></a>. Desktop app only.</div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="password" id="notionToken" placeholder="Paste your Notion integration secret…" style="flex:1">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="text" id="notionParentPage" placeholder="Parent page ID (from the page's Notion URL)…" style="flex:1">
+            <button class="btn btn-primary" onclick="saveNotionConfig()">Save</button>
+          </div>
+        </div>
       </div>
 
       <div class="sec" id="secAppUpdates">
@@ -2167,6 +2178,7 @@ function renderSettings(){
   if(typeof renderPwaRecoveryStatus === "function") renderPwaRecoveryStatus();
   if(typeof renderBackupList === "function") renderBackupList();
   if(typeof loadSafetyKeyStatus === "function") loadSafetyKeyStatus();
+  if(typeof loadNotionStatus === "function") loadNotionStatus();
   // These preferences live in ia_settings and sync between PWA and desktop.
   // Only the desktop Core + browser extension perform the actual platform check.
   if(document.getElementById("autoImportToggle")){
@@ -2284,6 +2296,36 @@ async function saveSafeBrowsingKey(){
   if (inp) inp.value = "";
   toast(v ? "Safe Browsing key saved" : "Safe Browsing key cleared", 4000);
   loadSafetyKeyStatus();
+}
+const NOTION_MASK = "••••••••••••••••••••••••";
+async function loadNotionStatus(){
+  let status = { hasToken:false, hasParent:false };
+  try { status = await Store.getNotionStatus(); } catch(e){ const el0=document.getElementById("notionStatus"); if(el0) el0.textContent=""; return; }
+  const tokInp = document.getElementById("notionToken");
+  if (tokInp && status.hasToken && !tokInp.value) tokInp.value = NOTION_MASK;
+  const el = document.getElementById("notionStatus");
+  if (el) el.textContent = status.hasToken && status.hasParent ? "— configured" : status.hasToken ? "— missing parent page" : status.hasParent ? "— missing secret" : "— not set";
+}
+// Builds the request as ONLY the fields actually changing — Store.setNotionConfig
+// (Task 4) forwards this straight to POST /api/notion-config, whose contract
+// (Task 1) is "an omitted key leaves that stored value unchanged." The token
+// input is never populated with the real secret (only NOTION_MASK once one is
+// set), so "field left as the mask" must mean "not included in this request" —
+// there is no other way to express "leave it alone" without re-sending a value
+// the browser was never given in the first place.
+async function saveNotionConfig(){
+  const tokInp = document.getElementById("notionToken");
+  const pageInp = document.getElementById("notionParentPage");
+  const tok = tokInp ? tokInp.value.trim() : "";
+  const page = pageInp ? pageInp.value.trim() : "";
+  const fields = { parentPageId: page };
+  if (tok !== NOTION_MASK) fields.token = tok;   // omit entirely when unmodified
+  let res;
+  try { res = await Store.setNotionConfig(fields); } catch(e){ toast("Couldn't save Notion settings", 4000); return; }
+  if (res && res.ok===false){ toast(res.reason || "Couldn't save Notion settings", 4000); return; }
+  if (tokInp && "token" in fields) tokInp.value = "";
+  toast("Notion settings saved", 4000);
+  loadNotionStatus();
 }
 
 /* ============ prompt ============ */
@@ -2690,6 +2732,13 @@ const GUIDES = {
     <li>Open <b>APIs &amp; Services &rarr; Credentials</b>, click <b>Create credentials &rarr; API key</b></li>
     <li>Copy the key and paste it into the field here</li></ol>
     <p>Safe Browsing is Google's free malware/phishing blocklist — the same one Chrome uses. The free quota (about 10,000 checks/day) is far more than this app needs. The links you check are sent to Google for lookup; nothing else leaves your machine.</p>`,
+  notionkey: `<h2>Connect Notion export</h2><ol>
+    <li>Go to <b>notion.so/my-integrations</b> and sign in with your Notion account</li>
+    <li>Click <b>New integration</b>, give it any name (e.g. "Interests App"), and pick the workspace to connect it to</li>
+    <li>Click <b>Submit</b>, then copy the <b>Internal Integration Secret</b> shown on the next screen — paste it into the key field here</li>
+    <li>Open the Notion page you want exported cards to land under, click the <b>&middot;&middot;&middot;</b> menu in the top right &rarr; <b>Connections</b> &rarr; connect your new integration</li>
+    <li>Copy that page's ID from its URL — the 32-character string right before any <code>?</code> (with or without dashes) — and paste it into the parent page field here</li></ol>
+    <p>Only pages you explicitly connect via <b>Connections</b> are reachable by the integration; the secret can't see the rest of your workspace. Exported cards are created as new sub-pages under the parent page you choose.</p>`,
   groqkey: `<h2>Get a free Groq API key</h2><ol>
     <li>Go to <b>console.groq.com</b> and sign up — free, no credit card (Google or GitHub login works)</li>
     <li>In the left menu, open <b>API Keys</b></li>
