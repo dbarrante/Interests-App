@@ -33,7 +33,7 @@ ok("the view-toggle row's .catpill buttons are gated behind an empty-string Stum
   /curTab==="stumble" \? "" : `<span style="flex:1">/.test(src));
 
 // Saved category sidebar (v1.12.14) uses .tg with counts, mirroring the tag sidebar.
-ok("catSideHTML uses .tg pills with a count <b>", /function catSideHTML\(\)[\s\S]{0,600}?class="tg[\s\S]{0,120}?<b>/.test(src));
+ok("catSideHTML uses .tg pills with a count <b>", /function catSideHTML\(list\)[\s\S]{0,700}?class="tg[\s\S]{0,120}?<b>/.test(src));
 
 console.log("pill-style-parity: " + pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

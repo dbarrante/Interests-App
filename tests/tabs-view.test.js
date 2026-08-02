@@ -48,10 +48,14 @@ function loadOpenTab(src, initialOpenTabId, log){
 // list.length===0 in both scenarios below, so list.map's per-card body (cardHTML,
 // impCardHTML, researchPanelHTML, tabCardWrapper, newId, Store) is never reached and
 // deliberately isn't stubbed — if it ever executes, that itself is a bug.
+// catSidebarOn is stubbed to always-off here — neither call site below exercises
+// the sidebar-embedding branch (task 1), only the pre-existing empty-state wording,
+// so gridHtml always takes the `innerHtml` (non-sidebar) path and catSideHTML is
+// never reached / never needs its own catByName/CATS/esc scope wired up.
 function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, CATS }){
   const factory = new Function(
     "document", "tabs", "openTabId", "filterCat", "tabSelMode", "tabSelPicks",
-    "imported", "saved", "CATS", "save", "esc", "tabSuggestPanelHTML", "attachCardImages",
+    "imported", "saved", "CATS", "save", "esc", "tabSuggestPanelHTML", "attachCardImages", "catSidebarOn",
     fn(src, "tabCardCount") + "\n" +
     fn(src, "cardHasTag") + "\n" +
     fn(src, "tabsFilteredList") + "\n" +
@@ -63,7 +67,7 @@ function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, 
   const renderTabsView = factory(
     documentMock, tabs, openTabId, filterCat, false, new Set(),
     imported || [], saved || [], CATS || [], () => {}, esc,
-    () => "", () => {}
+    () => "", () => {}, () => false
   );
   renderTabsView();
   return view.innerHTML;

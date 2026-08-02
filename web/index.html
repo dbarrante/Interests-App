@@ -570,7 +570,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <input type="checkbox" id="tagSideToggle" style="width:auto"> Tags in a left sidebar (Imported view)
         </label>
         <label style="display:block;margin-top:8px">
-          <input type="checkbox" id="catSideToggle" style="width:auto"> Categories in a left sidebar (Saved view)
+          <input type="checkbox" id="catSideToggle" style="width:auto"> Categories in a left sidebar (Saved &amp; Tabs)
         </label>
         <label style="display:block;margin-top:8px">
           <input type="checkbox" id="reuseWinToggle" style="width:auto"> Open links in one reused window (instead of a new browser tab each)
@@ -1203,7 +1203,7 @@ function showUpdateTokenHelp(){
 }
 function renderCatBar(){
   const pills = [{key:"",name:"All",chip:"var(--ink)"}].concat(CATS);
-  const catSideActive = curTab==="saved" && catSidebarOn();
+  const catSideActive = (curTab==="saved" || curTab==="tabs") && catSidebarOn();
   const catHtml = curTab==="imported"
     ? PLATS.map(([k,label])=>
       `<button class="catpill${impSrc===k?" on":""}" style="${impSrc===k?"background:var(--ink)":""}"
@@ -3040,7 +3040,7 @@ function setStickyOffsets(){
   }catch(e){}
 }
 let _impResizeTimer;
-window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } else if(curTab==="stumble"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(()=>{ renderCatBar(); renderStumble(); },120); } });
+window.addEventListener("resize", ()=>{ setStickyOffsets(); if(curTab==="imported"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderImported,120); } else if(curTab==="saved" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderSaved,120); } else if(curTab==="tabs" && S.catSidebar){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(renderTabsView,120); } else if(curTab==="stumble"){ clearTimeout(_impResizeTimer); _impResizeTimer=setTimeout(()=>{ renderCatBar(); renderStumble(); },120); } });
 function updateCounts(){
   document.querySelectorAll('[data-cnt="saved"]').forEach(el=>el.textContent = saved.length?`(${saved.length})`:"");
   document.querySelectorAll('[data-cnt="imported"]').forEach(el=>el.textContent = imported.length?`(${imported.length})`:"");
@@ -3213,9 +3213,10 @@ function stNewsSideHTML(){
 }
 // Category filter as a left sidebar in the Saved view — same pill size/style as the
 // Imported tag sidebar (uses .tg, with per-category counts; active shown with ✕ to clear).
-function catSideHTML(){
+function catSideHTML(list){
+  const items = list || saved;
   const counts = {};
-  saved.forEach(s=>{ const c = catByName(String(s.category||"")); if(c) counts[c.key] = (counts[c.key]||0) + 1; });
+  items.forEach(s=>{ const c = catByName(String(s.category||"")); if(c) counts[c.key] = (counts[c.key]||0) + 1; });
   const rows = CATS.filter(c=>counts[c.key]).sort((a,b)=>counts[b.key]-counts[a.key]);   // populated cats, most first — like tags
   const activeName = filterCat ? ((CATS.find(c=>c.key===filterCat)||{}).name || filterCat) : "";
   return `<div class="tag-side-h">Categories</div>`
@@ -3637,7 +3638,7 @@ function renderTabsView(){
     // unrelated category filter active elsewhere would wrongly claim the
     // filter is hiding cards. Use the tab's TRUE (unfiltered) count instead.
     const narrowed = filterCat && tabCardCount(t.tag) > 0;
-    gridHtml = !list.length
+    const innerHtml = !list.length
       ? `<div class="empty"><h2>Nothing in "${esc(t.name)}"${narrowed?" in this category":" yet"}</h2><p>${narrowed?"Clear the category filter above to see everything in this tab.":"Add cards from Saved or Imported using the tag picker's Tabs section."}</p></div>`
       : `<div class="${gridClass()}">${list.map(r=>{
           // Imported identity is the card's stable id, NOT its array index — a pick
@@ -3655,6 +3656,16 @@ function renderTabsView(){
           const identity = r.it.id;
           return tabCardWrapper(inner, r.kind, identity, tabSelPicks.has(r.kind+":"+identity));
         }).join("")}</div>`;
+    // Sidebar counts must reflect the tab's TRUE (tag-only) membership, not
+    // `list` (already category-narrowed by tabsFilteredList) — otherwise the
+    // active category would appear to have fewer members than it really does,
+    // and every OTHER category would show its correct count while the active
+    // one alone was wrong. Recomputed here rather than widening
+    // tabsFilteredList's contract, matching this file's existing preference
+    // for small local duplication over reshaping an already-tested function.
+    gridHtml = catSidebarOn()
+      ? `<div class="imp-body"><aside class="tag-side cat-side">${catSideHTML(imported.filter(it=>cardHasTag(it,t.tag)).concat(saved.filter(it=>it&&cardHasTag(it,t.tag))))}</aside>${innerHtml}</div>`
+      : innerHtml;
   }
   const manageHtml = !t ? "" : (t.reserved ? "" : `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`)
     + (t ? (tabSelMode
