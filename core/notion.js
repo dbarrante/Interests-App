@@ -63,12 +63,18 @@ function buildPageBody(parentPageId, payload) {
 const NOTION_VERSION = "2022-06-28";
 
 // Actual outbound call — separated from buildPageBody so the shaping logic
-// (Task 2) stays testable without a network mock. Never throws: any failure
-// (HTTP error or network exception) resolves {ok:false, error}, matching this
-// project's fail-soft convention for third-party calls (see core/safebrowse.js).
+// (Task 2) stays testable without a network mock. Never throws (and never
+// returns a rejected promise): any failure — a malformed payload that makes
+// buildPageBody itself throw (e.g. a garbage entry in payload.qa), an HTTP
+// error, or a network exception — resolves {ok:false, error}, matching this
+// project's fail-soft convention for third-party calls (see
+// core/safebrowse.js). buildPageBody is deliberately called INSIDE this try
+// block, not before it, so a throw there is caught the same way as a fetch
+// failure — see the caller in core/server.js's /api/notion/export route,
+// which has no try/catch of its own and relies on this guarantee.
 async function createPage(token, parentPageId, payload) {
-  const body = buildPageBody(parentPageId, payload);
   try {
+    const body = buildPageBody(parentPageId, payload);
     const res = await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers: {

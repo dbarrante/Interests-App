@@ -36,6 +36,20 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.ok(r.error);
   });
 
+  await t("malformed qa entry (null) -> resolves {ok:false, error}, never rejects", async () => {
+    global.fetch = async () => ({ ok: true, json: async () => ({ url: "https://notion.so/should-not-be-reached" }) });
+    const r = await notion.createPage("secret_x", "p", { title: "T", url: "", article: null, qa: [null] });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error);
+  });
+
+  await t("mixed-garbage qa array (string, number, then null) -> resolves {ok:false, error}, never rejects", async () => {
+    global.fetch = async () => ({ ok: true, json: async () => ({ url: "https://notion.so/should-not-be-reached" }) });
+    const r = await notion.createPage("secret_x", "p", { title: "T", url: "", article: null, qa: ["oops", 42, null] });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error);
+  });
+
   global.fetch = realFetch;
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;
