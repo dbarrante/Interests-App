@@ -1,6 +1,8 @@
-// tests/tabs-bulk-add.test.js — Task 4: bulkAddTag's pure mutation logic, and the
-// Saved-side + Imported-side wiring that calls it. cardHTML's/the bulk bar's
-// innerHTML is covered by a manual smoke check (same convention as tabs-view).
+// tests/tabs-bulk-add.test.js — bulkAddTag's pure mutation logic, plus the
+// Saved/Imported/Tabs wiring that opens the shared bulk tag picker
+// (docs/superpowers/plans/2026-08-01-bulk-retag.md). cardHTML's/the bulk
+// bar's innerHTML is covered by a manual smoke check (same convention as
+// tabs-view).
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
@@ -32,27 +34,6 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const n = bulkAddTag(items, "stl files");
     assert.strictEqual(n, 0);
     assert.deepStrictEqual(items[0].tags, ["STL Files"]);
-  });
-
-  t(label + ": addSavedPicksToTab applies the tab's tag to every picked saved id and persists", () => {
-    const savedArr = [{ id: "s0", tags: [] }, { id: "s1", tags: [] }, { id: "s2", tags: [] }];
-    const calls = [];
-    const body = [fn(src, "bulkAddTag"), fn(src, "addSavedPicksToTab")].join("\n");
-    const factory = new Function(
-      "saved", "tabs", "savedSelPicks", "savedSelMode", "Store", "toast", "renderSaved",
-      body + "\nreturn addSavedPicksToTab;"
-    );
-    const addSavedPicksToTab = factory(
-      savedArr, [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }],
-      new Set(["s0", "s2"]), true,
-      { putSaved: (arr) => calls.push(["putSaved", arr]) },
-      () => calls.push("toast"), () => calls.push("render")
-    );
-    addSavedPicksToTab("t1");
-    assert.deepStrictEqual(savedArr[0].tags, ["stl files"]);
-    assert.deepStrictEqual(savedArr[1].tags, []);
-    assert.deepStrictEqual(savedArr[2].tags, ["stl files"]);
-    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putSaved"));
   });
 
   t(label + ": addImportedPicksToTab applies the tab's tag to every picked imported index and persists", () => {
@@ -89,20 +70,6 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src, /id="savedBulkBar"/);
   });
 
-  t(label + ": entering the Tabs view also closes the new Add-to-tab menu", () => {
-    const body = fn(src, "showTab");
-    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);\s*impAddTabMenuOpen=false;.*renderTabsView\(\)/);
-  });
-
-  t(label + ": savedAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {
-    const factory = new Function(
-      "savedAddTabMenuOpen", "savedSelPicks", "tabs", "esc",
-      fn(src, "savedAddTabMenuHTML") + "\nreturn savedAddTabMenuHTML;"
-    );
-    const menu = factory(true, new Set(), [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], (s) => s);
-    assert.strictEqual(menu(), "");
-  });
-
   t(label + ": impAddTabMenuHTML closes itself once the backing selection empties, even if left 'open'", () => {
     const factory = new Function(
       "impAddTabMenuOpen", "selPicks", "tabs", "esc",
@@ -110,6 +77,68 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     );
     const menu = factory(true, new Set(), [{ id: "t1", name: "STL files", tag: "stl files", reserved: false }], (s) => s);
     assert.strictEqual(menu(), "");
+  });
+
+  t(label + ": openSavedBulkTagPicker opens the shared bulk picker with every picked saved item", () => {
+    const savedArr = [{ id: "s0", tags: [] }, { id: "s1", tags: [] }, { id: "s2", tags: [] }];
+    let openedWith = null;
+    const factory = new Function(
+      "saved", "savedSelPicks", "openBulkTagPicker",
+      fn(src, "openSavedBulkTagPicker") + "\nreturn openSavedBulkTagPicker;"
+    );
+    const openSavedBulkTagPicker = factory(savedArr, new Set(["s0", "s2"]), (items) => { openedWith = items; });
+    openSavedBulkTagPicker({});
+    assert.deepStrictEqual(openedWith, [savedArr[0], savedArr[2]]);
+  });
+
+  t(label + ": openSavedBulkTagPicker does nothing when nothing is picked", () => {
+    let called = false;
+    const factory = new Function(
+      "saved", "savedSelPicks", "openBulkTagPicker",
+      fn(src, "openSavedBulkTagPicker") + "\nreturn openSavedBulkTagPicker;"
+    );
+    const openSavedBulkTagPicker = factory([], new Set(), () => { called = true; });
+    openSavedBulkTagPicker({});
+    assert.strictEqual(called, false);
+  });
+
+  t(label + ": openSavedBulkTagPicker's onDone persists, tags the toast with the applied tag, and exits select mode", () => {
+    const savedArr = [{ id: "s0", tags: [] }];
+    const calls = [];
+    const factory = new Function(
+      "saved", "savedSelPicks", "savedSelMode", "openBulkTagPicker", "Store", "toast", "renderSaved",
+      fn(src, "openSavedBulkTagPicker") + "\nreturn openSavedBulkTagPicker;"
+    );
+    const openSavedBulkTagPicker = factory(
+      savedArr, new Set(["s0"]), true,
+      (items, onDone) => onDone(1, "travel"),
+      { putSaved: (arr) => calls.push(["putSaved", arr]) },
+      (msg) => calls.push(["toast", msg]),
+      () => calls.push("render")
+    );
+    openSavedBulkTagPicker({});
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putSaved"));
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "toast" && /travel/.test(c[1])));
+    assert.ok(calls.includes("render"));
+  });
+
+  t(label + ": the Saved bulk toolbar's tag button is an Apply-tag trigger, not the old tab-only menu", () => {
+    const body = fn(src, "renderSaved");
+    assert.match(body, /openSavedBulkTagPicker\(event\)/);
+    assert.match(body, /bulk-tag-btn/);
+    assert.doesNotMatch(body, /toggleSavedAddTabMenu/);
+  });
+
+  t(label + ": the old Custom-Tab-only Saved bulk-add mechanism is fully removed", () => {
+    assert.strictEqual(extractFn(src, "addSavedPicksToTab"), null);
+    assert.strictEqual(extractFn(src, "savedAddTabMenuHTML"), null);
+    assert.strictEqual(extractFn(src, "toggleSavedAddTabMenu"), null);
+    assert.doesNotMatch(src, /savedAddTabMenuOpen/);
+  });
+
+  t(label + ": entering the Tabs view still resets Saved's select mode (savedAddTabMenuOpen reference removed)", () => {
+    const body = fn(src, "showTab");
+    assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);.*savedSelMode=false;\s*savedSelPicks\.clear\(\);.*renderTabsView\(\)/);
   });
 }
 

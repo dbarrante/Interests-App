@@ -72,7 +72,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 
   t(label + ": entering the Tabs view ALSO clears Saved's own select mode, not just Imported's — fixes a double-overlay bug where a saved card shown inside a tab could render both cardHTML's own pick overlay (savedSelMode) and tabCardWrapper's", () => {
     const body = fn(src, "showTab");
-    assert.match(body, /if\(t===["']tabs["']\)\{[^}]*savedSelMode=false;[^}]*savedSelPicks\.clear\(\);[^}]*savedAddTabMenuOpen=false;[^}]*renderTabsView\(\)/);
+    assert.match(body, /if\(t===["']tabs["']\)\{[^}]*savedSelMode=false;[^}]*savedSelPicks\.clear\(\);[^}]*renderTabsView\(\)/);
   });
 
   t(label + ": renderTabsView wires a Select toggle and, when active, the Remove-from-tab bar", () => {

@@ -17,7 +17,7 @@ const FNS = [
   "allTags", "tagRow", "aiSuggestTags",
   "tabsFilteredList", "openTab", "newTabPrompt", "renameTabPrompt", "deleteTabPrompt", "renderTabsView",
   "tabPickerRows", "renderTagPicker",
-  "bulkAddTag", "toggleSavedSelMode", "toggleSavedPick", "toggleSavedAddTabMenu", "savedAddTabMenuHTML", "addSavedPicksToTab",
+  "bulkAddTag", "toggleSavedSelMode", "toggleSavedPick", "openSavedBulkTagPicker",
   "toggleSelMode", "toggleImpAddTabMenu", "impAddTabMenuHTML", "addImportedPicksToTab", "cardHTML", "renderSaved",
   "toggleTabSelMode", "toggleTabPick", "tabCardWrapper", "removeTabPicksFromTab",
   "aiSuggestCardsForTab", "openTabSuggest", "tabSugToggleSel", "tabSugRemove", "tabSugAccept", "tabSuggestPanelHTML",
