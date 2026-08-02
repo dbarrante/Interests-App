@@ -489,7 +489,6 @@ body.reader-locked{overflow:hidden}
 .tp-empty{padding:8px 10px;color:var(--muted);font-size:12px}
 .tp-tabs-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:4px 10px 2px}
 .tp-tabs{display:flex;flex-direction:column;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:4px}
-.addtab-menu{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;margin-left:8px;vertical-align:top}
 .research-unit{break-inside:avoid}
 .research-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .research-panel-head{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;cursor:pointer;margin-bottom:6px}
@@ -3680,15 +3679,21 @@ function renderTabsView(){
 // toggling one of these pills IS adding/removing that tag (reuses tagPickerToggle
 // directly via the same data-tag attribute the regular tag rows already use).
 function tabPickerRows(){
-  if(_bulkTagItems) return "";
-  const it = _tagPickItem(); if(!it || !tabs.length) return "";
-  const have = new Set((it.tags||[]).map(t=>t.toLowerCase()));
-  const chips = tabs.map(tb=>
+  // Bulk mode has no single "current card", so there is no meaningful checked state —
+  // and the reserved AI tab is excluded (bulk-applying it would fire research on every
+  // selected card). The section must still render: allTags() strips tab-backed tags out
+  // of the main list, so this is the ONLY way to apply a tab's tag in bulk.
+  const it = _bulkTagItems ? null : _tagPickItem();
+  if((!_bulkTagItems && !it) || !tabs.length) return "";
+  const have = it ? new Set((it.tags||[]).map(t=>t.toLowerCase())) : new Set();
+  const list = _bulkTagItems ? tabs.filter(tb=>!tb.reserved) : tabs;
+  if(!list.length) return "";
+  const chips = list.map(tb=>
     `<button class="tp-row tp-tab${have.has(tb.tag.toLowerCase())?" on":""}" data-tag="${esc(tb.tag)}" onclick="event.stopPropagation();tagPickerToggle(this)">${have.has(tb.tag.toLowerCase())?"&#10003; ":""}${tb.reserved?"&#129302; ":""}${esc(tb.name)}</button>`
   ).join("");
   return `<div class="tp-tabs-label">Tabs</div><div class="tp-tabs">${chips}</div>`;
 }
-/* ---- bulk "Add to tab" (Saved + Imported) ---- */
+/* ---- bulk tag apply (Saved + Imported + Tabs) ---- */
 // Pure: add `tag` to every item missing it (case-insensitive check). Returns how
 // many actually changed, for the toast.
 function bulkAddTag(items, tag){
@@ -4249,6 +4254,7 @@ function positionPicker(ev){
   p.style.left=Math.max(8,left)+"px"; p.style.top=top+"px";
 }
 function openTagPicker(scope, identity, ev){
+  _bulkTagItems=null; _bulkTagDone=null;   // defence-in-depth: this picker is single-card only
   _tagPickScope = scope||"imported";
   if(_tagPickScope==="saved"){ _tagPickId=identity; _tagPickIdx=-1; } else { _tagPickIdx=identity; _tagPickId=null; }
   _tagMulti=false; _tpHi=-1;   // single-select + no highlight by default on each open
@@ -4351,6 +4357,7 @@ async function aiSuggestTags(it){
 }
 function openAutoTag(scope, identity, ev){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first", 5000); return; }
+  _bulkTagItems=null; _bulkTagDone=null;   // defence-in-depth: this picker is single-card only
   _tagPickScope = scope||"imported";
   if(_tagPickScope==="saved"){ _tagPickId=identity; _tagPickIdx=-1; } else { _tagPickIdx=identity; _tagPickId=null; }
   _autoSug=[]; _autoErr="";

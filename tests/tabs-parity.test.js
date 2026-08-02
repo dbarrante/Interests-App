@@ -19,7 +19,7 @@ const FNS = [
   "tabPickerRows", "renderTagPicker",
   "bulkAddTag", "toggleSavedSelMode", "toggleSavedPick", "openSavedBulkTagPicker",
   "toggleSelMode", "openImportedBulkTagPicker", "cardHTML", "renderSaved",
-  "toggleTabSelMode", "toggleTabPick", "tabCardWrapper", "removeTabPicksFromTab",
+  "toggleTabSelMode", "toggleTabPick", "tabCardWrapper", "removeTabPicksFromTab", "openTabBulkTagPicker",
   "aiSuggestCardsForTab", "openTabSuggest", "tabSugToggleSel", "tabSugRemove", "tabSugAccept", "tabSuggestPanelHTML",
   "showTab",
 ];

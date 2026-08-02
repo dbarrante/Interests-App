@@ -61,14 +61,29 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(tabPickerRows(), "");
   });
 
-  t(label + ": tabPickerRows returns empty string in bulk mode even when tabs exist and the picker isn't closed", () => {
-    const body = [fn(src,"_tagPickItem"), fn(src,"tabPickerRows")].join("\n");
-    const factory = new Function(
-      "imported", "saved", "_tagPickScope", "_tagPickIdx", "_tagPickId", "tabs", "esc", "_bulkTagItems",
-      body + "\nreturn tabPickerRows;"
-    );
+  // Bulk mode: there is no single "current card", so the pinned Tabs section is built
+  // from `tabs` alone — with no checked state, and without the reserved AI tab. It must
+  // still render, because allTags() strips tab-backed tags out of the main list below.
+  t(label + ": tabPickerRows renders a tab chip in bulk mode, unchecked, with no current card at all", () => {
     const tabsList = [{id:"1",name:"STL files",tag:"stl files",reserved:false}];
-    const tabPickerRows = factory([], [], "imported", -1, null, tabsList, (s)=>s, [{tags:[]}]);
+    // no imported/saved arrays and idx -1: _tagPickItem() would find nothing, yet the chip must still render
+    const tabPickerRows = loadTabPickerRows(src, { tabs: tabsList, bulkTagItems: [{tags:["stl files"]}, {tags:[]}] });
+    const out = tabPickerRows();
+    assert.match(out, /data-tag="stl files"/);
+    assert.doesNotMatch(out, /tp-row tp-tab on/);
+    assert.doesNotMatch(out, /&#10003;/);
+  });
+
+  t(label + ": tabPickerRows hides the reserved AI tab in bulk mode", () => {
+    const tabsList = [{id:"1",name:"STL files",tag:"stl files",reserved:false}, {id:"2",name:"AI",tag:"__ai_research__",reserved:true}];
+    const tabPickerRows = loadTabPickerRows(src, { tabs: tabsList, bulkTagItems: [{tags:[]}] });
+    const out = tabPickerRows();
+    assert.match(out, /data-tag="stl files"/);
+    assert.doesNotMatch(out, /data-tag="__ai_research__"/);
+  });
+
+  t(label + ": tabPickerRows returns an empty string in bulk mode when there are no tabs at all", () => {
+    const tabPickerRows = loadTabPickerRows(src, { tabs: [], bulkTagItems: [{tags:[]}] });
     assert.strictEqual(tabPickerRows(), "");
   });
 

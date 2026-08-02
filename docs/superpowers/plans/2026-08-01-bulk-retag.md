@@ -1043,8 +1043,9 @@ Since this feature is UI-heavy and this project's convention for `#tagPicker`/se
 2. Saved: same, but type a brand-new tag and click Add → same result, tag is new.
 3. Imported: same two checks as Saved.
 4. Open a Custom Tab, enable Select, pick cards from a mix of Saved-origin and Imported-origin cards inside that tab, click "Apply tag…" → both persist correctly (check both cards keep the new tag after switching to Saved/Imported directly).
-5. Open the tag picker in bulk mode and confirm: no "Select multiple" checkbox is shown, no pinned "Tabs" quick-section at the top (tab tags still appear in the main scrollable list, unchecked), and clicking outside the picker (not on the "Apply tag…" button) still closes it normally.
-6. Confirm the picker does NOT flash-open-then-close when "Apply tag…" is clicked (the `.bulk-tag-btn` outside-click exclusion from Task 1).
+5. Open the tag picker in bulk mode and confirm: no "Select multiple" checkbox is shown; the pinned "Tabs" quick-section IS shown at the top, with every Custom Tab's chip rendered **without** a checkmark (bulk selection is heterogeneous, so there is no "have" state to show) and with the reserved AI tab **excluded** (bulk-applying `__ai_research__` would fire a research panel for every selected card); and clicking outside the picker (not on the "Apply tag…" button) still closes it normally. The Tabs section is load-bearing here — `allTags()` deliberately strips tab-backed tags out of the main scrollable list, so these chips are the only way to bulk-apply a tab's tag.
+6. Saved: enable Select, pick 2+ cards, click "Apply tag…", and pick an existing **Custom Tab** chip from the pinned Tabs section → then open that tab and confirm those cards are now in it.
+7. Confirm the picker does NOT flash-open-then-close when "Apply tag…" is clicked (the `.bulk-tag-btn` outside-click exclusion from Task 1).
 
 - [ ] **Step 5: Commit (only if Step 3 changed `pwa/sw.js`)**
 
