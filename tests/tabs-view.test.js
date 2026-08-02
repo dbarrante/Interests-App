@@ -2,9 +2,11 @@
 // nav view (tabsFilteredList — critically, it must preserve each imported card's
 // REAL index into `imported`, not a compacted 0..n index, since impCardHTML's
 // buttons are all wired to that real index), plus showTab's wiring (nav array +
-// catBar visibility) and openTab's state transition. Full DOM rendering
-// (renderTabsView's innerHTML) is exercised by a manual smoke check per this
-// repo's convention for innerHTML-heavy view functions (see tag-editing-render's
+// catBar visibility) and openTab's state transition. renderTabsView's empty-state
+// branch is exercised by a real functional invocation (loadRenderTabsView, below —
+// stubs out the DOM/card-render dependencies since list.length===0 never reaches
+// them); its populated card-grid branch is still left to manual smoke-testing per
+// this repo's convention for innerHTML-heavy view functions (see tag-editing-render's
 // sibling scope — pure logic gets unit tests, DOM string-building gets smoke-tested).
 const assert = require("assert");
 const fs = require("fs");
@@ -38,6 +40,33 @@ function loadOpenTab(src, initialOpenTabId, log){
     fn(src, "openTab") + "\nreturn { openTab, get: () => openTabId };"
   );
   return factory(initialOpenTabId, { scrollTo: () => {} }, () => log.push("rendered"), false, new Set());
+}
+
+// Full functional invocation of renderTabsView (not just a source-shape regex) so the
+// empty-state tests below actually exercise the real narrowed/tabCardCount logic against
+// real data, the same way tests/tabs-final-review-fixes.test.js drives impDrop/impSave/etc.
+// list.length===0 in both scenarios below, so list.map's per-card body (cardHTML,
+// impCardHTML, researchPanelHTML, tabCardWrapper, newId, Store) is never reached and
+// deliberately isn't stubbed — if it ever executes, that itself is a bug.
+function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, CATS }){
+  const factory = new Function(
+    "document", "tabs", "openTabId", "filterCat", "tabSelMode", "tabSelPicks",
+    "imported", "saved", "CATS", "save", "esc", "tabSuggestPanelHTML", "attachCardImages",
+    fn(src, "tabCardCount") + "\n" +
+    fn(src, "cardHasTag") + "\n" +
+    fn(src, "tabsFilteredList") + "\n" +
+    fn(src, "renderTabsView") + "\nreturn renderTabsView;"
+  );
+  const view = { innerHTML: "" };
+  const documentMock = { getElementById: (id) => id === "view-tabs" ? view : null };
+  const esc = (s) => s == null ? "" : String(s); // fixture names below need no HTML-escaping
+  const renderTabsView = factory(
+    documentMock, tabs, openTabId, filterCat, false, new Set(),
+    imported || [], saved || [], CATS || [], () => {}, esc,
+    () => "", () => {}
+  );
+  renderTabsView();
+  return view.innerHTML;
 }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
@@ -87,28 +116,46 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.doesNotMatch(body, /t===["']settings["']\s*\|\|\s*t===["']tabs["']/);
   });
 
-  t(label + ": setFilter re-renders the Tabs view when curTab is tabs", () => {
-    const log = [];
+  function loadSetFilter(src, curTab, tabSelMode, tabSelPicks, log){
     const factory = new Function(
       "curTab", "filterCat", "mobileFilterOpen", "save", "renderCatBar", "renderSaved", "renderStumble", "renderTabsView",
-      fn(src, "setFilter") + "\nreturn setFilter;"
+      "tabSelMode", "tabSelPicks",
+      fn(src, "setFilter") + "\nreturn { setFilter, getSelMode: () => tabSelMode, getSelPicks: () => tabSelPicks };"
     );
-    const setFilter = factory("tabs", "", false, () => {}, () => {}, () => log.push("saved"), () => log.push("stumble"), () => log.push("tabs"));
+    return factory(curTab, "", false, () => {}, () => {}, () => log.push("saved"), () => log.push("stumble"), () => log.push("tabs"), tabSelMode, tabSelPicks);
+  }
+
+  t(label + ": setFilter re-renders the Tabs view when curTab is tabs", () => {
+    const log = [];
+    const { setFilter } = loadSetFilter(src, "tabs", false, new Set(), log);
     setFilter("personal");
     assert.deepStrictEqual(log, ["tabs"]);
   });
 
   t(label + ": setFilter still only renders Saved for curTab=saved, Stumble for curTab=stumble (unchanged)", () => {
     const log = [];
-    const factory = new Function(
-      "curTab", "filterCat", "mobileFilterOpen", "save", "renderCatBar", "renderSaved", "renderStumble", "renderTabsView",
-      fn(src, "setFilter") + "\nreturn setFilter;"
-    );
-    const setFilterSaved = factory("saved", "", false, () => {}, () => {}, () => log.push("saved"), () => log.push("stumble"), () => log.push("tabs"));
-    setFilterSaved("personal");
-    const setFilterStumble = factory("stumble", "", false, () => {}, () => {}, () => log.push("saved"), () => log.push("stumble"), () => log.push("tabs"));
-    setFilterStumble("personal");
+    loadSetFilter(src, "saved", false, new Set(), log).setFilter("personal");
+    loadSetFilter(src, "stumble", false, new Set(), log).setFilter("personal");
     assert.deepStrictEqual(log, ["saved", "stumble"]);
+  });
+
+  t(label + ": setFilter clears an active Tabs selection (mode + picks) when the category filter changes — a stale pick count on the destructive 'Remove from tab' button would otherwise act on cards no longer visible", () => {
+    const log = [];
+    const picks = new Set(["saved:s0", "imported:5"]);
+    const api = loadSetFilter(src, "tabs", true, picks, log);
+    api.setFilter("personal");
+    assert.strictEqual(api.getSelMode(), false, "tabSelMode must be cleared");
+    assert.strictEqual(api.getSelPicks().size, 0, "tabSelPicks must be cleared");
+    assert.deepStrictEqual(log, ["tabs"], "must still re-render the Tabs view");
+  });
+
+  t(label + ": setFilter does NOT touch tabSelMode/tabSelPicks for curTab=saved or curTab=stumble (unchanged)", () => {
+    const log = [];
+    const savedPicks = new Set(["x"]);
+    const savedApi = loadSetFilter(src, "saved", true, savedPicks, log);
+    savedApi.setFilter("personal");
+    assert.strictEqual(savedApi.getSelMode(), true);
+    assert.strictEqual(savedApi.getSelPicks().size, 1);
   });
 
   t(label + ": setView re-renders the Tabs view when curTab is tabs", () => {
@@ -182,12 +229,40 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src, /id="view-tabs"/);
   });
 
-  t(label + ": renderTabsView's empty state distinguishes a category filter from a truly empty tab", () => {
+  t(label + ": renderTabsView's empty state ternary is keyed on a narrowed flag, not bare filterCat", () => {
     // A tab narrowed to zero cards by the active category filter must not tell
     // the user the tab itself is empty (renderSaved already sets this precedent
-    // at "Nothing saved${filterCat?\" in this category\":\" yet\"}").
+    // at "Nothing saved${filterCat?\" in this category\":\" yet\"}") — but bare
+    // filterCat is truthy even when the tab is GENUINELY empty (zero cards
+    // total), so the ternary must key off a derived "narrowed" flag instead.
     const body = fn(src, "renderTabsView");
-    assert.match(body, /Nothing in ["'`].*filterCat\?["'] in this category["']:["'] yet["']/);
+    assert.match(body, /Nothing in ["'`].*narrowed\?["'] in this category["']:["'] yet["']/);
+  });
+
+  t(label + ": renderTabsView empty state — genuinely empty tab (zero total cards) with an active filterCat shows the 'yet'/add-cards message, not 'in this category'", () => {
+    // The bug: a brand-new tab (or any tab with zero cards, period) while some
+    // OTHER category filter happens to be active must not blame the filter —
+    // clearing it would reveal nothing, and the user never learns the real
+    // fix (add cards via the tag picker's Tabs section).
+    const tabs = [{ id: "t1", name: "Empty Tab", tag: "empty-tag", reserved: false }];
+    const CATS = [{ key: "personal", name: "Personal projects & hobbies" }];
+    const rendered = loadRenderTabsView(src, { tabs, openTabId: "t1", filterCat: "personal", imported: [], saved: [], CATS });
+    assert.match(rendered, /Nothing in "Empty Tab" yet/, "must use the 'yet' wording when the tab has zero cards, regardless of the active filter");
+    assert.doesNotMatch(rendered, /in this category/, "must not blame the category filter when the tab is genuinely empty");
+    assert.match(rendered, /Add cards from Saved or Imported using the tag picker's Tabs section\./);
+  });
+
+  t(label + ": renderTabsView empty state — tab has cards but the active filterCat excludes all of them shows 'in this category'", () => {
+    // Pinning the other branch: a tab that DOES have cards, all just outside
+    // the active category filter, must still point the user at clearing the
+    // filter (the message this task's fix must not have broken).
+    const tabs = [{ id: "t2", name: "Some Tab", tag: "some-tag", reserved: false }];
+    const CATS = [{ key: "personal", name: "Personal projects & hobbies" }, { key: "work", name: "Work initiatives" }];
+    const imported = [{ tags: ["some-tag"], category: "Work initiatives" }];
+    const rendered = loadRenderTabsView(src, { tabs, openTabId: "t2", filterCat: "personal", imported, saved: [], CATS });
+    assert.match(rendered, /Nothing in "Some Tab" in this category/, "must blame the filter when the tab genuinely has cards outside it");
+    assert.match(rendered, /Clear the category filter above to see everything in this tab\./);
+    assert.doesNotMatch(rendered, /Some Tab" yet/);
   });
 }
 
