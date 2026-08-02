@@ -3943,6 +3943,20 @@ function toggleResearchPanel(scope, id){
   _panelCollapsed.has(key) ? _panelCollapsed.delete(key) : _panelCollapsed.add(key);
   renderTabsView();
 }
+async function exportCardToNotion(scope, id){
+  const it = _researchCard(scope, id); if(!it) return;
+  let status;
+  try { status = await Store.getNotionStatus(); } catch(e){ toast("Couldn't reach Notion export — try again", 4000); return; }
+  if(!status || (!status.hasToken && !status.hasParent)){ toast("Add your Notion integration in Settings first", 5000); return; }
+  if(!status.hasToken){ toast("Add your Notion integration secret in Settings first", 5000); return; }
+  if(!status.hasParent){ toast("Set a target Notion page in Settings first", 5000); return; }
+  const payload = { title: it.title, url: it.url||"", article: (it.research&&it.research.article)||null, qa: (it.research&&it.research.qa)||[] };
+  toast("Exporting to Notion…", 3000);
+  let res;
+  try { res = await Store.exportToNotion(payload); } catch(e){ toast("Export failed — try again", 4000); return; }
+  if(!res || res.ok===false){ toast((res&&(res.reason||res.error))||"Export failed", 6000); return; }
+  toast("Exported to Notion — click to open", 6000, ()=>window.open(res.pageUrl,"_blank","noopener"));
+}
 function researchPanelHTML(scope, it){
   const key = scope+":"+it.id;
   const collapsed = _panelCollapsed.has(key);
@@ -3951,6 +3965,7 @@ function researchPanelHTML(scope, it){
   const busyOp = _researchBusy.get(key);   // undefined | "article" | "qa"
   const busy = !!busyOp;
   const art = it.research && it.research.article;
+  const canExport = !!art || !!((it.research && it.research.qa) || []).length;
   let articleHtml;
   if(!art){
     articleHtml = busy
@@ -4003,6 +4018,7 @@ function researchPanelHTML(scope, it){
       <button ${busy?"disabled":""} onclick="askQuestion('${scope}','${it.id}')">${busy?"…":"Ask"}</button>
     </div>
     ${qaList}
+    ${canExport ? `<div style="margin-top:10px"><button class="btn-ghost" onclick="exportCardToNotion('${scope}','${it.id}')">Export to Notion</button></div>` : ""}
   </div>`;
 }
 function toggleArticleExpanded(scope, id){

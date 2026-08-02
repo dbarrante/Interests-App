@@ -39,6 +39,21 @@ function loadGenerateArticle(src, state, callAI) {
   );
 }
 
+function loadExportCardToNotion(src, state) {
+  const body = [
+    fn(src, "_researchCard"),
+    fn(src, "exportCardToNotion"),
+  ].join("\n");
+  const factory = new Function(
+    "imported", "saved", "toast", "Store", "window",
+    body + "\nreturn { exportCardToNotion: exportCardToNotion };"
+  );
+  return factory(
+    state.imported || [], state.saved || [],
+    state.toast || (()=>{}), state.Store || {}, state.window || { open: () => {} }
+  );
+}
+
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": generateArticle writes research.article from a parsed AI response", async () => {
     const impArr = [{ id: "i0", title: "Ferrofluid displays" }];
@@ -258,6 +273,218 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const it = { id: "i0", research: null };
     const out = researchPanelHTML("imported", it);
     assert.match(out, /onkeydown="if\(event\.key==='Enter'\)askQuestion\('imported','i0'\)"/);
+  });
+
+  t(label + ": researchPanelHTML renders an Export to Notion button when an article exists (Task 6)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: { article: { text: "Some article text.", sources: [], generatedAt: 1 }, qa: [] } };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /exportCardToNotion\('imported','i0'\)/);
+    assert.match(out, /Export to Notion/);
+  });
+
+  t(label + ": researchPanelHTML renders the Export to Notion button when there's no article but Q&A exists (Task 6)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: { article: null, qa: [{ question: "Q", answer: "A", sources: [], answeredAt: 1 }] } };
+    const out = researchPanelHTML("imported", it);
+    assert.match(out, /exportCardToNotion\('imported','i0'\)/);
+  });
+
+  t(label + ": researchPanelHTML does NOT render the Export to Notion button when there's no article and no Q&A (Task 6)", () => {
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: null };
+    const out = researchPanelHTML("imported", it);
+    assert.doesNotMatch(out, /exportCardToNotion/);
+    assert.doesNotMatch(out, /Export to Notion/);
+  });
+
+  t(label + ": researchPanelHTML does NOT render the Export to Notion button for an initialized-but-empty research object (article:null, qa:[]) (Task 6)", () => {
+    // Realistic empty state: it.research gets initialized by generateArticle/
+    // askQuestion, then a card can end up with article:null (never generated)
+    // and qa:[] (last Q&A entry deleted via deleteQaEntry) — distinct from
+    // research:null itself, which the case above already covers.
+    const factory = new Function(
+      "_panelCollapsed", "_researchBusy", "_articleEditing", "_articleExpanded", "_articleDrafts", "_qaDrafts", "esc", "domain",
+      fn(src, "researchPanelHTML") + "\nreturn researchPanelHTML;"
+    );
+    const researchPanelHTML = factory(new Set(), new Map(), new Set(), new Set(), {}, {}, (s)=>s, ()=>"");
+    const it = { id: "i0", research: { article: null, qa: [] } };
+    const out = researchPanelHTML("imported", it);
+    assert.doesNotMatch(out, /exportCardToNotion/);
+    assert.doesNotMatch(out, /Export to Notion/);
+  });
+
+  t(label + ": exportCardToNotion is a no-op for an unknown card id (Task 6)", async () => {
+    const calls = [];
+    const api = loadExportCardToNotion(src, {
+      imported: [],
+      Store: { getNotionStatus: async () => { calls.push("status"); return { hasToken: true, hasParent: true }; } },
+    });
+    await api.exportCardToNotion("imported", "nope");
+    assert.strictEqual(calls.length, 0, "must not even check Notion status for an unresolved card");
+  });
+
+  t(label + ": exportCardToNotion toasts and does not export when neither token nor parent are configured (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", url: "https://x.example", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    let exportCalled = false;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: false, hasParent: false }),
+        exportToNotion: async () => { exportCalled = true; return { ok: true, pageUrl: "https://notion.so/x" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.strictEqual(exportCalled, false);
+    assert.ok(toasts.length && /Notion integration/i.test(toasts[0]) && /Settings/.test(toasts[0]));
+  });
+
+  t(label + ": exportCardToNotion toasts a token-specific message when only the token is missing (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    let exportCalled = false;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: false, hasParent: true }),
+        exportToNotion: async () => { exportCalled = true; return { ok: true, pageUrl: "https://notion.so/x" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.strictEqual(exportCalled, false);
+    assert.ok(toasts.length && /secret/i.test(toasts[0]));
+  });
+
+  t(label + ": exportCardToNotion toasts a parent-page-specific message when only the parent page is missing (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    let exportCalled = false;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: false }),
+        exportToNotion: async () => { exportCalled = true; return { ok: true, pageUrl: "https://notion.so/x" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.strictEqual(exportCalled, false);
+    assert.ok(toasts.length && /target Notion page/i.test(toasts[toasts.length - 1]));
+  });
+
+  t(label + ": exportCardToNotion builds the payload from it.research and calls Store.exportToNotion on success (Task 6)", async () => {
+    const impArr = [{
+      id: "i0", title: "Ferrofluid displays", url: "https://example.com/f",
+      research: { article: { text: "Article body.", sources: ["https://s.example"], generatedAt: 1 }, qa: [{ question: "Q1", answer: "A1", sources: [], answeredAt: 1 }] },
+    }];
+    const toasts = [];
+    let sentPayload = null;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: true }),
+        exportToNotion: async (payload) => { sentPayload = payload; return { ok: true, pageUrl: "https://notion.so/abc" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.deepStrictEqual(sentPayload, {
+      title: "Ferrofluid displays", url: "https://example.com/f",
+      article: { text: "Article body.", sources: ["https://s.example"], generatedAt: 1 },
+      qa: [{ question: "Q1", answer: "A1", sources: [], answeredAt: 1 }],
+    });
+  });
+
+  t(label + ": exportCardToNotion defaults url/article/qa when absent, still calling Store.exportToNotion (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "No URL card", research: { article: null, qa: [{ question: "Q", answer: "A", sources: [], answeredAt: 1 }] } }];
+    let sentPayload = null;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr,
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: true }),
+        exportToNotion: async (payload) => { sentPayload = payload; return { ok: true, pageUrl: "https://notion.so/abc" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.strictEqual(sentPayload.url, "");
+    assert.strictEqual(sentPayload.article, null);
+    assert.deepStrictEqual(sentPayload.qa, [{ question: "Q", answer: "A", sources: [], answeredAt: 1 }]);
+  });
+
+  t(label + ": exportCardToNotion toasts success including the returned pageUrl, openable via the toast's onclick (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    const opened = [];
+    const api = loadExportCardToNotion(src, {
+      imported: impArr,
+      toast: (m, ms, onclick) => toasts.push({ m, onclick }),
+      window: { open: (...args) => opened.push(args) },
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: true }),
+        exportToNotion: async () => ({ ok: true, pageUrl: "https://notion.so/abc" }),
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    const last = toasts[toasts.length - 1];
+    assert.ok(last, "expected a success toast");
+    assert.strictEqual(typeof last.onclick, "function", "success toast must be clickable to open the page (or otherwise verifiably carry pageUrl)");
+    last.onclick();
+    assert.ok(opened.length === 1 && opened[0][0] === "https://notion.so/abc", "clicking the toast must open the returned pageUrl");
+  });
+
+  t(label + ": exportCardToNotion surfaces res.reason on a {ok:false, reason} response, e.g. the PWA stub (Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: true }),
+        exportToNotion: async () => ({ ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");
+    assert.ok(toasts.some(m => /Not applicable on iPad/.test(m)));
+  });
+
+  t(label + ": exportCardToNotion never throws when Store.getNotionStatus rejects (network hiccup, Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    let exportCalled = false;
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => { throw new Error("network down"); },
+        exportToNotion: async () => { exportCalled = true; return { ok: true, pageUrl: "x" }; },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");   // must resolve, not reject
+    assert.strictEqual(exportCalled, false);
+    assert.ok(toasts.length);
+  });
+
+  t(label + ": exportCardToNotion never throws when Store.exportToNotion rejects (network hiccup, Task 6)", async () => {
+    const impArr = [{ id: "i0", title: "X", research: { article: { text: "a", sources: [], generatedAt: 1 }, qa: [] } }];
+    const toasts = [];
+    const api = loadExportCardToNotion(src, {
+      imported: impArr, toast: (m) => toasts.push(m),
+      Store: {
+        getNotionStatus: async () => ({ hasToken: true, hasParent: true }),
+        exportToNotion: async () => { throw new Error("fetch failed"); },
+      },
+    });
+    await api.exportCardToNotion("imported", "i0");   // must resolve, not reject
+    assert.ok(toasts.some(m => /[Ee]xport/.test(m)));
   });
 }
 

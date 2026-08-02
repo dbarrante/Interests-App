@@ -18,6 +18,7 @@ const FNS = [
   "toggleArticleEdit", "saveArticleEdit",
   "askQuestion", "deleteQaEntry",
   "researchPanelHTML", "toggleResearchPanel",
+  "exportCardToNotion",
 ];
 
 for (const name of FNS) {
