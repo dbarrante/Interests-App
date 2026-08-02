@@ -3668,7 +3668,7 @@ function renderTabsView(){
   }
   const manageHtml = !t ? "" : (t.reserved ? "" : `<button class="btn btn-ghost" onclick="renameTabPrompt('${t.id}')">Rename</button><button class="btn btn-ghost" onclick="deleteTabPrompt('${t.id}')">Remove tab</button>`)
     + (t ? (tabSelMode
-        ? `<button class="btn btn-ghost" onclick="removeTabPicksFromTab()" ${tabSelPicks.size?"":"disabled"}>Remove from tab (${tabSelPicks.size})</button><button class="btn btn-ghost" onclick="toggleTabSelMode()">Done</button>`
+        ? `<button class="btn btn-ghost bulk-tag-btn" onclick="openTabBulkTagPicker(event)" ${tabSelPicks.size?"":"disabled"}>Apply tag…</button><button class="btn btn-ghost" onclick="removeTabPicksFromTab()" ${tabSelPicks.size?"":"disabled"}>Remove from tab (${tabSelPicks.size})</button><button class="btn btn-ghost" onclick="toggleTabSelMode()">Done</button>`
         : `<button class="btn btn-ghost" onclick="toggleTabSelMode()">&#9745; Select</button><button class="btn btn-ghost" onclick="openTabSuggest()">&#10024; Suggest cards</button>`) : "");
   v.innerHTML = `<div class="tabbar-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">${pills}</div>` +
     (t ? `<div style="display:flex;gap:8px;margin-bottom:10px">${manageHtml}</div>` : "") +
@@ -4014,6 +4014,23 @@ function removeTabPicksFromTab(){
   tabSelMode=false; tabSelPicks.clear();
   renderTabsView();
   toast(n?("Removed "+n+" card"+(n>1?"s":"")+" from "+t.name):"Nothing removed");
+}
+function openTabBulkTagPicker(ev){
+  if(!tabSelPicks.size) return;
+  const items = [];
+  tabSelPicks.forEach(key=>{
+    const sep = key.indexOf(":");
+    const scope = key.slice(0,sep), id = key.slice(sep+1);
+    const it = scope==="saved" ? saved.find(c=>c&&c.id===id) : imported.find(c=>c&&c.id===id);
+    if(it) items.push(it);
+  });
+  openBulkTagPicker(items, (n,tag)=>{
+    Store.putCards(imported);
+    Store.putSaved(saved);
+    tabSelMode=false; tabSelPicks.clear();
+    renderTabsView();
+    toast(n?("Tagged "+n+" card"+(n>1?"s":"")+" with "+tag):"Already tagged "+tag);
+  }, ev);
 }
 // The single-card ✕ on a card shown INSIDE a tab: unlike impDrop/unsaveItem (the
 // same button's meaning in Imported/Saved, which permanently delete the card),

@@ -169,6 +169,62 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const body = fn(src, "showTab");
     assert.match(body, /if\(t===["']tabs["']\)\{\s*selMode=false;\s*selPicks\.clear\(\);.*savedSelMode=false;\s*savedSelPicks\.clear\(\);.*renderTabsView\(\)/);
   });
+
+  t(label + ": openTabBulkTagPicker resolves both imported: and saved: composite keys into live items", () => {
+    const importedArr = [{ id: "i0", tags: [] }, { id: "i1", tags: [] }];
+    const savedArr = [{ id: "s0", tags: [] }];
+    let openedWith = null;
+    const factory = new Function(
+      "imported", "saved", "tabSelPicks", "openBulkTagPicker",
+      fn(src, "openTabBulkTagPicker") + "\nreturn openTabBulkTagPicker;"
+    );
+    const tabSelPicks = new Set(["imported:i1", "saved:s0"]);
+    const openTabBulkTagPicker = factory(importedArr, savedArr, tabSelPicks, (items) => { openedWith = items; });
+    openTabBulkTagPicker({});
+    assert.strictEqual(openedWith.length, 2);
+    assert.ok(openedWith.includes(importedArr[1]));
+    assert.ok(openedWith.includes(savedArr[0]));
+  });
+
+  t(label + ": openTabBulkTagPicker does nothing when nothing is picked", () => {
+    let called = false;
+    const factory = new Function(
+      "imported", "saved", "tabSelPicks", "openBulkTagPicker",
+      fn(src, "openTabBulkTagPicker") + "\nreturn openTabBulkTagPicker;"
+    );
+    const openTabBulkTagPicker = factory([], [], new Set(), () => { called = true; });
+    openTabBulkTagPicker({});
+    assert.strictEqual(called, false);
+  });
+
+  t(label + ": openTabBulkTagPicker's onDone persists both arrays, toasts, and exits tab-select mode", () => {
+    const importedArr = [{ id: "i0", tags: [] }];
+    const savedArr = [{ id: "s0", tags: [] }];
+    const calls = [];
+    const factory = new Function(
+      "imported", "saved", "tabSelPicks", "tabSelMode", "openBulkTagPicker", "Store", "toast", "renderTabsView",
+      fn(src, "openTabBulkTagPicker") + "\nreturn openTabBulkTagPicker;"
+    );
+    const openTabBulkTagPicker = factory(
+      importedArr, savedArr, new Set(["imported:i0", "saved:s0"]), true,
+      (items, onDone) => onDone(2, "travel"),
+      { putCards: (arr) => calls.push(["putCards", arr]), putSaved: (arr) => calls.push(["putSaved", arr]) },
+      (msg) => calls.push(["toast", msg]),
+      () => calls.push("render")
+    );
+    openTabBulkTagPicker({});
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putCards"));
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "putSaved"));
+    assert.ok(calls.some(c => Array.isArray(c) && c[0] === "toast" && /travel/.test(c[1])));
+    assert.ok(calls.includes("render"));
+  });
+
+  t(label + ": the open-Tab view's select-mode toolbar has both Apply-tag and the existing Remove-from-tab actions", () => {
+    const body = fn(src, "renderTabsView");
+    assert.match(body, /openTabBulkTagPicker\(event\)/);
+    assert.match(body, /bulk-tag-btn/);
+    assert.match(body, /removeTabPicksFromTab\(\)/);   // existing action, must survive unchanged
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");
