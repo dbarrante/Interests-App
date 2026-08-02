@@ -23,6 +23,7 @@ const news = require("./news");
 const autoimport = require("./autoimport");
 const captureQueue = require("./capture-queue");
 const cardimage = require("./cardimage");
+const notion = require("./notion");
 
 const WEB_DIR = path.join(__dirname, "..", "web");
 const VERSION = require("../package.json").version;
@@ -1109,6 +1110,20 @@ function createServer(ctx) {
     config.setNotionConfig(fields);
     const c = config.getNotionConfig();
     res.json({ ok: true, hasToken: !!c.token, hasParent: !!c.parentPageId });
+  });
+
+  app.post("/api/notion/export", async (req, res) => {
+    const c = config.getNotionConfig();
+    if (!c.token) { res.json({ ok: false, error: "no_token" }); return; }
+    if (!c.parentPageId) { res.json({ ok: false, error: "no_parent" }); return; }
+    const payload = {
+      title: (req.body && req.body.title) || "",
+      url: (req.body && req.body.url) || "",
+      article: (req.body && req.body.article) || null,
+      qa: (req.body && Array.isArray(req.body.qa)) ? req.body.qa : []
+    };
+    const result = await notion.createPage(c.token, c.parentPageId, payload);
+    res.json(result);
   });
 
   app.get("/api/safebrowsing-verify", async (req, res) => {

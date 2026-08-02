@@ -60,4 +60,30 @@ function buildPageBody(parentPageId, payload) {
   };
 }
 
-module.exports = { buildPageBody, splitIntoRichText };
+const NOTION_VERSION = "2022-06-28";
+
+// Actual outbound call — separated from buildPageBody so the shaping logic
+// (Task 2) stays testable without a network mock. Never throws: any failure
+// (HTTP error or network exception) resolves {ok:false, error}, matching this
+// project's fail-soft convention for third-party calls (see core/safebrowse.js).
+async function createPage(token, parentPageId, payload) {
+  const body = buildPageBody(parentPageId, payload);
+  try {
+    const res = await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+        "Notion-Version": NOTION_VERSION
+      },
+      body: JSON.stringify(body)
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: (json && json.message) || ("Notion API error " + res.status) };
+    return { ok: true, pageUrl: json.url || "" };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+module.exports = { buildPageBody, splitIntoRichText, createPage };
