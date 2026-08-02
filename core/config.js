@@ -245,6 +245,33 @@ function setSafeBrowsingKey(key) {
   saveConfig(cfg);
 }
 
+function getNotionConfig() {
+  const cfg = loadConfig();
+  return {
+    token: typeof cfg.notionToken === "string" ? cfg.notionToken : "",
+    parentPageId: typeof cfg.notionParentPageId === "string" ? cfg.notionParentPageId : ""
+  };
+}
+
+// Partial update: only keys PRESENT on `fields` are changed. A present key with
+// a non-string/empty value clears that field; an OMITTED key leaves the
+// currently-stored value untouched. This exists because the browser never
+// re-receives the real token once set (Settings shows a mask) — a form save
+// that only changed the parent page must not have any way to accidentally
+// wipe the token, and "the browser resends what it was never given" isn't an
+// option, so the contract has to be presence-based instead of value-based.
+function setNotionConfig(fields) {
+  const f = fields || {};
+  const cfg = loadConfig();
+  if (Object.prototype.hasOwnProperty.call(f, "token")) {
+    cfg.notionToken = typeof f.token === "string" ? f.token.trim() : "";
+  }
+  if (Object.prototype.hasOwnProperty.call(f, "parentPageId")) {
+    cfg.notionParentPageId = typeof f.parentPageId === "string" ? f.parentPageId.trim() : "";
+  }
+  saveConfig(cfg);
+}
+
 module.exports = {
   appDataDir,
   configPath,
@@ -263,6 +290,8 @@ module.exports = {
   setPairingRequired,
   getSafeBrowsingKey,
   setSafeBrowsingKey,
+  getNotionConfig,
+  setNotionConfig,
   isTempPath,
   recordLastCounts,
   getLastCounts,

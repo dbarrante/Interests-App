@@ -1094,6 +1094,23 @@ function createServer(ctx) {
     res.json({ ok: true, hasKey: !!key });
   });
 
+  app.get("/api/notion-config", (req, res) => {
+    const c = config.getNotionConfig();
+    res.json({ hasToken: !!c.token, hasParent: !!c.parentPageId });
+  });
+
+  app.post("/api/notion-config", (req, res) => {
+    // Forward only the keys the client actually included — config.setNotionConfig
+    // treats an omitted key as "leave unchanged" (see its own comment). Do NOT
+    // default missing keys to "" here, that would defeat the whole point.
+    const fields = {};
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, "token")) fields.token = req.body.token;
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, "parentPageId")) fields.parentPageId = req.body.parentPageId;
+    config.setNotionConfig(fields);
+    const c = config.getNotionConfig();
+    res.json({ ok: true, hasToken: !!c.token, hasParent: !!c.parentPageId });
+  });
+
   app.get("/api/safebrowsing-verify", async (req, res) => {
     try {
       const key = config.getSafeBrowsingKey();
