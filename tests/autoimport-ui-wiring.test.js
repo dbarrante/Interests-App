@@ -56,10 +56,23 @@ function ok(name, cond) { if (cond) { pass++; console.log("  ok  " + name); } el
 });
 
 // --- PWA status: visible, explicit, and read-only ----------------------------
+// This asserts membership in the parsed hide-list array rather than pinning its
+// exact literal text: the point of the test is "secAutoImport must NOT be
+// hidden", and pinning the full literal made every legitimate ADDITION to the
+// list a false failure (it did, when notionExportBlock was added — 2026-08-02
+// final-review fix wave). tests/notion-settings-ui.test.js parses the same list
+// with the same regex to assert the opposite direction for notionExportBlock.
+function iPadHideList(src) {
+  const m = /if\s*\(window\.IA_IDB\)\s*\{\s*(\[[^\]]*\])\.forEach/.exec(src);
+  return m ? JSON.parse(m[1]) : null;
+}
 [web, pwa].forEach((src, i) => {
+  const ids = iPadHideList(src);
+  ok(`${i ? "pwa" : "web"}: desktop-only hide list is present and parseable`, Array.isArray(ids) && ids.length > 0);
   ok(`${i ? "pwa" : "web"}: desktop-only hide list leaves secAutoImport visible`,
-    /\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"\s*\]\.forEach/.test(src) &&
-    !/\[\s*"secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","secAutoImport"\s*\]\.forEach/.test(src));
+    Array.isArray(ids) && !ids.includes("secAutoImport"));
+  ok(`${i ? "pwa" : "web"}: desktop-only hide list still hides the known desktop-only sections`,
+    Array.isArray(ids) && ["secBrowserExt", "newsMixBlock", "sbKeyBlock", "secAppUpdates"].every((id) => ids.includes(id)));
 });
 ok("pwa: section explains that settings are read-only and checks run on Windows", /id="autoImportPwaNote"[\s\S]{0,500}?read-only[\s\S]{0,200}?Windows app[\s\S]{0,200}?browser extension/i.test(pwa));
 ok("pwa: renderSettings disables every auto-import control", /if\(window\.IA_IDB\)\{[\s\S]{0,900}?\["autoImportToggle","autoImportFbToggle","autoImportIgToggle","autoImportPinToggle","autoImportGsToggle","autoImportEvery"\][\s\S]{0,300}?\.disabled=true/.test(pwa));

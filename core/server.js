@@ -1127,8 +1127,20 @@ function createServer(ctx) {
       article: (req.body && req.body.article) || null,
       qa: (req.body && Array.isArray(req.body.qa)) ? req.body.qa : []
     };
-    const result = await notion.createPage(c.token, c.parentPageId, payload);
-    res.json(result);
+    // notion.createPage's own contract says it never rejects (it resolves
+    // {ok:false, error} for every failure mode, including a malformed payload).
+    // This try/catch does not trust that contract: every other async route in
+    // this file has one, and without it a future change inside createPage turns
+    // an unhandled rejection into a request that never gets a response. Log the
+    // exception only — never any part of `c` (it holds the Notion token) or
+    // `payload` (it holds the user's card content).
+    try {
+      const result = await notion.createPage(c.token, c.parentPageId, payload);
+      res.json(result);
+    } catch (e) {
+      console.error("notion export failed:", e);
+      res.json({ ok: false, error: "export failed" });
+    }
   });
 
   app.get("/api/safebrowsing-verify", async (req, res) => {

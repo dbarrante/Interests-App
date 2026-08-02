@@ -50,6 +50,23 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.ok(r.error);
   });
 
+  // Fix 3 (final-review fix wave): pin the outbound fetch's redirect behavior.
+  // Without an explicit `redirect`, fetch defaults to "follow" — whether the
+  // Authorization: Bearer <token> header survives a cross-origin redirect then
+  // depends on the JS runtime's own stripping behavior, which is verified on
+  // recent Node but not on every Electron/Node build this app ships against.
+  // "error" fails closed instead: if api.notion.com ever redirects, the call
+  // fails rather than the runtime deciding whether to forward the token.
+  await t("createPage pins redirect:'error' so a redirect can never forward the Bearer token", async () => {
+    let capturedOpts;
+    global.fetch = async (url, opts) => {
+      capturedOpts = opts;
+      return { ok: true, json: async () => ({ url: "https://notion.so/abc123" }) };
+    };
+    await notion.createPage("secret_x", "p", { title: "T", url: "", article: null, qa: [] });
+    assert.strictEqual(capturedOpts.redirect, "error", "fetch options must pin redirect:'error' (fails closed)");
+  });
+
   global.fetch = realFetch;
   console.log(passed + " passed, " + failed + " failed");
   process.exitCode = failed ? 1 : 0;

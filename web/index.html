@@ -3872,6 +3872,9 @@ async function exportCardToNotion(scope, id){
   const it = _researchCard(scope, id); if(!it) return;
   let status;
   try { status = await Store.getNotionStatus(); } catch(e){ toast("Couldn't reach Notion export — try again", 4000); return; }
+  // A platform that can't do this at all (iPad/PWA) says so via {ok:false, reason} —
+  // surface that instead of pointing at a Settings section that's hidden there.
+  if(status && status.ok===false && status.reason){ toast(status.reason, 6000); return; }
   if(!status || (!status.hasToken && !status.hasParent)){ toast("Add your Notion integration in Settings first", 5000); return; }
   if(!status.hasToken){ toast("Add your Notion integration secret in Settings first", 5000); return; }
   if(!status.hasParent){ toast("Set a target Notion page in Settings first", 5000); return; }
@@ -3880,7 +3883,10 @@ async function exportCardToNotion(scope, id){
   let res;
   try { res = await Store.exportToNotion(payload); } catch(e){ toast("Export failed — try again", 4000); return; }
   if(!res || res.ok===false){ toast((res&&(res.reason||res.error))||"Export failed", 6000); return; }
-  toast("Exported to Notion — click to open", 6000, ()=>window.open(res.pageUrl,"_blank","noopener"));
+  // createPage defaults pageUrl to "" when Notion's response omits `url` — only
+  // promise a click-to-open when there is actually something to open.
+  if(res.pageUrl) toast("Exported to Notion — click to open", 6000, ()=>window.open(res.pageUrl,"_blank","noopener"));
+  else toast("Exported to Notion", 6000);
 }
 function researchPanelHTML(scope, it){
   const key = scope+":"+it.id;
@@ -8627,7 +8633,7 @@ setupPasteToCard();
 // preferences remain visible because ia_settings syncs them to Windows, where
 // the Core service and browser extension perform the checks.
 if (window.IA_IDB) {
-  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates"].forEach(function(id){
+  ["secBrowserExt","newsMixBlock","sbKeyBlock","secAppUpdates","notionExportBlock"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.style.display = "none";
   });

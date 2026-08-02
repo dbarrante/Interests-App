@@ -67,5 +67,55 @@ t("buildPageBody with neither article nor qa still produces a valid body (title 
   assert.ok(body.children.length >= 1);
 });
 
+// --- final-review fix wave ---
+
+// Fix 6: the page title was the ONE string in the body not routed through
+// splitIntoRichText's 2000-char cap, so a >2000-char card title produced a
+// request Notion rejects outright (and, unlike a long body, with no partial
+// success). It must be capped like every other string.
+t("buildPageBody caps the page title at 2000 chars (Notion's rich_text limit)", () => {
+  const body = buildPageBody("p", { title: "T".repeat(2500), url: "", article: null, qa: [] });
+  const content = body.properties.title.title[0].text.content;
+  assert.strictEqual(typeof content, "string");
+  assert.strictEqual(content.length, 2000, "title must be sliced to 2000 chars, got " + content.length);
+  assert.strictEqual(content, "T".repeat(2000));
+});
+t("buildPageBody still falls back to 'Untitled' for a missing title", () => {
+  const body = buildPageBody("p", { url: "", article: null, qa: [] });
+  assert.strictEqual(body.properties.title.title[0].text.content, "Untitled");
+});
+t("buildPageBody coerces a non-string title to a string (never nests a raw object in properties)", () => {
+  const body = buildPageBody("p", { title: 42, url: "", article: null, qa: [] });
+  assert.strictEqual(body.properties.title.title[0].text.content, "42");
+});
+
+// Fix 4: bulletBlock built {content: url, link:{url}} straight from its argument,
+// unlike splitIntoRichText's String(text || "") coercion — a non-string entry in
+// a sources array nested verbatim into the outbound request body. Note the
+// entries below must be TRUTHY: sourceListBlocks does .filter(Boolean), so
+// null/""/0 never reach bulletBlock at all.
+t("buildPageBody coerces a non-string (number) source entry to a string", () => {
+  const body = buildPageBody("p", { title: "T", url: "", article: { text: "Body.", sources: [42] }, qa: [] });
+  const bullets = body.children.filter(b => b.type === "bulleted_list_item");
+  assert.strictEqual(bullets.length, 1);
+  const rt = bullets[0].bulleted_list_item.rich_text[0];
+  assert.strictEqual(typeof rt.text.content, "string", "content must be a string, got " + typeof rt.text.content);
+  assert.strictEqual(typeof rt.text.link.url, "string", "link.url must be a string, got " + typeof rt.text.link.url);
+  assert.strictEqual(rt.text.content, "42");
+  assert.strictEqual(rt.text.link.url, "42");
+});
+t("buildPageBody coerces a non-string (object) source entry in a Q&A sources array", () => {
+  const body = buildPageBody("p", { title: "T", url: "", article: null, qa: [
+    { question: "Q?", answer: "A.", sources: [{ href: "https://a.test/" }] }
+  ] });
+  const bullets = body.children.filter(b => b.type === "bulleted_list_item");
+  assert.strictEqual(bullets.length, 1);
+  const rt = bullets[0].bulleted_list_item.rich_text[0];
+  assert.strictEqual(typeof rt.text.content, "string", "content must be a string, got " + typeof rt.text.content);
+  assert.strictEqual(typeof rt.text.link.url, "string", "link.url must be a string, got " + typeof rt.text.link.url);
+  // Whole body must be free of any nested non-string in the bullet's text node.
+  assert.ok(!("href" in JSON.parse(JSON.stringify(rt.text.link))), "the raw object must not survive into link");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

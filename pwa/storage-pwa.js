@@ -263,7 +263,12 @@
     captureMeta: () => Promise.resolve([]),
 
     // --- Notion export: desktop-only (needs the local Core service), N/A on iPad ---
-    getNotionStatus: () => Promise.resolve({ hasToken: false, hasParent: false }),
+    // Carries the same {ok:false, reason} shape as its two siblings below: the
+    // research panel's "Export to Notion" button is gated on card content, not
+    // on platform, so it still renders here — exportCardToNotion reads this
+    // reason and shows it, instead of pointing the user at a Settings section
+    // that is hidden on iPad (see the window.IA_IDB hide list in index.html).
+    getNotionStatus: () => Promise.resolve({ hasToken: false, hasParent: false, ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
     setNotionConfig: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
     exportToNotion: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
 

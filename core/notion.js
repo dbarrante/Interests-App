@@ -28,8 +28,12 @@ function heading3Block(text) {
   return { object: "block", type: "heading_3", heading_3: { rich_text: splitIntoRichText(text) } };
 }
 
+// Coerces like splitIntoRichText does: a sources array is caller-supplied data
+// (it comes back from an AI provider), so a non-string entry — an object, a
+// number — must not nest verbatim into the outbound Notion request body.
 function bulletBlock(url) {
-  return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: [{ type: "text", text: { content: url, link: { url: url } } }] } };
+  const u = String(url || "");
+  return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: [{ type: "text", text: { content: u, link: { url: u } } }] } };
 }
 
 function sourceListBlocks(sources) {
@@ -55,7 +59,10 @@ function buildPageBody(parentPageId, payload) {
   });
   return {
     parent: { page_id: parentPageId },
-    properties: { title: { title: [{ text: { content: p.title || "Untitled" } }] } },
+    // The title is the one string that does NOT go through splitIntoRichText, so
+    // it needs its own coercion + 2000-char cap — Notion rejects the whole
+    // request if any rich_text segment is over the limit.
+    properties: { title: { title: [{ text: { content: String(p.title || "Untitled").slice(0, RICH_TEXT_LIMIT) } }] } },
     children: children
   };
 }
@@ -70,8 +77,9 @@ const NOTION_VERSION = "2022-06-28";
 // project's fail-soft convention for third-party calls (see
 // core/safebrowse.js). buildPageBody is deliberately called INSIDE this try
 // block, not before it, so a throw there is caught the same way as a fetch
-// failure — see the caller in core/server.js's /api/notion/export route,
-// which has no try/catch of its own and relies on this guarantee.
+// failure. The caller (core/server.js's /api/notion/export route) has its own
+// try/catch as well and deliberately does NOT depend on this guarantee — belt
+// and braces, matching every other async route in that file.
 async function createPage(token, parentPageId, payload) {
   try {
     const body = buildPageBody(parentPageId, payload);
@@ -82,7 +90,13 @@ async function createPage(token, parentPageId, payload) {
         "Authorization": "Bearer " + token,
         "Notion-Version": NOTION_VERSION
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      // Fail closed on any redirect. The default ("follow") would leave it to the
+      // JS runtime to decide whether the Authorization: Bearer <token> header
+      // survives a cross-origin hop — verified stripped on recent Node, but not
+      // verified on every Electron/Node build this app ships against. Notion's
+      // API does not redirect, so "error" costs nothing and removes the question.
+      redirect: "error"
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: (json && json.message) || ("Notion API error " + res.status) };
