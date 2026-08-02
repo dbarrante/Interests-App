@@ -50,6 +50,8 @@
     ,autoImportStatus: function () { return "/api/auto-import/status"; }
     ,pairingToken: function () { return "/api/pairing-token"; }
     ,pairingConfig: function () { return "/api/pairing-config"; }
+    ,notionConfig: function () { return "/api/notion-config"; }
+    ,notionExport: function () { return "/api/notion/export"; }
   };
 
   // Expose SE on the global (browser) so index.html can read /api/img/<id>.
@@ -203,6 +205,11 @@
       setSafeBrowsingKey: function (key) { return jsend("POST", SE.safeBrowsingKey(), { key: key || "" }); },
       verifySafeBrowsing: function () { return jget(SE.safebrowsingVerify()).then(function (j) { return (j && j.state) || "error"; }); },
       captureMeta: function (items, opts) { return jsend("POST", SE.captureMeta(), Object.assign({ items: items || [] }, opts || {})).then(function (j) { return (j && j.results) || []; }); },
+
+      // --- Notion export (desktop-only; core/notion.js) ---
+      getNotionStatus: function () { return jget(SE.notionConfig()); },
+      setNotionConfig: function (fields) { return jsend("POST", SE.notionConfig(), fields || {}); },
+      exportToNotion: function (payload) { return jsend("POST", SE.notionExport(), payload); },
 
       // --- browser stumble (renderer drains these; the extension owns the other side) ---
       getBrowserStumbleRequest: function () { return jget(SE.bstumbleRequest()).then(function (j) { return (j && j.request) || null; }); },

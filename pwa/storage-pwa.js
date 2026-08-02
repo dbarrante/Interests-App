@@ -262,6 +262,11 @@
     verifySafeBrowsing: () => Promise.resolve("error"),
     captureMeta: () => Promise.resolve([]),
 
+    // --- Notion export: desktop-only (needs the local Core service), N/A on iPad ---
+    getNotionStatus: () => Promise.resolve({ hasToken: false, hasParent: false }),
+    setNotionConfig: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
+    exportToNotion: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Notion export needs the desktop app's local service." }),
+
     // --- browser stumble bridge: N/A on iPad ---
     getBrowserStumbleRequest: () => Promise.resolve(null),
     clearBrowserStumbleRequest: () => Promise.resolve(),
