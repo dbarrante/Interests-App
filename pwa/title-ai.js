@@ -88,7 +88,27 @@
     return String(collection || "").trim() + " — saved from a Facebook collection";
   }
 
-  var api = { buildTitlePrompt: buildTitlePrompt, parseTitleReply: parseTitleReply, extractWeakContext: extractWeakContext, composeFallbackTitle: composeFallbackTitle };
+  // extractHashtags(rawTitle) — pull #word tokens out of an AI-generated
+  // title; returns { title, tags } where title has the tokens (and any
+  // resulting double-spaces) removed, and tags is the lowercase, deduped
+  // token list, UNCLEANED — bad-pattern rejection and canonicalization onto
+  // existing vocabulary is index.html's job (applyGeneratedTitle), since
+  // this module has no access to the library's tag state.
+  function extractHashtags(rawTitle) {
+    var text = String(rawTitle == null ? "" : rawTitle);
+    var found = text.match(/#(\w+)/g) || [];
+    var title = text.replace(/#\w+/g, "").replace(/\s{2,}/g, " ").trim();
+    var seen = {}, tags = [];
+    found.forEach(function (h) {
+      var tag = h.slice(1).toLowerCase();
+      if (!tag || tag.length > 40 || seen[tag]) return;
+      seen[tag] = 1;
+      tags.push(tag);
+    });
+    return { title: title, tags: tags };
+  }
+
+  var api = { buildTitlePrompt: buildTitlePrompt, parseTitleReply: parseTitleReply, extractWeakContext: extractWeakContext, composeFallbackTitle: composeFallbackTitle, extractHashtags: extractHashtags };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  if (root) { root.buildTitlePrompt = buildTitlePrompt; root.parseTitleReply = parseTitleReply; root.extractWeakContext = extractWeakContext; root.composeFallbackTitle = composeFallbackTitle; }
+  if (root) { root.buildTitlePrompt = buildTitlePrompt; root.parseTitleReply = parseTitleReply; root.extractWeakContext = extractWeakContext; root.composeFallbackTitle = composeFallbackTitle; root.extractHashtags = extractHashtags; }
 })(typeof self !== "undefined" ? self : this);

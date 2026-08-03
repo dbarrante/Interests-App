@@ -112,5 +112,42 @@ t("buildTitlePrompt: collection is included as supplementary context, not a stan
   assert.match(p, /context only/i);
 });
 
+// ---- extractHashtags ----
+t("extractHashtags: no hashtags -> title unchanged, no tags", () => {
+  const r = t2.extractHashtags("A Guide to Backyard Pizza Ovens");
+  assert.strictEqual(r.title, "A Guide to Backyard Pizza Ovens");
+  assert.deepStrictEqual(r.tags, []);
+});
+t("extractHashtags: strips multiple hashtags and collapses the resulting gaps", () => {
+  const r = t2.extractHashtags("Backyard Pizza Oven #diy #pizza Build");
+  assert.strictEqual(r.title, "Backyard Pizza Oven Build");
+  assert.deepStrictEqual(r.tags, ["diy", "pizza"]);
+});
+t("extractHashtags: lowercases and dedupes tags (case-insensitive)", () => {
+  const r = t2.extractHashtags("#DIY project #diy again #Diy");
+  assert.deepStrictEqual(r.tags, ["diy"]);
+});
+t("extractHashtags: a hashtag-only title collapses to an empty string (caller decides the fallback)", () => {
+  const r = t2.extractHashtags("#diy #pizza");
+  assert.strictEqual(r.title, "");
+  assert.deepStrictEqual(r.tags, ["diy", "pizza"]);
+});
+t("extractHashtags: a lone '#' with no word characters after it is not a tag", () => {
+  const r = t2.extractHashtags("Price is # 1 today");
+  assert.strictEqual(r.title, "Price is # 1 today");
+  assert.deepStrictEqual(r.tags, []);
+});
+t("extractHashtags: null/undefined/empty input -> empty title, no tags, no throw", () => {
+  assert.deepStrictEqual(t2.extractHashtags(null), { title: "", tags: [] });
+  assert.deepStrictEqual(t2.extractHashtags(undefined), { title: "", tags: [] });
+  assert.deepStrictEqual(t2.extractHashtags(""), { title: "", tags: [] });
+});
+t("extractHashtags: drops a token longer than 40 characters (defensive cap, matches aiSuggestTags' own tag length cap)", () => {
+  const longTag = "#" + "a".repeat(41);
+  const r = t2.extractHashtags("Title " + longTag + " end");
+  assert.deepStrictEqual(r.tags, []);
+  assert.strictEqual(r.title, "Title end");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
