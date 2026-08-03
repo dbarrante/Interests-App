@@ -3703,7 +3703,23 @@ function openConfigBackupImport(){
   const inp = document.getElementById("cfgBackupPw1");
   inp.onkeydown = e=>{ if(e.key==="Enter") submitConfigBackupImport(); else if(e.key==="Escape") closeConfigBackupModal(); };
 }
+// Guards submitConfigBackupImport against re-entry (data-safety review finding
+// on Task 5): the modal stays fully live -- file input, password field, and
+// the password field's Enter-to-resubmit onkeydown -- for the whole ~800ms
+// between a successful import and location.reload(). A second click on
+// Restore, or a second Enter, during that window would fire
+// submitConfigBackupImport() again; applyConfigPayload's
+// writeImportSafetySnapshot writes ONE fixed, overwritten snapshot file, so
+// the second call would snapshot the ALREADY-imported settings over the
+// user's real pre-import config -- permanently losing it from the one place
+// the modal promises it's recoverable. Scoped to this modal rather than
+// sharing the store-ops' _storeOpInFlight: that flag's UI (label switch,
+// disabled buttons) is hardcoded to backup/restore/move-store with no slot
+// for "importing config", so reusing it would mislabel the indicator and
+// needlessly block unrelated store ops while a config import is in flight.
+let _cfgImportInFlight = false;
 function submitConfigBackupImport(){
+  if(_cfgImportInFlight){ toast("Restore already in progress — please wait."); return; }
   const fileInput = document.getElementById("cfgRestoreFile");
   const pw = document.getElementById("cfgBackupPw1").value;
   const err = document.getElementById("cfgBackupErr");
@@ -3711,17 +3727,24 @@ function submitConfigBackupImport(){
   if(!file){ err.textContent = "Choose a file."; return; }
   if(!pw){ err.textContent = "Enter the password."; return; }
   err.textContent = "";
+  _cfgImportInFlight = true;
   const reader = new FileReader();
-  reader.onerror = function(){ err.textContent = "Couldn't read that file."; };
+  reader.onerror = function(){ err.textContent = "Couldn't read that file."; _cfgImportInFlight = false; };
   reader.onload = async function(){
     let envelope;
-    try{ envelope = JSON.parse(reader.result); }catch(e){ err.textContent = "That doesn't look like a valid configuration backup file."; return; }
+    try{ envelope = JSON.parse(reader.result); }catch(e){ err.textContent = "That doesn't look like a valid configuration backup file."; _cfgImportInFlight = false; return; }
     try{
       const res = await Store.importConfigBackup(pw, envelope);
       if(!res || res.ok===false){ err.textContent = (res&&(res.error||res.reason)) || "Restore failed."; return; }
+      // Close the modal (same as submitConfigBackupExport's success path)
+      // BEFORE the deferred reload -- this removes the Enter-to-resubmit
+      // handler and the password field well before the 800ms window closes,
+      // which is what actually closes the double-submit hole above.
+      closeConfigBackupModal();
       toast("Configuration restored — reloading…");
       setTimeout(()=>location.reload(), 800);
     }catch(e){ err.textContent = "Restore failed: "+(e&&e.message||e); }
+    finally{ _cfgImportInFlight = false; }
   };
   reader.readAsText(file);
 }
