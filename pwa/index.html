@@ -3545,6 +3545,35 @@ function removeFailSelected(){
 }
 function clearFailedFilter(){ impFailed=false; renderImportedKeepFocus(); }
 document.addEventListener("click", e=>{ if(!e.target.closest(".tag-drop")) closeMenus(); });
+// Shared "send a chunk of cards to the AI, get tags+category back" core.
+// autoTag (below) uses merge:false — its cards have no tags yet, so "set"
+// and "merge" are the same operation, and an empty AI response still falls
+// back to ["misc"] so every processed card ends up tagged. The AI-refresh
+// batch uses merge:true — its cards may already be tagged, so new tags are
+// ADDED (never replacing what's there), and an empty AI response leaves the
+// card's existing tags untouched rather than downgrading them to ["misc"].
+async function aiTagChunk(queue, opts){
+  const merge = !!(opts && opts.merge);
+  const prompt = `Tag each numbered saved item for an interest discovery app. For EACH item return 2-4 short lowercase keyword tags (1-2 words each, reusable across items — e.g. "3d printing", "bass fishing", "claude", "recipes", "linkedin") and the ONE best-fit category, chosen ONLY from this exact list: ${CATS.map(c=>c.name).join(" | ")}.
+Return ONLY a JSON array of ${queue.length} objects, same order, shape: [{"t":["tag1","tag2"],"c":"Category Name"}]
+
+${queue.map((q,i)=>(i+1)+". "+q.title+((q.desc||q.benefit)?" — "+(q.desc||q.benefit).slice(0,80):"")).join("\n")}`;
+  const text = await callAI(prompt);
+  const arr = parseJsonArray(text);
+  if(arr===null) throw new Error("No tags found in model response");
+  queue.forEach((q,i)=>{
+    const r=arr[i]||{};
+    const newTags = Array.isArray(r.t) ? r.t.filter(x=>typeof x==="string"&&x.trim()).slice(0,4).map(x=>x.trim().toLowerCase()) : [];
+    if(merge){
+      if(newTags.length) q.tags = Array.from(new Set([...(q.tags||[]), ...newTags]));
+    } else {
+      q.tags = newTags.length ? newTags : ["misc"];
+    }
+    const cat = catByName(String(r.c||"")).name;
+    if(q.category!==undefined) q.category = cat;
+    else q.cat = cat;
+  });
+}
 async function autoTag(limit){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const btn=document.getElementById("tagBtn");
@@ -3555,21 +3584,7 @@ async function autoTag(limit){
     while(done<cap){
       const queue = imported.filter(i=>!i.tags).concat(saved.filter(i=>!i.tags)).slice(0,40);
       if(!queue.length) break;
-      const prompt = `Tag each numbered saved item for an interest discovery app. For EACH item return 2-4 short lowercase keyword tags (1-2 words each, reusable across items — e.g. "3d printing", "bass fishing", "claude", "recipes", "linkedin") and the ONE best-fit category, chosen ONLY from this exact list: ${CATS.map(c=>c.name).join(" | ")}.
-Return ONLY a JSON array of ${queue.length} objects, same order, shape: [{"t":["tag1","tag2"],"c":"Category Name"}]
-
-${queue.map((q,i)=>(i+1)+". "+q.title+(q.desc?" — "+q.desc.slice(0,80):"")).join("\n")}`;
-      const text = await callAI(prompt);
-      const arr = parseJsonArray(text);
-      if(arr===null) throw new Error("No tags found in model response");
-      queue.forEach((q,i)=>{
-        const r=arr[i]||{};
-        q.tags = Array.isArray(r.t) ? r.t.filter(x=>typeof x==="string"&&x.trim()).slice(0,4).map(x=>x.trim().toLowerCase()) : [];
-        if(!q.tags.length) q.tags=["misc"];
-        const cat = catByName(String(r.c||"")).name;
-        if(q.category!==undefined) q.category = cat;
-        else q.cat = cat;
-      });
+      await aiTagChunk(queue, {merge:false});
       done += queue.length;
       Store.putCards(imported); persistAll();
       toast(done+" tagged…");
