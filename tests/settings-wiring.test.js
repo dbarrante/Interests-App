@@ -37,7 +37,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
   t(label + ": manual/auto/safety-gate backups all pass the configured retain count", () => {
     const sites = [
-      /doBackup\(manual\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
+      /doBackup\(manual, ?opts\)\{\s*try\{\s*const res = await Store\.backupNow\(Object\.assign\(\{keep: S\.backupRetainCount\|\|3\}, ?opts\|\|\{\}\)\)/,
       /verifiedSafetyBackup\(action\)\{\s*try\{\s*const res = await Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)/,
       /Store\.backupNow\(\{keep: S\.backupRetainCount\|\|3\}\)\.then\(res=>\{/,
     ];
@@ -52,6 +52,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src,
       /if\(res && res\.ok!==false && res\.verified===true\) _lastDestructiveSnapshotAt=Date\.now\(\);/,
       "timestamp update isn't gated on ok!==false && verified===true — a failed/unverified attempt must not block a retry");
+  });
+  t(label + ": doBackup merges an optional opts object into the Store.backupNow call", () => {
+    assert.match(src,
+      /async function doBackup\(manual, ?opts\)\{\s*try\{\s*const res = await Store\.backupNow\(Object\.assign\(\{keep: S\.backupRetainCount\|\|3\}, ?opts\|\|\{\}\)\)/,
+      "doBackup must accept an opts param and merge it into the Store.backupNow() call");
+  });
+  t(label + ": maybeAutoBackup passes its own autoBackup day-interval as freshWithinMs", () => {
+    assert.match(src,
+      /await doBackup\(false, ?\{freshWithinMs: days\*86400000\}\);/,
+      "maybeAutoBackup must call doBackup with {freshWithinMs: days*86400000}");
   });
 }
 

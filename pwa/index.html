@@ -1474,9 +1474,9 @@ async function backupNow(){
     renderStoreOpIndicator();
   }
 }
-async function doBackup(manual){
+async function doBackup(manual, opts){
   try{
-    const res = await Store.backupNow({keep: S.backupRetainCount||3});   // {ok,verified,name,counts}
+    const res = await Store.backupNow(Object.assign({keep: S.backupRetainCount||3}, opts||{}));   // {ok,verified,name,counts}
     if(res && res.ok===false){
       // Check res.error before res.reason: /api/backup returns {ok:false,error}
       // (and a 409 for the one actionable failure — an incomplete images
@@ -1515,7 +1515,7 @@ async function maybeAutoBackup(){
   const days = +S.autoBackup; if(!days) return;
   let last = 0; try{ last = (+(await Store.kvGet("ia_lastbackup")) || 0); }catch(e){}
   if(Date.now() - last < days*86400000) return;
-  await doBackup();
+  await doBackup(false, {freshWithinMs: days*86400000});
 }
 // Service-backed durability status only. Browser storage-quota / persistence
 // (navigator.storage) rows were removed with the SQLite/Core migration — the
