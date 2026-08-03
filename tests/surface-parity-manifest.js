@@ -24,5 +24,13 @@ module.exports = {
     "computeCardHash",
     "loadImgHashCache",
     "saveImgHashCache",
+    "applyGeneratedTitle",
+    "clearTitleSuggestions",
+    "aiTagChunk",
+    "aiRefreshCandidates",
+    "airefreshSetDays",
+    "airefreshUpdateBtn",
+    "renderHealthAiRefresh",
+    "runAiRefreshBatch",
   ],
 };
