@@ -344,6 +344,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.5}
    Electron's sandboxed renderer (sandbox:true, main.js), so this can't use prompt(). ---- */
 #tabNameModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:96;align-items:center;justify-content:center;padding:16px}
 #tabNameModal.open{display:flex}
+#configBackupModal{display:none;position:fixed;inset:0;background:rgba(31,29,26,.5);z-index:96;align-items:center;justify-content:center;padding:16px}
+#configBackupModal.open{display:flex}
 .tnm-box{background:var(--card);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(360px,92vw);padding:20px}
 .tnm-box input{width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--bg);color:var(--ink)}
 .gp-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;font-weight:700}
@@ -796,6 +798,14 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
             <input type="file" id="restoreFile" accept=".json,application/json" onchange="restoreData(event)" title="Import a single-file .json backup exported by an older version.">
           </div>
         </div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Configuration backup</label>
+          <div class="hint" style="margin:4px 0 8px">A separate, password-protected export of your AI provider settings, keys, and preferences — a portable file you can restore on any install, not tied to Dropbox.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary" onclick="openConfigBackupExport()">Export configuration…</button>
+            <button class="btn btn-ghost" onclick="openConfigBackupImport()">Restore configuration…</button>
+          </div>
+        </div>
       </div>
 
       <div class="sec">
@@ -833,6 +843,7 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
 <div id="healthModal"><div class="dupe-box"><div id="healthBody"></div></div></div>
 <div id="getpicModal"><div class="gp-box"><div id="getpicBody"></div></div></div>
 <div id="tabNameModal" onclick="if(event.target===this)closeTabNameModal()"><div class="tnm-box" id="tabNameModalBody"></div></div>
+<div id="configBackupModal" onclick="if(event.target===this)closeConfigBackupModal()"><div class="tnm-box" id="configBackupModalBody"></div></div>
 <div id="readerModal"><div class="reader-box" id="readerBody"></div></div>
 
 <script>
@@ -3633,6 +3644,45 @@ function submitTabNameModal(){
   if(!name) return;
   if(mode==="rename"){ renameTab(tabId, name); renderTabsView(); }
   else { const created = createTab(name); if(created) openTab(created.id); else renderTabsView(); }
+}
+let _cfgBackupMode = "export";   // "export" | "import" -- set by Task 5's openConfigBackupImport too
+function openConfigBackupExport(){
+  _cfgBackupMode = "export";
+  document.getElementById("configBackupModalBody").innerHTML =
+    `<h3 style="margin:0 0 12px">Export configuration</h3>`+
+    `<div class="hint" style="margin-bottom:10px">Downloads a password-protected file with your AI provider settings, keys, and preferences — restore it on any install of the app.</div>`+
+    `<input id="cfgBackupPw1" type="password" placeholder="Password" autocomplete="new-password">`+
+    `<input id="cfgBackupPw2" type="password" placeholder="Confirm password" autocomplete="new-password" style="margin-top:8px">`+
+    `<div id="cfgBackupErr" class="hint" style="color:#b3261e;min-height:1.2em;margin-top:6px"></div>`+
+    `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">`+
+    `<button class="btn btn-ghost" onclick="closeConfigBackupModal()">Cancel</button>`+
+    `<button class="btn btn-primary" onclick="submitConfigBackupExport()">Export</button>`+
+    `</div>`;
+  document.getElementById("configBackupModal").classList.add("open");
+  const inp = document.getElementById("cfgBackupPw1");
+  inp.focus();
+  inp.onkeydown = e=>{ if(e.key==="Enter") submitConfigBackupExport(); else if(e.key==="Escape") closeConfigBackupModal(); };
+}
+function closeConfigBackupModal(){ document.getElementById("configBackupModal").classList.remove("open"); }
+async function submitConfigBackupExport(){
+  const pw1 = document.getElementById("cfgBackupPw1").value;
+  const pw2 = document.getElementById("cfgBackupPw2").value;
+  const err = document.getElementById("cfgBackupErr");
+  if(!pw1){ err.textContent = "Enter a password."; return; }
+  if(pw1 !== pw2){ err.textContent = "Passwords don't match."; return; }
+  err.textContent = "";
+  try{
+    const res = await Store.exportConfigBackup(pw1);
+    if(!res || res.ok===false){ err.textContent = (res&&(res.error||res.reason)) || "Export failed."; return; }
+    const blob = new Blob([JSON.stringify(res.envelope)], {type:"application/octet-stream"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "interests-config-backup-"+new Date().toISOString().slice(0,10)+".iaconfig";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    closeConfigBackupModal();
+    toast("Configuration exported.");
+  }catch(e){ err.textContent = "Export failed: "+(e&&e.message||e); }
 }
 function deleteTabPrompt(id){
   const t = tabs.find(x=>x.id===id); if(!t) return;
