@@ -3687,6 +3687,44 @@ async function submitConfigBackupExport(){
     toast("Configuration exported.");
   }catch(e){ err.textContent = "Export failed: "+(e&&e.message||e); }
 }
+function openConfigBackupImport(){
+  _cfgBackupMode = "import";
+  document.getElementById("configBackupModalBody").innerHTML =
+    `<h3 style="margin:0 0 12px">Restore configuration</h3>`+
+    `<div class="hint" style="margin-bottom:10px;color:#b3261e">This replaces this device's current AI provider settings, keys, and preferences. A local, unencrypted safety copy of your current settings is kept in case you need to undo this.</div>`+
+    `<input id="cfgRestoreFile" type="file" accept=".iaconfig,.json">`+
+    `<input id="cfgBackupPw1" type="password" placeholder="Password" autocomplete="current-password" style="margin-top:8px">`+
+    `<div id="cfgBackupErr" class="hint" style="color:#b3261e;min-height:1.2em;margin-top:6px"></div>`+
+    `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">`+
+    `<button class="btn btn-ghost" onclick="closeConfigBackupModal()">Cancel</button>`+
+    `<button class="btn btn-primary" onclick="submitConfigBackupImport()">Restore</button>`+
+    `</div>`;
+  document.getElementById("configBackupModal").classList.add("open");
+  const inp = document.getElementById("cfgBackupPw1");
+  inp.onkeydown = e=>{ if(e.key==="Enter") submitConfigBackupImport(); else if(e.key==="Escape") closeConfigBackupModal(); };
+}
+function submitConfigBackupImport(){
+  const fileInput = document.getElementById("cfgRestoreFile");
+  const pw = document.getElementById("cfgBackupPw1").value;
+  const err = document.getElementById("cfgBackupErr");
+  const file = fileInput.files && fileInput.files[0];
+  if(!file){ err.textContent = "Choose a file."; return; }
+  if(!pw){ err.textContent = "Enter the password."; return; }
+  err.textContent = "";
+  const reader = new FileReader();
+  reader.onerror = function(){ err.textContent = "Couldn't read that file."; };
+  reader.onload = async function(){
+    let envelope;
+    try{ envelope = JSON.parse(reader.result); }catch(e){ err.textContent = "That doesn't look like a valid configuration backup file."; return; }
+    try{
+      const res = await Store.importConfigBackup(pw, envelope);
+      if(!res || res.ok===false){ err.textContent = (res&&(res.error||res.reason)) || "Restore failed."; return; }
+      toast("Configuration restored — reloading…");
+      setTimeout(()=>location.reload(), 800);
+    }catch(e){ err.textContent = "Restore failed: "+(e&&e.message||e); }
+  };
+  reader.readAsText(file);
+}
 function deleteTabPrompt(id){
   const t = tabs.find(x=>x.id===id); if(!t) return;
   if(t.reserved){ toast("The AI tab can't be deleted"); return; }
