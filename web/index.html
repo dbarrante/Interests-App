@@ -3659,11 +3659,14 @@ function openConfigBackupExport(){
     `<button class="btn btn-primary" onclick="submitConfigBackupExport()">Export</button>`+
     `</div>`;
   document.getElementById("configBackupModal").classList.add("open");
+  const onKey = e=>{ if(e.key==="Enter") submitConfigBackupExport(); else if(e.key==="Escape") closeConfigBackupModal(); };
   const inp = document.getElementById("cfgBackupPw1");
+  const inp2 = document.getElementById("cfgBackupPw2");
   inp.focus();
-  inp.onkeydown = e=>{ if(e.key==="Enter") submitConfigBackupExport(); else if(e.key==="Escape") closeConfigBackupModal(); };
+  inp.onkeydown = onKey;
+  inp2.onkeydown = onKey;
 }
-function closeConfigBackupModal(){ document.getElementById("configBackupModal").classList.remove("open"); }
+function closeConfigBackupModal(){ document.getElementById("configBackupModal").classList.remove("open"); document.getElementById("configBackupModalBody").innerHTML = ""; }
 async function submitConfigBackupExport(){
   const pw1 = document.getElementById("cfgBackupPw1").value;
   const pw2 = document.getElementById("cfgBackupPw2").value;

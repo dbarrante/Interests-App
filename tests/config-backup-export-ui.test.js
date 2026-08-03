@@ -81,6 +81,37 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(anchor.clicked, "the download must actually be triggered via a.click()");
     assert.ok(/\.iaconfig$/.test(anchor.download), "download filename must end in .iaconfig");
     assert.ok(JSON.parse(blobContent).v === 1, "the Blob content must be the envelope JSON");
+    assert.ok(!blobContent.includes("abc123"), "the downloaded file must never contain the plaintext password");
+  });
+
+  await t(label + ": openConfigBackupExport wires the same Enter/Escape handler on both password fields", async () => {
+    const { document, els } = makeDom();
+    let submitCalled = false, closeCalled = false;
+    const factory = new Function(
+      "document", "submitConfigBackupExport", "closeConfigBackupModal",
+      extractFn(src, "openConfigBackupExport") + "\nreturn openConfigBackupExport;"
+    );
+    const openConfigBackupExport = factory(document, () => { submitCalled = true; }, () => { closeCalled = true; });
+    openConfigBackupExport();
+    assert.strictEqual(typeof els.cfgBackupPw1.onkeydown, "function", "password field must have a keydown handler");
+    assert.strictEqual(typeof els.cfgBackupPw2.onkeydown, "function", "confirm field must have a keydown handler too");
+    assert.strictEqual(els.cfgBackupPw1.onkeydown, els.cfgBackupPw2.onkeydown, "both fields must share the identical handler");
+    els.cfgBackupPw2.onkeydown({ key: "Enter" });
+    assert.ok(submitCalled, "Enter in the confirm field must submit");
+    els.cfgBackupPw1.onkeydown({ key: "Escape" });
+    assert.ok(closeCalled, "Escape in the password field must close the modal");
+  });
+
+  await t(label + ": closeConfigBackupModal clears the modal body so a typed password doesn't linger in the DOM", () => {
+    const { document, els } = makeDom();
+    els.configBackupModalBody.innerHTML = "<input value=\"abc123\">";
+    const factory = new Function(
+      "document",
+      extractFn(src, "closeConfigBackupModal") + "\nreturn closeConfigBackupModal;"
+    );
+    const closeConfigBackupModal = factory(document);
+    closeConfigBackupModal();
+    assert.strictEqual(els.configBackupModalBody.innerHTML, "", "modal body must be cleared on close");
   });
 
   await t(label + ": the Settings section has Export/Restore configuration buttons", () => {
