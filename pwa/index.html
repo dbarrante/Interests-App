@@ -6643,7 +6643,7 @@ function renderHealth(){
 // Session-only checkbox state — both default on, matching the "run
 // everything" common case; unchecked state does not persist across an app
 // restart, unlike S.aiRefreshDays (a real setting).
-let _airefreshRetag = true, _airefreshRetitle = true;
+let _airefreshRetag = true, _airefreshRetitle = true, _airefreshRunning = false;
 function airefreshSetDays(v){
   const n = Math.max(1, parseInt(v,10)||30);
   S.aiRefreshDays = n; save("settings", S);
