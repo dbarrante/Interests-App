@@ -13,6 +13,7 @@ const { imageCount } = images;
 const { importLegacyBackup } = require("./importer");
 const backup = require("./backup");
 const config = require("./config");
+const configBackup = require("./config-backup");
 const sync = require("./sync");
 const bookmarks = require("./bookmarks");
 const linkcheck = require("./linkcheck");
@@ -1129,6 +1130,39 @@ function createServer(ctx) {
     config.setNotionConfig(fields);
     const c = config.getNotionConfig();
     res.json({ ok: true, hasToken: !!c.token, hasParent: !!c.parentPageId });
+  });
+
+  app.post("/api/config-backup/export", (req, res) => {
+    try {
+      const password = (req.body && typeof req.body.password === "string") ? req.body.password : "";
+      if (!password) return res.status(400).json({ ok: false, error: "password required" });
+      const payload = configBackup.buildConfigPayload(ctx.db);
+      const envelope = configBackup.encryptConfigBackup(payload, password);
+      res.json({ ok: true, envelope: envelope });
+    } catch (e) {
+      console.error("config-backup export failed:", e);
+      res.status(500).json({ ok: false, error: "export failed" });
+    }
+  });
+
+  app.post("/api/config-backup/import", (req, res) => {
+    try {
+      const password = (req.body && typeof req.body.password === "string") ? req.body.password : "";
+      const envelope = req.body && req.body.envelope;
+      if (!password) return res.status(400).json({ ok: false, error: "password required" });
+      if (!envelope || typeof envelope !== "object") return res.status(400).json({ ok: false, error: "no backup file provided" });
+      let payload;
+      try {
+        payload = configBackup.decryptConfigBackup(envelope, password);
+      } catch (e) {
+        return res.status(400).json({ ok: false, error: "Wrong password or a corrupted file — nothing was changed." });
+      }
+      configBackup.applyConfigPayload(ctx.db, payload);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("config-backup import failed:", e);
+      res.status(500).json({ ok: false, error: "import failed" });
+    }
   });
 
   app.post("/api/notion/export", async (req, res) => {
