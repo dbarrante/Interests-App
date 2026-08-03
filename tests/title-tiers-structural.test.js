@@ -183,12 +183,12 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(m, "applyTitleSuggestions not found");
     const body = m[1];
     const bail = body.search(/if\(!applied\)\{[^}]*return;/);
-    const clear = body.indexOf("_titleSuggestions={};");
+    const clear = body.indexOf("clearTitleSuggestions();");
     assert.ok(bail >= 0, "must bail out when nothing was applied");
     assert.ok(clear >= 0, "must still clear suggestions on a real apply");
     assert.ok(
       bail < clear,
-      "the zero-applied bail MUST come before _titleSuggestions={} — clearing first silently throws away an already-paid-for batch (reachable in one click via Deselect all)"
+      "the zero-applied bail MUST come before clearTitleSuggestions() — clearing first silently throws away an already-paid-for batch (reachable in one click via Deselect all)"
     );
   });
 }

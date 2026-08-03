@@ -6529,11 +6529,11 @@ function closeHealth(){
   // close so reopening shows the same frozen results, not a fresh auto-scan.
   _deadList = []; _failModalList = []; _failStatus = {};
   _healthScanned.dead = false; _healthScanned.failed = false; _healthScanned.nolink = false; _healthScanned.titles = false;
-  _titleSuggestions = {};
+  clearTitleSuggestions();
   _imgScanAbort = true;   // stop a running image scan; its .then() checks this before applying results
   _imgScanProgress = null;
 }
-function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); _titleSuggestions = {}; _healthTab = tab; renderHealth(); }
+function healthSwitch(tab){ if(tab===_healthTab) return; if(tab!=="dupes") dupeSetFullscreen(false); clearTitleSuggestions(); _healthTab = tab; renderHealth(); }
 // Esc + backdrop-click close (fixes the old per-modal inconsistency; one Close placement).
 document.getElementById("healthModal").addEventListener("click", e=>{ if(e.target.id==="healthModal") closeHealth(); });
 // Unified keydown handler for all overlay surfaces (was three separate keydown
@@ -6944,6 +6944,12 @@ function flaggedTitleCards(){
 // {scope:id -> suggested title string} for cards awaiting review after
 // "Suggest titles". Cleared on Apply, Cancel, or leaving the tab.
 let _titleSuggestions = {};
+// Which _titleSuggestions keys came from the AI (retryTitleSuggestion /
+// suggestTitlesForFlagged) vs a hand-typed edit (editTitleManually) — only
+// AI-origin rows get hashtag-to-tag conversion on Apply (see
+// applyTitleSuggestions). Always reset together via clearTitleSuggestions().
+let _titleSuggestionsAI = new Set();
+function clearTitleSuggestions(){ _titleSuggestions = {}; _titleSuggestionsAI = new Set(); }
 // Bulk selection controls for the Title issues list. That list runs to four
 // figures on a real library (1,135 flagged cards here), every row starts
 // checked, and every checked row is one paid AI call — so "Suggest titles"
@@ -7008,7 +7014,7 @@ async function retryTitleSuggestion(key){
   const others = Object.keys(_titleSuggestions).filter(k=>k!==key).map(k=>_titleSuggestions[k]);
   const out = await regenerateTitleFor(m.card, others, "Suggesting a new title…");
   if(!out) return;
-  _titleSuggestions[key]=out;
+  _titleSuggestions[key]=out; _titleSuggestionsAI.add(key);
   if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
   toast("New suggestion ready — review it, then Apply.", 5000);
 }
@@ -7057,7 +7063,7 @@ function titleOpenOriginal(el){
 function editTitleManually(key){
   const hit = titleRowCard(key);
   if(!hit){ toast("That card is no longer in this list."); return; }
-  _titleSuggestions[key] = hit.card.title || "";
+  _titleSuggestions[key] = hit.card.title || ""; _titleSuggestionsAI.delete(key);
   renderHealthTitles(document.getElementById("healthList"));
   const row = document.querySelector('#healthBody .dupe-row[data-title-key="'+(window.CSS&&CSS.escape?CSS.escape(key):key)+'"]');
   const input = row && row.querySelector("input.title-suggest-input");
@@ -7066,7 +7072,7 @@ function editTitleManually(key){
 }
 function renderHealthTitles(list){
   const flagged = flaggedTitleCards();
-  if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; _titleSuggestions={}; return; }
+  if(!flagged.length){ list.innerHTML = `<div class="s" style="padding:14px 4px">Every card has a clear, descriptive title. Nothing to fix.</div>`; clearTitleSuggestions(); return; }
   const hasSuggestions = Object.keys(_titleSuggestions).length>0;
   if(_titleVisionModels===null && (S.provider==="openrouter" || S.provider==="gemini")){
     _titleVisionModels = [];   // avoid re-triggering the fetch while it's in flight
@@ -7077,7 +7083,7 @@ function renderHealthTitles(list){
     ${(S.provider==="openrouter"||S.provider==="gemini") ? visionPickerHTML(_titleVisionModels) : ""}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 4px 10px">
       ${hasSuggestions
-        ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="_titleSuggestions={};renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
+        ? `<button class="btn btn-primary" onclick="applyTitleSuggestions()">Apply</button><button class="btn btn-ghost" onclick="clearTitleSuggestions();renderHealthTitles(document.getElementById('healthList'));">Cancel</button>`
         : `<button class="btn btn-primary" onclick="suggestTitlesForFlagged()">Suggest titles</button>`}
       <span style="width:1px;height:22px;background:var(--line);margin:0 2px"></span>
       <button class="btn btn-ghost" style="padding:4px 10px;font-size:12.5px" onclick="titleSelectAll(true)">Select all</button>
@@ -7125,7 +7131,7 @@ async function suggestTitlesForFlagged(){
     try{
       const result = await generateUniqueTitle(m.card, acceptedThisBatch);
       const suggestion = result && result.title;
-      if(suggestion){ _titleSuggestions[m.scope+":"+m.card.id]=suggestion; acceptedThisBatch.push(suggestion); }
+      if(suggestion){ const key=m.scope+":"+m.card.id; _titleSuggestions[key]=suggestion; _titleSuggestionsAI.add(key); acceptedThisBatch.push(suggestion); }
     }catch(e){ console.warn("title suggestion failed", e); }
     done++;
   }
@@ -7148,7 +7154,9 @@ function applyTitleSuggestions(){
     const val=input.value.trim(); if(!val) return;
     const card=scope==="saved"?bySaved[id]:byImported[id];
     if(!card) return;
-    card.title=val.slice(0,250); card.titleSet=true;
+    if(_titleSuggestionsAI.has(key)) applyGeneratedTitle(card, val);
+    else card.title=val.slice(0,250);
+    card.titleSet=true;
     applied++;
   });
   // Bail BEFORE clearing _titleSuggestions. Clearing it unconditionally threw
@@ -7157,7 +7165,7 @@ function applyTitleSuggestions(){
   // that Deselect all exists and the suggest phase is opt-in. Returning early
   // also leaves the DOM untouched, so edited text and checkboxes survive.
   if(!applied){ toast("No titles checked — nothing applied. Your suggestions are still here; check the ones you want, then Apply.", 7000); return; }
-  _titleSuggestions={};
+  clearTitleSuggestions();
   persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s"));
   if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
 }
