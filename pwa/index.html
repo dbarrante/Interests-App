@@ -931,6 +931,7 @@ const DEFAULTS = {
   autoImportGs:true,
   tagSidebar:false,
   catSidebar:false,
+  aiRefreshDays:30,
   reuseWindow:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
@@ -6505,6 +6506,16 @@ function dupePrimary(members){
     if (sc > bestScore || (sc === bestScore && older)) { best = members[k]; bestScore = sc; }
   }
   return best;
+}
+// The "Process next 200" freshness query — mirrors the existing .lc.at/
+// _lcFresh and .sb.at/_sbFresh "skip if checked within N days" pattern, with
+// its own field (aiRefreshedAt) and its own threshold (S.aiRefreshDays).
+// Never-touched cards (aiRefreshedAt unset) sort as the oldest possible
+// value, so they are always processed ahead of merely-stale ones.
+function aiRefreshCandidates(){
+  const cutoff = (S.aiRefreshDays||30) * 864e5;
+  return imported.concat(saved).filter(it=>it && (!it.aiRefreshedAt || (Date.now()-it.aiRefreshedAt) > cutoff))
+    .sort((a,b)=>(a.aiRefreshedAt||0)-(b.aiRefreshedAt||0));
 }
 /* ============ Library health modal (review D2) ============
    ONE tabbed modal (Duplicates | Dead & unsafe | Failed captures | No link)
