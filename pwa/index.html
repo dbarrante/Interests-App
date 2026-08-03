@@ -6445,6 +6445,31 @@ async function generateUniqueTitle(card, extraAvoid, allowVision=true){
   if(weak.collection) return { title: await fallbackCollectionTitle(card, weak.collection, extraAvoid), failReason: imgFailReason };
   return { title: null, failReason: imgFailReason };
 }
+// Shared write path for every AI-GENERATED title (impRefreshTitle,
+// enrichOnOpen, the Title-issues Apply flow for AI-origin rows, and the
+// AI-refresh batch) — deliberately NOT used by the manual edit forms
+// (cardEditSave/impEditSave), which save whatever the user typed verbatim.
+// Converts embedded #hashtags into tags (merged, never replacing what the
+// card already has) using the same cleaning aiSuggestTags already applies
+// to its own AI-returned tags, and writes the cleaned title onto the card.
+// Returns null (no-op) for a falsy rawTitle, else { title, tagsAdded } so
+// callers can toast/log the title actually written, not the raw one that
+// may still contain '#'.
+function applyGeneratedTitle(card, rawTitle){
+  if(!rawTitle) return null;
+  const extracted = extractHashtags(rawTitle);
+  const seen=new Set(), cleaned=[];
+  extracted.tags.forEach(t=>{
+    if(t===AI_TAB_TAG) return;
+    t=canonicalTag(t);
+    const k=t.toLowerCase();
+    if(seen.has(k)) return; seen.add(k);
+    if(!tagBadPattern(t)) cleaned.push(t);
+  });
+  card.title = (extracted.title || rawTitle).slice(0,250);
+  if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
+  return { title: card.title, tagsAdded: cleaned };
+}
 // Pick the member to KEEP from a duplicate group. Higher score wins.
 function dupePrimary(members){
   const score = (mem)=>{
