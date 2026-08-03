@@ -265,6 +265,60 @@ function listen(app) {
       assert.strictEqual(ctx.storeDir, preMoveDir, "refused move must not repoint ctx");
     });
 
+    // NOTE: by this point in the file, several earlier tests have already
+    // created/rewritten today's dated backup — do NOT assume the shared
+    // folder is empty. This priming call establishes a KNOWN-fresh baseline
+    // regardless of whatever state came before, by making an ordinary
+    // no-freshWithinMs call (which, like every earlier test in this file,
+    // must always actually run).
+    let freshTestBackupName, freshTestMetaPath, freshTestTsBefore;
+    await run(t("POST /api/backup (priming call, no freshWithinMs) establishes a known-fresh baseline"), async () => {
+      const r = await (await fetch(base + "/api/backup", { method: "POST" })).json();
+      assert.strictEqual(r.ok, true);
+      assert.ok(!r.skipped, "a call with no freshWithinMs must never skip");
+      assert.ok(/^interests-backup-\d{4}-\d{2}-\d{2}$/.test(r.name));
+      freshTestBackupName = r.name;
+      freshTestMetaPath = path.join(bdir, freshTestBackupName, "meta.json");
+      freshTestTsBefore = JSON.parse(fs.readFileSync(freshTestMetaPath, "utf8")).ts;
+      assert.ok(typeof freshTestTsBefore === "number");
+    });
+
+    await run(t("POST /api/backup with freshWithinMs SKIPS when the shared folder already has a fresh dated backup"), async () => {
+      const r = await (await fetch(base + "/api/backup", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ freshWithinMs: 24 * 60 * 60 * 1000 }),
+      })).json();
+      assert.deepStrictEqual(r, { ok: true, skipped: true, reason: "already-fresh", verified: true });
+      // Prove runBackup did NOT actually execute again -- a real run rewrites
+      // meta.json with a brand new ts (core/backup.js's runBackup always does
+      // `ts: Date.now()`), so an unchanged ts proves the skip short-circuited
+      // BEFORE any real work, not just that the response happens to look right.
+      const tsAfter = JSON.parse(fs.readFileSync(freshTestMetaPath, "utf8")).ts;
+      assert.strictEqual(tsAfter, freshTestTsBefore, "meta.json must be untouched by a skipped call");
+    });
+
+    await run(t("POST /api/backup with a tiny freshWithinMs does NOT skip (the existing backup no longer counts as fresh)"), async () => {
+      const r = await (await fetch(base + "/api/backup", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ freshWithinMs: 1 }),
+      })).json();
+      assert.strictEqual(r.ok, true);
+      assert.ok(!r.skipped, "an interval of 1ms cannot possibly still be fresh");
+      assert.strictEqual(r.name, freshTestBackupName, "same calendar day -> same dated folder name, just rewritten");
+      const tsAfterRealRun = JSON.parse(fs.readFileSync(freshTestMetaPath, "utf8")).ts;
+      assert.ok(tsAfterRealRun > freshTestTsBefore, "a real run must rewrite meta.json with a newer ts");
+    });
+
+    await run(t("POST /api/backup with freshWithinMs is ignored for a safety backup -- safety backups never skip"), async () => {
+      const r = await (await fetch(base + "/api/backup", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ freshWithinMs: 365 * 24 * 60 * 60 * 1000, safety: true }),
+      })).json();
+      assert.strictEqual(r.ok, true);
+      assert.ok(!r.skipped, "a safety backup must always actually run, regardless of freshWithinMs");
+      assert.ok(/^interests-backup-before-cleanup-/.test(r.name), "safety backups use their own naming, confirming the safety path really ran");
+    });
+
     await new Promise(function (res) { srv.close(res); });
     try { ctx.db.close(); } catch (e) {}
   } finally {

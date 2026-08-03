@@ -668,6 +668,20 @@ function createServer(ctx) {
       let keep = Number(req.body && req.body.keep);
       if (!Number.isFinite(keep) || keep < 1) keep = 3;
       keep = Math.min(Math.floor(keep), 30);
+      // Opt-in freshness skip (multi-device Dropbox sync): a caller that knows
+      // its own acceptable staleness window (maybeAutoBackup, using S.autoBackup's
+      // day count) can avoid redoing work another device already did and Dropbox
+      // already synced down. Never applies to a safety backup -- that gate must
+      // always actually run. newestDatedSnapshotTime() only counts a folder once
+      // its meta.json completion marker parses with non-zero counts -- the same
+      // trust bar ensureBackupBeforeMerge already relies on without a full re-verify.
+      const freshWithinMs = Number(req.body && req.body.freshWithinMs);
+      if (!safety && Number.isFinite(freshWithinMs) && freshWithinMs > 0) {
+        const newest = backup.newestDatedSnapshotTime();
+        if (newest && (Date.now() - newest) < freshWithinMs) {
+          return res.json({ ok: true, skipped: true, reason: "already-fresh", verified: true });
+        }
+      }
       const runner = (ctx.storeWorker && ctx.storeWorker.runBackup) ? ctx.storeWorker : { runBackup: (storeDir, opts) => Promise.resolve((function () {
         const out = backup.runBackup(ctx.db, storeDir, { safety: opts.safety });
         const verified = backup.verifyBackup(out.name, out.counts);
