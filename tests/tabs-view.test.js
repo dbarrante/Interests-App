@@ -48,14 +48,16 @@ function loadOpenTab(src, initialOpenTabId, log){
 // list.length===0 in both scenarios below, so list.map's per-card body (cardHTML,
 // impCardHTML, researchPanelHTML, tabCardWrapper, newId, Store) is never reached and
 // deliberately isn't stubbed — if it ever executes, that itself is a bug.
-// catSidebarOn is stubbed to always-off here — neither call site below exercises
-// the sidebar-embedding branch (task 1), only the pre-existing empty-state wording,
-// so gridHtml always takes the `innerHtml` (non-sidebar) path and catSideHTML is
-// never reached / never needs its own catByName/CATS/esc scope wired up.
-function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, CATS }){
+// catSidebarOn defaults to always-off — most call sites below exercise only the
+// pre-existing empty-state wording, so gridHtml takes the `innerHtml` (non-sidebar)
+// path. Pass catSidebar:true to drive the sidebar-embedding branch instead; that
+// branch's catSideHTML is stubbed (its counting is covered for real, against both
+// card shapes, in tests/tabs-catsidebar.test.js) because what's under test here is
+// the empty-state COPY, which must name wherever the clear-chip actually lives.
+function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, CATS, catSidebar }){
   const factory = new Function(
     "document", "tabs", "openTabId", "filterCat", "tabSelMode", "tabSelPicks",
-    "imported", "saved", "CATS", "save", "esc", "tabSuggestPanelHTML", "attachCardImages", "catSidebarOn",
+    "imported", "saved", "CATS", "save", "esc", "tabSuggestPanelHTML", "attachCardImages", "catSidebarOn", "catSideHTML",
     fn(src, "tabCardCount") + "\n" +
     fn(src, "cardHasTag") + "\n" +
     fn(src, "tabsFilteredList") + "\n" +
@@ -67,7 +69,7 @@ function loadRenderTabsView(src, { tabs, openTabId, filterCat, imported, saved, 
   const renderTabsView = factory(
     documentMock, tabs, openTabId, filterCat, false, new Set(),
     imported || [], saved || [], CATS || [], () => {}, esc,
-    () => "", () => {}, () => false
+    () => "", () => {}, () => !!catSidebar, () => ""
   );
   renderTabsView();
   return view.innerHTML;
@@ -200,6 +202,41 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(list.every(r => r.it.category === "Personal projects & hobbies"));
   });
 
+  t(label + ": tabsFilteredList narrows IMPORTED-shaped cards by their .cat field (imported cards never carry .category)", () => {
+    // Imported-origin cards keep their category in `.cat`, saved cards in `.category`
+    // — see the AI tagging pass ("if(q.category!==undefined) q.category = cat; else
+    // q.cat = cat;") and the store's `cards.cat` column (core/db.js). Nothing ever
+    // assigns `.category` to an imported card, so a narrowing predicate that reads
+    // `.category` alone silently drops EVERY imported card from EVERY category.
+    // Deliberately imported-shaped fixtures: the pre-existing test above used
+    // {category:...} on imported cards, which is exactly why it never caught this.
+    const importedArr = [{tags:["x"], cat:"Personal projects & hobbies"}, {tags:["x"], cat:"Work initiatives"}];
+    const savedArr = [{id:"s0", tags:["x"], category:"Personal projects & hobbies"}];
+    const CATS = [{key:"personal", name:"Personal projects & hobbies"}, {key:"work", name:"Work initiatives"}];
+    const factory = new Function(
+      "imported", "saved", "filterCat", "CATS", "save",
+      fn(src,"cardHasTag") + "\n" + fn(src,"tabsFilteredList") + "\nreturn tabsFilteredList;"
+    );
+    const list = factory(importedArr, savedArr, "personal", CATS, () => {})("x");
+    assert.strictEqual(list.length, 2, "the imported .cat card AND the saved .category card must both match");
+    assert.deepStrictEqual(list.map(r=>r.kind), ["imported", "saved"]);
+    assert.strictEqual(list[0].it.cat, "Personal projects & hobbies");
+  });
+
+  t(label + ": tabsFilteredList excludes a genuinely untagged card from every category", () => {
+    // catByName() would resolve "" to CATS[0]; the narrowing predicate must not —
+    // a card with no category at all belongs to no category, and must never be
+    // counted into (or filtered into) the first one.
+    const importedArr = [{tags:["x"]}, {tags:["x"], cat:"Work initiatives"}];
+    const CATS = [{key:"personal", name:"Personal projects & hobbies"}, {key:"work", name:"Work initiatives"}];
+    const factory = new Function(
+      "imported", "saved", "filterCat", "CATS", "save",
+      fn(src,"cardHasTag") + "\n" + fn(src,"tabsFilteredList") + "\nreturn tabsFilteredList;"
+    );
+    assert.strictEqual(factory(importedArr, [], "work", CATS, () => {})("x").length, 1);
+    assert.strictEqual(factory(importedArr, [], "personal", CATS, () => {})("x").length, 0);
+  });
+
   t(label + ": tabsFilteredList returns everything (no category narrowing) when filterCat is empty", () => {
     const importedArr = [{tags:["x"], category:"Personal projects & hobbies"}, {tags:["x"], category:"Work initiatives"}];
     const factory = new Function(
@@ -267,6 +304,20 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(rendered, /Nothing in "Some Tab" in this category/, "must blame the filter when the tab genuinely has cards outside it");
     assert.match(rendered, /Clear the category filter above to see everything in this tab\./);
     assert.doesNotMatch(rendered, /Some Tab" yet/);
+  });
+
+  t(label + ": renderTabsView empty state points at the SIDEBAR, not 'above', when the category sidebar is on", () => {
+    // With catSidebarOn(), renderCatBar emits "" for the top pill row (catSideActive
+    // short-circuit) — the "✕ Category" clear-chip only exists in the left sidebar.
+    // "above" would point the user at an empty strip. Same conditional-hint shape
+    // stumble already uses for stSidebarOn ("the category list on the left").
+    const tabs = [{ id: "t3", name: "Side Tab", tag: "side-tag", reserved: false }];
+    const CATS = [{ key: "personal", name: "Personal projects & hobbies" }, { key: "work", name: "Work initiatives" }];
+    const imported = [{ tags: ["side-tag"], cat: "Work initiatives" }];
+    const rendered = loadRenderTabsView(src, { tabs, openTabId: "t3", filterCat: "personal", imported, saved: [], CATS, catSidebar: true });
+    assert.match(rendered, /Nothing in "Side Tab" in this category/);
+    assert.match(rendered, /Clear the category filter in the list on the left to see everything in this tab\./);
+    assert.doesNotMatch(rendered, /category filter above/, "'above' is wrong when the pill row is suppressed");
   });
 }
 

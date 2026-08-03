@@ -3288,10 +3288,17 @@ function stNewsSideHTML(){
 }
 // Category filter as a left sidebar in the Saved view — same pill size/style as the
 // Imported tag sidebar (uses .tg, with per-category counts; active shown with ✕ to clear).
+// Counts use EXACTLY the predicate applyFilter/tabsFilteredList narrow with: an exact name
+// match over `.category` (saved cards) falling back to `.cat` (imported cards — which never
+// carry `.category`). catByName is deliberately NOT used here: it never returns undefined
+// (it falls back to CATS[0]), so it counted untagged cards into the first category, cards
+// that clicking that category would then never show. A counting rule looser than the
+// filtering rule IS the count/filter disagreement bug — a card with no real category
+// belongs in no count at all.
 function catSideHTML(list){
   const items = list || saved;
   const counts = {};
-  items.forEach(s=>{ const c = catByName(String(s.category||"")); if(c) counts[c.key] = (counts[c.key]||0) + 1; });
+  items.forEach(s=>{ const n = String((s && (s.category || s.cat)) || ""); const c = CATS.find(x=>x.name===n); if(c) counts[c.key] = (counts[c.key]||0) + 1; });
   const rows = CATS.filter(c=>counts[c.key]).sort((a,b)=>counts[b.key]-counts[a.key]);   // populated cats, most first — like tags
   const activeName = filterCat ? ((CATS.find(c=>c.key===filterCat)||{}).name || filterCat) : "";
   return `<div class="tag-side-h">Categories</div>`
@@ -3636,7 +3643,13 @@ function tabsFilteredList(tag){
   if(!filterCat) return list;
   const c = CATS.find(c=>c.key===filterCat);
   if(!c){ filterCat=""; save("fcat",""); return list; }
-  return list.filter(r=>r.it.category===c.name);
+  // Imported-origin cards keep their category in `.cat`, saved cards in `.category`
+  // (see the AI tagging pass: `if(q.category!==undefined) q.category = cat; else q.cat = cat;`,
+  // and the store `cards.cat` column) — nothing ever sets `.category` on an imported card.
+  // Reading `.category` alone silently excluded EVERY imported card from EVERY category.
+  // Keep this chain byte-identical to catSideHTML's counting predicate, or the sidebar
+  // count and the filter result disagree for a card that somehow carries both fields.
+  return list.filter(r=>(r.it.category || r.it.cat)===c.name);
 }
 function openTab(id){
   openTabId = id;
@@ -3713,8 +3726,13 @@ function renderTabsView(){
     // unrelated category filter active elsewhere would wrongly claim the
     // filter is hiding cards. Use the tab's TRUE (unfiltered) count instead.
     const narrowed = filterCat && tabCardCount(t.tag) > 0;
+    // Where the clear-chip actually IS: with the category sidebar on, renderCatBar
+    // emits "" for the top pill row (its catSideActive short-circuit), so the
+    // "✕ Category" chip lives ONLY in the left sidebar and "above" would point
+    // at an empty strip. Same conditional-hint shape stumble uses for stSidebarOn.
+    const clearHint = catSidebarOn() ? "in the list on the left" : "above";
     const innerHtml = !list.length
-      ? `<div class="empty"><h2>Nothing in "${esc(t.name)}"${narrowed?" in this category":" yet"}</h2><p>${narrowed?"Clear the category filter above to see everything in this tab.":"Add cards from Saved or Imported using the tag picker's Tabs section."}</p></div>`
+      ? `<div class="empty"><h2>Nothing in "${esc(t.name)}"${narrowed?" in this category":" yet"}</h2><p>${narrowed?"Clear the category filter "+clearHint+" to see everything in this tab.":"Add cards from Saved or Imported using the tag picker's Tabs section."}</p></div>`
       : `<div class="${gridClass()}">${list.map(r=>{
           // Imported identity is the card's stable id, NOT its array index — a pick
           // made now must still resolve to the right card even if something else
