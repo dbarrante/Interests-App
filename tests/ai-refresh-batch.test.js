@@ -151,6 +151,27 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(cards.every(c => c.aiRefreshedAt === undefined), "no card stamped when its chunk's retag call threw");
   });
 
+  await t(label + ": a multi-chunk batch stamps completed chunks even when a later chunk's retag throws", async () => {
+    const cards = makeCards(45);
+    let call = 0;
+    const state = {
+      IA_AI: { hasAIKey: () => true, creditsMessage: () => null },
+      S: { aiRefreshDays: 30 },
+      toast: () => {},
+      aiRefreshCandidates: () => cards,
+      aiTagChunk: async () => { call++; if (call === 2) throw new Error("AI down"); },
+      generateUniqueTitle: async () => ({ title: null }),
+      applyGeneratedTitle: () => {},
+      Store: { putCards: () => {} },
+      persistAll: () => {},
+      _airefreshRetag: true, _airefreshRetitle: false,
+    };
+    const runAiRefreshBatch = load(src, { ...state, btn: {} });
+    await runAiRefreshBatch();
+    assert.ok(cards.slice(0, 40).every(c => typeof c.aiRefreshedAt === "number"), "chunk 1 (cards 0-39) must be stamped");
+    assert.ok(cards.slice(40).every(c => c.aiRefreshedAt === undefined), "chunk 2 (cards 40-44) must NOT be stamped since its aiTagChunk call threw");
+  });
+
   await t(label + ": runAiRefreshBatch no-ops with a toast when nothing is eligible", async () => {
     let toasted = "";
     const state = {
@@ -168,6 +189,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const runAiRefreshBatch = load(src, { ...state, btn: {} });
     await runAiRefreshBatch();
     assert.ok(toasted.length > 0);
+  });
+
+  t(label + ": _airefreshRunning is declared at script scope (not just injected by tests)", () => {
+    assert.match(src, /let _airefreshRetag[^;]*_airefreshRunning\s*=\s*false/);
   });
 
   await t(label + ": runAiRefreshBatch no-ops with a toast when there's no AI key", async () => {

@@ -892,7 +892,7 @@ const DEFAULTS = {
   autoImportGs:true,
   tagSidebar:false,
   catSidebar:false,
-  aiRefreshDays:30,
+  aiRefreshDays:30,   // "Process next 200" in Library Health skips any card AI-refreshed within this many days
   reuseWindow:false,
   weights:{personal:8, work:6, career:7, life:5},
   itemCount:12,
@@ -6564,6 +6564,7 @@ function airefreshSetDays(v){
 }
 function airefreshUpdateBtn(){
   const btn = document.getElementById("airefreshBtn"); if(!btn) return;
+  if(_airefreshRunning) return;   // a run in progress owns the button's disabled/label state
   btn.disabled = !_airefreshRetag && !_airefreshRetitle;
 }
 function renderHealthAiRefresh(list){
@@ -6587,6 +6588,7 @@ async function runAiRefreshBatch(){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
   const batch = aiRefreshCandidates().slice(0,200);
   if(!batch.length){ toast("Nothing eligible — every card was AI-refreshed within the last "+(S.aiRefreshDays||30)+" days."); return; }
+  const doRetag = _airefreshRetag, doRetitle = _airefreshRetitle;   // snapshot: a mid-run checkbox toggle must not change already-started work's semantics
   _airefreshRunning = true;
   const btn = document.getElementById("airefreshBtn");
   if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Processing…'; }
@@ -6597,9 +6599,10 @@ async function runAiRefreshBatch(){
       // Retag failures propagate (matches autoTag's own error handling): a
       // chunk that fails stops the whole run here, un-stamped, so re-running
       // the batch naturally retries it instead of silently marking it done.
-      if(_airefreshRetag) await aiTagChunk(chunk, {merge:true});
-      if(_airefreshRetitle){
+      if(doRetag) await aiTagChunk(chunk, {merge:true});
+      if(doRetitle){
         for(const card of chunk){
+          if(card.titleSet) continue;   // user settled this title by hand — retag still applies, retitle doesn't
           try{
             const result = await generateUniqueTitle(card, undefined, true);
             if(result && result.title) applyGeneratedTitle(card, result.title);
@@ -6959,6 +6962,10 @@ let _titleSuggestions = {};
 // suggestTitlesForFlagged) vs a hand-typed edit (editTitleManually) — only
 // AI-origin rows get hashtag-to-tag conversion on Apply (see
 // applyTitleSuggestions). Always reset together via clearTitleSuggestions().
+// AI-origin rows keep this flag even if the user tweaks the suggestion text
+// in place (without clicking "Write the title yourself") — amending an AI
+// suggestion still counts as AI-origin for hashtag-to-tag purposes; only
+// editTitleManually's explicit hand-authored path clears it.
 let _titleSuggestionsAI = new Set();
 function clearTitleSuggestions(){ _titleSuggestions = {}; _titleSuggestionsAI = new Set(); }
 // Bulk selection controls for the Title issues list. That list runs to four
