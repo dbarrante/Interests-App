@@ -113,6 +113,17 @@ t("applyConfigPayload is a true full replace for Notion/Safe Browsing config —
   db.close();
 });
 
+t("applyConfigPayload bumps ia_settings_updatedAt to a fresh stamp (so a later Dropbox sync round can't judge the import stale and revert it)", () => {
+  const db = newDb();
+  setKV(db, "ia_settings", JSON.stringify({ provider: "gemini" }));
+  setKV(db, "ia_settings_updatedAt", "1");
+  const before = Date.now();
+  cb.applyConfigPayload(db, { v: 1, settings: { provider: "anthropic" }, notionToken: "", notionParentPageId: "", safeBrowsingKey: "" });
+  const stamp = Number(getKV(db, "ia_settings_updatedAt"));
+  assert.ok(!Number.isNaN(stamp) && stamp >= before, "ia_settings_updatedAt must be bumped to a fresh timestamp on import");
+  db.close();
+});
+
 t("applyConfigPayload writes a pre-mutation safety snapshot before changing anything", () => {
   const db = newDb();
   setKV(db, "ia_settings", JSON.stringify({ provider: "gemini", itemCount: 42 }));

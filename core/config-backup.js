@@ -65,24 +65,43 @@ function decryptConfigBackup(envelope, password) {
 
 // One overwritten, unencrypted, local-only "undo my last import" snapshot --
 // not a rotated history, matching the risk (a rare, deliberate, already-
-// confirmed action).
+// confirmed action). Atomic write: tmp sidecar then rename into place (same
+// pattern as core/config.js's saveConfig -- both write into appDataDir()). A
+// torn write here would defeat the one purpose this file exists for: a
+// trustworthy pre-import recovery copy.
 function writeImportSafetySnapshot(db) {
   const snapshot = buildConfigPayload(db);
   fs.mkdirSync(config.appDataDir(), { recursive: true });
-  fs.writeFileSync(path.join(config.appDataDir(), "config-import-safety.json"), JSON.stringify(snapshot, null, 2), "utf8");
+  const target = path.join(config.appDataDir(), "config-import-safety.json");
+  const tmpFile = target + ".tmp." + process.pid;
+  fs.writeFileSync(tmpFile, JSON.stringify(snapshot, null, 2), "utf8");
+  try {
+    fs.renameSync(tmpFile, target);
+  } catch (e) {
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
+    throw e;
+  }
 }
 
 // Full replace, not a merge -- same semantics as the existing data
 // /api/restore, deliberately different from the Dropbox settings-sync's
 // merge semantics. updateToken is ALWAYS preserved from the current
 // device, never taken from the payload (buildConfigPayload never includes
-// one, but a hand-crafted file might -- this guards that too).
+// one, but a hand-crafted file might -- this guards that too; unlike
+// core/merge.js's mergeSyncedSettings, which DELETES the key when the local
+// side has none, this always SETS it to "" in that case -- harmless since
+// core/db.js's settingsForSync strips it again before any sync export, but
+// not the same mechanism).
 function applyConfigPayload(db, payload) {
   writeImportSafetySnapshot(db);
   let currentSettings = {};
   try { currentSettings = JSON.parse(dbm.getKV(db, "ia_settings") || "{}") || {}; } catch (e) { currentSettings = {}; }
   const merged = Object.assign({}, payload.settings || {}, { updateToken: currentSettings.updateToken || "" });
   dbm.setKV(db, "ia_settings", JSON.stringify(merged));
+  // Bump the sync stamp (same convention as core/db.js's applySyncedSettings)
+  // so this full-replace import isn't later judged "older" than a stale
+  // peer's Dropbox sync blob and silently reverted on the next sync round.
+  dbm.setKV(db, "ia_settings_updatedAt", String(Date.now()));
   config.setNotionConfig({ token: payload.notionToken || "", parentPageId: payload.notionParentPageId || "" });
   config.setSafeBrowsingKey(payload.safeBrowsingKey || "");
 }
