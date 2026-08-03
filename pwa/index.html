@@ -6668,6 +6668,47 @@ function renderHealthAiRefresh(list){
     <div class="s" style="opacity:.7;padding:0 4px 10px">Retitle can call the AI's vision tier when a card has no usable description or on-image text — same cost as the single-card refresh button.</div>
     <button class="btn btn-primary" id="airefreshBtn" ${noProcess?"disabled":""} onclick="runAiRefreshBatch()">Process next ${Math.min(200,eligible.length)}</button>`;
 }
+async function runAiRefreshBatch(){
+  if(_airefreshRunning) return;
+  if(!_airefreshRetag && !_airefreshRetitle){ toast("Check Retag and/or Retitle first"); return; }
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return; }
+  const batch = aiRefreshCandidates().slice(0,200);
+  if(!batch.length){ toast("Nothing eligible — every card was AI-refreshed within the last "+(S.aiRefreshDays||30)+" days."); return; }
+  _airefreshRunning = true;
+  const btn = document.getElementById("airefreshBtn");
+  if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Processing…'; }
+  let done = 0;
+  try{
+    for(let i=0; i<batch.length; i+=40){
+      const chunk = batch.slice(i, i+40);
+      // Retag failures propagate (matches autoTag's own error handling): a
+      // chunk that fails stops the whole run here, un-stamped, so re-running
+      // the batch naturally retries it instead of silently marking it done.
+      if(_airefreshRetag) await aiTagChunk(chunk, {merge:true});
+      if(_airefreshRetitle){
+        for(const card of chunk){
+          try{
+            const result = await generateUniqueTitle(card, undefined, true);
+            if(result && result.title) applyGeneratedTitle(card, result.title);
+          }catch(e){ console.warn("AI refresh: retitle failed for one card", e); }
+        }
+      }
+      chunk.forEach(card=>{ card.aiRefreshedAt = Date.now(); });
+      done += chunk.length;
+      Store.putCards(imported); persistAll();
+      toast("AI refresh: "+done+"/"+batch.length+"…");
+    }
+    toast("AI refresh done — processed "+done+" card"+(done===1?"":"s"));
+  }catch(e){
+    console.error(e);
+    toast((done ? done+" processed before an error: " : "AI refresh failed: ")+((IA_AI.creditsMessage && IA_AI.creditsMessage(e)) || e.message), 7000);
+  } finally {
+    _airefreshRunning = false;
+  }
+  if(curTab==="saved") renderSaved();
+  renderImportedKeepFocus();
+  if(_healthTab==="airefresh"){ const list=document.getElementById("healthList"); if(list) renderHealthAiRefresh(list); }
+}
 // ---- Duplicates tab ----
 let _dupeReviewMode = "all";
 let _dupeReviewIndex = 0;
