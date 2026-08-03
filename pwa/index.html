@@ -5184,7 +5184,7 @@ async function enrichOnOpen(it, idx){
     if(isGenericTitle(it.title, it.url)){
       try{
         const suggested = await generateUniqueTitle(it, undefined, false);
-        if(suggested && suggested.title){ it.title=suggested.title; changed=true; }
+        if(suggested && suggested.title){ applyGeneratedTitle(it, suggested.title); changed=true; }
       }catch(e){ console.warn("AI title generation failed",e); }
     }
     if(changed){
@@ -7018,14 +7018,14 @@ async function impRefreshTitle(idx){
   const it = imported[idx]; if(!it) return;
   const out = await regenerateTitleFor(it, null, "Generating a new title…");
   if(!out) return;
-  it.title = out.slice(0,250);
+  const applied = applyGeneratedTitle(it, out);
   await persistCards();
   updateCounts();
   // Anchor BEFORE the re-render, while the old DOM is still on screen — without
   // this, restoreImpScrollSettle ran against whatever anchor some earlier
   // interaction left behind and jumped away from the card being refreshed.
   if(curTab==="imported"){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
-  toast("New title: "+out, 7000);
+  toast("New title: "+applied.title, 7000);
 }
 // Resolve a Title-issues row key ("<scope>:<id>") back to its live card.
 function titleRowCard(key){
