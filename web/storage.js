@@ -23,6 +23,8 @@
     batchProgress: function () { return "/api/batch-progress"; },
     backup: function () { return "/api/backup"; },
     backups: function () { return "/api/backups"; },
+    configBackupExport: function () { return "/api/config-backup/export"; },
+    configBackupImport: function () { return "/api/config-backup/import"; },
     restore: function () { return "/api/restore"; },
     storeLocation: function () { return "/api/store-location"; },
     storeMove: function () { return "/api/store-location/move"; },
@@ -177,6 +179,8 @@
       // --- backup / restore / store location / import ---
       backupNow: function (opts) { return jsend("POST", SE.backup(), opts || {}); },
       listBackups: function () { return jget(SE.backups()).then(function (j) { return (j && j.backups) || []; }); },
+      exportConfigBackup: function (password) { return jsend("POST", SE.configBackupExport(), { password: password }); },
+      importConfigBackup: function (password, envelope) { return jsend("POST", SE.configBackupImport(), { password: password, envelope: envelope }); },
       restore: function (name) { return jsend("POST", SE.restore(), { name: name }); },
       recoveryStatus: function () { return Promise.resolve({ available: false, reason: "PWA-only recovery journal" }); },
       recoverLastMerge: function () { return Promise.resolve({ ok: false, reason: "PWA-only recovery journal" }); },

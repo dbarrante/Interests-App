@@ -175,6 +175,8 @@
     // model itself is the backup/restore path (see docs/iphone-sync-design.md) ---
     backupNow: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — Dropbox sync is the backup." }),
     listBackups: () => Promise.resolve([]),
+    exportConfigBackup: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — configuration backup is desktop-only." }),
+    importConfigBackup: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — configuration backup is desktop-only." }),
     restore: () => Promise.resolve({ ok: false, reason: "Not applicable on iPad — resync from Dropbox instead." }),
     recoveryStatus: () => window.IASync.recoveryStatus(),
     recoverLastMerge: () => window.IASync.recoverLastMerge(),

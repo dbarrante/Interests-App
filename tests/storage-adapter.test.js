@@ -91,6 +91,28 @@ function loadStoreWithFetch(fetchImpl) {
     assert.strictEqual(r.storePath, "C:\\data");
   });
 
+  await run("Store.exportConfigBackup POSTs /api/config-backup/export with the password", async () => {
+    calls = [];
+    const Store = loadStoreWithFetch(stub(() => ({ ok: true, envelope: { v: 1, salt: "s", iv: "i", authTag: "a", ciphertext: "c" } })));
+    const r = await Store.exportConfigBackup("my-password");
+    assert.ok(calls[0].url.endsWith("/api/config-backup/export"));
+    assert.strictEqual(calls[0].opts.method, "POST");
+    assert.strictEqual(JSON.parse(calls[0].opts.body).password, "my-password");
+    assert.strictEqual(r.envelope.v, 1);
+  });
+
+  await run("Store.importConfigBackup POSTs /api/config-backup/import with the password and envelope", async () => {
+    calls = [];
+    const envelope = { v: 1, salt: "s", iv: "i", authTag: "a", ciphertext: "c" };
+    const Store = loadStoreWithFetch(stub(() => ({ ok: true })));
+    const r = await Store.importConfigBackup("my-password", envelope);
+    assert.ok(calls[0].url.endsWith("/api/config-backup/import"));
+    const sentBody = JSON.parse(calls[0].opts.body);
+    assert.strictEqual(sentBody.password, "my-password");
+    assert.deepStrictEqual(sentBody.envelope, envelope);
+    assert.strictEqual(r.ok, true);
+  });
+
   console.log(pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 })();
