@@ -112,6 +112,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(counted.slice().sort(), [1, 1]);
   });
 
+  t(label + ": the active category's clear-chip really does render IN the sidebar (Fix 2's premise)", () => {
+    // The empty-state copy promises the clear-chip is "in the list on the left" whenever
+    // catSidebarOn() — and renderCatBar emits "" for the top pill row in that case, so the
+    // sidebar is the ONLY place it can be. Pin that here: the chip is gated on filterCat
+    // alone, independent of `rows`, so it must survive even when exact-match counting
+    // leaves no count rows at all (a tab of entirely untagged cards).
+    assert.match(loadPair("work").catSideHTML(AGREE_TABCARDS), /&#10005; Work initiatives/);
+    assert.match(loadPair("work").catSideHTML([{cat:""}]), /&#10005; Work initiatives/, "the chip must not depend on any category having a count");
+  });
+
   t(label + ": count and filter AGREE for an imported-shaped card (matching + non-matching category)", () => {
     const workList = loadPair("work").tabsFilteredList("x");
     assert.strictEqual(workList.length, 1, "Work initiatives counted 1 — clicking it must return exactly that 1");
