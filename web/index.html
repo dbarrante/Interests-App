@@ -6443,6 +6443,7 @@ const HEALTH_TABS = [
   { id:"failed", label:"Failed captures" },
   { id:"nolink", label:"No link" },
   { id:"titles", label:"Title issues" },
+  { id:"airefresh", label:"AI refresh" },
 ];
 let _healthTab = "dupes";
 let _healthScanned = {};   // {tabId:true} once its lazy scan has run this open
@@ -6549,6 +6550,36 @@ function renderHealth(){
   if(tab==="failed") return renderHealthFailed(list);
   if(tab==="nolink") return renderHealthNoLink(list);
   if(tab==="titles") return renderHealthTitles(list);
+  if(tab==="airefresh") return renderHealthAiRefresh(list);
+}
+// ---- AI refresh tab (Library Health) ----
+// Session-only checkbox state — both default on, matching the "run
+// everything" common case; unchecked state does not persist across an app
+// restart, unlike S.aiRefreshDays (a real setting).
+let _airefreshRetag = true, _airefreshRetitle = true;
+function airefreshSetDays(v){
+  const n = Math.max(1, parseInt(v,10)||30);
+  S.aiRefreshDays = n; save("settings", S);
+  if(_healthTab==="airefresh"){ const list=document.getElementById("healthList"); if(list) renderHealthAiRefresh(list); }
+}
+function airefreshUpdateBtn(){
+  const btn = document.getElementById("airefreshBtn"); if(!btn) return;
+  btn.disabled = !_airefreshRetag && !_airefreshRetitle;
+}
+function renderHealthAiRefresh(list){
+  const eligible = aiRefreshCandidates();
+  const noProcess = (!_airefreshRetag && !_airefreshRetitle) || !eligible.length;
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 10px">${eligible.length} card${eligible.length===1?"":"s"} eligible — untouched, or last AI-refreshed more than the threshold below.</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 4px 10px">
+      <label class="s">Only touch cards older than <input type="number" min="1" id="airefreshDays" value="${S.aiRefreshDays||30}" style="width:56px" onchange="airefreshSetDays(this.value)"> days</label>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:0 4px 10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="airefreshRetag" ${_airefreshRetag?"checked":""} onchange="_airefreshRetag=this.checked;airefreshUpdateBtn()"> Retag</label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="airefreshRetitle" ${_airefreshRetitle?"checked":""} onchange="_airefreshRetitle=this.checked;airefreshUpdateBtn()"> Retitle</label>
+    </div>
+    <div class="s" style="opacity:.7;padding:0 4px 10px">Retitle can call the AI's vision tier when a card has no usable description or on-image text — same cost as the single-card refresh button.</div>
+    <button class="btn btn-primary" id="airefreshBtn" ${noProcess?"disabled":""} onclick="runAiRefreshBatch()">Process next ${Math.min(200,eligible.length)}</button>`;
 }
 // ---- Duplicates tab ----
 let _dupeReviewMode = "all";
