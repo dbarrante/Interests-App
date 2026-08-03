@@ -6701,7 +6701,7 @@ async function runAiRefreshBatch(){
     toast("AI refresh done — processed "+done+" card"+(done===1?"":"s"));
   }catch(e){
     console.error(e);
-    toast((done ? done+" processed before an error: " : "AI refresh failed: ")+((IA_AI.creditsMessage && IA_AI.creditsMessage(e)) || e.message), 7000);
+    toast((done ? done+" processed before an error: " : "AI refresh failed: ")+(IA_AI.creditsMessage(e) || e.message), 7000);
   } finally {
     _airefreshRunning = false;
   }

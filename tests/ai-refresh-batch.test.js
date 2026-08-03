@@ -135,7 +135,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   await t(label + ": runAiRefreshBatch: a chunk-level retag failure propagates and stops the run without stamping that chunk", async () => {
     const cards = makeCards(2);
     const state = {
-      IA_AI: { hasAIKey: () => true },
+      IA_AI: { hasAIKey: () => true, creditsMessage: () => null },
       S: { aiRefreshDays: 30 },
       toast: () => {},
       aiRefreshCandidates: () => cards,
