@@ -32,5 +32,10 @@ module.exports = {
     "airefreshUpdateBtn",
     "renderHealthAiRefresh",
     "runAiRefreshBatch",
+    "openConfigBackupExport",
+    "closeConfigBackupModal",
+    "submitConfigBackupExport",
+    "openConfigBackupImport",
+    "submitConfigBackupImport",
   ],
 };
