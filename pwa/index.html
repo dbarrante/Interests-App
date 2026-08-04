@@ -3720,9 +3720,7 @@ function submitTabNameModal(){
   if(mode==="rename"){ renameTab(tabId, name); renderTabsView(); }
   else { const created = createTab(name); if(created) openTab(created.id); else renderTabsView(); }
 }
-let _cfgBackupMode = "export";   // "export" | "import" -- set by Task 5's openConfigBackupImport too
 function openConfigBackupExport(){
-  _cfgBackupMode = "export";
   document.getElementById("configBackupModalBody").innerHTML =
     `<h3 style="margin:0 0 12px">Export configuration</h3>`+
     `<div class="hint" style="margin-bottom:10px">Downloads a password-protected file with your AI provider settings, keys, and preferences — restore it on any install of the app.</div>`+
@@ -3763,7 +3761,6 @@ async function submitConfigBackupExport(){
   }catch(e){ err.textContent = "Export failed: "+(e&&e.message||e); }
 }
 function openConfigBackupImport(){
-  _cfgBackupMode = "import";
   document.getElementById("configBackupModalBody").innerHTML =
     `<h3 style="margin:0 0 12px">Restore configuration</h3>`+
     `<div class="hint" style="margin-bottom:10px;color:#b3261e">This replaces this device's current AI provider settings, keys, and preferences. A local, unencrypted safety copy of your current settings is kept in case you need to undo this.</div>`+

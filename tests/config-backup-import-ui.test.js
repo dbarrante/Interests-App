@@ -30,10 +30,17 @@ function makeFileReader(readResult, shouldError) {
 // re-entrancy guard and the modal-close-on-success behavior added by the
 // data-safety review's Finding 1 fix, not just the file/password/Store
 // plumbing the earlier version of this file covered.
+//
+// The guard declaration itself is extracted from `src` (not hardcoded here)
+// so that if someone ever deletes `let _cfgImportInFlight = false;` from the
+// real page, this test fails loudly instead of silently supplying its own
+// copy and staying green.
 function loadSubmit(src, mocks) {
+  const guardDecl = src.match(/let _cfgImportInFlight\s*=\s*false;/);
+  assert.ok(guardDecl, "_cfgImportInFlight declaration must exist in source");
   const factory = new Function(
     "document", "Store", "FileReader", "toast", "location", "closeConfigBackupModal", "setTimeout",
-    "let _cfgImportInFlight = false;\n" +
+    guardDecl[0] + "\n" +
     extractFn(src, "submitConfigBackupImport") +
     "\nreturn { submitConfigBackupImport, get inFlight(){ return _cfgImportInFlight; } };"
   );

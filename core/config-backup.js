@@ -94,16 +94,47 @@ function writeImportSafetySnapshot(db) {
 // not the same mechanism).
 function applyConfigPayload(db, payload) {
   writeImportSafetySnapshot(db);
+  // Captured in memory, pre-mutation, as the RAW row values (not a
+  // parse+restringify) -- reused below to roll ia_settings back byte-for-byte
+  // if a later step in this function throws, no re-read needed. Restringifying
+  // a re-parsed object would be lossy: a missing row (null) would round-trip
+  // to the string "{}" (creating a row that didn't exist), and malformed JSON
+  // already in the row would round-trip to "{}" too (destroying the original
+  // bytes on a FAILED import, the one case where nothing must change).
+  const prevSettingsRaw = dbm.getKV(db, "ia_settings");
+  const prevUpdatedAt = dbm.getKV(db, "ia_settings_updatedAt");
   let currentSettings = {};
-  try { currentSettings = JSON.parse(dbm.getKV(db, "ia_settings") || "{}") || {}; } catch (e) { currentSettings = {}; }
+  try { currentSettings = JSON.parse(prevSettingsRaw || "{}") || {}; } catch (e) { currentSettings = {}; }
   const merged = Object.assign({}, payload.settings || {}, { updateToken: currentSettings.updateToken || "" });
-  dbm.setKV(db, "ia_settings", JSON.stringify(merged));
-  // Bump the sync stamp (same convention as core/db.js's applySyncedSettings)
-  // so this full-replace import isn't later judged "older" than a stale
-  // peer's Dropbox sync blob and silently reverted on the next sync round.
-  dbm.setKV(db, "ia_settings_updatedAt", String(Date.now()));
-  config.setNotionConfig({ token: payload.notionToken || "", parentPageId: payload.notionParentPageId || "" });
-  config.setSafeBrowsingKey(payload.safeBrowsingKey || "");
+  try {
+    dbm.setKV(db, "ia_settings", JSON.stringify(merged));
+    // Bump the sync stamp (same convention as core/db.js's applySyncedSettings)
+    // so this full-replace import isn't later judged "older" than a stale
+    // peer's Dropbox sync blob and silently reverted on the next sync round.
+    dbm.setKV(db, "ia_settings_updatedAt", String(Date.now()));
+    config.setNotionConfig({ token: payload.notionToken || "", parentPageId: payload.notionParentPageId || "" });
+    config.setSafeBrowsingKey(payload.safeBrowsingKey || "");
+  } catch (e) {
+    // config.setNotionConfig / config.setSafeBrowsingKey write config.json
+    // atomically (tmp + rename) and THROW if that rename fails -- a real,
+    // previously-seen failure mode (see commit 3ee6e4b). If either throws
+    // here, ia_settings above has *already* committed to SQLite, which would
+    // otherwise leave a mixed A/B configuration: imported settings/keys in
+    // the live store, but the original device's Notion/Safe-Browsing config
+    // still on disk (or partially written). Roll ia_settings (and its stamp)
+    // back to their pre-import values so the live store ends up completely
+    // unchanged, matching a fully-failed import -- then re-throw so the
+    // route still reports failure honestly. We deliberately do NOT try to
+    // roll config.json back here: if setNotionConfig/setSafeBrowsingKey are
+    // what's failing, retrying a write to the same broken path isn't
+    // productive. The complete pre-import state (including config.json)
+    // remains recoverable from the safety snapshot written above.
+    if (prevSettingsRaw === null || prevSettingsRaw === undefined) dbm.delKV(db, "ia_settings");
+    else dbm.setKV(db, "ia_settings", prevSettingsRaw);
+    if (prevUpdatedAt === null || prevUpdatedAt === undefined) dbm.delKV(db, "ia_settings_updatedAt");
+    else dbm.setKV(db, "ia_settings_updatedAt", prevUpdatedAt);
+    throw e;
+  }
 }
 
 module.exports = { buildConfigPayload, encryptConfigBackup, decryptConfigBackup, applyConfigPayload, writeImportSafetySnapshot };

@@ -136,5 +136,32 @@ t("applyConfigPayload writes a pre-mutation safety snapshot before changing anyt
   db.close();
 });
 
+t("applyConfigPayload rolls ia_settings (and its stamp) back to pre-import values, and still re-throws, if a config.json write fails partway through", () => {
+  const db = newDb();
+  setKV(db, "ia_settings", JSON.stringify({ provider: "gemini", itemCount: 42, updateToken: "this-devices-token" }));
+  setKV(db, "ia_settings_updatedAt", "1000");
+  const origSetNotionConfig = config.setNotionConfig;
+  config.setNotionConfig = () => { throw new Error("simulated config.json rename failure"); };
+  try {
+    assert.throws(
+      () => cb.applyConfigPayload(db, { v: 1, settings: { provider: "openai", itemCount: 1 }, notionToken: "tok", notionParentPageId: "", safeBrowsingKey: "" }),
+      /simulated config\.json rename failure/,
+      "the original error must still propagate so the route reports failure"
+    );
+  } finally {
+    config.setNotionConfig = origSetNotionConfig;
+  }
+  const after = JSON.parse(getKV(db, "ia_settings"));
+  assert.strictEqual(after.provider, "gemini", "ia_settings must be rolled back to its pre-import value after a partial-write failure");
+  assert.strictEqual(after.itemCount, 42);
+  assert.strictEqual(after.updateToken, "this-devices-token");
+  assert.strictEqual(getKV(db, "ia_settings_updatedAt"), "1000", "ia_settings_updatedAt must also be rolled back, not left bumped");
+  const snapPath = path.join(config.appDataDir(), "config-import-safety.json");
+  const snap = JSON.parse(fs.readFileSync(snapPath, "utf8"));
+  assert.strictEqual(snap.settings.provider, "gemini", "the pre-import safety snapshot must still hold the correct pre-import state after a failed import -- this is what makes the failure recoverable rather than data loss");
+  assert.strictEqual(snap.settings.itemCount, 42);
+  db.close();
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
