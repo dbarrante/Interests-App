@@ -30,8 +30,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": AI lookup stages into the input, it does not write the card", () => {
     const m = /async function edAiTitle\(\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "edAiTitle not found");
-    assert.match(m[1], /box\.value = out\.slice\(0,250\)/,
-      "the suggestion must land in the Title input for review");
+    assert.match(m[1], /box\.value = choices\[0\]\.slice\(0,250\)/,
+      "the top suggestion must land in the Title input for review");
     assert.doesNotMatch(m[1], /putSaved|persistCards|putCards/,
       "nothing may be persisted until the user hits Save — same contract as the Title-issues panel");
   });

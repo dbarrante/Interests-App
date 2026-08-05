@@ -4892,6 +4892,7 @@ function impEdit(idx){
     <h2>Edit card</h2>
     <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
+    <div id="edTitleChoices"></div>
     <label>Description</label>
     <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
     <label>Categories / tags <span style="font-weight:400;color:var(--muted)">(comma-separated)</span></label>
@@ -4934,6 +4935,7 @@ function cardEdit(id){
     <h2>Edit title</h2>
     <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
+    <div id="edTitleChoices"></div>
     <div class="hint">${esc(it.source||domain(it.url)||"")}</div>
     <div class="ed-row">
       <button class="btn btn-primary" onclick="cardEditSave()">Save changes</button>
@@ -4967,11 +4969,28 @@ async function edAiTitle(){
     ? saved.find(x=>x && x.id===_edSavedId)
     : imported[_editIdx];
   if(!card){ toast("That card is no longer available."); return; }
-  const out = await regenerateTitleFor(card, [box.value.trim()].filter(Boolean), "Looking up a better title…");
-  if(!out) return;
-  box.value = out.slice(0,250);
+  renderTitleChoices([]);
+  const choices = await regenerateTitleChoices(card, [box.value.trim()].filter(Boolean), S.aiTitleSuggestCount||3);
+  if(!choices.length) return;
+  box.value = choices[0].slice(0,250);
   box.focus();
-  toast("Title suggested — edit it if you like, then Save changes.", 6000);
+  renderTitleChoices(choices);
+  toast(choices.length>1 ? "Pick a suggestion below, or edit it, then Save changes." : "Title suggested — edit it if you like, then Save changes.", 6000);
+}
+// Renders the multi-choice picker's candidate chips below the title input.
+// Clicking a chip stages it into the input -- same "nothing written until
+// Save" contract as the rest of the edit modal.
+function renderTitleChoices(list){
+  const box = document.getElementById("edTitleChoices"); if(!box) return;
+  box.innerHTML = (list && list.length)
+    ? `<div class="hint" style="margin:8px 0 4px">Suggestions (click to use):</div>
+       <div class="tagwrap">${list.map(t=>`<span class="catpill" onclick="edPickTitleChoice(this)" data-title="${esc(t).replace(/"/g,"&quot;")}">${esc(t)}</span>`).join("")}</div>`
+    : "";
+}
+function edPickTitleChoice(el){
+  const box = document.getElementById("edTitle"); if(!box) return;
+  box.value = el.getAttribute("data-title")||"";
+  box.focus();
 }
 // Stages the original title into the input for review -- same "nothing is
 // stored until Save changes" contract as edAiTitle.
@@ -7283,6 +7302,14 @@ async function fetchGroundingExcerpt(card){
     return (m && m.excerpt) || "";
   }catch(e){ return ""; }
 }
+// Shared fail-reason -> toast message, used by both regenerateTitleFor (one
+// candidate) and regenerateTitleChoices (up to N candidates).
+function titleFailReasonMessage(failReason){
+  return failReason === "fetch-blocked" ? "Couldn't load that card's picture — the site may be blocking it, or it may be gone."
+    : failReason === "decode-failed" ? "That card's picture couldn't be read."
+    : failReason === "no-image" ? "That card has no picture to read a title from."
+    : "Couldn't generate a title — check your AI key, credits, and rate limits.";
+}
 // --- One-card title regeneration -------------------------------------------
 // Shared by the Title-issues per-row retry and the card-grid hover icon.
 // Returns the new title, or null (the failure is already toasted).
@@ -7307,16 +7334,35 @@ async function regenerateTitleFor(card, extraAvoid, busyLabel){
   }
   catch(e){ console.warn("title regeneration failed", e); }
   hideBusyOverlay();
-  if(!out){
-    const why = failReason === "fetch-blocked"
-      ? "Couldn't load that card's picture — the site may be blocking it, or it may be gone."
-      : failReason === "decode-failed"
-      ? "That card's picture couldn't be read."
-      : failReason === "no-image"
-      ? "That card has no picture to read a title from."
-      : "Couldn't generate a title — check your AI key, credits, and rate limits.";
-    toast(why, 7000);
-  }
+  if(!out) toast(titleFailReasonMessage(failReason), 7000);
+  return out;
+}
+// Generates up to `count` distinct AI title candidates for the multi-choice
+// picker (edAiTitle). Grounding is fetched ONCE and reused across every
+// attempt -- it's a property of the source article, not of any one attempt.
+// Each successful candidate is added to the avoid-list before the next
+// attempt, reusing titleFromSignal's existing collision-avoidance. Returns
+// fewer than `count` (never padded) when an attempt fails the quality gate
+// -- no title beats a bad one, same philosophy as every other tier here.
+async function regenerateTitleChoices(card, extraAvoid, count){
+  if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return []; }
+  showBusyOverlay("Looking up a better title…");
+  await new Promise(r=>requestAnimationFrame(r));
+  const groundingText = await fetchGroundingExcerpt(card);
+  const avoid = (extraAvoid||[]).slice();
+  const out = [];
+  let failReason = "";
+  try{
+    for(let i=0;i<count;i++){
+      const result = await generateUniqueTitle(card, avoid, true, groundingText);
+      const title = result && result.title;
+      if(!title){ if(!out.length) failReason = (result && result.failReason)||""; break; }
+      out.push(title);
+      avoid.push(title);
+    }
+  }catch(e){ console.warn("title choices generation failed", e); }
+  hideBusyOverlay();
+  if(!out.length) toast(titleFailReasonMessage(failReason), 7000);
   return out;
 }
 // Title-issues row retry: stages a fresh suggestion for review rather than
