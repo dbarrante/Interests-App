@@ -245,7 +245,20 @@
       if (!msg || msg.action !== "autoCaptureFB") return;
       try { window.scrollTo(0, 0); } catch (e) {}   // bring the post into view so FB lazy-loads its photo
       let waited = 0;
-      const MAX_WAIT = 18000;   // wait up to 18s for the REAL photo (a cold post shows a spinner first; manual Save works because you wait)
+      // /watch/ and /reel/ are FB's dedicated video-player layout — there is no
+      // [role="article"] post card there (findMainPost() always returns null), so
+      // no lazy-loading post photo will EVER appear no matter how long we wait.
+      // Give up on the photo well before the normal 18s — BUT isUnavailable() is
+      // checked on every tick of this same loop regardless of page type, so this
+      // deadline also doubles as the deleted-video detection window; cutting it too
+      // short (an earlier version of this fix used 3000ms) can miss a "content isn't
+      // available" interstitial that hasn't painted yet, silently falling through to
+      // captureFbByOg — which has no deletion check — instead of removing the dead
+      // card. 8000ms keeps most of the time savings while leaving a real margin
+      // after the isUnavailable gate below (waited >= 1200) for the interstitial to
+      // actually render.
+      const isVideoPage = /^\/(watch|reel)(\/|$)/.test(location.pathname || "");
+      const MAX_WAIT = isVideoPage ? 8000 : 18000;   // wait up to 18s for the REAL photo (a cold post shows a spinner first; manual Save works because you wait)
       (function loop() {
         // FB sent us to the home feed (post gone) and there's no post dialog → never
         // grab a feed post; give up cleanly.

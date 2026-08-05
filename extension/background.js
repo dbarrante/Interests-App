@@ -1468,6 +1468,15 @@ function waitTabComplete(tabId, timeoutMs) {
 // render finds no photo. Retries up to 3× (wait 5s + reload) then moves on. Serialized.
 const RENDER_MAX_TRIES = 3;
 const RENDER_RETRY_WAIT_MS = 5000;
+// /watch/ and /reel/ pages are FB's dedicated video-player layout, not a feed post
+// card — capture-core.js's findMainPost() looks for [role="article"], which never
+// exists there, so every render try is guaranteed to find nothing (confirmed live:
+// src=none on all 3 tries, every time) before falling back to captureFbByOg anyway.
+// Reloading+waiting 2 more times can't fix a structural mismatch, it only burns time
+// and visibly reloads the tab twice for nothing — so these get exactly one render
+// pass (still catches a deleted video via isUnavailable's body-text fallback, still
+// opportunistically grabs an image if one is found) before going straight to og-fetch.
+const FB_NO_RETRY_RE = /facebook\.com\/(watch|reel)(\/|\?|$)/i;
 let fbRenderBusy = false;
 async function renderCaptureFb(url, id, delayMs) {
   // a render is already in flight (e.g. a single ↻ racing the batch) — leave the
@@ -1490,7 +1499,10 @@ async function renderCaptureFb(url, id, delayMs) {
       await waitTabComplete(tabId, (delayMs || 0) + 30000);
       // Up to RENDER_MAX_TRIES, RELOAD + wait 5s between tries; stop the moment one
       // lands an image or the post is detected deleted. captureFbPost never crops a spinner.
-      for (let attempt = 1; attempt <= RENDER_MAX_TRIES; attempt++) {
+      // /watch/ and /reel/ pages have no post card to find (see FB_NO_RETRY_RE above) —
+      // reload-retrying them can't help, so they get exactly 1 try.
+      const maxTries = FB_NO_RETRY_RE.test(url) ? 1 : RENDER_MAX_TRIES;
+      for (let attempt = 1; attempt <= maxTries; attempt++) {
         if (attempt > 1) {
           await new Promise((r) => setTimeout(r, RENDER_RETRY_WAIT_MS));   // wait 5s before re-attempting (per request)
           try { await chrome.tabs.reload(tabId); } catch (e) {}
@@ -1502,7 +1514,7 @@ async function renderCaptureFb(url, id, delayMs) {
         catch (e) { res = false; }
         if (res === "dead") return "dead";        // deleted/unavailable interstitial → card removed
         if (res) return "captured";               // got a real image
-        log("FB render try " + attempt + "/" + RENDER_MAX_TRIES + " — no image yet: " + url);
+        log("FB render try " + attempt + "/" + maxTries + " — no image yet: " + url);
       }
     }
     // Render found no image AND the post isn't a dead interstitial → try the fast
