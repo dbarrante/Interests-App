@@ -4808,7 +4808,7 @@ function impEdit(idx){
     : "";
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit card</h2>
-    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button></label>
+    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle)}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
     <label>Description</label>
     <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
@@ -4850,7 +4850,7 @@ function cardEdit(id){
   _edScope = "saved"; _edSavedId = id;
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit title</h2>
-    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button></label>
+    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle)}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
     <div class="hint">${esc(it.source||domain(it.url)||"")}</div>
     <div class="ed-row">
@@ -4889,6 +4889,15 @@ async function edAiTitle(){
   box.value = out.slice(0,250);
   box.focus();
   toast("Title suggested — edit it if you like, then Save changes.", 6000);
+}
+// Stages the original title into the input for review -- same "nothing is
+// stored until Save changes" contract as edAiTitle.
+function edRevertTitle(){
+  const box = document.getElementById("edTitle"); if(!box) return;
+  const card = _edScope==="saved" ? saved.find(x=>x && x.id===_edSavedId) : imported[_editIdx];
+  if(!card || card.origTitle===undefined) return;
+  box.value = card.origTitle;
+  box.focus();
 }
 function edAddTag(t){
   const inp=document.getElementById("edTags"); if(!inp) return;
