@@ -22,6 +22,8 @@ function loadApplyGeneratedTitle(src, vocab) {
   const parts = {
     tagBadPattern: extractFn(src, "tagBadPattern"),
     canonicalTag: extractFn(src, "canonicalTag"),
+    captureOrigTitle: extractFn(src, "captureOrigTitle"),
+    settleOrigTitle: extractFn(src, "settleOrigTitle"),
     applyGeneratedTitle: extractFn(src, "applyGeneratedTitle"),
   };
   Object.keys(parts).forEach(name => assert.ok(parts[name], name + " not found in source"));
@@ -98,6 +100,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const longTitle = "A".repeat(300);
     applyGeneratedTitle(card, longTitle);
     assert.strictEqual(card.title.length, 250);
+  });
+
+  t(label + ": applyGeneratedTitle captures origTitle on the first AI rename and settles it away on a coincidental round-trip", () => {
+    const applyGeneratedTitle = loadApplyGeneratedTitle(src);
+    const card = { title: "Original Title", tags: [] };
+    applyGeneratedTitle(card, "New AI Title");
+    assert.strictEqual(card.origTitle, "Original Title");
+    applyGeneratedTitle(card, "Original Title");
+    assert.strictEqual(card.title, "Original Title");
+    assert.strictEqual(card.origTitle, undefined, "settles once the title round-trips back to the original");
   });
 }
 

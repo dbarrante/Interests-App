@@ -6572,6 +6572,18 @@ async function generateUniqueTitle(card, extraAvoid, allowVision=true){
   if(weak.collection) return { title: await fallbackCollectionTitle(card, weak.collection, extraAvoid), failReason: imgFailReason };
   return { title: null, failReason: imgFailReason };
 }
+// Captures the card's TRUE original title, once, the first time a rename
+// would actually change something -- never overwritten again, so it always
+// points at the original no matter how many renames happen in between.
+function captureOrigTitle(card, newTitle){
+  if(!card || !newTitle || card.title===newTitle) return;
+  if(card.origTitle===undefined) card.origTitle = card.title;
+}
+// Clears origTitle once the current title matches it again -- nothing left
+// to roll back to; the next rename starts a fresh baseline.
+function settleOrigTitle(card){
+  if(card && card.origTitle!==undefined && card.title===card.origTitle) delete card.origTitle;
+}
 // Shared write path for every AI-GENERATED title (impRefreshTitle,
 // enrichOnOpen, the Title-issues Apply flow for AI-origin rows, and the
 // AI-refresh batch) — deliberately NOT used by the manual edit forms
@@ -6593,7 +6605,10 @@ function applyGeneratedTitle(card, rawTitle){
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
   });
-  card.title = (extracted.title || rawTitle).slice(0,250);
+  const newTitle = (extracted.title || rawTitle).slice(0,250);
+  captureOrigTitle(card, newTitle);
+  card.title = newTitle;
+  settleOrigTitle(card);
   if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
   return { title: card.title, tagsAdded: cleaned };
 }
