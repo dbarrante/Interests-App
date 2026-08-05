@@ -14,8 +14,9 @@ async function t(n, fn) { try { await fn(); pass++; console.log("  ok  " + n); }
 
 (async () => {
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  await t(label + ": regenerateTitleChoices returns up to `count` candidates, each avoiding all prior ones", async () => {
+  await t(label + ": regenerateTitleChoices returns up to `count` candidates, each avoiding all prior ones, fetching grounding exactly once", async () => {
     const seenAvoid = [];
+    let groundCalls = 0;
     const factory = new Function(
       "IA_AI", "toast", "showBusyOverlay", "hideBusyOverlay", "requestAnimationFrame",
       "fetchGroundingExcerpt", "generateUniqueTitle", "titleFailReasonMessage",
@@ -24,12 +25,13 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     let n = 0;
     const regenerateTitleChoices = factory(
       { hasAIKey: () => true }, () => {}, () => {}, () => {}, (cb) => cb(),
-      async () => "grounding text", async (card, avoid) => { seenAvoid.push(avoid.slice()); n++; return { title: "Title " + n, failReason: "" }; },
+      async () => { groundCalls++; return "grounding text"; }, async (card, avoid) => { seenAvoid.push(avoid.slice()); n++; return { title: "Title " + n, failReason: "" }; },
       () => "fail message"
     );
     const out = await regenerateTitleChoices({ id: "c1", url: "https://example.test" }, [], 3);
     assert.deepStrictEqual(out, ["Title 1", "Title 2", "Title 3"]);
     assert.deepStrictEqual(seenAvoid, [[], ["Title 1"], ["Title 1", "Title 2"]]);
+    assert.strictEqual(groundCalls, 1, "grounding is a property of the article, fetched once and reused across all attempts");
   });
 
   await t(label + ": regenerateTitleChoices returns fewer than `count` when an attempt fails the quality gate (never padded)", async () => {
