@@ -170,6 +170,37 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);
   });
+
+  // Test the canonicalTag-aware deleted-tag guard: a plural variant of a
+  // deleted tag must not resurrect it via the hashtag extraction.
+  await t(label + ": impEditSave prevents plural hashtag variants from resurrecting deleted tags (real canonicalTag)", async () => {
+    const it = { id: "i1", title: "Vintage collection #vintages", tags: ["vintage"] };
+    const imported = [it];
+    // The user deleted "vintage" from the tags box while also renaming the title.
+    // The outgoing title has #vintages (plural), which canonicalTag would map back
+    // to "vintage" (singular) if in the vocabulary. The exclude guard must prevent
+    // that resurrection.
+    const els = { edTitle: { value: "Antique collection" }, edDesc: { value: "" }, edTags: { value: "" } };
+    const document = { getElementById: (id) => els[id] };
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    // Real canonicalTag implementation that maps plural forms to their singular equivalents
+    const allTagsVocab = ["vintage", "modern", "retro"];
+    const realCanonicalTag = function(t) {
+      const k = (t || "").toLowerCase();
+      for (const e of allTagsVocab) {
+        const ek = e.toLowerCase();
+        if (ek === k || ek === k + "s" || ek + "s" === k || ek.replace(/s$/, "") === k.replace(/s$/, "")) return e;
+      }
+      return t;
+    };
+    const impEditSave = factory(extractHashtags, "interests", realCanonicalTag, ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    impEditSave();
+    assert.strictEqual(it.title, "Antique collection");
+    assert.deepStrictEqual(it.tags, [], "the plural hashtag #vintages must NOT resurrect the deleted singular tag 'vintage', even after canonicalTag maps it");
+  });
 }
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

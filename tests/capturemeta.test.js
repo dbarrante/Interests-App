@@ -43,6 +43,14 @@ t("extractArticleExcerpt falls back to whole-page text when there's little/no <p
   const r = cm.extractArticleExcerpt(html);
   assert.ok(r.indexOf("Real article text") >= 0, "should fall back to contentcheck.extractText: " + r);
 });
+t("extractArticleExcerpt falls back to whole-page text when <p> tags exist but joined text is under 200 chars", () => {
+  const html = "<html><body><nav>Navigation</nav><p>Short</p><footer>Footer text</footer><div>Longer article body with more context that provides real content about the topic.</div></body></html>";
+  const r = cm.extractArticleExcerpt(html);
+  // The <p> text "Short" is only 5 chars, well under 200 threshold, so it should fall back to contentcheck.extractText
+  // which extracts the full page text including the footer and body
+  assert.ok(r.length > 50, "should use full-page fallback: " + r);
+  assert.ok(r.indexOf("article") >= 0 || r.indexOf("content") >= 0, "should include body/div text from fallback: " + r);
+});
 t("extractArticleExcerpt caps at 1500 chars", () => {
   const html = "<p>" + "word ".repeat(2000) + "</p>";
   const r = cm.extractArticleExcerpt(html);

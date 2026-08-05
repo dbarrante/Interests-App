@@ -4970,7 +4970,7 @@ async function edAiTitle(){
     : imported[_editIdx];
   if(!card){ toast("That card is no longer available."); return; }
   renderTitleChoices([]);
-  const choices = await regenerateTitleChoices(card, [box.value.trim()].filter(Boolean), S.aiTitleSuggestCount||3);
+  const choices = await regenerateTitleChoices(card, [box.value.trim()].filter(Boolean), Math.max(1,Math.min(5,S.aiTitleSuggestCount||3)));
   if(!choices.length) return;
   box.value = choices[0].slice(0,250);
   box.focus();
@@ -6646,21 +6646,11 @@ function captureOrigTitle(card, newTitle){
 function settleOrigTitle(card){
   if(card && card.origTitle!==undefined && card.title===card.origTitle) delete card.origTitle;
 }
-// Shared write path for every AI-GENERATED title (impRefreshTitle,
-// enrichOnOpen, the Title-issues Apply flow for AI-origin rows, and the
-// AI-refresh batch) — deliberately NOT used by the manual edit forms
-// (cardEditSave/impEditSave), which save whatever the user typed verbatim.
-// Converts embedded #hashtags into tags (merged, never replacing what the
-// card already has) using the same cleaning aiSuggestTags already applies
-// to its own AI-returned tags, and writes the cleaned title onto the card.
-// Returns null (no-op) for a falsy rawTitle, else { title, tagsAdded } so
-// callers can toast/log the title actually written, not the raw one that
-// may still contain '#'.
 // Clean + merge a raw hashtag list into the card's tags (dedupe, canonicalize,
 // filter AI_TAB_TAG and bad patterns) -- shared by both the incoming-AI-title
 // path (applyGeneratedTitle below) and the outgoing-title path
 // (captureOutgoingHashtags). `exclude`, if given, is a Set of lowercased raw
-// tag words to drop before canonicalizing -- impEditSave uses this so a tag
+// tag words to drop after canonicalizing -- impEditSave uses this so a tag
 // the user just deleted from the edTags box isn't resurrected by a matching
 // hashtag in the title being replaced in that same save. Returns the cleaned
 // list actually added.
@@ -6668,8 +6658,8 @@ function mergeCleanTags(card, rawTags, exclude){
   const seen=new Set(), cleaned=[];
   (rawTags||[]).forEach(t=>{
     if(t===AI_TAB_TAG) return;
-    if(exclude && exclude.has(t.toLowerCase())) return;
     t=canonicalTag(t);
+    if(exclude && exclude.has(t.toLowerCase())) return;
     const k=t.toLowerCase();
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
@@ -6685,6 +6675,15 @@ function captureOutgoingHashtags(card, exclude){
   if(!card || !card.title) return;
   mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
 }
+// Shared write path for every title that sets tags via captureOutgoingHashtags
+// (AI-generated titles via impRefreshTitle/enrichOnOpen/Title-issues Apply/
+// AI-refresh batch, plus manual edits via cardEditSave/impEditSave). Converts
+// embedded #hashtags into tags (merged, never replacing what the card already
+// has) using the same cleaning aiSuggestTags already applies to its own
+// AI-returned tags, and writes the cleaned title onto the card. Returns null
+// (no-op) for a falsy rawTitle, else { title, tagsAdded } so callers can
+// toast/log the title actually written, not the raw one that may still
+// contain '#'.
 function applyGeneratedTitle(card, rawTitle){
   if(!rawTitle) return null;
   const extracted = extractHashtags(rawTitle);
@@ -7333,7 +7332,7 @@ async function regenerateTitleFor(card, extraAvoid, busyLabel){
     failReason = (result && result.failReason) || "";
   }
   catch(e){ console.warn("title regeneration failed", e); }
-  hideBusyOverlay();
+  finally{ hideBusyOverlay(); }
   if(!out) toast(titleFailReasonMessage(failReason), 7000);
   return out;
 }
@@ -7348,11 +7347,11 @@ async function regenerateTitleChoices(card, extraAvoid, count){
   if(!IA_AI.hasAIKey()){ toast("Add your "+PROVIDERS[S.provider].keyName+" in Settings first"); return []; }
   showBusyOverlay("Looking up a better title…");
   await new Promise(r=>requestAnimationFrame(r));
-  const groundingText = await fetchGroundingExcerpt(card);
   const avoid = (extraAvoid||[]).slice();
   const out = [];
   let failReason = "";
   try{
+    const groundingText = await fetchGroundingExcerpt(card);
     for(let i=0;i<count;i++){
       const result = await generateUniqueTitle(card, avoid, true, groundingText);
       const title = result && result.title;
@@ -7361,7 +7360,7 @@ async function regenerateTitleChoices(card, extraAvoid, count){
       avoid.push(title);
     }
   }catch(e){ console.warn("title choices generation failed", e); }
-  hideBusyOverlay();
+  finally{ hideBusyOverlay(); }
   if(!out.length) toast(titleFailReasonMessage(failReason), 7000);
   return out;
 }
