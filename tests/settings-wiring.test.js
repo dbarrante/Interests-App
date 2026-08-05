@@ -35,6 +35,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src, /S\.backupRetainCount=Math\.max\(1,Math\.min\(30,\+e\.target\.value\|\|3\)\); save\("settings",S\);/,
       "oninput handler missing or no longer clamps/saves");
   });
+  t(label + ": aiTitleSuggestCount default is 3", () => {
+    assert.match(src, /aiTitleSuggestCount:3,/, "DEFAULTS.aiTitleSuggestCount missing");
+  });
+  t(label + ": AI title suggestions number input exists with a sane range", () => {
+    assert.match(src, /<input type="number" id="aiTitleSuggestCount" min="1" max="5"/, "input element missing or range changed");
+  });
+  t(label + ": aiTitleSuggestCount input clamps 1-5 and persists", () => {
+    assert.match(src, /S\.aiTitleSuggestCount=Math\.max\(1,Math\.min\(5,\+e\.target\.value\|\|3\)\); save\("settings",S\);/,
+      "oninput handler missing or no longer clamps/saves");
+  });
   t(label + ": manual/auto/safety-gate backups all pass the configured retain count", () => {
     const sites = [
       /doBackup\(manual, ?opts\)\{\s*try\{\s*const res = await Store\.backupNow\(Object\.assign\(\{keep: S\.backupRetainCount\|\|3\}, ?opts\|\|\{\}\)\)/,

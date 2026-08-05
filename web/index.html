@@ -598,6 +598,10 @@ html.dark .tp-sug{background:#332f2a;color:#cfc9c0}
           <label data-p="local"><input type="radio" name="prov" value="local">Local / Custom<div class="hint">Ollama · OpenRouter</div></label>
         </div>
         <div id="provFields"></div>
+        <div class="row2" style="margin-top:12px;align-items:center">
+          <div><label for="aiTitleSuggestCount">AI title suggestions to generate</label></div>
+          <div style="flex:0 0 auto"><input type="number" id="aiTitleSuggestCount" min="1" max="5" step="1" style="width:80px"></div>
+        </div>
       </div>
 
       <div class="sec collapsible" data-sec="categories">
@@ -893,6 +897,7 @@ const DEFAULTS = {
   captureDelay:3,
   captureConcurrency:3,
   backupRetainCount:3,
+  aiTitleSuggestCount:3,
   recaptureMonths:0,
   showDates:false,
   autoBackup:0,
@@ -2048,6 +2053,8 @@ function renderSettings(){
     document.getElementById("modelName").oninput = e=>{ S.models[S.provider]=e.target.value.trim(); };
   }
   if(S.provider==="local") document.getElementById("localUrl").oninput = e=>{ S.localUrl=e.target.value.trim().replace(/\/$/,""); };
+  document.getElementById("aiTitleSuggestCount").value = S.aiTitleSuggestCount||3;
+  document.getElementById("aiTitleSuggestCount").oninput = e=>{ S.aiTitleSuggestCount=Math.max(1,Math.min(5,+e.target.value||3)); save("settings",S); };
 
   document.getElementById("sliders").innerHTML = CATS.map(c=>`
     <div class="slider-row">
