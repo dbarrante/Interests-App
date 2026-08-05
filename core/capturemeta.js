@@ -34,12 +34,17 @@ function extractOg(html) {
 // same load-time-cycle reason captureMetaChunk already documents below.
 function extractArticleExcerpt(html) {
   var h = String(html || "");
-  // Cap input to avoid quadratic regex behavior on pathological unterminated-<p> HTML.
-  // The function's output is capped at 1500 chars anyway, and buildTitlePrompt only
-  // uses the first 1000, so scanning past 50KB is wasteful. This bound replaces (not
-  // stacks on) the old 300000 guard, which duplicated extractOg's identical cap.
-  if (h.length > 50000) h = h.slice(0, 50000);
-  var paras = h.match(/<p[^>]*>[\s\S]*?<\/p>/gi) || [];
+  // Guard against pathological malformed/unterminated <p> tags that cause the
+  // regex below to degrade to O(n²). Detect high open-to-close ratio (malformed)
+  // before attempting the scan; fall back to contentcheck's linear text extraction
+  // if pathological. Allows real pages to use full HTML (~256KB from _fetchHtml)
+  // rather than truncating content that starts past an arbitrary boundary.
+  var opens = (h.match(/<p[\s>]/gi) || []).length;
+  var closes = (h.match(/<\/p>/gi) || []).length;
+  var pathological = opens > 20 && opens > closes * 4;
+  // Outer safety bound matching extractOg; pathology guard handles the real issue.
+  if (h.length > 300000) h = h.slice(0, 300000);
+  var paras = !pathological ? (h.match(/<p[^>]*>[\s\S]*?<\/p>/gi) || []) : [];
   var joined = paras.map(function (p) {
     return p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   }).filter(Boolean).join(" ");

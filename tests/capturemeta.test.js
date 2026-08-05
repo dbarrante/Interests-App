@@ -51,6 +51,36 @@ t("extractArticleExcerpt falls back to whole-page text when <p> tags exist but j
   assert.ok(r.length > 50, "should use full-page fallback: " + r);
   assert.ok(r.indexOf("article") >= 0 || r.indexOf("content") >= 0, "should include body/div text from fallback: " + r);
 });
+t("extractArticleExcerpt skips pathological unterminated-<p> tags without scanning (fast fallback)", () => {
+  // A page with many open <p tags but few closes -- the regex would degrade to O(n²)
+  // if we tried to scan it. The pathology guard should detect this and fall back to
+  // contentcheck.extractText (fast, linear) without even attempting the <p> regex.
+  const html = "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>" +
+    "This is the actual article text that the pathology guard allows to be extracted via fallback. " +
+    "</p>";
+  const start = Date.now();
+  const r = cm.extractArticleExcerpt(html);
+  const elapsed = Date.now() - start;
+  // Should resolve in milliseconds (contentcheck.extractText is O(n)), not seconds (regex scan is O(n²))
+  assert.ok(elapsed < 100, "pathology guard should make this sub-100ms; got " + elapsed + "ms");
+  assert.ok(r.indexOf("actual article text") >= 0, "should fall back to full-page extraction: " + r);
+});
+t("extractArticleExcerpt handles real Wikipedia-shaped article with substantial content past early nav", () => {
+  // A realistic page: nav chrome at the start (~45KB worth), then actual article body in <p> tags.
+  // With the 50KB input truncation, this would cut off real <p> content. With the
+  // pathology guard (which doesn't truncate), it should find the article paragraphs.
+  // Use a nav simulation that pushes past but not past 300KB outer bound.
+  var html = "<html><body><nav>";
+  for (var i = 0; i < 1500; i++) html += "<li>Menu item</li>";  // ~45KB of nav
+  html += "</nav>" +
+    "<p>First paragraph of the real article with substantial content to extract as grounding.</p>" +
+    "<p>Second paragraph continuing the discussion with more details and context.</p>" +
+    "<p>Third paragraph completing the thought with additional information and analysis.</p>" +
+    "</body></html>";
+  const r = cm.extractArticleExcerpt(html);
+  assert.ok(r.indexOf("First paragraph") >= 0, "should extract the real article <p> content, not nav");
+  assert.ok(r.indexOf("Menu item") === -1, "should not include nav chrome");
+});
 t("extractArticleExcerpt caps at 1500 chars", () => {
   const html = "<p>" + "word ".repeat(2000) + "</p>";
   const r = cm.extractArticleExcerpt(html);

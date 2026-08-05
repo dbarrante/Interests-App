@@ -17,13 +17,14 @@ function loadFn(src, name, extraFreeVars) {
   const parts = {
     captureOrigTitle: extractFn(src, "captureOrigTitle"),
     settleOrigTitle: extractFn(src, "settleOrigTitle"),
+    canonicalTag: extractFn(src, "canonicalTag"),
     mergeCleanTags: extractFn(src, "mergeCleanTags"),
     captureOutgoingHashtags: extractFn(src, "captureOutgoingHashtags"),
     [name]: extractFn(src, name),
   };
   Object.keys(parts).forEach(k => assert.ok(parts[k], k + " not found in source"));
   const body = Object.values(parts).join("\n");
-  const factory = new Function("extractHashtags", "AI_TAB_TAG", "canonicalTag", "tagBadPattern", ...(extraFreeVars || []), body + "\nreturn " + name + ";");
+  const factory = new Function("extractHashtags", "AI_TAB_TAG", "tagBadPattern", "allTags", ...(extraFreeVars || []), body + "\nreturn " + name + ";");
   return factory;
 }
 
@@ -34,7 +35,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Renamed" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.strictEqual(it.origTitle, "Original");
@@ -45,7 +46,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Renamed" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.deepStrictEqual(it.tags, ["vintage"]);
@@ -56,7 +57,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Renamed Twice" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Renamed Twice");
     assert.strictEqual(it.origTitle, "The True Original", "must stay the TRUE original");
@@ -67,7 +68,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Original" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);
@@ -82,7 +83,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.strictEqual(it.origTitle, "Original");
@@ -97,7 +98,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.deepStrictEqual(it.tags.sort(), ["typed", "vintage"], "the outgoing title's hashtag must survive the edTags-box write, not be clobbered by it");
@@ -116,7 +117,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Beach Day Redux");
     assert.deepStrictEqual(it.tags, [], "a tag the user just deleted from the box must not be resurrected by a matching hashtag in the title being replaced");
@@ -135,7 +136,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Beach Day Redux");
     assert.deepStrictEqual(it.tags, ["sunny"], "\"vintage\" stays deleted; \"sunny\" (kept in the box) is unaffected");
@@ -150,7 +151,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed Twice");
     assert.strictEqual(it.origTitle, "The True Original");
@@ -165,41 +166,57 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);
   });
 
-  // Test the canonicalTag-aware deleted-tag guard: a plural variant of a
-  // deleted tag must not resurrect it via the hashtag extraction.
-  await t(label + ": impEditSave prevents plural hashtag variants from resurrecting deleted tags (real canonicalTag)", async () => {
+  // Test the canonicalTag-aware deleted-tag guard with real canonicalTag:
+  // a plural variant of a deleted canonical tag must not resurrect it
+  await t(label + ": impEditSave prevents plural hashtag variants from resurrecting deleted canonical tags", async () => {
     const it = { id: "i1", title: "Vintage collection #vintages", tags: ["vintage"] };
     const imported = [it];
-    // The user deleted "vintage" from the tags box while also renaming the title.
-    // The outgoing title has #vintages (plural), which canonicalTag would map back
-    // to "vintage" (singular) if in the vocabulary. The exclude guard must prevent
-    // that resurrection.
+    // The user deleted "vintage" from the tags box while renaming the title.
+    // The outgoing title has #vintages (plural). With real canonicalTag and
+    // ["vintage"] in vocabulary, it maps to "vintage". The exclude guard must
+    // prevent resurrection even though it's checking both raw and canonical forms.
     const els = { edTitle: { value: "Antique collection" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    // Real canonicalTag implementation that maps plural forms to their singular equivalents
-    const allTagsVocab = ["vintage", "modern", "retro"];
-    const realCanonicalTag = function(t) {
-      const k = (t || "").toLowerCase();
-      for (const e of allTagsVocab) {
-        const ek = e.toLowerCase();
-        if (ek === k || ek === k + "s" || ek + "s" === k || ek.replace(/s$/, "") === k.replace(/s$/, "")) return e;
-      }
-      return t;
-    };
-    const impEditSave = factory(extractHashtags, "interests", realCanonicalTag, ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    // allTags() returns a vocabulary with the canonical forms
+    const vocab = ["vintage", "modern", "retro"];
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Antique collection");
-    assert.deepStrictEqual(it.tags, [], "the plural hashtag #vintages must NOT resurrect the deleted singular tag 'vintage', even after canonicalTag maps it");
+    assert.deepStrictEqual(it.tags, [], "plural hashtag #vintages must NOT resurrect deleted 'vintage' after canonicalTag maps it");
+  });
+
+  // Test the other direction: a non-canonical stored tag must not get
+  // resurrected in canonical form via a matching hashtag
+  await t(label + ": impEditSave prevents non-canonical stored tags from being resurrected as canonical via hashtags", async () => {
+    const it = { id: "i1", title: "Collection #vintage", tags: ["vintages"] };  // Stored as plural (non-canonical)
+    const imported = [it];
+    // The user deleted "vintages" from the tags box while renaming the title.
+    // The outgoing title has #vintage (singular). With real canonicalTag and
+    // ["vintage"] in vocabulary, it would map to "vintage", resurrecting the
+    // tag. But mergeCleanTags must check exclude against BOTH rawKey ("vintage")
+    // AND canonical ("vintage"), so it catches the deletion even when the stored
+    // tag was non-canonical ("vintages").
+    const els = { edTitle: { value: "New collection" }, edDesc: { value: "" }, edTags: { value: "" } };
+    const document = { getElementById: (id) => els[id] };
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    const vocab = ["vintage", "modern", "retro"];
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    impEditSave();
+    assert.strictEqual(it.title, "New collection");
+    assert.deepStrictEqual(it.tags, [], "non-canonical stored 'vintages' must NOT be resurrected in canonical form 'vintage' via #vintage hashtag");
   });
 }
 console.log(pass + " passed, " + fail + " failed");

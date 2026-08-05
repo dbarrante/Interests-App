@@ -6650,17 +6650,30 @@ function settleOrigTitle(card){
 // filter AI_TAB_TAG and bad patterns) -- shared by both the incoming-AI-title
 // path (applyGeneratedTitle below) and the outgoing-title path
 // (captureOutgoingHashtags). `exclude`, if given, is a Set of lowercased raw
-// tag words to drop after canonicalizing -- impEditSave uses this so a tag
-// the user just deleted from the edTags box isn't resurrected by a matching
-// hashtag in the title being replaced in that same save. Returns the cleaned
-// list actually added.
+// tag words to drop (checked against both the raw hashtag, its canonical form,
+// and the canonical forms of the exclude set itself) -- impEditSave uses this
+// so a tag the user just deleted from the edTags box isn't resurrected by a
+// matching hashtag in the title being replaced in that same save, whether the
+// stored tag is canonical or raw. Returns the cleaned list actually added.
 function mergeCleanTags(card, rawTags, exclude){
   const seen=new Set(), cleaned=[];
-  (rawTags||[]).forEach(t=>{
-    if(t===AI_TAB_TAG) return;
-    t=canonicalTag(t);
-    if(exclude && exclude.has(t.toLowerCase())) return;
+  (rawTags||[]).forEach(raw=>{
+    if(raw===AI_TAB_TAG) return;
+    const rawKey=String(raw).toLowerCase();
+    const t=canonicalTag(raw);
     const k=t.toLowerCase();
+    // Check exclusion against: (1) the raw hashtag word, (2) its canonical form,
+    // and (3) canonical forms of the exclude set entries. This handles all cases:
+    // - Canonical deleted tag vs canonical hashtag
+    // - Non-canonical deleted tag vs hashtag that maps to it
+    // - Non-canonical deleted tag vs hashtag variant of the canonical form
+    if(exclude){
+      if(exclude.has(rawKey) || exclude.has(k)) return;
+      // Also check if canonicalizing any deleted tag matches the canonical form
+      for(const delTag of exclude){
+        if(canonicalTag(delTag).toLowerCase()===k) return;
+      }
+    }
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
   });
@@ -6675,15 +6688,17 @@ function captureOutgoingHashtags(card, exclude){
   if(!card || !card.title) return;
   mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
 }
-// Shared write path for every title that sets tags via captureOutgoingHashtags
-// (AI-generated titles via impRefreshTitle/enrichOnOpen/Title-issues Apply/
-// AI-refresh batch, plus manual edits via cardEditSave/impEditSave). Converts
-// embedded #hashtags into tags (merged, never replacing what the card already
-// has) using the same cleaning aiSuggestTags already applies to its own
-// AI-returned tags, and writes the cleaned title onto the card. Returns null
-// (no-op) for a falsy rawTitle, else { title, tagsAdded } so callers can
-// toast/log the title actually written, not the raw one that may still
-// contain '#'.
+// Apply an AI-generated title to a card, including its embedded #hashtags as
+// tags. Called from enrichOnOpen (auto-refresh on open), retryTitleSuggestion
+// (Title-issues manual retry), applyTitleSuggestions (when user picks an AI
+// suggestion), and runAiRefreshBatch (bulk retitle). Converts embedded
+// #hashtags into tags (merged, never replacing what the card already has)
+// using the same cleaning aiSuggestTags already applies to its own AI-returned
+// tags, and writes the cleaned title onto the card. Returns null (no-op) for a
+// falsy rawTitle, else { title, tagsAdded } so callers can toast/log the title
+// actually written, not the raw one that may still contain '#'. Note: manual
+// edit forms (cardEditSave/impEditSave) do NOT use this function; they call
+// captureOutgoingHashtags directly and write whatever title the user typed.
 function applyGeneratedTitle(card, rawTitle){
   if(!rawTitle) return null;
   const extracted = extractHashtags(rawTitle);
