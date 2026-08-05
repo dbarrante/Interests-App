@@ -82,7 +82,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       extractFn(src, "impEdit") + "\nreturn impEdit;"
     );
     const impEdit = factory(
-      [{ id: "i1", title: '"Quoted Title" — some article', tags: [], img: "" }],
+      [{ id: "i1", title: '"Quoted Title" — some article', tags: ['say "hi"'], img: "" }],
       { putCards: () => {} }, () => "x", (img) => img || "", esc, () => {}, () => {}, document, (t) => t, () => ""
     );
     impEdit(0);
@@ -90,6 +90,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(m, "edTitle input not found in rendered markup");
     assert.strictEqual(m[1], "&quot;Quoted Title&quot; — some article",
       "quotes must be escaped so the attribute isn't truncated/emptied — got: " + JSON.stringify(m[1]));
+    const mTags = /<input type="text" id="edTags" value="([^]*?)"/.exec(capturedHTML);
+    assert.ok(mTags, "edTags input not found in rendered markup");
+    assert.strictEqual(mTags[1], "say &quot;hi&quot;",
+      "a tag containing a quote must also survive the attribute — got: " + JSON.stringify(mTags[1]));
   });
   t(label + ": cardEdit's title field survives a title containing a double-quote", () => {
     const esc = loadEsc(src);

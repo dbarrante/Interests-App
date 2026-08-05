@@ -3099,7 +3099,7 @@ function renderImported(){
   const stickyBlock = (mobileNarrow() && !mobileFilterOpen) ? "" : `
     <div class="imp-sticky">
     <div class="imp-head">
-      <input type="text" placeholder="Search ${imported.length} imported items…" value="${esc(impQuery)}"
+      <input type="text" placeholder="Search ${imported.length} imported items…" value="${esc(impQuery).replace(/"/g,"&quot;")}"
         oninput="impQuery=this.value.toLowerCase();renderImportedKeepFocus()">
       <span class="hint" title="Tip: hover a card and press Ctrl+V to paste a screenshot (e.g. from FireShot) as its image">${list.length} shown</span>
       <button class="btn btn-ghost" onclick="toggleImpSort()" title="Sort order">${impSort==="newest"?"&#9660; Newest":"&#9650; Oldest"}</button>
@@ -3634,7 +3634,7 @@ function openTabNameModal(mode, tabId, currentName){
   _tabNameModalMode = mode; _tabNameModalTabId = tabId;
   document.getElementById("tabNameModalBody").innerHTML =
     `<h3 style="margin:0 0 12px">${mode==="rename"?"Rename tab":"New tab"}</h3>`+
-    `<input id="tabNameInput" type="text" maxlength="60" placeholder="Tab name" value="${esc(currentName||"")}">`+
+    `<input id="tabNameInput" type="text" maxlength="60" placeholder="Tab name" value="${esc(currentName||"").replace(/"/g,"&quot;")}">`+
     `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">`+
     `<button class="btn btn-ghost" onclick="closeTabNameModal()">Cancel</button>`+
     `<button class="btn btn-primary" onclick="submitTabNameModal()">${mode==="rename"?"Rename":"Create"}</button>`+
@@ -4109,7 +4109,7 @@ function researchPanelHTML(scope, it){
     ${panelHead}
     ${articleHtml}
     <div class="research-qa-ask" style="display:flex;gap:8px;margin-top:10px">
-      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" value="${esc(qaDraft)}" oninput="_qaDrafts['${key}']=this.value" onkeydown="if(event.key==='Enter')askQuestion('${scope}','${it.id}')" ${busy?"disabled":""}>
+      <input id="qaInput_${scope}_${it.id}" type="text" placeholder="Ask a question about this…" value="${esc(qaDraft).replace(/"/g,"&quot;")}" oninput="_qaDrafts['${key}']=this.value" onkeydown="if(event.key==='Enter')askQuestion('${scope}','${it.id}')" ${busy?"disabled":""}>
       <button ${busy?"disabled":""} onclick="askQuestion('${scope}','${it.id}')">${busy?"…":"Ask"}</button>
     </div>
     ${qaList}
@@ -4821,7 +4821,7 @@ function impEdit(idx){
     <label>Description</label>
     <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
     <label>Categories / tags <span style="font-weight:400;color:var(--muted)">(comma-separated)</span></label>
-    <input type="text" id="edTags" value="${esc((it.tags||[]).join(", "))}" placeholder="e.g. woodworking, tools, diy">
+    <input type="text" id="edTags" value="${esc((it.tags||[]).join(", ")).replace(/"/g,"&quot;")}" placeholder="e.g. woodworking, tools, diy">
     ${chips}
     <label>Card image</label>
     ${it.lastUpdate?`<div class="hint" style="margin-bottom:6px">Last capture: <b style="color:${it.lastResult==="ok"?"var(--chip-life)":"#f87171"}">${it.lastResult||"done"}</b> on ${esc(fmtCardDate(it.lastUpdate))}</div>`:""}
@@ -7401,7 +7401,7 @@ function renderHealthTitles(list){
         <div class="dupe-row-photo" data-title-open="${esc(key)}" ondblclick="titleOpenOriginal(this)" title="Double-click to open the page (then capture it with the extension)">${dupeThumb(m)}</div>
         <div class="meta"><div class="t" data-title-open="${esc(key)}" ondblclick="titleOpenOriginal(this)" title="Double-click to open the page (then capture it with the extension)" style="cursor:pointer">${esc(it.title||"(untitled)")}</div>
           <div class="s">${esc(dom||"no link")} · <span class="dupe-badge">${m.scope==="saved"?"Saved":"Imported"}</span></div>
-          ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion)}" style="margin-top:6px;width:100%" ondblclick="event.stopPropagation()">` : ""}
+          ${suggestion!=null ? `<input type="text" class="title-suggest-input" value="${esc(suggestion).replace(/"/g,"&quot;")}" style="margin-top:6px;width:100%" ondblclick="event.stopPropagation()">` : ""}
         </div>
         <button class="btn btn-ghost" style="padding:4px 9px;font-size:14px;line-height:1;flex-shrink:0" title="Write the title yourself" onclick="editTitleManually('${esc(key)}')">&#9998;</button>
         <button class="btn btn-ghost" style="padding:4px 9px;font-size:14px;line-height:1;flex-shrink:0" title="Suggest a new title for just this card" onclick="retryTitleSuggestion('${esc(key)}')">&#8635;</button>
