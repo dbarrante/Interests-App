@@ -64,7 +64,7 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
   const writePaths = [
     ["applyTitleSuggestions", /card\.title\s*=\s*val\.slice\(0,250\);\s*card\.titleSet\s*=\s*true;/],
     ["cardEditSave", /it\.title\s*=\s*title\.slice\(0,250\);\s*it\.titleSet\s*=\s*true;/],
-    ["impEditSave", /if\(title\)\{\s*it\.title\s*=\s*title;\s*it\.titleSet\s*=\s*true;\s*\}/],
+    ["impEditSave", /if\(title\)\{[\s\S]*?it\.title\s*=\s*title;\s*it\.titleSet\s*=\s*true;[\s\S]*?\}/],
   ];
   for (const [fnName, re] of writePaths) {
     t(label + ": " + fnName + " stamps titleSet when the user writes a title", () => {

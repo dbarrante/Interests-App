@@ -4940,7 +4940,9 @@ async function cardEditSave(){
   if(!title){ toast("Give the card a title first."); return; }
   const it = (saved||[]).find(x=>x && x.id===_edSavedId);
   if(!it){ toast("That card is no longer available."); closeGuide(); return; }
+  captureOrigTitle(it, title.slice(0,250));
   it.title = title.slice(0,250); it.titleSet = true;
+  settleOrigTitle(it);
   await Store.putSaved(saved);
   closeGuide();
   if(!refreshTabsViewIfShowing()) renderSaved();
@@ -5060,7 +5062,7 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  if(title){ it.title=title; it.titleSet=true; }
+  if(title){ captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
   it.desc=desc;
   it.tags=tags;
   setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
