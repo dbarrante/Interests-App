@@ -4873,6 +4873,7 @@ async function cardEditSave(){
   if(!title){ toast("Give the card a title first."); return; }
   const it = (saved||[]).find(x=>x && x.id===_edSavedId);
   if(!it){ toast("That card is no longer available."); closeGuide(); return; }
+  captureOutgoingHashtags(it);
   captureOrigTitle(it, title.slice(0,250));
   it.title = title.slice(0,250); it.titleSet = true;
   settleOrigTitle(it);
@@ -5004,7 +5005,7 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  if(title){ captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
+  if(title){ captureOutgoingHashtags(it); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
   it.desc=desc;
   it.tags=tags;
   setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
@@ -5218,6 +5219,7 @@ async function enrichOnOpen(it, idx){
           // a still-blank/placeholder title, not a rename of a title the user has seen.
           if(m.title && m.title.length>10 && isGenericTitle(it.title, it.url)){
             const newTitle = m.title.slice(0,250);
+            captureOutgoingHashtags(it);
             captureOrigTitle(it, newTitle);
             it.title=newTitle;
             settleOrigTitle(it);
@@ -6537,22 +6539,39 @@ function settleOrigTitle(card){
 // Returns null (no-op) for a falsy rawTitle, else { title, tagsAdded } so
 // callers can toast/log the title actually written, not the raw one that
 // may still contain '#'.
-function applyGeneratedTitle(card, rawTitle){
-  if(!rawTitle) return null;
-  const extracted = extractHashtags(rawTitle);
+// Clean + merge a raw hashtag list into the card's tags (dedupe, canonicalize,
+// filter AI_TAB_TAG and bad patterns) -- shared by both the incoming-AI-title
+// path (applyGeneratedTitle below) and the outgoing-title path
+// (captureOutgoingHashtags). Returns the cleaned list actually added.
+function mergeCleanTags(card, rawTags){
   const seen=new Set(), cleaned=[];
-  extracted.tags.forEach(t=>{
+  (rawTags||[]).forEach(t=>{
     if(t===AI_TAB_TAG) return;
     t=canonicalTag(t);
     const k=t.toLowerCase();
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
   });
+  if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
+  return cleaned;
+}
+// Pull #hashtags out of a title about to be overwritten and add them as tags
+// too -- the most common real source is a raw imported caption used as a
+// fallback title, not the AI's own (rarely hashtag-laden) prose. No-op for a
+// blank/missing title (nothing to scan).
+function captureOutgoingHashtags(card){
+  if(!card || !card.title) return;
+  mergeCleanTags(card, extractHashtags(card.title).tags);
+}
+function applyGeneratedTitle(card, rawTitle){
+  if(!rawTitle) return null;
+  const extracted = extractHashtags(rawTitle);
   const newTitle = (extracted.title || rawTitle).slice(0,250);
+  captureOutgoingHashtags(card);
   captureOrigTitle(card, newTitle);
   card.title = newTitle;
   settleOrigTitle(card);
-  if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
+  const cleaned = mergeCleanTags(card, extracted.tags);
   return { title: card.title, tagsAdded: cleaned };
 }
 // Pick the member to KEEP from a duplicate group. Higher score wins.
@@ -7340,6 +7359,7 @@ function applyTitleSuggestions(){
     const card=scope==="saved"?bySaved[id]:byImported[id];
     if(!card) return;
     const newTitle = _titleSuggestionsAI.has(key) ? val : val.slice(0,250);
+    if(!_titleSuggestionsAI.has(key)) captureOutgoingHashtags(card);
     captureOrigTitle(card, newTitle);
     if(_titleSuggestionsAI.has(key)) applyGeneratedTitle(card, val);
     else card.title=val.slice(0,250);

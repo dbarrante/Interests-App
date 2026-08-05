@@ -5,6 +5,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { extractFn } = require("./_extract");
+const { extractHashtags } = require("../web/title-ai.js");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 const pwaHtml = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
@@ -13,10 +14,16 @@ let pass = 0, fail = 0;
 async function t(n, fn) { try { await fn(); pass++; console.log("  ok  " + n); } catch (e) { fail++; console.log("  FAIL " + n + " — " + (e && e.stack || e)); } }
 
 function loadFn(src, name, extraFreeVars) {
-  const parts = { captureOrigTitle: extractFn(src, "captureOrigTitle"), settleOrigTitle: extractFn(src, "settleOrigTitle"), [name]: extractFn(src, name) };
+  const parts = {
+    captureOrigTitle: extractFn(src, "captureOrigTitle"),
+    settleOrigTitle: extractFn(src, "settleOrigTitle"),
+    mergeCleanTags: extractFn(src, "mergeCleanTags"),
+    captureOutgoingHashtags: extractFn(src, "captureOutgoingHashtags"),
+    [name]: extractFn(src, name),
+  };
   Object.keys(parts).forEach(k => assert.ok(parts[k], k + " not found in source"));
   const body = Object.values(parts).join("\n");
-  const factory = new Function(...(extraFreeVars || []), body + "\nreturn " + name + ";");
+  const factory = new Function("extractHashtags", "AI_TAB_TAG", "canonicalTag", "tagBadPattern", ...(extraFreeVars || []), body + "\nreturn " + name + ";");
   return factory;
 }
 
@@ -27,10 +34,21 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Renamed" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.strictEqual(it.origTitle, "Original");
+  });
+
+  await t(label + ": cardEditSave captures hashtags from the outgoing title as tags", async () => {
+    const it = { id: "s1", title: "Old #vintage", tags: [] };
+    const saved = [it];
+    const document = { getElementById: () => ({ value: "Renamed" }) };
+    const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
+    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    await cardEditSave();
+    assert.strictEqual(it.title, "Renamed");
+    assert.deepStrictEqual(it.tags, ["vintage"]);
   });
 
   await t(label + ": cardEditSave does not re-capture on a second rename", async () => {
@@ -38,7 +56,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Renamed Twice" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Renamed Twice");
     assert.strictEqual(it.origTitle, "The True Original", "must stay the TRUE original");
@@ -49,7 +67,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const saved = [it];
     const document = { getElementById: () => ({ value: "Original" }) };
     const factory = loadFn(src, "cardEditSave", ["document", "toast", "saved", "_edSavedId", "Store", "closeGuide", "refreshTabsViewIfShowing", "renderSaved"]);
-    const cardEditSave = factory(document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
+    const cardEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, () => {}, saved, "s1", { putSaved: async () => {} }, () => {}, () => false, () => {});
     await cardEditSave();
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);
@@ -64,7 +82,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.strictEqual(it.origTitle, "Original");
@@ -79,7 +97,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed Twice");
     assert.strictEqual(it.origTitle, "The True Original");
@@ -94,7 +112,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);

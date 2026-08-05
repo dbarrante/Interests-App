@@ -7,6 +7,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { extractFn } = require("./_extract");
+const { extractHashtags } = require("../web/title-ai.js");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 const pwaHtml = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
@@ -62,7 +63,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   await t(label + ": applyTitleSuggestions writes a hand-edited row verbatim, hashtag and all", () => {
-    const imported = [{ id: "i1", title: "old", tags: [] }];
+    const imported = [{ id: "i1", title: "old #legacy", tags: [] }];
     const saved = [];
     const rows = [fakeRow("imported:i1", "My Own Title #keepit", true)];
     const document = { querySelectorAll: () => rows };
@@ -73,20 +74,24 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       extractFn(src, "clearTitleSuggestions") || "function clearTitleSuggestions(){ _titleSuggestions={}; _titleSuggestionsAI=new Set(); }",
       extractFn(src, "captureOrigTitle"),
       extractFn(src, "settleOrigTitle"),
+      extractFn(src, "mergeCleanTags"),
+      extractFn(src, "captureOutgoingHashtags"),
       extractFn(src, "applyTitleSuggestions"),
     ].join("\n");
     const factory = new Function(
+      "extractHashtags", "AI_TAB_TAG", "canonicalTag", "tagBadPattern",
       "document", "imported", "saved", "applyGeneratedTitle", "persistCards", "Store", "toast", "_healthTab",
       body + "\nreturn applyTitleSuggestions;"   // _titleSuggestionsAI deliberately NOT seeded with this key
     );
     const applyTitleSuggestions = factory(
+      extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false,
       document, imported, saved, applyGeneratedTitle,
       () => {}, { putSaved: () => {} }, () => {}, "dupes"
     );
     applyTitleSuggestions();
     assert.strictEqual(imported[0].title, "My Own Title #keepit");
-    assert.deepStrictEqual(imported[0].tags, []);
-    assert.strictEqual(imported[0].origTitle, "old", "a hand-edited (non-AI) suggestion must still capture the pre-write title");
+    assert.deepStrictEqual(imported[0].tags, ["legacy"], "the OUTGOING title's hashtag becomes a tag; the new (manually typed) title's #keepit stays literal");
+    assert.strictEqual(imported[0].origTitle, "old #legacy", "a hand-edited (non-AI) suggestion must still capture the pre-write title");
   });
 
   await t(label + ": retryTitleSuggestion marks its key as AI-origin", async () => {

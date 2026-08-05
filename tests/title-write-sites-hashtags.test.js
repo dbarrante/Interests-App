@@ -90,6 +90,30 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(it.tags, ["diy"]);
     assert.ok(putCardsCalled);
   });
+
+  await t(label + ": enrichOnOpen's metadata-title branch captures hashtags from the outgoing title", async () => {
+    const it = { id: "c1", title: "Old Post #throwback", desc: "a real description", url: "https://example.test/article", tags: [] };
+    const isGenericTitle = () => true;
+    let capturedFrom = null;
+    const captureOutgoingHashtags = (card) => { capturedFrom = card.title; card.tags = ["throwback"]; };
+    const captureOrigTitle = () => {};
+    const settleOrigTitle = () => {};
+    const factory = new Function(
+      "Store", "isGenericTitle", "setCardImage", "isBadImg", "fetchMicrolink", "Image",
+      "IA_AI", "callAI", "generateUniqueTitle", "applyGeneratedTitle", "captureOutgoingHashtags", "captureOrigTitle", "settleOrigTitle", "imported",
+      "curTab", "renderImported", "restoreImpScrollSettle", "refreshTabsViewIfShowing", "toast", "document",
+      extractFn(src, "enrichOnOpen") + "\nreturn enrichOnOpen;"
+    );
+    const enrichOnOpen = factory(
+      { putCards: () => {}, captureMeta: async () => [{ id: "c1", title: "A Real Page Title From The Site", description: "", hasImage: false }] },
+      isGenericTitle, () => {}, () => false, async () => null, function(){},
+      { hasAIKey: () => false }, async () => "", async () => ({ title: null }), () => {}, captureOutgoingHashtags, captureOrigTitle, settleOrigTitle, [],
+      "imported", () => {}, () => {}, () => false, () => {}, { addEventListener: () => {} }
+    );
+    await enrichOnOpen(it, 0);
+    assert.strictEqual(capturedFrom, "Old Post #throwback");
+    assert.deepStrictEqual(it.tags, ["throwback"]);
+  });
 }
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

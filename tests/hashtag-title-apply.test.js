@@ -24,6 +24,8 @@ function loadApplyGeneratedTitle(src, vocab) {
     canonicalTag: extractFn(src, "canonicalTag"),
     captureOrigTitle: extractFn(src, "captureOrigTitle"),
     settleOrigTitle: extractFn(src, "settleOrigTitle"),
+    mergeCleanTags: extractFn(src, "mergeCleanTags"),
+    captureOutgoingHashtags: extractFn(src, "captureOutgoingHashtags"),
     applyGeneratedTitle: extractFn(src, "applyGeneratedTitle"),
   };
   Object.keys(parts).forEach(name => assert.ok(parts[name], name + " not found in source"));
@@ -53,6 +55,15 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(card.tags.sort(), ["diy", "pizza"]);
     assert.strictEqual(out.title, "Backyard Pizza Oven Build");
     assert.deepStrictEqual(out.tagsAdded.sort(), ["diy", "pizza"]);
+  });
+
+  t(label + ": applyGeneratedTitle also captures hashtags from the OUTGOING title being replaced", () => {
+    const applyGeneratedTitle = loadApplyGeneratedTitle(src);
+    const card = { title: "Old Caption #vintage", tags: [] };
+    const out = applyGeneratedTitle(card, "New AI Title");
+    assert.strictEqual(card.title, "New AI Title");
+    assert.deepStrictEqual(card.tags, ["vintage"]);
+    assert.deepStrictEqual(out.tagsAdded, [], "tagsAdded reflects only the NEW title's own hashtags, not the outgoing one's");
   });
 
   t(label + ": applyGeneratedTitle merges into existing tags, never replaces", () => {
