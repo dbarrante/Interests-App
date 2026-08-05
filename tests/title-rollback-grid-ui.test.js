@@ -53,6 +53,20 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(src, /\.imp-edit,\.imp-refresh,\.imp-reader,\.imp-title,\.imp-revert\{/);
     assert.match(src, /\.imp-card:hover \.imp-edit,\.imp-card:hover \.imp-refresh,\.imp-card:hover \.imp-reader,\.imp-card:hover \.imp-title,\.imp-card:hover \.imp-revert\{display:flex\}/);
   });
+
+  // Guards the exact right-offset value: a prior commit on this branch initially
+  // missed it and had to add it in a follow-up fix (Task 3).
+  t(label + ": .imp-revert has its own right:142px offset (doesn't overlap .imp-title)", () => {
+    assert.match(src, /\.imp-revert\{right:142px\}/);
+  });
+
+  t(label + ": .imp-revert is included in the :hover color-change group", () => {
+    assert.match(src, /\.imp-edit:hover,\.imp-refresh:hover,\.imp-reader:hover,\.imp-title:hover,\.imp-revert:hover\{/);
+  });
+
+  t(label + ": .imp-revert is included in the touch-reachability @media(max-width:760px) rule", () => {
+    assert.match(src, /@media\(max-width:760px\)\{\.imp-edit,\.imp-refresh,\.imp-reader,\.imp-title,\.imp-revert\{display:flex\}\}/);
+  });
 }
 
 console.log(pass + " passed, " + fail + " failed");

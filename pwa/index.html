@@ -4850,7 +4850,7 @@ function impCardHTML(it,idx,tabTag){
         ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
         : `<div class="ic">${yt?"YT":"IM"}</div>`));
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
-    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-title" title="Suggest a new title for this card (AI)" onclick="event.stopPropagation();impRefreshTitle(${idx})">Aa</button>${it.origTitle!==undefined?`<button class="imp-revert" title="Revert to the original title: ${esc(it.origTitle)}" onclick="event.stopPropagation();impRevertTitle(${idx})">&#8617;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
+    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-title" title="Suggest a new title for this card (AI)" onclick="event.stopPropagation();impRefreshTitle(${idx})">Aa</button>${it.origTitle!==undefined?`<button class="imp-revert" title="Revert to the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}" onclick="event.stopPropagation();impRevertTitle(${idx})">&#8617;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1;min-width:0">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${(it.ts||0)>_impPrevSeen?'<span class="newpill">NEW</span>':""}${esc(it.title)}</div>
@@ -4883,7 +4883,7 @@ function impEdit(idx){
     : "";
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit card</h2>
-    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle)}">&#8617; Revert to original</button>`:""}</label>
+    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
     <label>Description</label>
     <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
@@ -4925,7 +4925,7 @@ function cardEdit(id){
   _edScope = "saved"; _edSavedId = id;
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit title</h2>
-    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle)}">&#8617; Revert to original</button>`:""}</label>
+    <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
     <input type="text" id="edTitle" value="${esc(it.title||"")}">
     <div class="hint">${esc(it.source||domain(it.url)||"")}</div>
     <div class="ed-row">
@@ -5284,7 +5284,18 @@ async function enrichOnOpen(it, idx){
         const res = await Store.captureMeta([{id:it.id, url:it.url}]);
         const m = res && res[0];
         if(m){
-          if(m.title && m.title.length>10 && isGenericTitle(it.title, it.url)){ it.title=m.title.slice(0,250); changed=true; }
+          // origTitle-tracked like applyGeneratedTitle below, since this is also an
+          // automatic rewrite of a user-visible title. Sibling metadata/capture paths
+          // (enrichPins, applyCaptureResult, drainCaptures, addClip) are deliberately
+          // NOT wired the same way -- those are capture/import replication filling in
+          // a still-blank/placeholder title, not a rename of a title the user has seen.
+          if(m.title && m.title.length>10 && isGenericTitle(it.title, it.url)){
+            const newTitle = m.title.slice(0,250);
+            captureOrigTitle(it, newTitle);
+            it.title=newTitle;
+            settleOrigTitle(it);
+            changed=true;
+          }
           if(m.description && m.description.length>15 && (!it.desc || it.desc.startsWith("Saved from") || it.desc.startsWith("From your"))){ it.desc=m.description.slice(0,220); changed=true; }
           if(m.hasImage && isBadImg(it.img)){ setCardImage(it, "idb:"+it.id); changed=true; }
           else if(m.imageUrl && isBadImg(it.img)){ setCardImage(it, m.imageUrl); changed=true; }   // og:image URL fallback
@@ -6588,7 +6599,7 @@ async function generateUniqueTitle(card, extraAvoid, allowVision=true){
 // would actually change something -- never overwritten again, so it always
 // points at the original no matter how many renames happen in between.
 function captureOrigTitle(card, newTitle){
-  if(!card || !newTitle || card.title===newTitle) return;
+  if(!card || !newTitle || !card.title || card.title===newTitle) return;
   if(card.origTitle===undefined) card.origTitle = card.title;
 }
 // Clears origTitle once the current title matches it again -- nothing left
@@ -7281,6 +7292,7 @@ async function impRefreshTitle(idx){
 function impRevertTitle(idx){
   const it = imported[idx]; if(!it || it.origTitle===undefined) return;
   it.title = it.origTitle;
+  it.titleSet = true;
   settleOrigTitle(it);
   persistCards();
   if(curTab==="imported"){ anchorImpOnCard(it); renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
@@ -7407,9 +7419,12 @@ function applyTitleSuggestions(){
     const val=input.value.trim(); if(!val) return;
     const card=scope==="saved"?bySaved[id]:byImported[id];
     if(!card) return;
+    const newTitle = _titleSuggestionsAI.has(key) ? val : val.slice(0,250);
+    captureOrigTitle(card, newTitle);
     if(_titleSuggestionsAI.has(key)) applyGeneratedTitle(card, val);
     else card.title=val.slice(0,250);
     card.titleSet=true;
+    settleOrigTitle(card);
     applied++;
   });
   // Bail BEFORE clearing _titleSuggestions. Clearing it unconditionally threw

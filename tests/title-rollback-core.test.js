@@ -37,6 +37,17 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(card.origTitle, undefined);
   });
 
+  t(label + ": captureOrigTitle never captures an origTitle from a card with an empty current title", () => {
+    // A blank title is reachable via at least one import path. Capturing "" as
+    // origTitle would make BOTH rollback surfaces (the no-review card-grid icon
+    // and the modal) visible for a card whose "original" was never anything --
+    // one click on the grid icon would blank the title back out with no undo.
+    const { captureOrigTitle } = loadHelpers(src);
+    const card = { title: "" };
+    captureOrigTitle(card, "AI-generated title");
+    assert.strictEqual(card.origTitle, undefined, "an empty current title must never become a captured origTitle");
+  });
+
   t(label + ": captureOrigTitle never overwrites an already-captured original across multiple renames", () => {
     const { captureOrigTitle } = loadHelpers(src);
     const card = { title: "Original", origTitle: "Original" };

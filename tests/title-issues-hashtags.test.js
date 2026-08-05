@@ -37,6 +37,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "let _titleSuggestions = {};",
       "let _titleSuggestionsAI = new Set();",
       extractFn(src, "clearTitleSuggestions") || "function clearTitleSuggestions(){ _titleSuggestions={}; _titleSuggestionsAI=new Set(); }",
+      extractFn(src, "captureOrigTitle"),
+      extractFn(src, "settleOrigTitle"),
       extractFn(src, "applyTitleSuggestions"),
     ].join("\n");
     const factory = new Function(
@@ -69,6 +71,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
       "let _titleSuggestions = {};",
       "let _titleSuggestionsAI = new Set();",
       extractFn(src, "clearTitleSuggestions") || "function clearTitleSuggestions(){ _titleSuggestions={}; _titleSuggestionsAI=new Set(); }",
+      extractFn(src, "captureOrigTitle"),
+      extractFn(src, "settleOrigTitle"),
       extractFn(src, "applyTitleSuggestions"),
     ].join("\n");
     const factory = new Function(
@@ -82,6 +86,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     applyTitleSuggestions();
     assert.strictEqual(imported[0].title, "My Own Title #keepit");
     assert.deepStrictEqual(imported[0].tags, []);
+    assert.strictEqual(imported[0].origTitle, "old", "a hand-edited (non-AI) suggestion must still capture the pre-write title");
   });
 
   await t(label + ": retryTitleSuggestion marks its key as AI-origin", async () => {

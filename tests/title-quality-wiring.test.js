@@ -18,8 +18,9 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": enrichPins uses isGenericTitle", () => {
     assert.match(src, /if\(m\.title && isGenericTitle\(p\.title, ?p\.url\)\) p\.title=m\.title\.slice\(0,250\);/);
   });
-  t(label + ": enrichOnOpen's free re-fetch uses isGenericTitle", () => {
-    assert.match(src, /if\(m\.title && m\.title\.length>10 && isGenericTitle\(it\.title, ?it\.url\)\)\{ it\.title=m\.title\.slice\(0,250\); changed=true; \}/);
+  t(label + ": enrichOnOpen's free re-fetch uses isGenericTitle and tracks origTitle around the write", () => {
+    assert.match(src, /if\(m\.title && m\.title\.length>10 && isGenericTitle\(it\.title, ?it\.url\)\)\{\s*const newTitle = m\.title\.slice\(0,250\);\s*captureOrigTitle\(it, ?newTitle\);\s*it\.title=newTitle;\s*settleOrigTitle\(it\);\s*changed=true;\s*\}/,
+      "the metadata-title branch must write m.title.slice(0,250) and capture/settle origTitle around its own write, just like applyGeneratedTitle does for the AI branch");
   });
   t(label + ": addClip uses isGenericTitle", () => {
     assert.match(src, /if\(cap\.title && \(isNew \|\| isGenericTitle\(item\.title\|\|"", ?item\.url\)\)\) item\.title = cap\.title\.slice\(0,250\);/);
