@@ -28,8 +28,19 @@ function loadFn(src, name, extraFreeVars) {
   return factory;
 }
 
+// Real resolveImg from source (needs a Store.imgUrl stub matching the real
+// service-URL shape) -- used by every impEditSave test below so the new
+// "did the image section actually change" check runs against real logic,
+// not a guess at what resolveImg returns.
+function loadResolveImg(src) {
+  const resolveImgSrc = extractFn(src, "resolveImg");
+  const factory = new Function("Store", resolveImgSrc + "\nreturn resolveImg;");
+  return factory({ imgUrl: (id) => "/api/img/" + id });
+}
+
 (async () => {
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+  const resolveImg = loadResolveImg(src);
   await t(label + ": cardEditSave captures origTitle on the first manual rename", async () => {
     const it = { id: "s1", title: "Original" };
     const saved = [it];
@@ -80,10 +91,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Renamed" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.strictEqual(it.origTitle, "Original");
@@ -95,10 +106,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Renamed" }, edDesc: { value: "" }, edTags: { value: "typed" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed");
     assert.deepStrictEqual(it.tags.sort(), ["typed", "vintage"], "the outgoing title's hashtag must survive the edTags-box write, not be clobbered by it");
@@ -114,10 +125,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Beach Day Redux" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Beach Day Redux");
     assert.deepStrictEqual(it.tags, [], "a tag the user just deleted from the box must not be resurrected by a matching hashtag in the title being replaced");
@@ -133,10 +144,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Beach Day Redux" }, edDesc: { value: "" }, edTags: { value: "sunny" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Beach Day Redux");
     assert.deepStrictEqual(it.tags, ["sunny"], "\"vintage\" stays deleted; \"sunny\" (kept in the box) is unaffected");
@@ -148,10 +159,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Renamed Twice" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Renamed Twice");
     assert.strictEqual(it.origTitle, "The True Original");
@@ -163,10 +174,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Original" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Original");
     assert.strictEqual(it.origTitle, undefined);
@@ -184,12 +195,12 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "Antique collection" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
     // allTags() returns a vocabulary with the canonical forms
     const vocab = ["vintage", "modern", "retro"];
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "Antique collection");
     assert.deepStrictEqual(it.tags, [], "plural hashtag #vintages must NOT resurrect deleted 'vintage' after canonicalTag maps it");
@@ -209,14 +220,70 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const els = { edTitle: { value: "New collection" }, edDesc: { value: "" }, edTags: { value: "" } };
     const document = { getElementById: (id) => els[id] };
     const factory = loadFn(src, "impEditSave", [
-      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
       "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
     ]);
     const vocab = ["vintage", "modern", "retro"];
-    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    const impEditSave = factory(extractHashtags, "interests", ()=>false, ()=>vocab, document, 0, imported, () => {}, "", resolveImg, () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
     impEditSave();
     assert.strictEqual(it.title, "New collection");
     assert.deepStrictEqual(it.tags, [], "non-canonical stored 'vintages' must NOT be resurrected in canonical form 'vintage' via #vintage hashtag");
+  });
+
+  // Reported bug: editing ONLY the title (never touching the image section)
+  // silently deleted the card's real, untouched image. Root cause: _editImg
+  // is seeded from resolveImg(it.img) -- a RESOLVED display URL like
+  // /api/img/<id>, never the raw "idb:<id>" the card stores -- so the old
+  // unconditional setCardImage(it, _editImg) call always looked like "the
+  // user changed the image to this URL", and setCardImage's own logic then
+  // deletes the OLD idb file whenever the old id equals the card's own id
+  // (true for every idb-backed image). impEditSave must skip setCardImage
+  // entirely when _editImg still equals resolveImg(it.img) -- i.e. nothing
+  // in the image section actually changed.
+  await t(label + ": impEditSave does not touch an untouched idb-backed image when only the title changes", async () => {
+    const it = { id: "i1", title: "Original", img: "idb:i1", tags: [] };
+    const imported = [it];
+    const els = { edTitle: { value: "Renamed" }, edDesc: { value: "" }, edTags: { value: "" } };
+    const document = { getElementById: (id) => els[id] };
+    let setCardImageCalled = false;
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    // _editImg exactly as impEdit() seeds it when the modal opens: the
+    // RESOLVED form of the card's current image, not the raw "idb:" ref.
+    const editImgAsSeeded = resolveImg(it.img);
+    const impEditSave = factory(
+      extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported,
+      () => { setCardImageCalled = true; }, editImgAsSeeded, resolveImg,
+      () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {}
+    );
+    impEditSave();
+    assert.strictEqual(it.title, "Renamed");
+    assert.strictEqual(setCardImageCalled, false, "setCardImage must not run when the image section was never touched");
+    assert.strictEqual(it.img, "idb:i1", "the card's real image reference must survive an unrelated title edit");
+  });
+
+  await t(label + ": impEditSave still applies a genuine image removal", async () => {
+    const it = { id: "i1", title: "Original", img: "idb:i1", tags: [] };
+    const imported = [it];
+    const els = { edTitle: { value: "Original" }, edDesc: { value: "" }, edTags: { value: "" } };
+    const document = { getElementById: (id) => els[id] };
+    let setCardImageArgs = null;
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "resolveImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    // The user clicked "Remove image" (edRemoveImg sets _editImg="") -- this
+    // is genuinely different from resolveImg(it.img), so the change must
+    // still go through.
+    const impEditSave = factory(
+      extractHashtags, "interests", ()=>false, ()=>[], document, 0, imported,
+      (card, src) => { setCardImageArgs = src; }, "", resolveImg,
+      () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {}
+    );
+    impEditSave();
+    assert.strictEqual(setCardImageArgs, "", "a deliberate image removal must still call setCardImage");
   });
 }
 console.log(pass + " passed, " + fail + " failed");

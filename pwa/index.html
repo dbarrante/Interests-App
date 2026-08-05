@@ -5109,9 +5109,19 @@ function impEditSave(){
   // assignment would silently wipe out the merge.
   it.tags=tags;
   if(title){ captureOutgoingHashtags(it, deletedTags); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
-  setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
-  if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
-  else if(it.blocked) delete it.blocked;
+  // _editImg was seeded from resolveImg(it.img) (a RESOLVED display URL, e.g.
+  // /api/img/<id> for an idb-backed image, never the raw "idb:<id>" form) --
+  // comparing against that same resolution is the only reliable way to tell
+  // "the user never touched the image" from "they re-entered the same URL".
+  // Calling setCardImage unconditionally here deleted the untouched image's
+  // own file every save (its else-branch treats any non-data: src as a NEW
+  // image, and the old idb id equals the card's own id) -- the card's
+  // picture would silently disappear the moment you only edited the title.
+  if(_editImg !== resolveImg(it.img)){
+    setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
+    if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
+    else if(it.blocked) delete it.blocked;
+  }
   it.edited=Date.now();
   persistCards();
   closeGuide();
