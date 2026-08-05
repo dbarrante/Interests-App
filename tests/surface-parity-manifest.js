@@ -37,5 +37,9 @@ module.exports = {
     "submitConfigBackupExport",
     "openConfigBackupImport",
     "submitConfigBackupImport",
+    "captureOrigTitle",
+    "settleOrigTitle",
+    "impRevertTitle",
+    "edRevertTitle",
   ],
 };
