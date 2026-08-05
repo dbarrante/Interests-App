@@ -5005,12 +5005,16 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+  // A tag present before this edit but missing from the box below was just
+  // deliberately deleted by the user -- captureOutgoingHashtags must not
+  // resurrect it from a matching hashtag in the (about-to-be-replaced) title.
+  const deletedTags = new Set((it.tags||[]).map(t=>String(t).toLowerCase()).filter(t=>!tags.includes(t)));
   it.desc=desc;
   // Set the user's typed tags BEFORE captureOutgoingHashtags below, which merges
   // (never replaces) into it.tags -- if this ran after `it.tags=tags`, that
   // assignment would silently wipe out the merge.
   it.tags=tags;
-  if(title){ captureOutgoingHashtags(it); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
+  if(title){ captureOutgoingHashtags(it, deletedTags); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
   setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
   if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
@@ -6545,11 +6549,16 @@ function settleOrigTitle(card){
 // Clean + merge a raw hashtag list into the card's tags (dedupe, canonicalize,
 // filter AI_TAB_TAG and bad patterns) -- shared by both the incoming-AI-title
 // path (applyGeneratedTitle below) and the outgoing-title path
-// (captureOutgoingHashtags). Returns the cleaned list actually added.
-function mergeCleanTags(card, rawTags){
+// (captureOutgoingHashtags). `exclude`, if given, is a Set of lowercased raw
+// tag words to drop before canonicalizing -- impEditSave uses this so a tag
+// the user just deleted from the edTags box isn't resurrected by a matching
+// hashtag in the title being replaced in that same save. Returns the cleaned
+// list actually added.
+function mergeCleanTags(card, rawTags, exclude){
   const seen=new Set(), cleaned=[];
   (rawTags||[]).forEach(t=>{
     if(t===AI_TAB_TAG) return;
+    if(exclude && exclude.has(t.toLowerCase())) return;
     t=canonicalTag(t);
     const k=t.toLowerCase();
     if(seen.has(k)) return; seen.add(k);
@@ -6561,10 +6570,10 @@ function mergeCleanTags(card, rawTags){
 // Pull #hashtags out of a title about to be overwritten and add them as tags
 // too -- the most common real source is a raw imported caption used as a
 // fallback title, not the AI's own (rarely hashtag-laden) prose. No-op for a
-// blank/missing title (nothing to scan).
-function captureOutgoingHashtags(card){
+// blank/missing title (nothing to scan). `exclude` -- see mergeCleanTags above.
+function captureOutgoingHashtags(card, exclude){
   if(!card || !card.title) return;
-  mergeCleanTags(card, extractHashtags(card.title).tags);
+  mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
 }
 function applyGeneratedTitle(card, rawTitle){
   if(!rawTitle) return null;

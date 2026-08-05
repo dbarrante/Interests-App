@@ -103,6 +103,44 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(it.tags.sort(), ["typed", "vintage"], "the outgoing title's hashtag must survive the edTags-box write, not be clobbered by it");
   });
 
+  await t(label + ": impEditSave does not resurrect a tag the user just deleted from the box, even when it matches a hashtag in the outgoing title", async () => {
+    const it = { id: "i1", title: "Beach day #vintage", tags: ["vintage"] };
+    const imported = [it];
+    // The user deleted "vintage" from the tags box (now empty) while also
+    // renaming the title in the same save -- captureOutgoingHashtags must
+    // treat that deletion as deliberate, not re-add "vintage" from the
+    // #vintage hashtag still present in the OLD title.
+    const els = { edTitle: { value: "Beach Day Redux" }, edDesc: { value: "" }, edTags: { value: "" } };
+    const document = { getElementById: (id) => els[id] };
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    impEditSave();
+    assert.strictEqual(it.title, "Beach Day Redux");
+    assert.deepStrictEqual(it.tags, [], "a tag the user just deleted from the box must not be resurrected by a matching hashtag in the title being replaced");
+  });
+
+  await t(label + ": impEditSave's deletion guard only suppresses the deleted tag, not an unrelated hashtag also in the outgoing title", async () => {
+    const it = { id: "i1", title: "Beach day #vintage #sunny", tags: ["vintage", "sunny"] };
+    const imported = [it];
+    // The user deleted "vintage" but kept "sunny" in the box -- "vintage" must
+    // stay gone, but "sunny" surviving (already present, re-merged as a no-op)
+    // proves the guard is scoped to the specific deleted tag, not a blanket
+    // "skip captureOutgoingHashtags entirely" fallback.
+    const els = { edTitle: { value: "Beach Day Redux" }, edDesc: { value: "" }, edTags: { value: "sunny" } };
+    const document = { getElementById: (id) => els[id] };
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    impEditSave();
+    assert.strictEqual(it.title, "Beach Day Redux");
+    assert.deepStrictEqual(it.tags, ["sunny"], "\"vintage\" stays deleted; \"sunny\" (kept in the box) is unaffected");
+  });
+
   await t(label + ": impEditSave does not re-capture on a second rename", async () => {
     const it = { id: "i1", title: "Renamed Once", origTitle: "The True Original" };
     const imported = [it];
