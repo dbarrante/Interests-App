@@ -25,6 +25,24 @@ function extractOg(html) {
   return { image: String(image || "").trim(), title: String(title || "").trim(), description: String(description || "").trim() };
 }
 
+// Extract a longer excerpt of real page content for AI title-grounding (Task 4
+// of the AI-title-multichoice-grounding plan consumes this) -- distinct from
+// extractOg's short og:description, which is often thin, generic, or entirely
+// absent. Prefers <p> tag text (article bodies are <p>-heavy; nav/footer
+// chrome usually isn't) and falls back to contentcheck's whole-page flatten
+// for pages that don't use <p> tags. Lazy require of contentcheck for the
+// same load-time-cycle reason captureMetaChunk already documents below.
+function extractArticleExcerpt(html) {
+  var h = String(html || "");
+  if (h.length > 300000) h = h.slice(0, 300000);
+  var paras = h.match(/<p[^>]*>[\s\S]*?<\/p>/gi) || [];
+  var joined = paras.map(function (p) {
+    return p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }).filter(Boolean).join(" ");
+  var text = joined.length >= 200 ? joined : require("./contentcheck").extractText(h, 1500);
+  return text.length > 1500 ? text.slice(0, 1500) : text;
+}
+
 var gf = require("./guardedfetch");
 var UA = gf.UA_CAPTURE;
 var MAX_HOPS = 5;
@@ -73,7 +91,7 @@ async function captureMetaChunk(items, opts) {
       var url = it.url;
       if (typeof url !== "string" || !linkcheck.isProbableHost(url) || linkcheck.isSkippedHost(url) || !(await linkcheck.safeToFetch(url, opts))) {
         var skipReason = (typeof url === "string" && linkcheck.isSkippedHost(url)) ? "social" : "unreachable";
-        return { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "", reason: skipReason };
+        return { id: it.id, skipped: true, imageDataUrl: "", title: "", description: "", excerpt: "", reason: skipReason };
       }
       var page = await _fetchHtml(url, opts);
       // 404-shaped page gate: an HTTP-200 "not found" page (creative title, content-stuffed
@@ -86,9 +104,10 @@ async function captureMetaChunk(items, opts) {
         var cc = require("./contentcheck");
         var cls = cc.classifyContent({ originalUrl: url, finalUrl: page.finalUrl, title: cc.extractTitle(page.html), text: cc.extractText(page.html) });
         var strong = (cls.signals || []).some(function (s) { return String(s).indexOf("phrase:") === 0 || s === "redirect-home"; });
-        if (strong) return { id: it.id, imageDataUrl: "", imageUrl: "", title: "", description: "", reason: "notfound" };
+        if (strong) return { id: it.id, imageDataUrl: "", imageUrl: "", title: "", description: "", excerpt: "", reason: "notfound" };
       }
       var og = extractOg(page.html);
+      var excerpt = page.html ? extractArticleExcerpt(page.html) : "";
       var imageDataUrl = "";
       var abs = "";
       if (og.image) {
@@ -105,11 +124,11 @@ async function captureMetaChunk(items, opts) {
       // return it so the renderer can display it directly via <img> (the browser loads it where the
       // server-side fetch was blocked by hotlink/referer protection). http(s) only.
       var imageUrl = (!imageDataUrl && /^https?:\/\//i.test(abs)) ? abs : "";
-      return { id: it.id, imageDataUrl: imageDataUrl, imageUrl: imageUrl, title: og.title, description: og.description, reason: reason };
+      return { id: it.id, imageDataUrl: imageDataUrl, imageUrl: imageUrl, title: og.title, description: og.description, excerpt: excerpt, reason: reason };
     } catch (e) {
-      return { id: it.id, imageDataUrl: "", title: "", description: "", reason: "unreachable" };
+      return { id: it.id, imageDataUrl: "", title: "", description: "", excerpt: "", reason: "unreachable" };
     }
   });
 }
 
-module.exports = { extractOg: extractOg, captureMetaChunk: captureMetaChunk };
+module.exports = { extractOg: extractOg, extractArticleExcerpt: extractArticleExcerpt, captureMetaChunk: captureMetaChunk };

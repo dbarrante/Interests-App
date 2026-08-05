@@ -1056,7 +1056,7 @@ function createServer(ctx) {
           catch (e) { console.error("capture-meta putImg failed:", e && e.message); }
         }
         const imageUrl = (!hasImage && r && /^https?:\/\//i.test(r.imageUrl || "")) ? r.imageUrl : "";
-        return { id: r && r.id, hasImage: hasImage, imageUrl: imageUrl, title: (r && r.title) || "", description: (r && r.description) || "", reason: (hasImage || imageUrl) ? "" : ((r && r.reason) || "unreachable") };
+        return { id: r && r.id, hasImage: hasImage, imageUrl: imageUrl, title: (r && r.title) || "", description: (r && r.description) || "", excerpt: (r && r.excerpt) || "", reason: (hasImage || imageUrl) ? "" : ((r && r.reason) || "unreachable") };
       });
       res.json({ results: results });
     } catch (e) {

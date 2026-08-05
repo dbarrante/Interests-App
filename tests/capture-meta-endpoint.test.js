@@ -29,6 +29,16 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.ok(images.getImg(store, "c1"), "image file should have been written for c1");
     assert.ok(!("imageDataUrl" in r.json.results[0]), "must not return the data url");
   });
+  await t("POST /api/capture-meta returns an article excerpt extracted from <p> tags", async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.png/.test(u)) return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "image/png" : null }, arrayBuffer: async () => new Uint8Array([137,80,78,71]).buffer };
+      return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () => '<meta property="og:image" content="https://img.test/p.png"><title>Hi</title><p>A real paragraph of article body text, long enough to be picked up as the grounding excerpt for this test case here.</p>' };
+    };
+    const r = await req(port, "POST", "/api/capture-meta", { items:[{ id:"e1", url:"https://example.test/excerpt-page" }] });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.json.results[0].excerpt.indexOf("real paragraph of article body text") >= 0, "got: " + r.json.results[0].excerpt);
+  });
   await t("items capped at 100", async () => {
     const big = []; for(let i=0;i<150;i++) big.push({ id:"x"+i, url:"https://www.instagram.com/p/"+i+"/" });
     const r = await req(port, "POST", "/api/capture-meta", { items: big });

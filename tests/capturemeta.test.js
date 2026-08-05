@@ -27,5 +27,31 @@ t("extractOg empty when nothing present", () => {
   assert.deepStrictEqual(cm.extractOg(null), { image:"", title:"", description:"" });
 });
 
+t("extractArticleExcerpt joins <p> tag text and strips inner tags", () => {
+  const html = "<html><body><nav>Menu Home About</nav>" +
+    "<p>This is the <b>first</b> real paragraph of the article, long enough to count as real content for grounding purposes here.</p>" +
+    "<p>And a second paragraph continuing the same thought with more real substance about the actual topic.</p>" +
+    "</body></html>";
+  const r = cm.extractArticleExcerpt(html);
+  assert.ok(r.indexOf("first real paragraph") >= 0, "should include first <p> text: " + r);
+  assert.ok(r.indexOf("second paragraph") >= 0, "should include second <p> text: " + r);
+  assert.ok(r.indexOf("<b>") === -1, "inner tags must be stripped");
+  assert.ok(r.indexOf("Menu Home About") === -1, "must prefer <p> text over nav chrome when <p> content is substantial");
+});
+t("extractArticleExcerpt falls back to whole-page text when there's little/no <p> content", () => {
+  const html = "<html><body><div>Real article text with no paragraph tags at all, just a div wrapping everything the page actually says about its topic.</div></body></html>";
+  const r = cm.extractArticleExcerpt(html);
+  assert.ok(r.indexOf("Real article text") >= 0, "should fall back to contentcheck.extractText: " + r);
+});
+t("extractArticleExcerpt caps at 1500 chars", () => {
+  const html = "<p>" + "word ".repeat(2000) + "</p>";
+  const r = cm.extractArticleExcerpt(html);
+  assert.ok(r.length <= 1500, "got length " + r.length);
+});
+t("extractArticleExcerpt empty for empty/null input", () => {
+  assert.strictEqual(cm.extractArticleExcerpt(""), "");
+  assert.strictEqual(cm.extractArticleExcerpt(null), "");
+});
+
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
