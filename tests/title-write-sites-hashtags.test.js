@@ -41,6 +41,27 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(toasted.indexOf("#") === -1, "toast must show the cleaned title, not the raw one with '#'");
   });
 
+  await t(label + ": impRefresh (the card-face image refresh icon) turns a hashtag already in the title into a tag, without touching the title text", async () => {
+    const it = { id: "c1", url: "https://example.test/x", title: "Beach day #vintage", tags: [] };
+    const imported = [it];
+    let capturedWith = null;
+    const captureOutgoingHashtags = (card) => { capturedWith = { title: card.title, id: card.id }; card.tags = ["vintage"]; };
+    const factory = new Function(
+      "imported", "toast", "batchUI", "newId", "_refreshPins", "captureOutgoingHashtags", "anchorImpOnCard",
+      "setCardImage", "Store", "S", "enrichOnOpen", "refreshTabsViewIfShowing", "renderImportedKeepFocus",
+      extractFn(src, "impRefresh") + "\nreturn impRefresh;"
+    );
+    const impRefresh = factory(
+      imported, () => {}, { active: false }, () => "x", new Set(), captureOutgoingHashtags, () => {},
+      () => {}, { putCards: () => {}, kvSet: () => {}, setCaptureRequest: () => {} }, {}, () => {}, () => false, () => {}
+    );
+    impRefresh(0);
+    assert.deepStrictEqual(capturedWith, { title: "Beach day #vintage", id: "c1" },
+      "must be called with the card while its title is still unchanged");
+    assert.strictEqual(it.title, "Beach day #vintage", "the title text itself must not be modified by this button");
+    assert.deepStrictEqual(it.tags, ["vintage"]);
+  });
+
   await t(label + ": impRefreshTitle is a no-op when regenerateTitleFor returns null (unchanged)", async () => {
     const it = { title: "old", tags: [] };
     const imported = [it];

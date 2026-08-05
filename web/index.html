@@ -5213,6 +5213,7 @@ function impRefresh(idx){
   const isFb = /facebook\.com|fb\.watch/i.test(it.url||"");
   if(isFb && batchUI.active){ toast("A capture run is going — try this refresh after it finishes, or Stop it first."); return; }
   if(!it.id){ it.id=newId(); }
+  captureOutgoingHashtags(it);   // any #hashtag already in the title becomes a tag; the title text itself is untouched
   _refreshPins.add(it.id);   // keep this card in the current filter so its picture shows up in place instead of dropping off
   anchorImpOnCard(it);
   setCardImage(it,"");                 // clear so enrichOnOpen can refill + the capture overwrites
