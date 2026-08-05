@@ -4816,7 +4816,7 @@ function impEdit(idx){
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit card</h2>
     <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
-    <input type="text" id="edTitle" value="${esc(it.title||"")}">
+    <input type="text" id="edTitle" value="${esc(it.title||"").replace(/"/g,"&quot;")}">
     <div id="edTitleChoices"></div>
     <label>Description</label>
     <textarea id="edDesc" placeholder="What is this about?">${esc(it.desc||"")}</textarea>
@@ -4859,7 +4859,7 @@ function cardEdit(id){
   document.getElementById("modalBody").innerHTML = `
     <h2>Edit title</h2>
     <label>Title <button type="button" class="btn btn-ghost ed-ai" onclick="edAiTitle()" title="Ask the AI for a better title for this card">&#10024; AI title lookup</button>${it.origTitle!==undefined?` <button type="button" class="btn btn-ghost ed-ai" onclick="edRevertTitle()" title="Restore the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}">&#8617; Revert to original</button>`:""}</label>
-    <input type="text" id="edTitle" value="${esc(it.title||"")}">
+    <input type="text" id="edTitle" value="${esc(it.title||"").replace(/"/g,"&quot;")}">
     <div id="edTitleChoices"></div>
     <div class="hint">${esc(it.source||domain(it.url)||"")}</div>
     <div class="ed-row">

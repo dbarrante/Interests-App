@@ -4,11 +4,23 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { extractFn } = require("./_extract");
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
 const pwaHtml = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
 
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + e.message); } }
+
+// Real esc() from source, run against a stub document whose createElement
+// mirrors the DOM's own textContent->innerHTML escaping (&<> only, NOT
+// quotes -- that gap is exactly what the two tests below guard against).
+function loadEsc(src) {
+  const escSrc = extractFn(src, "esc");
+  function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  const stubDocument = { createElement: () => { let t = ""; return { set textContent(v) { t = v; }, get innerHTML() { return escapeHtml(t); } }; } };
+  const factory = new Function("document", escSrc + "\nreturn esc;");
+  return factory(stubDocument);
+}
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": saved cards get a hover edit icon", () => {
@@ -50,6 +62,54 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /await Store\.putSaved\(saved\)/, "must persist through the Store");
     assert.match(m[1], /renderSaved\(\)/, "and re-render so the change is visible");
     assert.match(m[1], /if\(!title\)\{/, "must refuse to blank out a title");
+  });
+
+  // esc() escapes &<> but not a literal '"' -- a title containing (or
+  // starting with) a quote character breaks the `value="..."` attribute
+  // the two editors render into, truncating the visible text or, when the
+  // title STARTS with a quote, collapsing the value to nothing at all
+  // (`value=""..."` parses as an empty attribute). Both editors' title
+  // inputs must escape quotes the same way the origTitle tooltip already
+  // does two lines above (`.replace(/"/g,"&quot;")`).
+  t(label + ": impEdit's title field survives a title containing a double-quote", () => {
+    const esc = loadEsc(src);
+    let capturedHTML = "";
+    const modalBodyEl = { set innerHTML(v) { capturedHTML = v; }, get innerHTML() { return capturedHTML; } };
+    const els = { modalBody: modalBodyEl, edImgFile: { onchange: null }, modal: { classList: { add: () => {} }, onpaste: null } };
+    const document = { getElementById: (id) => els[id] || { onerror: null, src: "" } };
+    const factory = new Function(
+      "imported", "Store", "newId", "resolveImg", "esc", "edAddTag", "edRenderPrev", "document", "fmtCardDate", "domain",
+      extractFn(src, "impEdit") + "\nreturn impEdit;"
+    );
+    const impEdit = factory(
+      [{ id: "i1", title: '"Quoted Title" — some article', tags: [], img: "" }],
+      { putCards: () => {} }, () => "x", (img) => img || "", esc, () => {}, () => {}, document, (t) => t, () => ""
+    );
+    impEdit(0);
+    const m = /<input type="text" id="edTitle" value="([^]*?)">/.exec(capturedHTML);
+    assert.ok(m, "edTitle input not found in rendered markup");
+    assert.strictEqual(m[1], "&quot;Quoted Title&quot; — some article",
+      "quotes must be escaped so the attribute isn't truncated/emptied — got: " + JSON.stringify(m[1]));
+  });
+  t(label + ": cardEdit's title field survives a title containing a double-quote", () => {
+    const esc = loadEsc(src);
+    let capturedHTML = "";
+    const modalBodyEl = { set innerHTML(v) { capturedHTML = v; }, get innerHTML() { return capturedHTML; } };
+    const els = { modalBody: modalBodyEl, modal: { classList: { add: () => {} } } };
+    const document = { getElementById: (id) => els[id] || null };
+    const factory = new Function(
+      "saved", "toast", "document", "esc", "domain",
+      extractFn(src, "cardEdit") + "\nreturn cardEdit;"
+    );
+    const cardEdit = factory(
+      [{ id: "s1", title: '"Quoted Title" — some article', tags: [] }],
+      () => {}, document, esc, () => ""
+    );
+    cardEdit("s1");
+    const m = /<input type="text" id="edTitle" value="([^]*?)">/.exec(capturedHTML);
+    assert.ok(m, "edTitle input not found in rendered markup");
+    assert.strictEqual(m[1], "&quot;Quoted Title&quot; — some article",
+      "quotes must be escaped so the attribute isn't truncated/emptied — got: " + JSON.stringify(m[1]));
   });
 }
 
