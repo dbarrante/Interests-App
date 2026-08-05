@@ -88,6 +88,21 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.strictEqual(it.origTitle, "Original");
   });
 
+  await t(label + ": impEditSave captures hashtags from the outgoing title as tags, merged with the user's typed tags (not clobbered by the edTags-box write)", async () => {
+    const it = { id: "i1", title: "Old #vintage", tags: [] };
+    const imported = [it];
+    const els = { edTitle: { value: "Renamed" }, edDesc: { value: "" }, edTags: { value: "typed" } };
+    const document = { getElementById: (id) => els[id] };
+    const factory = loadFn(src, "impEditSave", [
+      "document", "_editIdx", "imported", "setCardImage", "_editImg", "persistCards", "closeGuide",
+      "refreshTabsViewIfShowing", "anchorImpOnCard", "renderImported", "restoreImpScrollSettle", "toast",
+    ]);
+    const impEditSave = factory(extractHashtags, "interests", (t)=>t.toLowerCase(), ()=>false, document, 0, imported, () => {}, "", () => {}, () => {}, () => false, () => {}, () => {}, () => {}, () => {});
+    impEditSave();
+    assert.strictEqual(it.title, "Renamed");
+    assert.deepStrictEqual(it.tags.sort(), ["typed", "vintage"], "the outgoing title's hashtag must survive the edTags-box write, not be clobbered by it");
+  });
+
   await t(label + ": impEditSave does not re-capture on a second rename", async () => {
     const it = { id: "i1", title: "Renamed Once", origTitle: "The True Original" };
     const imported = [it];

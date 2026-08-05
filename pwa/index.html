@@ -5080,9 +5080,12 @@ function impEditSave(){
   const title=document.getElementById("edTitle").value.trim();
   const desc=document.getElementById("edDesc").value.trim();
   const tags=document.getElementById("edTags").value.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  if(title){ captureOutgoingHashtags(it); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
   it.desc=desc;
+  // Set the user's typed tags BEFORE captureOutgoingHashtags below, which merges
+  // (never replaces) into it.tags -- if this ran after `it.tags=tags`, that
+  // assignment would silently wipe out the merge.
   it.tags=tags;
+  if(title){ captureOutgoingHashtags(it); captureOrigTitle(it, title); it.title=title; it.titleSet=true; settleOrigTitle(it); }
   setCardImage(it, _editImg);              // data URL -> IndexedDB, http URL inline, "" -> none
   if(!_editImg){ it.blocked=Date.now(); }  // removed image: suppress the mshots fallback
   else if(it.blocked) delete it.blocked;
