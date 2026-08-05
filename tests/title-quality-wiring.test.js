@@ -35,7 +35,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.match(m[1], /saved\.forEach/);
   });
   t(label + ": generateUniqueTitle runs the tiered pipeline in order (video-OCR -> desc -> OCR -> vision -> collection fallback)", () => {
-    const m = /async function generateUniqueTitle\(card, ?extraAvoid, ?allowVision ?= ?true\)\{([\s\S]*?)\n\}/.exec(src);
+    const m = /async function generateUniqueTitle\(card, ?extraAvoid, ?allowVision ?= ?true, ?groundingText ?= ?""\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "generateUniqueTitle not found");
     const body = m[1];
     const iVideoOcr = body.indexOf("if(looksLikeVideo(card)){");
@@ -66,7 +66,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.ok(start >= 0 && end > start, "enrichOnOpen not found");
     const body = src.slice(start, end);
     assert.match(body, /isGenericTitle\(it\.title, ?it\.url\)/, "should re-check isGenericTitle after the free re-fetch");
-    assert.match(body, /generateUniqueTitle\(it, ?undefined, ?false\)/, "should call generateUniqueTitle with allowVision=false — enrichOnOpen must never trigger the paid vision tier automatically");
+    assert.match(body, /generateUniqueTitle\(it, ?undefined, ?false, ?groundingExcerpt\)/, "should call generateUniqueTitle with allowVision=false — enrichOnOpen must never trigger the paid vision tier automatically");
   });
   t(label + ": bulk applyCaptureResult uses isGenericTitle instead of the old blank-or-domain gate", () => {
     assert.match(src, /if\(r\.title && isGenericTitle\(c\.title, ?c\.url\)\) c\.title=r\.title;/);

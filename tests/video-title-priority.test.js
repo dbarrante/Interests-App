@@ -68,7 +68,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   t(label + ": videos OCR the frame BEFORE using the description", () => {
-    const m = /async function generateUniqueTitle\(card, extraAvoid, allowVision=true\)\{([\s\S]*?)\n\}/.exec(src);
+    const m = /async function generateUniqueTitle\(card, extraAvoid, allowVision=true, groundingText=""\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "generateUniqueTitle not found");
     const body = m[1];
     const videoOcr = body.indexOf("if(looksLikeVideo(card)){");
@@ -95,7 +95,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
 t("the video-title path is byte-identical between web and pwa (binding parity)", () => {
   assert.strictEqual(extractFn(html, "looksLikeVideo"), extractFn(pwaHtml, "looksLikeVideo"),
     "looksLikeVideo has drifted between web/ and pwa/");
-  const re = /async function generateUniqueTitle\(card, extraAvoid, allowVision=true\)\{[\s\S]*?\n\}/;
+  const re = /async function generateUniqueTitle\(card, extraAvoid, allowVision=true, groundingText=""\)\{[\s\S]*?\n\}/;
   assert.strictEqual(re.exec(html)[0], re.exec(pwaHtml)[0],
     "generateUniqueTitle has drifted between web/ and pwa/");
 });

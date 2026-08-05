@@ -5288,6 +5288,7 @@ function impRefresh(idx){
 async function enrichOnOpen(it, idx){
   try{
     let changed=false;
+    let groundingExcerpt = "";
     const isFb = /facebook\.com|fb\.watch/.test(it.url);
     if(!isFb){
       // Enrich via the app's own Core (same-origin, SSRF-guarded) instead of a renderer->3rd-party
@@ -5299,6 +5300,7 @@ async function enrichOnOpen(it, idx){
         const res = await Store.captureMeta([{id:it.id, url:it.url}]);
         const m = res && res[0];
         if(m){
+          groundingExcerpt = m.excerpt || "";
           // origTitle-tracked like applyGeneratedTitle below, since this is also an
           // automatic rewrite of a user-visible title. Sibling metadata/capture paths
           // (enrichPins, applyCaptureResult, drainCaptures, addClip) are deliberately
@@ -5349,7 +5351,7 @@ async function enrichOnOpen(it, idx){
     }
     if(isGenericTitle(it.title, it.url)){
       try{
-        const suggested = await generateUniqueTitle(it, undefined, false);
+        const suggested = await generateUniqueTitle(it, undefined, false, groundingExcerpt);
         if(suggested && suggested.title){ applyGeneratedTitle(it, suggested.title); changed=true; }
       }catch(e){ console.warn("AI title generation failed",e); }
     }
@@ -6570,13 +6572,15 @@ function looksLikeVideo(card){
 // regenerateTitleFor can toast the exact reason -- without reading any shared
 // module state, since this is a fresh object tied to THIS call alone (see
 // resolveCardImageForAI for why that matters).
-async function generateUniqueTitle(card, extraAvoid, allowVision=true){
+async function generateUniqueTitle(card, extraAvoid, allowVision=true, groundingText=""){
   if(!IA_AI.hasAIKey()) return { title: null, failReason: "" };
   const rawDesc = card.desc || card.benefit || "";
   // "Saved from Facebook"/"From your <list>" is placeholder boilerplate set at capture
   // time (see enrichOnOpen), not real content — treat it as no description, same as
-  // the "is this a real description" check elsewhere in this file.
-  const description = (rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "";
+  // the "is this a real description" check elsewhere in this file. A non-empty
+  // groundingText (a freshly-fetched article excerpt) always wins over card.desc —
+  // it's fresher and richer by construction; card.desc itself is never written from it.
+  const description = groundingText || ((rawDesc && !rawDesc.startsWith("Saved from") && !rawDesc.startsWith("From your")) ? rawDesc : "");
   const weak = extractWeakContext(card);
   let imgFailReason = "";
 
@@ -7262,6 +7266,18 @@ function updateTitleSelCount(){
 }
 function titleSelectAll(on){ _titleSelBoxes().forEach(cb=>{ cb.checked=!!on; }); updateTitleSelCount(); }
 function titleSelectFirst(n){ _titleSelBoxes().forEach((cb,i)=>{ cb.checked = i<n; }); updateTitleSelCount(); }
+// Fetch a longer real-content excerpt (Core-side, SSRF-guarded) to ground AI
+// title generation -- richer than the thin og:description card.desc may
+// hold. Failure/no-URL/social-host all resolve to "", silently falling back
+// to today's card.desc/OCR/vision/fallback tiers -- no new error states.
+async function fetchGroundingExcerpt(card){
+  if(!card || !card.url) return "";
+  try{
+    const res = await Store.captureMeta([{id:card.id, url:card.url}]);
+    const m = res && res[0];
+    return (m && m.excerpt) || "";
+  }catch(e){ return ""; }
+}
 // --- One-card title regeneration -------------------------------------------
 // Shared by the Title-issues per-row retry and the card-grid hover icon.
 // Returns the new title, or null (the failure is already toasted).
@@ -7279,7 +7295,8 @@ async function regenerateTitleFor(card, extraAvoid, busyLabel){
   // (e.g. enrichOnOpen, triggered just by opening a different card) can never
   // leak its reason into this card's toast.
   try{
-    const result = await generateUniqueTitle(card, extraAvoid);
+    const groundingText = await fetchGroundingExcerpt(card);
+    const result = await generateUniqueTitle(card, extraAvoid, true, groundingText);
     out = (result && result.title) || null;
     failReason = (result && result.failReason) || "";
   }
