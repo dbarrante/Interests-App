@@ -7183,10 +7183,15 @@ function titleSelectFirst(n){ _titleSelBoxes().forEach((cb,i)=>{ cb.checked = i<
 // title generation -- richer than the thin og:description card.desc may
 // hold. Failure/no-URL/social-host all resolve to "", silently falling back
 // to today's card.desc/OCR/vision/fallback tiers -- no new error states.
+// excerptOnly:true tells the Core to skip the og:image download AND the
+// server-side images/<id>.jpg write entirely -- this call must never replace
+// a card's already-captured image just because the user asked for a better
+// title (enrichOnOpen's own captureMeta call is the one deliberately allowed
+// to refresh the image, gated by alreadyGood).
 async function fetchGroundingExcerpt(card){
   if(!card || !card.url) return "";
   try{
-    const res = await Store.captureMeta([{id:card.id, url:card.url}]);
+    const res = await Store.captureMeta([{id:card.id, url:card.url}], {excerptOnly:true});
     const m = res && res[0];
     return (m && m.excerpt) || "";
   }catch(e){ return ""; }

@@ -39,6 +39,23 @@ function req(port, method, p, body){ return new Promise((resolve,reject)=>{ cons
     assert.strictEqual(r.status, 200);
     assert.ok(r.json.results[0].excerpt.indexOf("real paragraph of article body text") >= 0, "got: " + r.json.results[0].excerpt);
   });
+  await t("POST /api/capture-meta with excerptOnly:true does NOT write the image file, even when a real og:image is present", async () => {
+    // Task 4 review fix: fetchGroundingExcerpt (the client's grounding-only call) must never
+    // overwrite a card's already-captured image. Prove the full route -- not just
+    // captureMetaChunk -- never calls images.putImg when the request body sets excerptOnly.
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.png/.test(u)) return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "image/png" : null }, arrayBuffer: async () => new Uint8Array([137,80,78,71]).buffer };
+      return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () => '<meta property="og:image" content="https://img.test/p.png"><title>Hi</title><p>Some real article body content long enough to be picked up as the grounding excerpt for this excerpt-only test case.</p>' };
+    };
+    const r = await req(port, "POST", "/api/capture-meta", { items:[{ id:"eo1", url:"https://example.test/excerpt-only-page" }], excerptOnly: true });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.json.results[0].hasImage, false, "excerptOnly must not report an image as captured");
+    assert.strictEqual(r.json.results[0].imageUrl, "", "excerptOnly must not return an og-image URL fallback either");
+    assert.ok(r.json.results[0].excerpt.indexOf("real article body content") >= 0, "the excerpt should still be extracted: " + r.json.results[0].excerpt);
+    assert.strictEqual(images.getImg(store, "eo1"), null, "no image file should have been written for eo1 under excerptOnly");
+  });
+
   await t("items capped at 100", async () => {
     const big = []; for(let i=0;i<150;i++) big.push({ id:"x"+i, url:"https://www.instagram.com/p/"+i+"/" });
     const r = await req(port, "POST", "/api/capture-meta", { items: big });

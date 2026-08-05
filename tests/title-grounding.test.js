@@ -69,6 +69,21 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     assert.deepStrictEqual(capturedArg, [{ id: "c1", url: "https://example.test/y" }]);
     assert.strictEqual(seenGrounding, "fetched excerpt text");
   });
+
+  await t(label + ": fetchGroundingExcerpt calls Store.captureMeta with excerptOnly:true (must never overwrite the card's captured image)", async () => {
+    let capturedOpts = null;
+    const factory = new Function(
+      "Store",
+      extractFn(src, "fetchGroundingExcerpt") + "\nreturn fetchGroundingExcerpt;"
+    );
+    const fetchGroundingExcerpt = factory(
+      { captureMeta: async (items, opts) => { capturedOpts = opts; return [{ id: items[0].id, excerpt: "grounding text" }]; } }
+    );
+    const out = await fetchGroundingExcerpt({ id: "c2", url: "https://example.test/z" });
+    assert.strictEqual(out, "grounding text");
+    assert.deepStrictEqual(capturedOpts, { excerptOnly: true },
+      "fetchGroundingExcerpt must pass excerptOnly:true so the Core skips the og:image download/write");
+  });
 }
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

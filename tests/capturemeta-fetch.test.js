@@ -89,6 +89,30 @@ function t(n, fn){ return Promise.resolve().then(fn).then(()=>{passed++;}).catch
     assert.strictEqual(out[0].reason, "notfound");
   });
 
+  await t("captureMetaChunk: opts.excerptOnly skips the og:image download entirely, even when a real image is present", async () => {
+    // Task 4 review fix: grounding fetches (fetchGroundingExcerpt) must never overwrite a
+    // card's already-captured image. The Core-side guard is opts.excerptOnly -- when set,
+    // the image branch must not even attempt a fetch, so a page with a real, fetchable
+    // og:image still comes back with an empty imageDataUrl (and no imageUrl fallback).
+    let imageFetchCalled = false;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (/\.png/.test(u)) {
+        imageFetchCalled = true;
+        return { ok:true, status:200, url:u, headers:{ get:(k)=> /content-type/i.test(k) ? "image/png" : null }, arrayBuffer: async () => new Uint8Array([1,2,3]).buffer };
+      }
+      return { ok:true, status:200, url:u, headers:{ get:()=>null }, text: async () =>
+        '<meta property="og:image" content="https://img.test/p.png"><title>Hi</title>' +
+        '<p>A real article paragraph with enough substantial content to be captured as the excerpt for grounding purposes here.</p>' };
+    };
+    const out = await cm.captureMetaChunk([{ id:"eo", url:"https://example.test/excerpt-only" }], { excerptOnly: true });
+    assert.strictEqual(imageFetchCalled, false, "the image URL must never be fetched when excerptOnly is set");
+    assert.strictEqual(out[0].imageDataUrl, "", "imageDataUrl must stay empty under excerptOnly");
+    assert.strictEqual(out[0].imageUrl, "", "no og-url image fallback either under excerptOnly");
+    assert.ok(out[0].excerpt.indexOf("real article paragraph") >= 0, "excerpt must still be extracted: " + out[0].excerpt);
+    assert.strictEqual(out[0].title, "Hi", "title (og:title) is still extracted under excerptOnly");
+  });
+
   global.fetch = realFetch;
   require("../core/linkcheck")._setLookup(null);
   console.log(passed + " passed, " + failed + " failed");

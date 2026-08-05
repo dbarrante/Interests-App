@@ -110,7 +110,7 @@ async function captureMetaChunk(items, opts) {
       var excerpt = page.html ? extractArticleExcerpt(page.html) : "";
       var imageDataUrl = "";
       var abs = "";
-      if (og.image) {
+      if (og.image && !opts.excerptOnly) {
         try { abs = new URL(og.image, page.finalUrl).href; } catch (e) { abs = ""; }
         if (abs) imageDataUrl = await _fetchImageDataUrl(abs, opts);
       }

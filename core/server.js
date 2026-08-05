@@ -1048,7 +1048,7 @@ function createServer(ctx) {
     try {
       const body = req.body || {};
       const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
-      const found = await capturemeta.captureMetaChunk(items, {});
+      const found = await capturemeta.captureMetaChunk(items, { excerptOnly: !!body.excerptOnly });
       const results = found.map((r) => {
         let hasImage = false;
         if (r && r.imageDataUrl) {
