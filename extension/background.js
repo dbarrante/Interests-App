@@ -1447,6 +1447,30 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   await setStatus("Facebook post captured ✓", true);
   return true;
 }
+// App-triggered manual point-to-point capture: opens its OWN foreground tab
+// (same pattern as captureOneTab's non-FB path) rather than trying to locate
+// whatever tab the app's own openLink() may have opened — the app's manual-
+// recapture button does NOT call openLink itself for this reason (see
+// web/index.html's impManualCapture). No timeout: unlike every other capture
+// path, this one is paced by a human deciding what to select, not a page
+// finishing rendering — restorePendingRequest's B12 persistence is
+// deliberately NOT used here (it assumes a short, bounded capture and would
+// wrongly treat a still-in-progress manual selection as abandoned).
+async function startManualCapture(req) {
+  await setStatus("Waiting for you to select an image…", true);
+  let tab;
+  try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
+  catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
+  try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
+  await waitTabComplete(tab.id, 30000);
+  manualCaptureSessions[tab.id] = { id: req.id || "", url: req.url };
+  try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
+  catch (e) {
+    delete manualCaptureSessions[tab.id];
+    log("startManualCapture: overlay injection failed: " + e.message);
+    await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
+  }
+}
 // resolve once a tab finishes loading (or after a timeout — captureFbPost then
 // waits + polls on its own, so a slow tab still gets a fair shot)
 function waitTabComplete(tabId, timeoutMs) {
@@ -1625,6 +1649,13 @@ async function sweepBatchTabs() {
 // sweep (core/linkcheck.js -> review modal), never by ordinary browsing. The
 // popup's explicit "Remove card" action is unaffected.
 
+// ---- Manual point-to-point capture: session tracking ----
+// tabId -> { id, url, dataUrl }. id:"" means a standalone (extension-only,
+// no existing card) session — routeCapture's existing id/url-match logic
+// decides whether that lands on an existing Imported card or a new Saved
+// entry (see routeCapture's "manual capture, no card -> Saved" rule).
+let manualCaptureSessions = {};
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "clipSocialPost" && msg.data) {
     (async () => {
@@ -1653,6 +1684,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectCrop" && msg.rect) {
+    (async () => {
+      const tab = sender.tab;
+      if (!tab) { sendResponse({ ok: false, error: "no tab" }); return; }
+      try {
+        const dataUrl = await cropScreenshot(tab, msg.rect);
+        if (!dataUrl) { sendResponse({ ok: false, error: "capture failed" }); return; }
+        const session = manualCaptureSessions[tab.id];
+        if (session) session.dataUrl = dataUrl;
+        sendResponse({ ok: true, dataUrl });
+      } catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectFinalize") {
+    (async () => {
+      const tab = sender.tab;
+      const session = tab && manualCaptureSessions[tab.id];
+      if (!session || !session.dataUrl) { sendResponse({ ok: false, error: "no capture to finalize" }); return; }
+      delete manualCaptureSessions[tab.id];
+      await deliverToApp({ url: session.url, id: session.id || "", screenshot: session.dataUrl, force: true, ts: Date.now() });
+      await setStatus("Manual capture saved ✓", true);
+      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectCancel") {
+    (async () => {
+      const tab = sender.tab;
+      const session = tab && manualCaptureSessions[tab.id];
+      if (session) {
+        delete manualCaptureSessions[tab.id];
+        // App-triggered (session.id set): tell the app the attempt produced
+        // nothing, so the card's "pending" state clears instead of showing
+        // pending forever. Standalone (no id): nothing to clear, no-op.
+        if (session.id) await deliverToApp({ url: session.url, id: session.id, attempt: true, ok: false, ts: Date.now() });
+      }
+      sendResponse({ ok: true });
     })();
     return true;
   }
