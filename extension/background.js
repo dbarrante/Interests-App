@@ -604,6 +604,11 @@ async function ensureContextMenu() {
         title: "Remove from Interests",
         contexts: ["action", "page", "link"],
       }, () => { void chrome.runtime.lastError; });
+      chrome.contextMenus.create({
+        id: "pointToPointCapture",
+        title: "Point-to-point capture",
+        contexts: ["action", "page"],
+      }, () => { void chrome.runtime.lastError; });
       // Created LAST so it lands at the bottom of the menu. enabled:false makes
       // it a read-only label -- disabled items never fire onClicked.
       chrome.contextMenus.create({
@@ -639,6 +644,16 @@ async function pollCaptureRequest() {
   try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
   if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
   log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
+  if (req.manual) {
+    // Manual point-to-point capture: human-paced, no timeout, and deliberately
+    // NOT persisted via B12 (persistPending/restorePendingRequest assume a
+    // short, bounded capture and would wrongly treat an in-progress manual
+    // selection as abandoned after PENDING_MAX_AGE_MS). startManualCapture
+    // delivers its own outcome (via the region-select message handlers in
+    // Task 3) whenever the user finishes or cancels.
+    await startManualCapture(req);
+    return;
+  }
   // B12: the claim is now out of the app's mailbox and lives only in this SW run —
   // persist it (persistPending also arms the suspension alarm) so an MV3 suspension
   // mid-capture can't silently lose it: restorePendingRequest re-dispatches a fresh
@@ -1114,6 +1129,15 @@ chrome.runtime.onStartup.addListener(onExtensionInit);
 
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "pointToPointCapture") {
+    (async () => {
+      if (!tab || !tab.id) return;
+      await setManualCaptureSession(tab.id, { id: "", url: tab.url || "" });   // no id = standalone; routeCapture decides match-vs-new-Saved
+      try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
+      catch (e) { await clearManualCaptureSession(tab.id); log("pointToPointCapture injection failed: " + e.message); }
+    })();
+    return;
+  }
   if (info.menuItemId === "removeFromInterests") {
     (async () => {
       try {
@@ -1447,6 +1471,34 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   await setStatus("Facebook post captured ✓", true);
   return true;
 }
+// App-triggered manual point-to-point capture: opens its OWN foreground tab
+// (same pattern as captureOneTab's non-FB path) rather than trying to locate
+// whatever tab the app's own openLink() may have opened — the app's manual-
+// recapture button does NOT call openLink itself for this reason (see
+// web/index.html's impManualCapture). No timeout: unlike every other capture
+// path, this one is paced by a human deciding what to select, not a page
+// finishing rendering — restorePendingRequest's B12 persistence is
+// deliberately NOT used here (it assumes a short, bounded capture and would
+// wrongly treat a still-in-progress manual selection as abandoned).
+async function startManualCapture(req) {
+  await setStatus("Waiting for you to select an image…", true);
+  let tab;
+  try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
+  catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
+  try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
+  await waitTabComplete(tab.id, 30000);
+  // owned:true — THIS flow opened the tab solely for this capture, so
+  // regionSelectFinalize may close it afterward. The standalone context-menu
+  // flow (pointToPointCapture below) captures on a tab the user was already
+  // reading and must NOT set this, so its tab is never auto-closed.
+  await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url, owned: true });
+  try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
+  catch (e) {
+    await clearManualCaptureSession(tab.id);
+    log("startManualCapture: overlay injection failed: " + e.message);
+    await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
+  }
+}
 // resolve once a tab finishes loading (or after a timeout — captureFbPost then
 // waits + polls on its own, so a slow tab still gets a fair shot)
 function waitTabComplete(tabId, timeoutMs) {
@@ -1625,6 +1677,68 @@ async function sweepBatchTabs() {
 // sweep (core/linkcheck.js -> review modal), never by ordinary browsing. The
 // popup's explicit "Remove card" action is unaffected.
 
+// ---- Manual point-to-point capture: session tracking ----
+// tabId -> { id, url, dataUrl }. id:"" means a standalone (extension-only,
+// no existing card) session — routeCapture's existing id/url-match logic
+// decides whether that lands on an existing Imported card or a new Saved
+// entry (see routeCapture's "manual capture, no card -> Saved" rule).
+//
+// Backed by chrome.storage.session (NOT a plain in-memory object): this
+// capture is deliberately unbounded and human-paced (see startManualCapture's
+// comment on skipping B12's timeout), so the user pausing to look at the
+// article before selecting a region past the ~30s MV3 service-worker
+// suspension window is the COMMON case, not an edge case. A plain object
+// would be wiped by that suspension and silently lose the session — the user
+// would see a normal crop preview (regionSelectCrop would keep no-oping
+// "successfully") and only discover the loss when regionSelectFinalize
+// couldn't find anything to finalize. chrome.storage.session survives SW
+// suspension (same mechanism B12's persistPending/clearPendingPersist use —
+// STORAGE pattern only; deliberately NOT B12's PENDING_MAX_AGE_MS staleness
+// eviction, which is exactly the timeout semantics this capture must not have).
+// Sessions are cleared only by an explicit finalize/cancel/onRemoved — never
+// by age.
+//
+// One storage key PER TAB (ia_manual_capture_session_<tabId>), not one shared
+// key holding a tabId->session map. A shared whole-map read-modify-write (get
+// the map, mutate one entry, set the map back) is not atomic across the
+// awaits it contains — if two tabs' capture sessions are live around the same
+// time (app-triggered capture on tab A while the user separately starts a
+// standalone capture on tab B) and their get()/set() pairs interleave, the
+// second set() to land can write back a stale snapshot of the map and
+// silently erase the other tab's entry. A per-tab key makes that impossible:
+// different tabs never touch the same key, so there's nothing to race.
+function manualCaptureKey(tabId) { return "ia_manual_capture_session_" + tabId; }
+async function getManualCaptureSession(tabId) {
+  try { const s = await chrome.storage.session.get(manualCaptureKey(tabId)); return s[manualCaptureKey(tabId)]; }
+  catch (e) { return undefined; }
+}
+async function setManualCaptureSession(tabId, session) {
+  try { await chrome.storage.session.set({ [manualCaptureKey(tabId)]: session }); } catch (e) {}
+}
+async function clearManualCaptureSession(tabId) {
+  try { await chrome.storage.session.remove(manualCaptureKey(tabId)); } catch (e) {}
+}
+// If the user closes the capture tab directly (not via regionSelectFinalize's
+// own chrome.tabs.remove nor regionSelectCancel), clear any leaked session so
+// nothing lingers. For an APP-TRIGGERED session (truthy session.id) the app
+// already stamped the card's lastResult = "pending" before arming the
+// request — if nothing ever reports the attempt as over, that card shows
+// "pending" forever. Report it the same way regionSelectCancel's handler
+// does, mirroring its "only report when session.id is truthy" rule
+// (standalone sessions have id:"" — nothing to report there). Read the
+// session BEFORE clearing; clearManualCaptureSession is idempotent, so this
+// is a safe no-op when onRemoved fires after a normal Finalize/Cancel already
+// cleared it (the read just finds nothing).
+chrome.tabs.onRemoved.addListener((tabId) => {
+  (async () => {
+    const session = await getManualCaptureSession(tabId);
+    if (session && session.id) {
+      await deliverToApp({ url: session.url, id: session.id, attempt: true, ok: false, ts: Date.now() });
+    }
+    await clearManualCaptureSession(tabId);
+  })().catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "clipSocialPost" && msg.data) {
     (async () => {
@@ -1653,6 +1767,73 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
         sendResponse(res);
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectCrop" && msg.rect) {
+    (async () => {
+      const tab = sender.tab;
+      if (!tab) { sendResponse({ ok: false, error: "no tab" }); return; }
+      try {
+        const dataUrl = await cropScreenshot(tab, msg.rect);
+        if (!dataUrl) { sendResponse({ ok: false, error: "capture failed" }); return; }
+        const session = await getManualCaptureSession(tab.id);
+        // No session (e.g. the SW was suspended and lost it, or it was never
+        // started) must be a reported failure, not a silent {ok:true} — a
+        // false "success" here would show the user a normal preview for a
+        // capture that regionSelectFinalize can never actually deliver.
+        if (!session) { sendResponse({ ok: false, error: "no capture session" }); return; }
+        session.dataUrl = dataUrl;
+        await setManualCaptureSession(tab.id, session);
+        sendResponse({ ok: true, dataUrl });
+      } catch (e) { sendResponse({ ok: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectFinalize") {
+    (async () => {
+      const tab = sender.tab;
+      const session = tab && await getManualCaptureSession(tab.id);
+      if (!session || !session.dataUrl) { sendResponse({ ok: false, error: "no capture to finalize" }); return; }
+      await clearManualCaptureSession(tab.id);
+      // title: sender.tab already carries the page's <title> — no content-script
+      // scrape needed. Without it, a standalone capture of a brand-new URL (no
+      // matching card) falls through addClip's fallback to the bare domain.
+      // ONLY for a standalone session (no id): an id-matched capture routes to
+      // card-image (web/index.html's drainCaptures), where cap.title unconditionally
+      // overwrites match.title whenever force is set — force is always true here, so
+      // this would silently clobber a user's manually-renamed (titleSet) card title
+      // on every ordinary id-matched recapture, with no origTitle rollback recorded
+      // (caught in final review 2026-08-05). The id-matched path already had a title
+      // before this feature existed; only the standalone/no-match path needs one.
+      const capture = { url: session.url, id: session.id || "", screenshot: session.dataUrl, force: true, ts: Date.now() };
+      if (!session.id) capture.title = (sender.tab && sender.tab.title) || "";
+      await deliverToApp(capture);
+      await setStatus("Manual capture saved ✓", true);
+      // Only close a tab THIS feature opened for the capture (session.owned, set
+      // only by startManualCapture's app-triggered flow). The standalone
+      // context-menu flow captures on the user's own already-open tab and must
+      // not close it out from under them.
+      if (session.owned) { try { await chrome.tabs.remove(tab.id); } catch (e) {} }
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (msg.action === "regionSelectCancel") {
+    (async () => {
+      const tab = sender.tab;
+      const session = tab && await getManualCaptureSession(tab.id);
+      if (session) {
+        await clearManualCaptureSession(tab.id);
+        // App-triggered (session.id set): tell the app the attempt produced
+        // nothing, so the card's "pending" state clears instead of showing
+        // pending forever. Standalone (no id): nothing to clear, no-op.
+        if (session.id) await deliverToApp({ url: session.url, id: session.id, attempt: true, ok: false, ts: Date.now() });
+      }
+      sendResponse({ ok: true });
     })();
     return true;
   }

@@ -135,5 +135,28 @@ t("non-auto source (undefined/plain) is unaffected -> falls through to normal ro
   assert.strictEqual(r.action, "unmatched");
 });
 
+// --- Manual point-to-point captures (Task 6) --------------------------------
+t("manual point-to-point capture with an id routes to card-image, same as any other id-matched non-clip capture", () => {
+  const imported = [{ id: "c1", url: "https://example.com/a" }];
+  const cap = { url: "https://example.com/a", id: "c1", screenshot: "data:image/jpeg;base64,xx", force: true, ts: Date.now() };
+  const decision = routeCapture(cap, base({ imported }));
+  assert.strictEqual(decision.action, "card-image");
+  assert.strictEqual(decision.target.id, "c1");
+});
+t("manual point-to-point capture with no id and no existing match creates a new Saved item (previously-unreachable branch)", () => {
+  const imported = [{ id: "c1", url: "https://example.com/other" }];
+  const cap = { url: "https://example.com/brand-new", id: "", screenshot: "data:image/jpeg;base64,xx", force: true, ts: Date.now() };
+  const decision = routeCapture(cap, base({ imported }));
+  assert.strictEqual(decision.action, "saved");
+  assert.strictEqual(decision.reason, "manual capture, no card -> Saved");
+});
+t("manual point-to-point capture with no id but a URL match on an existing Imported card updates that card, not Saved", () => {
+  const imported = [{ id: "c1", url: "https://example.com/existing" }];
+  const cap = { url: "https://example.com/existing", id: "", screenshot: "data:image/jpeg;base64,xx", force: true, ts: Date.now() };
+  const decision = routeCapture(cap, base({ imported }));
+  assert.strictEqual(decision.action, "card-image");
+  assert.strictEqual(decision.target.id, "c1");
+});
+
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

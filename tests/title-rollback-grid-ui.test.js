@@ -55,9 +55,13 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   // Guards the exact right-offset value: a prior commit on this branch initially
-  // missed it and had to add it in a follow-up fix (Task 3).
-  t(label + ": .imp-revert has its own right:142px offset (doesn't overlap .imp-title)", () => {
-    assert.match(src, /\.imp-revert\{right:142px\}/);
+  // missed it and had to add it in a follow-up fix (Task 3). Task 5 inserted a
+  // new .imp-manualcap icon at the (then-free) right:142px slot and moved
+  // .imp-revert to right:176px to make room, without disturbing this group's
+  // other members — see tests/manual-capture-app-trigger.test.js for the
+  // .imp-manualcap-side assertions.
+  t(label + ": .imp-revert has its own right:176px offset (doesn't overlap .imp-manualcap)", () => {
+    assert.match(src, /\.imp-revert\{right:176px\}/);
   });
 
   t(label + ": .imp-revert is included in the :hover color-change group", () => {
@@ -65,7 +69,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   });
 
   t(label + ": .imp-revert is included in the touch-reachability @media(max-width:760px) rule", () => {
-    assert.match(src, /@media\(max-width:760px\)\{\.imp-edit,\.imp-refresh,\.imp-reader,\.imp-title,\.imp-revert\{display:flex\}\}/);
+    assert.match(src, /@media\(max-width:760px\)\{\.imp-edit,\.imp-refresh,\.imp-reader,\.imp-title,\.imp-revert,\.imp-manualcap\{display:flex\}\}/);
   });
 }
 
