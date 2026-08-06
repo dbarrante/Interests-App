@@ -21,10 +21,11 @@
     var collection = String(info.collection || "");
     var lines = [
       "Write ONE short, descriptive, specific title for this saved web page, 8 words or fewer.",
-      "No platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject."
+      "No platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject.",
+      "Do not write generic stock-photo/blog-headline captions that could apply to many different images in the same category (e.g. \"Stylish Indoor Plant Decor for Modern Homes\", \"Cozy Living Room Ideas for Every Season\"). If the image only shows a generic scene with nothing specific to identify (no distinct object, product, place, person, or text), say so plainly and briefly rather than inventing a decorative-sounding title."
     ];
     if (hasImage) {
-      lines.push("An image of the actual saved content is attached — base the title on what's shown. If the image contains legible text (e.g. a quote), use that as the primary basis. Otherwise describe what's depicted.");
+      lines.push("An image of the actual saved content is attached — base the title on what's shown. If the image contains legible text (e.g. a quote), use that as the primary basis. Otherwise describe what's depicted, specifically — not the general category it belongs to.");
     }
     if (ocr) {
       lines.push("The description below was extracted via OCR from an image and may contain minor recognition errors — treat it as approximate, not verbatim-perfect.");

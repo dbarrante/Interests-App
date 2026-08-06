@@ -91,7 +91,7 @@ t("composeFallbackTitle: even a 1-character collection name produces a >=25-char
 // ---- buildTitlePrompt: new flags (hasImage, ocr, collection) ----
 t("buildTitlePrompt: unchanged output when no new flags are passed (regression guard)", () => {
   const before = t2.buildTitlePrompt({ url:"https://x.com/a", domain:"x.com", description:"d" });
-  const golden = "Write ONE short, descriptive, specific title for this saved web page, 8 words or fewer.\nNo platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject.\n\nURL: https://x.com/a\nDomain: x.com\nDescription: d\n\nReturn ONLY the title, no quotes, no explanation.";
+  const golden = "Write ONE short, descriptive, specific title for this saved web page, 8 words or fewer.\nNo platform names (Facebook/Instagram/Pinterest/etc), no generic filler like \"Post\" or \"Video\" — describe the actual subject.\nDo not write generic stock-photo/blog-headline captions that could apply to many different images in the same category (e.g. \"Stylish Indoor Plant Decor for Modern Homes\", \"Cozy Living Room Ideas for Every Season\"). If the image only shows a generic scene with nothing specific to identify (no distinct object, product, place, person, or text), say so plainly and briefly rather than inventing a decorative-sounding title.\n\nURL: https://x.com/a\nDomain: x.com\nDescription: d\n\nReturn ONLY the title, no quotes, no explanation.";
   assert.strictEqual(before, golden, "Output must be byte-for-byte identical to pre-change baseline");
   assert.ok(!/attached/i.test(before));
   assert.ok(!/OCR/i.test(before));
