@@ -42,21 +42,31 @@ t("regionSelectCrop reports failure (not silent success) when no session exists 
 t("regionSelectFinalize delivers with force:true and the session's id (empty string for standalone)", () => {
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
   assert.ok(i >= 0);
-  const body = bg.slice(i, i + 900);
-  assert.ok(/deliverToApp\(\{/.test(body) && /url: session\.url, id: session\.id \|\| ""/.test(body));
+  const body = bg.slice(i, i + 2000);
+  assert.ok(/const capture = \{ url: session\.url, id: session\.id \|\| ""/.test(body));
   assert.ok(/screenshot: session\.dataUrl/.test(body));
   assert.ok(/force: true/.test(body));
+  assert.ok(/await deliverToApp\(capture\);/.test(body));
   assert.ok(!/clip:\s*true/.test(body), "regionSelectFinalize's delivery must never set clip:true -- that would always route to a new Saved item and never match an existing Imported card by id/url");
 });
-t("regionSelectFinalize's delivery carries the tab's real page title (not the domain-only addClip fallback)", () => {
+t("regionSelectFinalize's delivery carries the tab's real page title, but ONLY for a standalone (no-id) session", () => {
+  // A titled delivery for an id-matched session would route through
+  // drainCaptures' card-image path, where cap.title unconditionally
+  // overwrites match.title whenever force is set (force is always true
+  // here) -- silently clobbering a user's manually-renamed (titleSet) card
+  // title on every ordinary id-matched recapture, with no origTitle
+  // rollback recorded (caught in final review 2026-08-05). The id-matched
+  // path already had a title before this feature existed; only the
+  // standalone/no-match path (which creates a brand-new card via addClip)
+  // needs one, so the title must be conditional on !session.id.
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
-  const body = bg.slice(i, i + 1300);
-  assert.ok(/title: \(sender\.tab && sender\.tab\.title\) \|\| ""/.test(body),
-    "a standalone capture of a brand-new URL must not permanently name the card just its bare domain");
+  const body = bg.slice(i, i + 2000);
+  assert.ok(/if \(!session\.id\) capture\.title = \(sender\.tab && sender\.tab\.title\) \|\| "";/.test(body),
+    "title must only be attached for a standalone (id-less) session, never an id-matched recapture");
 });
 t("regionSelectFinalize only closes the tab it owns (app-triggered), never the user's own standalone browsing tab", () => {
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
-  const body = bg.slice(i, i + 1300);
+  const body = bg.slice(i, i + 2000);
   assert.ok(/if \(session\.owned\) \{ try \{ await chrome\.tabs\.remove\(tab\.id\); \} catch \(e\) \{\} \}/.test(body),
     "chrome.tabs.remove must be gated on session.owned so a standalone capture never closes the user's own tab");
 });

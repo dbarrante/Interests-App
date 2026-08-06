@@ -1801,10 +1801,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // title: sender.tab already carries the page's <title> — no content-script
       // scrape needed. Without it, a standalone capture of a brand-new URL (no
       // matching card) falls through addClip's fallback to the bare domain.
-      await deliverToApp({
-        url: session.url, id: session.id || "", screenshot: session.dataUrl,
-        title: (sender.tab && sender.tab.title) || "", force: true, ts: Date.now(),
-      });
+      // ONLY for a standalone session (no id): an id-matched capture routes to
+      // card-image (web/index.html's drainCaptures), where cap.title unconditionally
+      // overwrites match.title whenever force is set — force is always true here, so
+      // this would silently clobber a user's manually-renamed (titleSet) card title
+      // on every ordinary id-matched recapture, with no origTitle rollback recorded
+      // (caught in final review 2026-08-05). The id-matched path already had a title
+      // before this feature existed; only the standalone/no-match path needs one.
+      const capture = { url: session.url, id: session.id || "", screenshot: session.dataUrl, force: true, ts: Date.now() };
+      if (!session.id) capture.title = (sender.tab && sender.tab.title) || "";
+      await deliverToApp(capture);
       await setStatus("Manual capture saved ✓", true);
       // Only close a tab THIS feature opened for the capture (session.owned, set
       // only by startManualCapture's app-triggered flow). The standalone
