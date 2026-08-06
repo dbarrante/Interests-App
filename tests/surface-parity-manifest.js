@@ -41,5 +41,6 @@ module.exports = {
     "settleOrigTitle",
     "impRevertTitle",
     "edRevertTitle",
+    "impManualCapture",
   ],
 };

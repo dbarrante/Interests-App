@@ -447,17 +447,18 @@ body.reader-locked{overflow:hidden}
 .pickov{position:absolute;inset:0;z-index:7;border-radius:11px;cursor:pointer;display:flex;align-items:flex-start;justify-content:flex-end;padding:7px}
 .pickov:hover{background:rgba(194,65,12,.08)}
 .selpick .pickov{background:rgba(194,65,12,.13)}
-.imp-edit,.imp-refresh,.imp-reader,.imp-title,.imp-revert{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.imp-manualcap,.imp-edit,.imp-refresh,.imp-reader,.imp-title,.imp-revert{position:absolute;top:6px;z-index:6;width:28px;height:28px;border:1px solid var(--line);background:rgba(255,255,255,.94);border-radius:8px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0;color:var(--muted);box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .imp-edit{right:6px}
 .imp-refresh{right:40px;font-size:15px}
 .imp-reader{right:74px}
 .imp-title{right:108px;font-size:12px;font-weight:700;letter-spacing:-.02em}
-.imp-revert{right:142px}
-.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader,.imp-card:hover .imp-title,.imp-card:hover .imp-revert{display:flex}
-.imp-edit:hover,.imp-refresh:hover,.imp-reader:hover,.imp-title:hover,.imp-revert:hover{border-color:var(--accent);color:var(--accent)}
+.imp-manualcap{right:142px;font-size:15px}
+.imp-revert{right:176px}
+.imp-card:hover .imp-manualcap,.imp-card:hover .imp-edit,.imp-card:hover .imp-refresh,.imp-card:hover .imp-reader,.imp-card:hover .imp-title,.imp-card:hover .imp-revert{display:flex}
+.imp-manualcap:hover,.imp-edit:hover,.imp-refresh:hover,.imp-reader:hover,.imp-title:hover,.imp-revert:hover{border-color:var(--accent);color:var(--accent)}
 /* Touch devices have no hover state, so hover-only icons are otherwise unreachable —
    show them unconditionally at mobile width, matching the app's other ≤760px rules. */
-@media(max-width:760px){.imp-edit,.imp-refresh,.imp-reader,.imp-title,.imp-revert{display:flex}}
+@media(max-width:760px){.imp-edit,.imp-refresh,.imp-reader,.imp-title,.imp-revert,.imp-manualcap{display:flex}}
 .imp-refresh.spin{animation:ispin .7s linear infinite}
 @keyframes ispin{to{transform:rotate(360deg)}}
 .ed-row{display:flex;gap:8px;margin-top:18px}
@@ -4857,7 +4858,7 @@ function impCardHTML(it,idx,tabTag){
         ? `<img class="fv" src="https://www.google.com/s2/favicons?domain=${esc(dom)}&sz=64" onerror="this.outerHTML='<div class=ic>${yt?"YT":"IM"}</div>'">`
         : `<div class="ic">${yt?"YT":"IM"}</div>`));
   return `<div class="imp-card${selPicks.has(idx)?" selpick":""}" data-id="${esc(it.id||'')}" onmouseenter="_hoverCardId='${esc(it.id||'')}'">
-    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-title" title="Suggest a new title for this card (AI)" onclick="event.stopPropagation();impRefreshTitle(${idx})">Aa</button>${it.origTitle!==undefined?`<button class="imp-revert" title="Revert to the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}" onclick="event.stopPropagation();impRevertTitle(${idx})">&#8617;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
+    ${selMode?`<div class="pickov" onclick="togglePick(${idx})">${selPicks.has(idx)?'<span class="pk">&#10003;</span>':""}</div>`:`${it.url?`<button class="imp-refresh${(it.lastResult==='pending' && _refreshPins.has(it.id))?' spin':''}" title="Refresh image — recapture this page" onclick="event.stopPropagation();impRefresh(${idx})">&#8635;</button><button class="imp-manualcap" title="Manually capture this card's image (draw a box on the page)" onclick="event.stopPropagation();impManualCapture(${idx})">&#9635;</button>`:""}<button class="imp-reader" title="Open reader view" onclick="event.stopPropagation();openReader(${idx})">&#128214;</button><button class="imp-title" title="Suggest a new title for this card (AI)" onclick="event.stopPropagation();impRefreshTitle(${idx})">Aa</button>${it.origTitle!==undefined?`<button class="imp-revert" title="Revert to the original title: ${esc(it.origTitle).replace(/"/g,"&quot;")}" onclick="event.stopPropagation();impRevertTitle(${idx})">&#8617;</button>`:""}<button class="imp-edit" title="Edit card" onclick="event.stopPropagation();impEdit(${idx})">&#9998;</button>`}
     ${icon}
     <div style="flex:1;min-width:0">
       <div class="imp-t${it.url?" link":""}" ${it.url?`onclick="impOpen(${idx})"`:""}>${(it.ts||0)>_impPrevSeen?'<span class="newpill">NEW</span>':""}${esc(it.title)}</div>
@@ -5314,6 +5315,19 @@ function impRefresh(idx){
   // the ↻ spins via card state (lastResult pending + _refreshPins) so it persists until the capture lands
   if(!refreshTabsViewIfShowing()) renderImportedKeepFocus();
   toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
+}
+// Manual point-to-point capture for an existing card: arms a "manual"
+// capture request and lets the extension take it from there (it opens its
+// OWN tab — see extension/background.js's startManualCapture — so this
+// deliberately does NOT call openLink itself, unlike impOpen/impRefresh).
+function impManualCapture(idx){
+  const it=imported[idx]; if(!it||!it.url) return;
+  if(!it.id){ it.id=newId(); Store.putCards(imported); }
+  anchorImpOnCard(it);
+  it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending";
+  Store.putCards(imported);
+  Store.setCaptureRequest({url:it.url, id:it.id, manual:true});
+  toast("Opening the article — draw a box around the image you want, then Use this");
 }
 async function enrichOnOpen(it, idx){
   try{
