@@ -71,5 +71,35 @@ t("startManualCapture tracks the session BEFORE injecting the overlay (no race w
   assert.ok(sessionIdx >= 0 && injectIdx >= 0 && sessionIdx < injectIdx);
 });
 
+t("ensureContextMenu creates a pointToPointCapture item before the status label (so it isn't the last item)", () => {
+  const start = bg.indexOf("async function ensureContextMenu() {");
+  const end = bg.indexOf("ensureContextMenu();", start);
+  const body = bg.slice(start, end);
+  const itemIdx = body.indexOf('id: "pointToPointCapture"');
+  const statusIdx = body.indexOf("id: CTX_STATUS_ID");
+  assert.ok(itemIdx >= 0 && statusIdx >= 0 && itemIdx < statusIdx,
+    "pointToPointCapture must be created before the status label, which must stay last");
+});
+t("the context-menu click handler starts a standalone session (no id) via the storage-backed helper and injects the overlay", () => {
+  const start = bg.indexOf("chrome.contextMenus.onClicked.addListener((info, tab) => {");
+  const body = bg.slice(start, start + 600);
+  assert.ok(/info\.menuItemId === "pointToPointCapture"/.test(body));
+  assert.ok(/await setManualCaptureSession\(tab\.id, \{ id: "", url: tab\.url \|\| "" \}\);/.test(body),
+    "must use the chrome.storage.session-backed helper, not a plain in-memory map (MV3 suspension safety)");
+  assert.ok(/catch \(e\) \{ await clearManualCaptureSession\(tab\.id\);/.test(body),
+    "a failed overlay injection must clear the session via the same storage-backed helper");
+});
+t("pollCaptureRequest's req.manual branch skips the automatic pipeline (captureOneTab/persistPending) entirely", () => {
+  const start = bg.indexOf("async function pollCaptureRequest() {");
+  const end = bg.indexOf("\nasync function pollBatchState", start);
+  const body = bg.slice(start, end);
+  const manualIdx = body.indexOf("if (req.manual) {");
+  assert.ok(manualIdx >= 0, "req.manual branch not found");
+  assert.ok(manualIdx < body.indexOf("pendingCaptureBusy = true;"),
+    "the manual branch must return BEFORE the automatic pipeline's persistPending/captureOneTab machinery runs");
+  const manualBranch = body.slice(manualIdx, body.indexOf("return;", manualIdx) + 7);
+  assert.ok(/await startManualCapture\(req\);/.test(manualBranch));
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

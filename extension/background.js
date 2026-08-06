@@ -604,6 +604,11 @@ async function ensureContextMenu() {
         title: "Remove from Interests",
         contexts: ["action", "page", "link"],
       }, () => { void chrome.runtime.lastError; });
+      chrome.contextMenus.create({
+        id: "pointToPointCapture",
+        title: "Point-to-point capture",
+        contexts: ["action", "page"],
+      }, () => { void chrome.runtime.lastError; });
       // Created LAST so it lands at the bottom of the menu. enabled:false makes
       // it a read-only label -- disabled items never fire onClicked.
       chrome.contextMenus.create({
@@ -639,6 +644,16 @@ async function pollCaptureRequest() {
   try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
   if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
   log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
+  if (req.manual) {
+    // Manual point-to-point capture: human-paced, no timeout, and deliberately
+    // NOT persisted via B12 (persistPending/restorePendingRequest assume a
+    // short, bounded capture and would wrongly treat an in-progress manual
+    // selection as abandoned after PENDING_MAX_AGE_MS). startManualCapture
+    // delivers its own outcome (via the region-select message handlers in
+    // Task 3) whenever the user finishes or cancels.
+    await startManualCapture(req);
+    return;
+  }
   // B12: the claim is now out of the app's mailbox and lives only in this SW run —
   // persist it (persistPending also arms the suspension alarm) so an MV3 suspension
   // mid-capture can't silently lose it: restorePendingRequest re-dispatches a fresh
@@ -1114,6 +1129,15 @@ chrome.runtime.onStartup.addListener(onExtensionInit);
 
 log("background service worker loaded — FB capture v" + FB_CAP_VERSION);
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "pointToPointCapture") {
+    (async () => {
+      if (!tab || !tab.id) return;
+      await setManualCaptureSession(tab.id, { id: "", url: tab.url || "" });   // no id = standalone; routeCapture decides match-vs-new-Saved
+      try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
+      catch (e) { await clearManualCaptureSession(tab.id); log("pointToPointCapture injection failed: " + e.message); }
+    })();
+    return;
+  }
   if (info.menuItemId === "removeFromInterests") {
     (async () => {
       try {
