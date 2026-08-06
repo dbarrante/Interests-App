@@ -6601,16 +6601,35 @@ function mergeCleanTags(card, rawTags, exclude){
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
   });
-  if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
-  return cleaned;
+  const added = [];
+  if(cleaned.length){
+    const existingLower = new Set((card.tags||[]).map(t=>t.toLowerCase()));
+    added.push(...cleaned.filter(t=>!existingLower.has(t.toLowerCase())));
+    card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
+  }
+  return added;
+}
+// Extract #hashtags from a title string. Returns { title: (title with #hashtags
+// removed), tags: [array of hashtag words without the #] }. Both title and tags
+// are trimmed of extra whitespace but otherwise unprocessed.
+function extractHashtags(rawTitle){
+  if(!rawTitle) return { title: "", tags: [] };
+  const tags = [];
+  const hashtagRe = /#(\w+)/g;
+  let match;
+  while((match = hashtagRe.exec(rawTitle))){
+    if(match[1]) tags.push(match[1]);
+  }
+  const title = rawTitle.replace(/#\w+/g, " ").replace(/\s+/g, " ").trim();
+  return { title, tags };
 }
 // Pull #hashtags out of a title about to be overwritten and add them as tags
 // too -- the most common real source is a raw imported caption used as a
 // fallback title, not the AI's own (rarely hashtag-laden) prose. No-op for a
 // blank/missing title (nothing to scan). `exclude` -- see mergeCleanTags above.
 function captureOutgoingHashtags(card, exclude){
-  if(!card || !card.title) return;
-  mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
+  if(!card || !card.title) return [];
+  return mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
 }
 // Apply an AI-generated title to a card, including its embedded #hashtags as
 // tags. Called from enrichOnOpen (auto-refresh on open), retryTitleSuggestion
@@ -6679,6 +6698,7 @@ const HEALTH_TABS = [
   { id:"nolink", label:"No link" },
   { id:"titles", label:"Title issues" },
   { id:"airefresh", label:"AI refresh" },
+  { id:"hashtags", label:"Hashtags → Tags" },
 ];
 let _healthTab = "dupes";
 let _healthScanned = {};   // {tabId:true} once its lazy scan has run this open
@@ -6786,6 +6806,7 @@ function renderHealth(){
   if(tab==="nolink") return renderHealthNoLink(list);
   if(tab==="titles") return renderHealthTitles(list);
   if(tab==="airefresh") return renderHealthAiRefresh(list);
+  if(tab==="hashtags") return renderHealthHashtags(list);
 }
 // ---- AI refresh tab (Library Health) ----
 // Session-only checkbox state — both default on, matching the "run
@@ -6859,6 +6880,45 @@ async function runAiRefreshBatch(){
   if(curTab==="saved") renderSaved();
   renderImportedKeepFocus();
   if(_healthTab==="airefresh"){ const list=document.getElementById("healthList"); if(list) renderHealthAiRefresh(list); }
+}
+// ---- Hashtags → Tags tab (Library Health) ----
+let _hashtagScanRunning = false;
+function renderHealthHashtags(list){
+  const total = imported.length + saved.length;
+  list.innerHTML = `
+    <div class="s" style="opacity:.75;padding:2px 4px 14px">Scans every card's title for #hashtags and adds them as tags. Titles are never changed. No AI key needed — this is a local, free operation.</div>
+    <div class="s" style="opacity:.75;padding:0 4px 10px">${total} card${total===1?"":"s"} in the library.</div>
+    <button class="btn btn-primary" id="hashtagScanBtn" ${(!total||_hashtagScanRunning)?"disabled":""} onclick="runHashtagLibraryScan()">Scan library</button>`;
+}
+async function runHashtagLibraryScan(){
+  if(_hashtagScanRunning) return;
+  const all = imported.concat(saved);
+  if(!all.length){ toast("Library is empty — nothing to scan"); return; }
+  _hashtagScanRunning = true;
+  const btn = document.getElementById("hashtagScanBtn");
+  if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin" style="border-color:#d8d2c8;border-top-color:var(--accent)"></span> Scanning…'; }
+  let tagged = 0, done = 0;
+  try{
+    for(let i=0; i<all.length; i+=400){
+      const chunk = all.slice(i, i+400);
+      chunk.forEach(card=>{
+        const added = captureOutgoingHashtags(card);
+        if(added && added.length) tagged++;
+      });
+      done += chunk.length;
+      Store.putCards(imported); Store.putSaved(saved); persistAll();
+      toast(`Hashtag scan: ${done}/${all.length}…`);
+    }
+    toast(`Hashtag scan done — added tags to ${tagged} of ${all.length} card${all.length===1?"":"s"}`);
+  }catch(e){
+    console.error(e);
+    toast("Hashtag scan failed: "+e.message, 7000);
+  } finally {
+    _hashtagScanRunning = false;
+  }
+  if(curTab==="saved") renderSaved();
+  renderImportedKeepFocus();
+  if(_healthTab==="hashtags"){ const list=document.getElementById("healthList"); if(list) renderHealthHashtags(list); }
 }
 // ---- Duplicates tab ----
 let _dupeReviewMode = "all";
