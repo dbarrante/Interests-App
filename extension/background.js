@@ -1471,40 +1471,88 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   await setStatus("Facebook post captured ✓", true);
   return true;
 }
-// App-triggered manual point-to-point capture: opens its OWN foreground tab
-// (same pattern as captureOneTab's non-FB path) rather than trying to locate
-// whatever tab the app's own openLink() may have opened — the app's manual-
-// recapture button does NOT call openLink itself for this reason (see
-// web/index.html's impManualCapture). No timeout: unlike every other capture
+// Find a tab the APP already opened for this URL (via its own reliable
+// openLink(), the same instant/synchronous mechanism the card-click uses —
+// window.ia.openInApp or shell.openExternal in Electron, window.open in the
+// PWA/browser build). Queried and filtered in JS, not passed as a
+// chrome.tabs.query({url}) match pattern: match patterns don't reliably
+// handle querystrings/fragments in an arbitrary article URL (see
+// focusAppTab above for the same precedent). Tries an exact match first,
+// then falls back to origin+pathname (ignoring querystring/fragment/trailing
+// slash) since by the time this poll tick runs (up to ~30s after openLink),
+// a redirect (utm-stripping, AMP, canonicalization -- all common on
+// articles) can easily have already left tab.url different from req.url.
+// Picks the most recently accessed match, since that's almost certainly the
+// tab the user just opened a moment before clicking the capture button.
+function tabOriginPath(u) {
+  try { const p = new URL(u); return p.origin + p.pathname.replace(/\/$/, ""); } catch (e) { return null; }
+}
+async function findAppOpenedTab(url) {
+  try {
+    const tabs = await chrome.tabs.query({});
+    let matches = tabs.filter((t) => t.url === url);
+    if (!matches.length) {
+      const key = tabOriginPath(url);
+      if (key) matches = tabs.filter((t) => t.url && tabOriginPath(t.url) === key);
+    }
+    if (!matches.length) return null;
+    matches.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    return matches[0];
+  } catch (e) { return null; }
+}
+// App-triggered manual point-to-point capture: the app's manual-capture
+// button opens the article itself via its own openLink() (2026-08-06 — live
+// reproduction found this flow's OWN chrome.tabs.create producing no tab at
+// all, visible or hidden, even though the poller correctly claimed the
+// request; openLink is the same call the reliable card-click uses, so this
+// sidesteps whatever chrome.tabs.create was failing on). This function's job
+// is reduced to FINDING that tab and injecting the overlay into it. If it
+// can't find one (app-side openLink didn't run, e.g. an older app build, or
+// the user's default browser isn't this Chrome), it falls back to creating
+// its own tab exactly as before — a URL that redirects between the app
+// opening it and this poll tick can rarely cause a duplicate tab in that
+// fallback path; accepted as a far smaller failure than "capture doesn't
+// work at all". No timeout on the overlay wait: unlike every other capture
 // path, this one is paced by a human deciding what to select, not a page
 // finishing rendering — restorePendingRequest's B12 persistence is
 // deliberately NOT used here (it assumes a short, bounded capture and would
 // wrongly treat a still-in-progress manual selection as abandoned).
 async function startManualCapture(req) {
   await setStatus("Waiting for you to select an image…", true);
-  let tab;
-  try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
-  catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
-  try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
-  // active:true on tabs.create only makes the tab active WITHIN its own browser
-  // window -- it does not bring that window in front of other windows (e.g. the
-  // Electron app the user is looking at when they click the card-face icon).
-  // Without this, the tab can open genuinely invisibly behind other windows —
-  // reported 2026-08-06: "the app says it is opening the page, but it doesn't."
-  // Every other capture path in this file that needs a tab the user (or FB's
-  // lazy-loader) can actually see does this same focus call — this one needs it
-  // even more, since a human has to see and interact with the overlay.
+  let tab = await findAppOpenedTab(req.url);
+  let owned = false;
+  if (!tab) {
+    owned = true;
+    try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
+    catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
+  }
+  try { await chrome.tabs.update(tab.id, { active: true, autoDiscardable: false }); } catch (e) {}
+  // active:true on tabs.update/create only makes the tab active WITHIN its own
+  // browser window -- it does not bring that window in front of other windows
+  // (e.g. the Electron app the user is looking at when they click the
+  // card-face icon). Without this, the tab can be genuinely invisible behind
+  // other windows -- reported 2026-08-06: "the app says it is opening the
+  // page, but it doesn't." Every other capture path in this file that needs a
+  // tab the user (or FB's lazy-loader) can actually see does this same focus
+  // call -- this one needs it even more, since a human has to see and
+  // interact with the overlay.
   try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
-  await waitTabComplete(tab.id, 30000);
-  // owned:true — THIS flow opened the tab solely for this capture, so
-  // regionSelectFinalize may close it afterward. The standalone context-menu
-  // flow (pointToPointCapture below) captures on a tab the user was already
-  // reading and must NOT set this, so its tab is never auto-closed.
-  await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url, owned: true });
-  try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
-  catch (e) {
+  // Everything from here on used to run unguarded -- a throw in either call
+  // (e.g. a stale tab.id if the tab closed between the checks above and here)
+  // was swallowed silently by iaPollAll's blanket .catch(() => {}), leaving
+  // no tab, no overlay, and no error delivered to the app: indistinguishable
+  // from "nothing happened". Wrapped so a failure here is always reported.
+  try {
+    await waitTabComplete(tab.id, 30000);
+    // owned:true only for a tab THIS flow created, so regionSelectFinalize may
+    // close it afterward. A tab the app already had open (found above) or the
+    // standalone context-menu flow (pointToPointCapture below) must NOT set
+    // this -- the user may have had it open for their own reasons too.
+    await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url, owned });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] });
+  } catch (e) {
     await clearManualCaptureSession(tab.id);
-    log("startManualCapture: overlay injection failed: " + e.message);
+    log("startManualCapture: failed after tab was ready: " + (e && e.message));
     await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
   }
 }

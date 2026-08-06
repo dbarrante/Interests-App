@@ -70,10 +70,15 @@ t("regionSelectFinalize only closes the tab it owns (app-triggered), never the u
   assert.ok(/if \(session\.owned\) \{ try \{ await chrome\.tabs\.remove\(tab\.id\); \} catch \(e\) \{\} \}/.test(body),
     "chrome.tabs.remove must be gated on session.owned so a standalone capture never closes the user's own tab");
 });
-t("only startManualCapture's app-triggered session sets owned:true; the standalone context-menu session does not", () => {
+t("startManualCapture only sets owned:true for a tab IT created, not one it found already open", () => {
   const startIdx = bg.indexOf("async function startManualCapture(req) {");
-  const startBody = bg.slice(startIdx, startIdx + 1600);
-  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url, owned: true \}\)/.test(startBody));
+  const startBody = bg.slice(startIdx, startIdx + 2400);
+  assert.ok(/let owned = false;/.test(startBody));
+  assert.ok(/owned = true;/.test(startBody));
+  assert.ok(/chrome\.tabs\.create\(\{ url: req\.url, active: true \}\)/.test(startBody),
+    "still falls back to creating its own tab when no app-opened tab is found");
+  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url, owned \}\)/.test(startBody),
+    "owned must be the variable (true only when this flow created the tab), not a hardcoded true");
 
   const ctxIdx = bg.indexOf('info.menuItemId === "pointToPointCapture"');
   const ctxBody = bg.slice(ctxIdx, ctxIdx + 400);
@@ -107,16 +112,27 @@ t("chrome.tabs.onRemoved reads the session BEFORE clearing it (clearManualCaptur
   const clearIdx = body.indexOf("clearManualCaptureSession(tabId)");
   assert.ok(getIdx >= 0 && clearIdx >= 0 && getIdx < clearIdx, "the read must happen before the clear");
 });
-t("startManualCapture opens its own tab (does not try to find an existing one) and has no timeout on the overlay wait", () => {
+t("startManualCapture tries to find a tab the app already opened before creating its own, and has no timeout on the overlay wait", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
   assert.ok(i >= 0);
-  const body = bg.slice(i, i + 1600);
-  assert.ok(/chrome\.tabs\.create\(\{ url: req\.url, active: true \}\)/.test(body));
+  const body = bg.slice(i, i + 1800);
+  const findIdx = body.indexOf("findAppOpenedTab(req.url)");
+  const createIdx = body.indexOf("chrome.tabs.create({ url: req.url, active: true })");
+  assert.ok(findIdx >= 0 && createIdx >= 0 && findIdx < createIdx,
+    "must look for an already-open tab (from the app's own openLink) before falling back to creating one");
   assert.ok(!/setTimeout.*regionSelect/i.test(body), "must not impose a timeout on the human-paced selection step");
+});
+t("findAppOpenedTab filters chrome.tabs.query({}) in JS by exact url match, not a chrome.tabs.query({url}) match pattern", () => {
+  const i = bg.indexOf("async function findAppOpenedTab(url) {");
+  assert.ok(i >= 0);
+  const body = bg.slice(i, i + 500);
+  assert.ok(/chrome\.tabs\.query\(\{\}\)/.test(body),
+    "must query all tabs and filter in JS -- match patterns don't reliably handle querystrings/fragments in an article URL");
+  assert.ok(/t\.url === url/.test(body));
 });
 t("startManualCapture tracks the session BEFORE injecting the overlay (no race where a fast user beats the session write)", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
-  const body = bg.slice(i, i + 1700);
+  const body = bg.slice(i, i + 2400);
   const sessionIdx = body.indexOf("setManualCaptureSession(tab.id,");
   const injectIdx = body.indexOf("chrome.scripting.executeScript");
   assert.ok(sessionIdx >= 0 && injectIdx >= 0 && sessionIdx < injectIdx);

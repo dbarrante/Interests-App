@@ -1,10 +1,13 @@
 // tests/manual-capture-app-trigger.test.js — impManualCapture (the card-face
 // "manual point-to-point capture" icon) and its CSS/markup wiring.
 //
-// impManualCapture arms a manual:true capture request and lets the extension
-// (Tasks 3-4, already built) open its own tab and drive the point-to-point
-// overlay from there — unlike impOpen/impRefresh, it must NOT open a tab or
-// window itself.
+// impManualCapture arms a manual:true capture request AND opens the article
+// itself via openLink, the same instant/reliable mechanism impOpen uses
+// (2026-08-06: the extension's own chrome.tabs.create path was found, via
+// live reproduction, to produce no tab at all even though the poller
+// correctly claimed the request). The extension's job is reduced to finding
+// that same tab (see extension/background.js's findAppOpenedTab) and driving
+// the point-to-point overlay from there.
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
@@ -17,10 +20,10 @@ let pass = 0, fail = 0;
 function t(n, fn) { try { fn(); pass++; console.log("  ok  " + n); } catch (e) { fail++; console.log("  FAIL " + n + " — " + (e && e.stack || e)); } }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": impManualCapture arms a manual:true request with the card's id, and does NOT call openLink", () => {
+  t(label + ": impManualCapture arms a manual:true request with the card's id, and also calls openLink with the card's url", () => {
     const imported = [{ id: "c1", url: "https://example.com/a" }];
     const calls = [];
-    let openLinkCalled = false;
+    let openLinkUrl = null;
     const Store = { putCards: () => {}, setCaptureRequest: (req) => calls.push(req) };
     const factory = new Function(
       "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
@@ -28,12 +31,18 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     );
     const impManualCapture = factory(
       imported, Store, () => {}, () => {}, () => "genid",
-      () => { openLinkCalled = true; }
+      (url) => { openLinkUrl = url; }
     );
     impManualCapture(0);
     assert.strictEqual(calls.length, 1);
     assert.deepStrictEqual(calls[0], { url: "https://example.com/a", id: "c1", manual: true });
-    assert.strictEqual(openLinkCalled, false, "impManualCapture must let the extension open its own tab");
+    // openLink (the same instant, reliable mechanism impOpen uses) opens the
+    // article right away -- the extension's job is reduced to finding that
+    // same tab and injecting the overlay, not creating its own (2026-08-06:
+    // live reproduction found the extension's own chrome.tabs.create path
+    // producing no tab at all, even though the poller correctly claimed the
+    // request).
+    assert.strictEqual(openLinkUrl, "https://example.com/a", "impManualCapture must open the article itself via openLink, same as impOpen");
   });
 
   t(label + ": impManualCapture assigns a new id to an id-less card before arming the request", () => {
@@ -42,10 +51,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     let putCardsCalls = 0;
     const Store = { putCards: () => { putCardsCalls++; }, setCaptureRequest: (req) => calls.push(req) };
     const factory = new Function(
-      "imported", "Store", "anchorImpOnCard", "toast", "newId",
+      "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
       extractFn(src, "impManualCapture") + "\nreturn impManualCapture;"
     );
-    const impManualCapture = factory(imported, Store, () => {}, () => {}, () => "newgenid");
+    const impManualCapture = factory(imported, Store, () => {}, () => {}, () => "newgenid", () => {});
     impManualCapture(0);
     assert.strictEqual(imported[0].id, "newgenid");
     assert.strictEqual(calls[0].id, "newgenid");
@@ -84,10 +93,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     let anchored = null;
     const Store = { putCards: () => {}, setCaptureRequest: () => {} };
     const factory = new Function(
-      "imported", "Store", "anchorImpOnCard", "toast", "newId",
+      "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
       extractFn(src, "impManualCapture") + "\nreturn impManualCapture;"
     );
-    const impManualCapture = factory(imported, Store, (card) => { anchored = card; }, () => {}, () => "x");
+    const impManualCapture = factory(imported, Store, (card) => { anchored = card; }, () => {}, () => "x", () => {});
     const before = Date.now();
     impManualCapture(0);
     assert.strictEqual(anchored, it, "anchorImpOnCard must be called with the card");
@@ -100,10 +109,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     const imported = [it];
     const Store = { putCards: () => {}, setCaptureRequest: () => {} };
     const factory = new Function(
-      "imported", "Store", "anchorImpOnCard", "toast", "newId",
+      "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
       extractFn(src, "impManualCapture") + "\nreturn impManualCapture;"
     );
-    const impManualCapture = factory(imported, Store, () => {}, () => {}, () => "x");
+    const impManualCapture = factory(imported, Store, () => {}, () => {}, () => "x", () => {});
     impManualCapture(0);
     assert.strictEqual(it.lastResult, "ok");
   });
@@ -113,10 +122,10 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     let toasted = "";
     const Store = { putCards: () => {}, setCaptureRequest: () => {} };
     const factory = new Function(
-      "imported", "Store", "anchorImpOnCard", "toast", "newId",
+      "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
       extractFn(src, "impManualCapture") + "\nreturn impManualCapture;"
     );
-    const impManualCapture = factory(imported, Store, () => {}, (msg) => { toasted = msg; }, () => "x");
+    const impManualCapture = factory(imported, Store, () => {}, (msg) => { toasted = msg; }, () => "x", () => {});
     impManualCapture(0);
     assert.ok(toasted.toLowerCase().indexOf("box") >= 0, "toast should mention drawing a box");
   });

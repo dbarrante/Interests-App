@@ -5236,10 +5236,13 @@ function impRefresh(idx){
   if(!refreshTabsViewIfShowing()) renderImportedKeepFocus();
   toast("Recapturing — the extension opens the page briefly, captures it, and closes it (up to ~30s). Keep Chrome open" + (isFb ? " and stay logged into Facebook." : "."), 7000);
 }
-// Manual point-to-point capture for an existing card: arms a "manual"
-// capture request and lets the extension take it from there (it opens its
-// OWN tab — see extension/background.js's startManualCapture — so this
-// deliberately does NOT call openLink itself, unlike impOpen/impRefresh).
+// Manual point-to-point capture for an existing card: opens the article the
+// same instant, reliable way impOpen does (openLink — proven reliable, unlike
+// waiting on the extension's own chrome.tabs.create, see
+// extension/background.js's startManualCapture/findAppOpenedTab), and arms a
+// "manual" capture request so the extension can find that same tab and
+// inject the draw-a-box overlay into it (up to ~30s, the extension's poll
+// interval — that part still can't be instant).
 function impManualCapture(idx){
   const it=imported[idx]; if(!it||!it.url) return;
   if(!it.id){ it.id=newId(); Store.putCards(imported); }
@@ -5247,7 +5250,8 @@ function impManualCapture(idx){
   it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending";
   Store.putCards(imported);
   Store.setCaptureRequest({url:it.url, id:it.id, manual:true});
-  toast("Opening the article — this can take up to ~30s. Keep Chrome open. Once it opens, draw a box around the image you want, then click Use this.", 7000);
+  openLink(it.url);
+  toast("Opening the article now — once it loads, wait up to ~30s for the capture overlay, then draw a box around the image you want and click Use this.", 7000);
 }
 async function enrichOnOpen(it, idx){
   try{
