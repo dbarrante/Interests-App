@@ -32,6 +32,8 @@ module.exports = {
     "airefreshUpdateBtn",
     "renderHealthAiRefresh",
     "runAiRefreshBatch",
+    "renderHealthHashtags",
+    "runHashtagLibraryScan",
     "openConfigBackupExport",
     "closeConfigBackupModal",
     "submitConfigBackupExport",

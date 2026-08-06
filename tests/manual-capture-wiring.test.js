@@ -42,10 +42,33 @@ t("regionSelectCrop reports failure (not silent success) when no session exists 
 t("regionSelectFinalize delivers with force:true and the session's id (empty string for standalone)", () => {
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
   assert.ok(i >= 0);
-  const body = bg.slice(i, i + 700);
-  assert.ok(/deliverToApp\(\{ url: session\.url, id: session\.id \|\| "", screenshot: session\.dataUrl, force: true/.test(body),
-    "must NOT set clip:true -- that would always route to a new Saved item and never match an existing Imported card by id/url");
-  assert.ok(!/clip:\s*true/.test(body), "regionSelectFinalize's delivery must never set clip:true");
+  const body = bg.slice(i, i + 900);
+  assert.ok(/deliverToApp\(\{/.test(body) && /url: session\.url, id: session\.id \|\| ""/.test(body));
+  assert.ok(/screenshot: session\.dataUrl/.test(body));
+  assert.ok(/force: true/.test(body));
+  assert.ok(!/clip:\s*true/.test(body), "regionSelectFinalize's delivery must never set clip:true -- that would always route to a new Saved item and never match an existing Imported card by id/url");
+});
+t("regionSelectFinalize's delivery carries the tab's real page title (not the domain-only addClip fallback)", () => {
+  const i = bg.indexOf('msg.action === "regionSelectFinalize"');
+  const body = bg.slice(i, i + 1300);
+  assert.ok(/title: \(sender\.tab && sender\.tab\.title\) \|\| ""/.test(body),
+    "a standalone capture of a brand-new URL must not permanently name the card just its bare domain");
+});
+t("regionSelectFinalize only closes the tab it owns (app-triggered), never the user's own standalone browsing tab", () => {
+  const i = bg.indexOf('msg.action === "regionSelectFinalize"');
+  const body = bg.slice(i, i + 1300);
+  assert.ok(/if \(session\.owned\) \{ try \{ await chrome\.tabs\.remove\(tab\.id\); \} catch \(e\) \{\} \}/.test(body),
+    "chrome.tabs.remove must be gated on session.owned so a standalone capture never closes the user's own tab");
+});
+t("only startManualCapture's app-triggered session sets owned:true; the standalone context-menu session does not", () => {
+  const startIdx = bg.indexOf("async function startManualCapture(req) {");
+  const startBody = bg.slice(startIdx, startIdx + 1200);
+  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url, owned: true \}\)/.test(startBody));
+
+  const ctxIdx = bg.indexOf('info.menuItemId === "pointToPointCapture"');
+  const ctxBody = bg.slice(ctxIdx, ctxIdx + 400);
+  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: "", url: tab\.url \|\| "" \}\)/.test(ctxBody),
+    "the standalone context-menu session must NOT set owned:true");
 });
 t("regionSelectCancel only notifies the app for an app-triggered session (has an id), not a standalone one", () => {
   const i = bg.indexOf('msg.action === "regionSelectCancel"');
@@ -54,7 +77,25 @@ t("regionSelectCancel only notifies the app for an app-triggered session (has an
   assert.ok(/if \(session\.id\) await deliverToApp/.test(body));
 });
 t("chrome.tabs.onRemoved clears a leaked manual-capture session if the user closes the tab directly", () => {
-  assert.ok(/chrome\.tabs\.onRemoved\.addListener\(\(tabId\) => \{ clearManualCaptureSession\(tabId\)/.test(bg));
+  const i = bg.indexOf("chrome.tabs.onRemoved.addListener((tabId) => {");
+  assert.ok(i >= 0);
+  const body = bg.slice(i, i + 500);
+  assert.ok(/getManualCaptureSession\(tabId\)/.test(body));
+  assert.ok(/clearManualCaptureSession\(tabId\)/.test(body));
+});
+t("chrome.tabs.onRemoved reports an app-triggered attempt as failed (id truthy) so the card doesn't show 'pending' forever, but stays silent for a standalone session (id falsy)", () => {
+  const i = bg.indexOf("chrome.tabs.onRemoved.addListener((tabId) => {");
+  const body = bg.slice(i, i + 500);
+  assert.ok(/if \(session && session\.id\) \{/.test(body),
+    "must only report to the app when the session is app-triggered (truthy id) -- standalone sessions (id:\"\") have nothing to report");
+  assert.ok(/deliverToApp\(\{ url: session\.url, id: session\.id, attempt: true, ok: false, ts: Date\.now\(\) \}\)/.test(body));
+});
+t("chrome.tabs.onRemoved reads the session BEFORE clearing it (clearManualCaptureSession is idempotent, so this is a safe no-op after a normal Finalize/Cancel already cleared it)", () => {
+  const i = bg.indexOf("chrome.tabs.onRemoved.addListener((tabId) => {");
+  const body = bg.slice(i, i + 500);
+  const getIdx = body.indexOf("getManualCaptureSession(tabId)");
+  const clearIdx = body.indexOf("clearManualCaptureSession(tabId)");
+  assert.ok(getIdx >= 0 && clearIdx >= 0 && getIdx < clearIdx, "the read must happen before the clear");
 });
 t("startManualCapture opens its own tab (does not try to find an existing one) and has no timeout on the overlay wait", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");

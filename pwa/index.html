@@ -6992,7 +6992,7 @@ async function runHashtagLibraryScan(){
         if(added && added.length) tagged++;
       });
       done += chunk.length;
-      Store.putCards(imported); Store.putSaved(saved); persistAll();
+      await Store.putCards(imported); await Store.putSaved(saved); persistAll();
       toast(`Hashtag scan: ${done}/${all.length}…`);
     }
     toast(`Hashtag scan done — added tags to ${tagged} of ${all.length} card${all.length===1?"":"s"}`);

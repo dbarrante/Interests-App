@@ -36,11 +36,35 @@ t("Escape sends regionSelectCancel and cleans up", () => {
   assert.ok(/e\.key !== "Escape"/.test(src));
   assert.ok(/action: "regionSelectCancel"/.test(src));
 });
-t("cleanup resets the re-entrancy flag and removes the overlay", () => {
+t("cleanup resets the re-entrancy flag and removes the shadow-root host (takes overlay/box/msg/preview with it)", () => {
   const start = src.indexOf("function cleanup() {");
-  const body = src.slice(start, start + 200);
+  const body = src.slice(start, start + 300);
   assert.ok(/window\.__iaRegionSelectActive = false;/.test(body));
-  assert.ok(/overlay\.remove\(\);/.test(body));
+  assert.ok(/host\.remove\(\);/.test(body), "cleanup must remove the shadow-root host, not just detach the overlay from it");
+});
+t("overlay is mounted in a closed shadow root, not the page's light DOM (page script can't reach in/exfiltrate the preview)", () => {
+  assert.ok(/attachShadow\(\s*\{\s*mode:\s*"closed"\s*\}\s*\)/.test(src), "must use a CLOSED shadow root");
+  assert.ok(/document\.documentElement\.appendChild\(host\)/.test(src), "the shadow host itself is what's appended to the page");
+  assert.ok(!/document\.documentElement\.appendChild\(overlay\)/.test(src), "the overlay must no longer be appended directly to the page's light DOM");
+});
+t("in-overlay element lookups use the shadow root, not document", () => {
+  assert.ok(/root\.getElementById\("__ia_region_select_msg"\)/.test(src));
+  assert.ok(/root\.getElementById\("__ia_region_select_preview"\)/.test(src));
+  assert.ok(!/document\.getElementById\("__ia_region_select_msg"\)/.test(src), "must look up the message element via the shadow root, not document");
+  assert.ok(!/document\.getElementById\("__ia_region_select_preview"\)/.test(src), "must look up the preview element via the shadow root, not document");
+});
+t("Use this / Redo click handlers and the Escape keydown handler all reject untrusted (script-synthesized) events", () => {
+  const useThisQsIdx = src.indexOf('querySelector("#__ia_use_this")');
+  const useThisBlock = src.slice(useThisQsIdx, useThisQsIdx + 600);
+  assert.ok(/if \(!e\.isTrusted\) return;/.test(useThisBlock), "Use this handler must gate on e.isTrusted");
+
+  const redoQsIdx = src.indexOf('querySelector("#__ia_redo")');
+  const redoBlock = src.slice(redoQsIdx, redoQsIdx + 400);
+  assert.ok(/if \(!e\.isTrusted\) return;/.test(redoBlock), "Redo handler must gate on e.isTrusted");
+
+  const keyDownStart = src.indexOf("function onKeyDown(e) {");
+  const keyDownBody = src.slice(keyDownStart, keyDownStart + 200);
+  assert.ok(/if \(!e\.isTrusted\) return;/.test(keyDownBody), "Escape keydown handler must gate on e.isTrusted");
 });
 t("catches mouseup events outside the overlay (document-level listener)", () => {
   assert.ok(/document\.addEventListener\("mouseup", onDocumentMouseUp\)/.test(src), "must add document-level mouseup listener");

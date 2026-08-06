@@ -1487,7 +1487,11 @@ async function startManualCapture(req) {
   catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
   try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
   await waitTabComplete(tab.id, 30000);
-  await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url });
+  // owned:true — THIS flow opened the tab solely for this capture, so
+  // regionSelectFinalize may close it afterward. The standalone context-menu
+  // flow (pointToPointCapture below) captures on a tab the user was already
+  // reading and must NOT set this, so its tab is never auto-closed.
+  await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url, owned: true });
   try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
   catch (e) {
     await clearManualCaptureSession(tab.id);
@@ -1715,8 +1719,25 @@ async function clearManualCaptureSession(tabId) {
   try { await chrome.storage.session.remove(manualCaptureKey(tabId)); } catch (e) {}
 }
 // If the user closes the capture tab directly (not via regionSelectFinalize's
-// own chrome.tabs.remove), clear any leaked session so nothing lingers.
-chrome.tabs.onRemoved.addListener((tabId) => { clearManualCaptureSession(tabId).catch(() => {}); });
+// own chrome.tabs.remove nor regionSelectCancel), clear any leaked session so
+// nothing lingers. For an APP-TRIGGERED session (truthy session.id) the app
+// already stamped the card's lastResult = "pending" before arming the
+// request — if nothing ever reports the attempt as over, that card shows
+// "pending" forever. Report it the same way regionSelectCancel's handler
+// does, mirroring its "only report when session.id is truthy" rule
+// (standalone sessions have id:"" — nothing to report there). Read the
+// session BEFORE clearing; clearManualCaptureSession is idempotent, so this
+// is a safe no-op when onRemoved fires after a normal Finalize/Cancel already
+// cleared it (the read just finds nothing).
+chrome.tabs.onRemoved.addListener((tabId) => {
+  (async () => {
+    const session = await getManualCaptureSession(tabId);
+    if (session && session.id) {
+      await deliverToApp({ url: session.url, id: session.id, attempt: true, ok: false, ts: Date.now() });
+    }
+    await clearManualCaptureSession(tabId);
+  })().catch(() => {});
+});
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "clipSocialPost" && msg.data) {
@@ -1777,9 +1798,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const session = tab && await getManualCaptureSession(tab.id);
       if (!session || !session.dataUrl) { sendResponse({ ok: false, error: "no capture to finalize" }); return; }
       await clearManualCaptureSession(tab.id);
-      await deliverToApp({ url: session.url, id: session.id || "", screenshot: session.dataUrl, force: true, ts: Date.now() });
+      // title: sender.tab already carries the page's <title> — no content-script
+      // scrape needed. Without it, a standalone capture of a brand-new URL (no
+      // matching card) falls through addClip's fallback to the bare domain.
+      await deliverToApp({
+        url: session.url, id: session.id || "", screenshot: session.dataUrl,
+        title: (sender.tab && sender.tab.title) || "", force: true, ts: Date.now(),
+      });
       await setStatus("Manual capture saved ✓", true);
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      // Only close a tab THIS feature opened for the capture (session.owned, set
+      // only by startManualCapture's app-triggered flow). The standalone
+      // context-menu flow captures on the user's own already-open tab and must
+      // not close it out from under them.
+      if (session.owned) { try { await chrome.tabs.remove(tab.id); } catch (e) {} }
       sendResponse({ ok: true });
     })();
     return true;
