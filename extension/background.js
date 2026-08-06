@@ -1669,25 +1669,26 @@ async function sweepBatchTabs() {
 // eviction, which is exactly the timeout semantics this capture must not have).
 // Sessions are cleared only by an explicit finalize/cancel/onRemoved — never
 // by age.
-const MANUAL_CAPTURE_KEY = "ia_manual_capture_sessions";
-async function getManualCaptureSessions() {
-  try { const s = await chrome.storage.session.get(MANUAL_CAPTURE_KEY); return s[MANUAL_CAPTURE_KEY] || {}; }
-  catch (e) { return {}; }
-}
+//
+// One storage key PER TAB (ia_manual_capture_session_<tabId>), not one shared
+// key holding a tabId->session map. A shared whole-map read-modify-write (get
+// the map, mutate one entry, set the map back) is not atomic across the
+// awaits it contains — if two tabs' capture sessions are live around the same
+// time (app-triggered capture on tab A while the user separately starts a
+// standalone capture on tab B) and their get()/set() pairs interleave, the
+// second set() to land can write back a stale snapshot of the map and
+// silently erase the other tab's entry. A per-tab key makes that impossible:
+// different tabs never touch the same key, so there's nothing to race.
+function manualCaptureKey(tabId) { return "ia_manual_capture_session_" + tabId; }
 async function getManualCaptureSession(tabId) {
-  const all = await getManualCaptureSessions();
-  return all[tabId];
+  try { const s = await chrome.storage.session.get(manualCaptureKey(tabId)); return s[manualCaptureKey(tabId)]; }
+  catch (e) { return undefined; }
 }
 async function setManualCaptureSession(tabId, session) {
-  const all = await getManualCaptureSessions();
-  all[tabId] = session;
-  try { await chrome.storage.session.set({ [MANUAL_CAPTURE_KEY]: all }); } catch (e) {}
+  try { await chrome.storage.session.set({ [manualCaptureKey(tabId)]: session }); } catch (e) {}
 }
 async function clearManualCaptureSession(tabId) {
-  const all = await getManualCaptureSessions();
-  if (!(tabId in all)) return;
-  delete all[tabId];
-  try { await chrome.storage.session.set({ [MANUAL_CAPTURE_KEY]: all }); } catch (e) {}
+  try { await chrome.storage.session.remove(manualCaptureKey(tabId)); } catch (e) {}
 }
 // If the user closes the capture tab directly (not via regionSelectFinalize's
 // own chrome.tabs.remove), clear any leaked session so nothing lingers.

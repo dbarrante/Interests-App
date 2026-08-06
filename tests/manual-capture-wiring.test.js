@@ -10,10 +10,21 @@ t("manual capture sessions are persisted via chrome.storage.session (not a plain
   // is the COMMON case here (unbounded, human-paced wait) -- must be backed
   // by storage that survives suspension, same mechanism as B12's
   // persistPending/clearPendingPersist.
-  assert.ok(/const MANUAL_CAPTURE_KEY = /.test(bg));
-  assert.ok(/chrome\.storage\.session\.get\(MANUAL_CAPTURE_KEY\)/.test(bg));
-  assert.ok(/chrome\.storage\.session\.set\(\{ \[MANUAL_CAPTURE_KEY\]: all \}\)/.test(bg));
+  assert.ok(/function manualCaptureKey\(tabId\)/.test(bg));
+  assert.ok(/chrome\.storage\.session\.get\(manualCaptureKey\(tabId\)\)/.test(bg));
+  assert.ok(/chrome\.storage\.session\.set\(\{ \[manualCaptureKey\(tabId\)\]: session \}\)/.test(bg));
   assert.ok(!/let manualCaptureSessions = \{\};/.test(bg), "must not fall back to a plain in-memory map");
+});
+t("each tab gets its own storage key, not a shared map read-modify-write (avoids a cross-tab overwrite race)", () => {
+  // A single shared key holding a tabId->session map would need get-mutate-set
+  // across an await boundary; two tabs' sessions overlapping in time could
+  // interleave those awaits and the second set() would silently clobber the
+  // first tab's entry with a stale snapshot. A per-tab key (ia_manual_capture_
+  // session_<tabId>) makes that impossible -- different tabs never share a key.
+  assert.ok(/"ia_manual_capture_session_" \+ tabId/.test(bg));
+  assert.ok(!/getManualCaptureSessions\s*\(/.test(bg), "must not reintroduce a shared whole-map getter");
+  assert.ok(/chrome\.storage\.session\.remove\(manualCaptureKey\(tabId\)\)/.test(bg),
+    "clearManualCaptureSession must remove just that tab's own key, not read-modify-write a shared map");
 });
 t("regionSelectCrop reuses the existing cropScreenshot primitive, keyed by sender.tab", () => {
   const i = bg.indexOf('msg.action === "regionSelectCrop"');
