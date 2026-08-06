@@ -5,15 +5,28 @@ const bg = fs.readFileSync(path.join(__dirname, "..", "extension", "background.j
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("  ok  " + name); } catch (e) { fail++; console.log("  FAIL " + name + " — " + (e && e.message)); } }
 
-t("manualCaptureSessions map is declared", () => {
-  assert.ok(/let manualCaptureSessions = \{\};/.test(bg));
+t("manual capture sessions are persisted via chrome.storage.session (not a plain in-memory object)", () => {
+  // A plain JS object would be wiped by MV3 service-worker suspension, which
+  // is the COMMON case here (unbounded, human-paced wait) -- must be backed
+  // by storage that survives suspension, same mechanism as B12's
+  // persistPending/clearPendingPersist.
+  assert.ok(/const MANUAL_CAPTURE_KEY = /.test(bg));
+  assert.ok(/chrome\.storage\.session\.get\(MANUAL_CAPTURE_KEY\)/.test(bg));
+  assert.ok(/chrome\.storage\.session\.set\(\{ \[MANUAL_CAPTURE_KEY\]: all \}\)/.test(bg));
+  assert.ok(!/let manualCaptureSessions = \{\};/.test(bg), "must not fall back to a plain in-memory map");
 });
 t("regionSelectCrop reuses the existing cropScreenshot primitive, keyed by sender.tab", () => {
   const i = bg.indexOf('msg.action === "regionSelectCrop"');
   assert.ok(i >= 0);
-  const body = bg.slice(i, i + 700);
+  const body = bg.slice(i, i + 900);
   assert.ok(/await cropScreenshot\(tab, msg\.rect\)/.test(body));
   assert.ok(/const tab = sender\.tab;/.test(body));
+});
+t("regionSelectCrop reports failure (not silent success) when no session exists for the tab", () => {
+  const i = bg.indexOf('msg.action === "regionSelectCrop"');
+  const body = bg.slice(i, i + 900);
+  assert.ok(/if \(!session\) \{ sendResponse\(\{ ok: false, error: "no capture session" \}\); return; \}/.test(body),
+    "a missing session (e.g. lost to SW suspension) must respond ok:false, never a silent ok:true");
 });
 t("regionSelectFinalize delivers with force:true and the session's id (empty string for standalone)", () => {
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
@@ -29,6 +42,9 @@ t("regionSelectCancel only notifies the app for an app-triggered session (has an
   const body = bg.slice(i, i + 700);
   assert.ok(/if \(session\.id\) await deliverToApp/.test(body));
 });
+t("chrome.tabs.onRemoved clears a leaked manual-capture session if the user closes the tab directly", () => {
+  assert.ok(/chrome\.tabs\.onRemoved\.addListener\(\(tabId\) => \{ clearManualCaptureSession\(tabId\)/.test(bg));
+});
 t("startManualCapture opens its own tab (does not try to find an existing one) and has no timeout on the overlay wait", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
   assert.ok(i >= 0);
@@ -39,7 +55,7 @@ t("startManualCapture opens its own tab (does not try to find an existing one) a
 t("startManualCapture tracks the session BEFORE injecting the overlay (no race where a fast user beats the session write)", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
   const body = bg.slice(i, i + 1200);
-  const sessionIdx = body.indexOf("manualCaptureSessions[tab.id] =");
+  const sessionIdx = body.indexOf("setManualCaptureSession(tab.id,");
   const injectIdx = body.indexOf("chrome.scripting.executeScript");
   assert.ok(sessionIdx >= 0 && injectIdx >= 0 && sessionIdx < injectIdx);
 });

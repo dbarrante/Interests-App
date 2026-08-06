@@ -1463,10 +1463,10 @@ async function startManualCapture(req) {
   catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
   try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
   await waitTabComplete(tab.id, 30000);
-  manualCaptureSessions[tab.id] = { id: req.id || "", url: req.url };
+  await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url });
   try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] }); }
   catch (e) {
-    delete manualCaptureSessions[tab.id];
+    await clearManualCaptureSession(tab.id);
     log("startManualCapture: overlay injection failed: " + e.message);
     await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() });
   }
@@ -1654,7 +1654,44 @@ async function sweepBatchTabs() {
 // no existing card) session — routeCapture's existing id/url-match logic
 // decides whether that lands on an existing Imported card or a new Saved
 // entry (see routeCapture's "manual capture, no card -> Saved" rule).
-let manualCaptureSessions = {};
+//
+// Backed by chrome.storage.session (NOT a plain in-memory object): this
+// capture is deliberately unbounded and human-paced (see startManualCapture's
+// comment on skipping B12's timeout), so the user pausing to look at the
+// article before selecting a region past the ~30s MV3 service-worker
+// suspension window is the COMMON case, not an edge case. A plain object
+// would be wiped by that suspension and silently lose the session — the user
+// would see a normal crop preview (regionSelectCrop would keep no-oping
+// "successfully") and only discover the loss when regionSelectFinalize
+// couldn't find anything to finalize. chrome.storage.session survives SW
+// suspension (same mechanism B12's persistPending/clearPendingPersist use —
+// STORAGE pattern only; deliberately NOT B12's PENDING_MAX_AGE_MS staleness
+// eviction, which is exactly the timeout semantics this capture must not have).
+// Sessions are cleared only by an explicit finalize/cancel/onRemoved — never
+// by age.
+const MANUAL_CAPTURE_KEY = "ia_manual_capture_sessions";
+async function getManualCaptureSessions() {
+  try { const s = await chrome.storage.session.get(MANUAL_CAPTURE_KEY); return s[MANUAL_CAPTURE_KEY] || {}; }
+  catch (e) { return {}; }
+}
+async function getManualCaptureSession(tabId) {
+  const all = await getManualCaptureSessions();
+  return all[tabId];
+}
+async function setManualCaptureSession(tabId, session) {
+  const all = await getManualCaptureSessions();
+  all[tabId] = session;
+  try { await chrome.storage.session.set({ [MANUAL_CAPTURE_KEY]: all }); } catch (e) {}
+}
+async function clearManualCaptureSession(tabId) {
+  const all = await getManualCaptureSessions();
+  if (!(tabId in all)) return;
+  delete all[tabId];
+  try { await chrome.storage.session.set({ [MANUAL_CAPTURE_KEY]: all }); } catch (e) {}
+}
+// If the user closes the capture tab directly (not via regionSelectFinalize's
+// own chrome.tabs.remove), clear any leaked session so nothing lingers.
+chrome.tabs.onRemoved.addListener((tabId) => { clearManualCaptureSession(tabId).catch(() => {}); });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "clipSocialPost" && msg.data) {
@@ -1695,8 +1732,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const dataUrl = await cropScreenshot(tab, msg.rect);
         if (!dataUrl) { sendResponse({ ok: false, error: "capture failed" }); return; }
-        const session = manualCaptureSessions[tab.id];
-        if (session) session.dataUrl = dataUrl;
+        const session = await getManualCaptureSession(tab.id);
+        // No session (e.g. the SW was suspended and lost it, or it was never
+        // started) must be a reported failure, not a silent {ok:true} — a
+        // false "success" here would show the user a normal preview for a
+        // capture that regionSelectFinalize can never actually deliver.
+        if (!session) { sendResponse({ ok: false, error: "no capture session" }); return; }
+        session.dataUrl = dataUrl;
+        await setManualCaptureSession(tab.id, session);
         sendResponse({ ok: true, dataUrl });
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
     })();
@@ -1706,9 +1749,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "regionSelectFinalize") {
     (async () => {
       const tab = sender.tab;
-      const session = tab && manualCaptureSessions[tab.id];
+      const session = tab && await getManualCaptureSession(tab.id);
       if (!session || !session.dataUrl) { sendResponse({ ok: false, error: "no capture to finalize" }); return; }
-      delete manualCaptureSessions[tab.id];
+      await clearManualCaptureSession(tab.id);
       await deliverToApp({ url: session.url, id: session.id || "", screenshot: session.dataUrl, force: true, ts: Date.now() });
       await setStatus("Manual capture saved ✓", true);
       try { await chrome.tabs.remove(tab.id); } catch (e) {}
@@ -1720,9 +1763,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "regionSelectCancel") {
     (async () => {
       const tab = sender.tab;
-      const session = tab && manualCaptureSessions[tab.id];
+      const session = tab && await getManualCaptureSession(tab.id);
       if (session) {
-        delete manualCaptureSessions[tab.id];
+        await clearManualCaptureSession(tab.id);
         // App-triggered (session.id set): tell the app the attempt produced
         // nothing, so the card's "pending" state clears instead of showing
         // pending forever. Standalone (no id): nothing to clear, no-op.
