@@ -63,6 +63,7 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
   // --- structural: every user title-write path stamps titleSet -----------------
   const writePaths = [
     ["applyTitleSuggestions", /card\.title\s*=\s*val\.slice\(0,250\);\s*card\.titleSet\s*=\s*true;/],
+    ["commitOneTitleSuggestion", /card\.title\s*=\s*val\.slice\(0,250\);\s*card\.titleSet\s*=\s*true;/],
     ["cardEditSave", /it\.title\s*=\s*title\.slice\(0,250\);\s*it\.titleSet\s*=\s*true;/],
     ["impEditSave", /if\(title\)\{[\s\S]*?it\.title\s*=\s*title;\s*it\.titleSet\s*=\s*true;[\s\S]*?\}/],
   ];
