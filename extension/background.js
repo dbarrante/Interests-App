@@ -1486,6 +1486,15 @@ async function startManualCapture(req) {
   try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
   catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
   try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch (e) {}
+  // active:true on tabs.create only makes the tab active WITHIN its own browser
+  // window -- it does not bring that window in front of other windows (e.g. the
+  // Electron app the user is looking at when they click the card-face icon).
+  // Without this, the tab can open genuinely invisibly behind other windows —
+  // reported 2026-08-06: "the app says it is opening the page, but it doesn't."
+  // Every other capture path in this file that needs a tab the user (or FB's
+  // lazy-loader) can actually see does this same focus call — this one needs it
+  // even more, since a human has to see and interact with the overlay.
+  try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
   await waitTabComplete(tab.id, 30000);
   // owned:true — THIS flow opened the tab solely for this capture, so
   // regionSelectFinalize may close it afterward. The standalone context-menu

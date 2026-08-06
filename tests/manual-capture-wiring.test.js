@@ -72,7 +72,7 @@ t("regionSelectFinalize only closes the tab it owns (app-triggered), never the u
 });
 t("only startManualCapture's app-triggered session sets owned:true; the standalone context-menu session does not", () => {
   const startIdx = bg.indexOf("async function startManualCapture(req) {");
-  const startBody = bg.slice(startIdx, startIdx + 1200);
+  const startBody = bg.slice(startIdx, startIdx + 1600);
   assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url, owned: true \}\)/.test(startBody));
 
   const ctxIdx = bg.indexOf('info.menuItemId === "pointToPointCapture"');
@@ -110,13 +110,13 @@ t("chrome.tabs.onRemoved reads the session BEFORE clearing it (clearManualCaptur
 t("startManualCapture opens its own tab (does not try to find an existing one) and has no timeout on the overlay wait", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
   assert.ok(i >= 0);
-  const body = bg.slice(i, i + 1200);
+  const body = bg.slice(i, i + 1600);
   assert.ok(/chrome\.tabs\.create\(\{ url: req\.url, active: true \}\)/.test(body));
   assert.ok(!/setTimeout.*regionSelect/i.test(body), "must not impose a timeout on the human-paced selection step");
 });
 t("startManualCapture tracks the session BEFORE injecting the overlay (no race where a fast user beats the session write)", () => {
   const i = bg.indexOf("async function startManualCapture(req) {");
-  const body = bg.slice(i, i + 1200);
+  const body = bg.slice(i, i + 1700);
   const sessionIdx = body.indexOf("setManualCaptureSession(tab.id,");
   const injectIdx = body.indexOf("chrome.scripting.executeScript");
   assert.ok(sessionIdx >= 0 && injectIdx >= 0 && sessionIdx < injectIdx);
