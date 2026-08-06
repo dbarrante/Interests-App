@@ -1365,6 +1365,7 @@ function settlePending(tabId, why) {
 // to find + measure the MAIN post, then build a durable card image from it (the
 // post's own photo, or a crop of the post area). Delivered tagged with the card
 // id so drainCaptures updates the existing imported card (not a new clip).
+const AUTO_CAPTURE_MSG_TIMEOUT_MS = 22000;   // above the in-page loop's own MAX_WAIT (18000ms, normal posts) + margin
 async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   const tabId = tab.id, tabUrl = tab.url || cardUrl;
   // give the in-page content script time to load + the post time to render before
@@ -1384,8 +1385,23 @@ async function captureFbPost(tab, cardUrl, delayMs, cardId, suppressFail) {
   let info = null;
   for (let attempt = 0; attempt < 2 && !(info && (info.ok || info.dead)); attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 1800));   // content script not ready yet — wait & retry once
-    try { info = await chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }); }
+    let raceTimer;
+    try {
+      // Bounded by a race so a content script that never calls sendResponse (tab killed
+      // mid-capture, extension context invalidated by a navigation, or any other way the
+      // in-page loop's own exception-safety net could still be bypassed) can never hang
+      // this forever — that left the status stuck at "Capturing Facebook post…" and
+      // fbRenderBusy permanently true (every later capture silently no-oping as "busy")
+      // (reported 2026-08-05). AUTO_CAPTURE_MSG_TIMEOUT_MS sits above the in-page loop's
+      // own worst-case MAX_WAIT (18000ms, now wall-clock — see capture-core.js) with
+      // margin for its final response's setTimeout.
+      info = await Promise.race([
+        chrome.tabs.sendMessage(tabId, { action: "autoCaptureFB" }),
+        new Promise((_, rej) => { raceTimer = setTimeout(() => rej(new Error("autoCaptureFB response timeout")), AUTO_CAPTURE_MSG_TIMEOUT_MS); }),
+      ]);
+    }
     catch (e) { log("autoCaptureFB message failed (try " + (attempt + 1) + "): " + e.message); info = null; }
+    finally { clearTimeout(raceTimer); }   // don't leave the losing timer armed to fire into a settled race (review 2026-08-05)
   }
   // Deleted / restricted post ("This content isn't available") → REMOVE the card
   // (drainCaptures handles cap.dead); the batch then moves on to the next.

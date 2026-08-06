@@ -46,7 +46,7 @@ t("renderCaptureFb caps retries at 1 for FB_NO_RETRY_RE URLs, RENDER_MAX_TRIES o
 t("capture-core.js shortens the in-page wait for video pages (no post card can ever appear)", () => {
   const start = core.indexOf('if (!msg || msg.action !== "autoCaptureFB") return;');
   assert.ok(start >= 0, "autoCaptureFB handler not found");
-  const body = core.slice(start, start + 1400);
+  const body = core.slice(start, start + 2200);
   assert.ok(/const isVideoPage = \/\^\\\/\(watch\|reel\)/.test(body), "isVideoPage detection must be present");
   assert.ok(/const MAX_WAIT = isVideoPage \? \d+ : 18000;/.test(body), "MAX_WAIT must differ on video pages, stay 18000ms elsewhere");
 });
@@ -61,13 +61,16 @@ t("capture-core.js shortens the in-page wait for video pages (no post card can e
 // it can't drift from the code) and asserts a real margin exists between the
 // isUnavailable gate and MAX_WAIT — not just that isUnavailable() is textually
 // present (which was true even when the margin was too thin to matter).
+// Note: a later same-day fix converted the loop's gates from a tick counter
+// ("waited") to real elapsed time ("elapsed()") — see tests/fb-capture-hang-fix.test.js
+// for that regression — so this test now matches elapsed(), not waited.
 t("video-page MAX_WAIT leaves deleted-post detection a real margin after its gate opens", () => {
   const mwMatch = core.match(/const MAX_WAIT = isVideoPage \? (\d+) : 18000;/);
   assert.ok(mwMatch, "MAX_WAIT ternary not found");
   const videoMaxWait = Number(mwMatch[1]);
 
-  const gateMatch = core.match(/waited >= (\d+) && isUnavailable\(post\)/);
-  assert.ok(gateMatch, "isUnavailable gate (waited >= N && isUnavailable(post)) not found");
+  const gateMatch = core.match(/elapsed\(\) >= (\d+) && isUnavailable\(post\)/);
+  assert.ok(gateMatch, "isUnavailable gate (elapsed() >= N && isUnavailable(post)) not found");
   const deadGate = Number(gateMatch[1]);
 
   const margin = videoMaxWait - deadGate;

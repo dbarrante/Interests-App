@@ -244,7 +244,15 @@
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || msg.action !== "autoCaptureFB") return;
       try { window.scrollTo(0, 0); } catch (e) {}   // bring the post into view so FB lazy-loads its photo
-      let waited = 0;
+      // Wall-clock, not a tick counter: a backgrounded/hidden tab gets Chromium's
+      // ~1/s timer clamp, so a naive "waited += 250 per tick" counter drifts from
+      // real elapsed time under throttling — a loop that's actually taking ~75s
+      // real time still reads as "waited=18000" after only 72 (slow) ticks, so it
+      // never actually respects the real MAX_WAIT budget and the caller's own
+      // AUTO_CAPTURE_MSG_TIMEOUT_MS (background.js) can time it out first even
+      // though the loop was healthy, not stuck (caught in review 2026-08-05).
+      const t0 = Date.now();
+      const elapsed = () => Date.now() - t0;
       // /watch/ and /reel/ are FB's dedicated video-player layout — there is no
       // [role="article"] post card there (findMainPost() always returns null), so
       // no lazy-loading post photo will EVER appear no matter how long we wait.
@@ -255,14 +263,15 @@
       // available" interstitial that hasn't painted yet, silently falling through to
       // captureFbByOg — which has no deletion check — instead of removing the dead
       // card. 8000ms keeps most of the time savings while leaving a real margin
-      // after the isUnavailable gate below (waited >= 1200) for the interstitial to
-      // actually render.
+      // after the isUnavailable gate below (elapsed() >= 1200) for the interstitial
+      // to actually render.
       const isVideoPage = /^\/(watch|reel)(\/|$)/.test(location.pathname || "");
       const MAX_WAIT = isVideoPage ? 8000 : 18000;   // wait up to 18s for the REAL photo (a cold post shows a spinner first; manual Save works because you wait)
       (function loop() {
+       try {
         // FB sent us to the home feed (post gone) and there's no post dialog → never
         // grab a feed post; give up cleanly.
-        if (!dialogPostPresent() && onHomeFeed() && waited >= 3000) {
+        if (!dialogPostPresent() && onHomeFeed() && elapsed() >= 3000) {
           console.log("[Interests] autoCaptureFB | home feed, no post dialog — skipping");
           try { sendResponse({ ok: true, image: "", rect: null, title: "", author: "", text: "", permalink: location.href }); } catch (e) {}
           return;
@@ -270,7 +279,7 @@
         let post = findMainPost();
         // Deleted / restricted post → tell the worker to REMOVE the card (and the
         // batch moves on). Wait a beat so the interstitial has actually rendered.
-        if (waited >= 1200 && isUnavailable(post)) {
+        if (elapsed() >= 1200 && isUnavailable(post)) {
           console.log("[Interests] autoCaptureFB | content unavailable/deleted — flagging dead for removal");
           try { sendResponse({ ok: false, dead: true, permalink: location.href }); } catch (e) {}
           return;
@@ -297,7 +306,7 @@
               });
             } catch (e) { try { sendResponse({ ok: false, error: e.message }); } catch (e2) {} }
           }, 350);
-        } else if (waited >= MAX_WAIT) {
+        } else if (elapsed() >= MAX_WAIT) {
           // No photo in the POST → it's a text/quote post (or the photo never loaded).
           // Return the POST rect (scoped — no feed) for the worker's stability-crop:
           // a static text post is kept, an animating spinner is rejected.
@@ -312,7 +321,27 @@
               permalink: (post && cfg.findPermalink ? cfg.findPermalink(post, U) : "") || location.href,
             });
           } catch (e) { try { sendResponse({ ok: true, image: "", rect: null }); } catch (e2) {} }
-        } else { waited += 250; setTimeout(loop, 250); }
+        } else { setTimeout(loop, 250); }
+       } catch (e) {
+         // Any of the synchronous DOM probes above (dialogPostPresent/onHomeFeed/
+         // findMainPost/isUnavailable/metaPhoto) throwing here used to kill this tick
+         // silently — no further ticks, sendResponse never called, so the background
+         // script's chrome.tabs.sendMessage() awaited forever and the capture stayed
+         // stuck at "Capturing Facebook post…" indefinitely (reported 2026-08-05: FB
+         // capture hangs and never completes even though the page loads fine).
+         console.log("[Interests] autoCaptureFB | loop tick threw: " + (e && e.message));
+         // A single TRANSIENT throw must not end the whole capture early: reschedule
+         // like a normal tick as long as time remains, so a one-off DOM hiccup on
+         // (say) tick 1 can't skip past the isUnavailable() dead-post check that
+         // would otherwise have caught a genuinely deleted post a few ticks later
+         // (caught in review 2026-08-05 — the first version of this fix always gave
+         // up immediately on any throw). Only once MAX_WAIT is genuinely exhausted
+         // does giving up mean sending the safe empty-result fallback — same
+         // guarantee as before: a response is ALWAYS eventually sent.
+         if (elapsed() < MAX_WAIT) { setTimeout(loop, 250); return; }
+         console.log("[Interests] autoCaptureFB | loop threw repeatedly, giving up: " + (e && e.message));
+         try { sendResponse({ ok: true, image: "", rect: null, title: "", author: "", text: "", permalink: location.href }); } catch (e2) {}
+       }
       })();
       return true;   // keep the message channel open for the async sendResponse
     });
