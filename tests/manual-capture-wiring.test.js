@@ -167,6 +167,27 @@ t("pollCaptureRequest's req.manual branch skips the automatic pipeline (captureO
   const manualBranch = body.slice(manualIdx, body.indexOf("return;", manualIdx) + 7);
   assert.ok(/await startManualCapture\(req\);/.test(manualBranch));
 });
+t("pollCaptureRequest is re-entrancy guarded (pollingCaptureRequest) so the 30s alarm and the tabs.onUpdated instant trigger can't both claim the same mailbox entry", () => {
+  const start = bg.indexOf("async function pollCaptureRequest() {");
+  assert.ok(start >= 0);
+  const preamble = bg.slice(0, start);
+  assert.ok(/let pollingCaptureRequest = false;/.test(preamble));
+  const body = bg.slice(start, start + 200);
+  assert.ok(/if \(pollingCaptureRequest\) return;/.test(body));
+  assert.ok(/pollingCaptureRequest = true;/.test(body));
+  const end = bg.indexOf("\n// Fire the poller the instant", start);
+  assert.ok(end > start, "poller's closing block not found");
+  const fullBody = bg.slice(start, end);
+  assert.ok(/\} finally \{\s*pollingCaptureRequest = false;\s*\}/.test(fullBody),
+    "the guard must be released in a finally so every return path (manual, watch-only, empty mailbox) clears it");
+});
+t("a tab landing on its real URL (changeInfo.url) triggers the capture poller immediately, instead of only the 30s alarm", () => {
+  const i = bg.indexOf("chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {");
+  assert.ok(i >= 0, "instant-trigger listener not found");
+  const body = bg.slice(i, i + 200);
+  assert.ok(/if \(changeInfo\.url\) pollCaptureRequest\(\)\.catch\(\(\) => \{\}\);/.test(body),
+    "must gate on changeInfo.url specifically (fires once per real navigation), not fire on every onUpdated tick (title/favicon changes)");
+});
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

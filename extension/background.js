@@ -632,47 +632,74 @@ try { chrome.storage.onChanged.addListener((changes, area) => { if (area === "lo
 // poll the app's single-capture mailbox and drive the capture in-SW. The
 // standalone desktop app is not a Chrome tab, so this works whenever Chrome is
 // open with the extension — no localhost tab, no page-context bridge required.
+// Re-entrancy guarded (pollingCaptureRequest) because this is now called from
+// two independent triggers -- the 30s alarm AND the tabs.onUpdated listener
+// below -- and both can fire close enough together to both read the mailbox
+// before either claims it, which would double-run startManualCapture/
+// captureOneTab for the same request.
+let pollingCaptureRequest = false;
 async function pollCaptureRequest() {
-  let port; try { port = await findAppPort(); } catch (e) { return; }
-  if (port == null) return;
-  let req = null;
+  if (pollingCaptureRequest) return;
+  pollingCaptureRequest = true;
   try {
-    const r = await fetch("http://127.0.0.1:" + port + "/api/capture-request");
-    if (r && r.ok) { const j = await r.json(); req = j && j.request; }
-  } catch (e) { return; }
-  if (!req || !req.url) return;
-  try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
-  if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
-  log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
-  if (req.manual) {
-    // Manual point-to-point capture: human-paced, no timeout, and deliberately
-    // NOT persisted via B12 (persistPending/restorePendingRequest assume a
-    // short, bounded capture and would wrongly treat an in-progress manual
-    // selection as abandoned after PENDING_MAX_AGE_MS). startManualCapture
-    // delivers its own outcome (via the region-select message handlers in
-    // Task 3) whenever the user finishes or cancels.
-    await startManualCapture(req);
-    return;
+    let port; try { port = await findAppPort(); } catch (e) { return; }
+    if (port == null) return;
+    let req = null;
+    try {
+      const r = await fetch("http://127.0.0.1:" + port + "/api/capture-request");
+      if (r && r.ok) { const j = await r.json(); req = j && j.request; }
+    } catch (e) { return; }
+    if (!req || !req.url) return;
+    try { await fetch("http://127.0.0.1:" + port + "/api/capture-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request: null }) }); } catch (e) {}   // claim it
+    if (req.capture === false) { log("SW poller: watch-only request, skipping capture"); return; }
+    log("SW poller claimed capture request: " + req.url + (req.render ? " (render)" : "") + (req.force ? " (force/overwrite)" : ""));
+    if (req.manual) {
+      // Manual point-to-point capture: human-paced, no timeout, and deliberately
+      // NOT persisted via B12 (persistPending/restorePendingRequest assume a
+      // short, bounded capture and would wrongly treat an in-progress manual
+      // selection as abandoned after PENDING_MAX_AGE_MS). startManualCapture
+      // delivers its own outcome (via the region-select message handlers in
+      // Task 3) whenever the user finishes or cancels.
+      await startManualCapture(req);
+      return;
+    }
+    // B12: the claim is now out of the app's mailbox and lives only in this SW run —
+    // persist it (persistPending also arms the suspension alarm) so an MV3 suspension
+    // mid-capture can't silently lose it: restorePendingRequest re-dispatches a fresh
+    // claim or marks a stale one attempted on the next wake.
+    pendingCaptureBusy = true;
+    await persistPending({ url: req.url, id: req.id || "", delay: req.delay || 0, render: !!req.render, force: !!req.force });
+    // Use captureOneTab (opens its OWN tab, tracks it by tab-id through redirects, captures, closes)
+    // — the single primitive the batch uses too, so single + bulk converge on one redirect-safe path.
+    // Pass req.force through: a ⟳ refresh sets force:true so the app OVERWRITES the existing image
+    // (without force, drainCaptures only fills empty/bad images and the real screenshot is discarded).
+    // captureOneTab delivers its own outcome (capture, attempt-failed, or dead) in every branch, so
+    // once it returns — success OR failure — the persisted claim has served its purpose: clear it.
+    try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
+    catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
+    // A suspension between captureOneTab's delivery and this clear can leave the persisted
+    // claim around for restorePendingRequest to re-dispatch — at most one redundant re-capture,
+    // safe because delivery is card-id-keyed and the app overwrites on the next delivery.
+    finally { pendingCaptureBusy = false; await clearPendingPersist(); }
+  } finally {
+    pollingCaptureRequest = false;
   }
-  // B12: the claim is now out of the app's mailbox and lives only in this SW run —
-  // persist it (persistPending also arms the suspension alarm) so an MV3 suspension
-  // mid-capture can't silently lose it: restorePendingRequest re-dispatches a fresh
-  // claim or marks a stale one attempted on the next wake.
-  pendingCaptureBusy = true;
-  await persistPending({ url: req.url, id: req.id || "", delay: req.delay || 0, render: !!req.render, force: !!req.force });
-  // Use captureOneTab (opens its OWN tab, tracks it by tab-id through redirects, captures, closes)
-  // — the single primitive the batch uses too, so single + bulk converge on one redirect-safe path.
-  // Pass req.force through: a ⟳ refresh sets force:true so the app OVERWRITES the existing image
-  // (without force, drainCaptures only fills empty/bad images and the real screenshot is discarded).
-  // captureOneTab delivers its own outcome (capture, attempt-failed, or dead) in every branch, so
-  // once it returns — success OR failure — the persisted claim has served its purpose: clear it.
-  try { await captureOneTab(req.url, req.id || "", (req.delay || 0), !!req.render, !!req.force); }
-  catch (e) { log("SW captureOneTab failed: " + (e && e.message)); }
-  // A suspension between captureOneTab's delivery and this clear can leave the persisted
-  // claim around for restorePendingRequest to re-dispatch — at most one redundant re-capture,
-  // safe because delivery is card-id-keyed and the app overwrites on the next delivery.
-  finally { pendingCaptureBusy = false; await clearPendingPersist(); }
 }
+// Fire the poller the instant a tab lands on its real URL, instead of waiting
+// for the next 30s alarm tick -- this is what makes manual capture's overlay
+// appear right after the article opens (impManualCapture's openLink) rather
+// than up to 30s later. changeInfo.url is only present on the update where
+// the tab's URL actually changed (post-navigation, not on every title/favicon
+// tick), which is also the earliest point findAppOpenedTab's chrome.tabs.query
+// can reliably match it -- firing any earlier (e.g. tabs.onCreated) risks
+// findAppOpenedTab missing because the tab is still on about:blank, which
+// would fall through to creating a duplicate tab. Harmless no-op for every
+// other page load: pollCaptureRequest returns immediately when the mailbox
+// is empty, and is now re-entrancy guarded against the alarm firing at the
+// same moment.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) pollCaptureRequest().catch(() => {});
+});
 
 // ---- Batch driver (bulk): drain /api/batch-state through captureOneTab so a bulk
 // recapture works in the STANDALONE desktop app (no localhost tab). Runs in the
