@@ -5247,7 +5247,7 @@ function impManualCapture(idx){
   it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending";
   Store.putCards(imported);
   Store.setCaptureRequest({url:it.url, id:it.id, manual:true});
-  toast("Opening the article — draw a box around the image you want, then Use this");
+  toast("Opening the article — this can take up to ~30s. Keep Chrome open. Once it opens, draw a box around the image you want, then click Use this.", 7000);
 }
 async function enrichOnOpen(it, idx){
   try{
