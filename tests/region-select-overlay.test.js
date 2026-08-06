@@ -42,6 +42,22 @@ t("cleanup resets the re-entrancy flag and removes the overlay", () => {
   assert.ok(/window\.__iaRegionSelectActive = false;/.test(body));
   assert.ok(/overlay\.remove\(\);/.test(body));
 });
+t("catches mouseup events outside the overlay (document-level listener)", () => {
+  assert.ok(/document\.addEventListener\("mouseup", onDocumentMouseUp\)/.test(src), "must add document-level mouseup listener");
+  assert.ok(/function onDocumentMouseUp/.test(src), "must define onDocumentMouseUp handler");
+  // Verify it processes the drag when cursor leaves viewport before mouseup
+  assert.ok(/if \(!dragging\) return;/.test(src), "onDocumentMouseUp must check dragging state");
+});
+t("aborts in-progress selection if window loses focus mid-drag", () => {
+  assert.ok(/window\.addEventListener\("blur", onWindowBlur\)/.test(src), "must add window blur listener");
+  assert.ok(/function onWindowBlur/.test(src), "must define onWindowBlur handler");
+  // Verify it resets dragging state without trying to capture
+  const blurStart = src.indexOf("function onWindowBlur");
+  const blurEnd = src.indexOf("}", blurStart) + 1;
+  const blurBody = src.slice(blurStart, blurEnd);
+  assert.ok(/dragging = false/.test(blurBody), "blur handler must reset dragging state");
+  assert.ok(/box\.style\.display = "none"/.test(blurBody), "blur handler must hide the selection box");
+});
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

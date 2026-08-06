@@ -26,6 +26,8 @@
     window.__iaRegionSelectActive = false;
     try { overlay.remove(); } catch (e) {}
     document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("mouseup", onDocumentMouseUp);
+    window.removeEventListener("blur", onWindowBlur);
   }
 
   function rectFromDrag(x1, y1, x2, y2) {
@@ -97,9 +99,29 @@
     if (e.key !== "Escape") return;
     chrome.runtime.sendMessage({ action: "regionSelectCancel" }, () => { cleanup(); });
   }
+  function onDocumentMouseUp(e) {
+    if (!dragging) return;   // only process if we're in an active drag
+    dragging = false;
+    const r = rectFromDrag(startX, startY, e.clientX, e.clientY);
+    if (r.w < 8 || r.h < 8) { box.style.display = "none"; return; }   // too small — just abort, don't try to capture
+    box.style.display = "none";
+    overlay.style.background = "transparent";   // hide the dimming before the real screenshot so it isn't captured
+    chrome.runtime.sendMessage({ action: "regionSelectCrop", rect: r }, (resp) => {
+      overlay.style.background = "rgba(0,0,0,.35)";
+      if (!resp || !resp.ok) { showMessage("Couldn't capture that — try drawing again, or press Escape to cancel."); return; }
+      showPreview(resp.dataUrl);
+    });
+  }
+  function onWindowBlur(e) {
+    if (!dragging) return;   // only process if we're in an active drag
+    dragging = false;
+    box.style.display = "none";   // abort in-progress selection without trying to capture
+  }
 
   overlay.addEventListener("mousedown", onMouseDown);
   overlay.addEventListener("mousemove", onMouseMove);
   overlay.addEventListener("mouseup", onMouseUp);
   document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("mouseup", onDocumentMouseUp);
+  window.addEventListener("blur", onWindowBlur);
 })();
