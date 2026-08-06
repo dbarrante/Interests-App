@@ -19,7 +19,6 @@ function loadFnsFromSource(src) {
     "allTags",
     "canonicalTag",
     "mergeCleanTags",
-    "extractHashtags",
     "captureOutgoingHashtags",
     "renderHealthHashtags",
     "runHashtagLibraryScan"
@@ -41,10 +40,23 @@ function loadFnsFromSource(src) {
   const factory = new Function(
     "imported", "saved", "Store", "toast", "persistAll",
     "renderSaved", "renderImportedKeepFocus", "curTab", "_healthTab",
-    "_hashtagScanRunning", "document", "tabs", "tagStats",
+    "_hashtagScanRunning", "document", "tabs", "tagStats", "extractHashtags",
     combined + "\nreturn { captureOutgoingHashtags, renderHealthHashtags, runHashtagLibraryScan };"
   );
   return factory;
+}
+
+// Stub for extractHashtags from title-ai.js
+function extractHashtagsStub(rawTitle){
+  if(!rawTitle) return { title: "", tags: [] };
+  const tags = [];
+  const hashtagRe = /#(\w+)/g;
+  let match;
+  while((match = hashtagRe.exec(rawTitle))){
+    if(match[1]) tags.push(match[1].toLowerCase());
+  }
+  const title = rawTitle.replace(/#\w+/g, "  ").replace(/\s{2,}/g, " ").trim();
+  return { title, tags };
 }
 
 function load(src, state) {
@@ -55,7 +67,8 @@ function load(src, state) {
     false, // _hashtagScanRunning initial value
     state.document,
     state.tabs || [],  // tabs
-    state.tagStats || {}  // tagStats
+    state.tagStats || {},  // tagStats
+    extractHashtagsStub  // extractHashtags from title-ai.js
   );
   return fns;
 }

@@ -6688,35 +6688,20 @@ function mergeCleanTags(card, rawTags, exclude){
     if(seen.has(k)) return; seen.add(k);
     if(!tagBadPattern(t)) cleaned.push(t);
   });
-  const added = [];
-  if(cleaned.length){
-    const existingLower = new Set((card.tags||[]).map(t=>t.toLowerCase()));
-    added.push(...cleaned.filter(t=>!existingLower.has(t.toLowerCase())));
-    card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
-  }
-  return added;
-}
-// Extract #hashtags from a title string. Returns { title: (title with #hashtags
-// removed), tags: [array of hashtag words without the #] }. Both title and tags
-// are trimmed of extra whitespace but otherwise unprocessed.
-function extractHashtags(rawTitle){
-  if(!rawTitle) return { title: "", tags: [] };
-  const tags = [];
-  const hashtagRe = /#(\w+)/g;
-  let match;
-  while((match = hashtagRe.exec(rawTitle))){
-    if(match[1]) tags.push(match[1]);
-  }
-  const title = rawTitle.replace(/#\w+/g, " ").replace(/\s+/g, " ").trim();
-  return { title, tags };
+  if(cleaned.length) card.tags = Array.from(new Set([...(card.tags||[]), ...cleaned]));
+  return cleaned;
 }
 // Pull #hashtags out of a title about to be overwritten and add them as tags
 // too -- the most common real source is a raw imported caption used as a
 // fallback title, not the AI's own (rarely hashtag-laden) prose. No-op for a
-// blank/missing title (nothing to scan). `exclude` -- see mergeCleanTags above.
+// blank/missing title (nothing to scan). Returns the subset of tags that were
+// actually newly added (not already present case-insensitively on card.tags).
+// `exclude` -- see mergeCleanTags above.
 function captureOutgoingHashtags(card, exclude){
   if(!card || !card.title) return [];
-  return mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
+  const existingLower = new Set((card.tags||[]).map(t=>t.toLowerCase()));
+  const merged = mergeCleanTags(card, extractHashtags(card.title).tags, exclude);
+  return merged.filter(t=>!existingLower.has(t.toLowerCase()));
 }
 // Apply an AI-generated title to a card, including its embedded #hashtags as
 // tags. Called from enrichOnOpen (auto-refresh on open), retryTitleSuggestion
