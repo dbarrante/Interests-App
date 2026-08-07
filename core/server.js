@@ -524,6 +524,17 @@ function createServer(ctx) {
     }
   });
 
+  // App focus signal: extension/background.js's regionSelectFinalize posts here right
+  // after an accepted manual-capture picture update, so the Electron window comes back
+  // to front once the user returns from the browser. ctx.focusApp is set by main.js
+  // only when a live window exists (see main.js) -- core/server.js stays Electron-
+  // agnostic, so this must never throw or fail the response when it's absent (test
+  // contexts and any other embedder of this server won't have it wired).
+  app.post("/api/focus-app", (req, res) => {
+    try { if (typeof ctx.focusApp === "function") ctx.focusApp(); } catch (e) {}
+    res.json({ ok: true });
+  });
+
   // --- Single capture request / batch driver state / batch progress ---
   // These three routes are byte-identical GET/POST kv pairs that differ only in
   // the URL segment, the kv storage key, and the request/response body field

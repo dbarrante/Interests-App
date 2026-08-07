@@ -98,6 +98,17 @@ if (!gotLock) {
       syncRunner = storeWorker;
       ctx.storeWorker = storeWorker;   // POST /api/sync/now, /api/backup, /api/restore, /api/store-location/move all use this when present
 
+      // App-focus signal for POST /api/focus-app (core/server.js): reuses the exact
+      // restore/focus sequence the second-instance handler above already uses, so the
+      // manual-capture browser flow can bring the app back to front after an accepted
+      // picture update.
+      ctx.focusApp = () => {
+        if (!mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      };
+
       // Sync timers self-gate on live config (re-read every tick), so start them
       // unconditionally — enabling/disabling Dropbox sync in Settings takes effect
       // on the next tick with no app restart required.
