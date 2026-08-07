@@ -6869,7 +6869,14 @@ document.getElementById("readerBody").addEventListener("touchend", e=>{
 function _healthCounts(){
   const nolink = imported.filter(i=>!i.url).length;
   const failed = imported.filter(needsRetry).length;
-  const titles = imported.filter(i=>i&&isGenericTitle(i.title,i.url)).length + saved.filter(i=>i&&isGenericTitle(i.title,i.url)).length;
+  // Reuses flaggedTitleCards() itself (the SAME function that builds the actual
+  // Title-issues list) rather than re-deriving the predicate here -- the old
+  // inline isGenericTitle-only filter omitted the !c.titleSet check flaggedTitleCards
+  // applies, so the badge counted cards the user had ALREADY fixed (whenever the
+  // new title still happened to look short/generic) and could never match the
+  // list length no matter how many were resolved (2026-08-07 report: "Title
+  // issues count is still wrong").
+  const titles = flaggedTitleCards().length;
   return { nolink, failed, titles: titles };
 }
 function healthTabStripHTML(){

@@ -77,11 +77,16 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
   t(label + ": HEALTH_TABS includes the Title issues tab", () => {
     assert.match(src, /\{\s*id:"titles",\s*label:"Title issues"\s*\}/);
   });
-  t(label + ": _healthCounts reports a titles count from both imported and saved", () => {
+  t(label + ": _healthCounts reports a titles count sourced from flaggedTitleCards (covers both imported and saved, honours titleSet)", () => {
     const m = /function _healthCounts\(\)\{([\s\S]*?)\n\}/.exec(src);
     assert.ok(m, "_healthCounts not found");
-    assert.match(m[1], /isGenericTitle\(i\.title,\s*i\.url\)/);
-    assert.match(m[1], /saved\.filter/);
+    // SANCTIONED CHANGE (2026-08-07): was its OWN inline isGenericTitle-only
+    // filter over imported+saved, which omitted flaggedTitleCards' !c.titleSet
+    // check -- the badge counted already-resolved cards forever and could
+    // never match the actual list (see tests/title-issues-resolved.test.js for
+    // the behavioral proof). Now delegates to flaggedTitleCards() itself so the
+    // count can never drift from the list again.
+    assert.match(m[1], /titles\s*=\s*flaggedTitleCards\(\)\.length/);
     assert.match(m[1], /titles:/);
   });
   t(label + ": renderHealth dispatches the titles tab", () => {

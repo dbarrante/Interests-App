@@ -34,6 +34,18 @@ function buildFlagged(src, imported, saved) {
   return factory(imported, saved, isGenericTitle);
 }
 
+// Build a live _healthCounts() -- it now calls flaggedTitleCards() itself, so
+// both must be present in the same factory. needsRetry (the `failed` count)
+// is irrelevant here; stub it to false since these tests only check `titles`.
+function buildHealthCounts(src, imported, saved) {
+  const flaggedSrc = extractFn(src, "flaggedTitleCards");
+  const countsSrc = extractFn(src, "_healthCounts");
+  if (!flaggedSrc || !countsSrc) throw new Error("could not extract flaggedTitleCards/_healthCounts");
+  const factory = new Function("imported", "saved", "isGenericTitle", "needsRetry",
+    flaggedSrc + "\n" + countsSrc + "\nreturn _healthCounts();");
+  return factory(imported, saved, isGenericTitle, () => false);
+}
+
 for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
   t(label + ": a short, un-set title IS flagged (the mechanism the bug rides on)", () => {
     // 19 chars, perfectly descriptive, but under the 25-char heuristic — this is
@@ -79,11 +91,32 @@ for (const [label, src] of [["web", webHtml], ["pwa", pwaHtml]]) {
     const fnSrc = extractFn(src, "flaggedTitleCards");
     assert.match(fnSrc, /!c\.titleSet/, "flaggedTitleCards must skip cards whose title the user has set");
   });
+
+  t(label + ": _healthCounts' titles badge agrees with flaggedTitleCards().length — the reported bug", () => {
+    // The badge used to run its OWN inline isGenericTitle-only filter, omitting
+    // the !c.titleSet check flaggedTitleCards applies -- so a resolved (but
+    // still short-titled) card kept counting forever, and the "(N)" badge could
+    // never reach 0 or match the actual list (2026-08-07: "Title issues count
+    // is still wrong" -- reported again even after the separate refresh-timing
+    // fix, because the underlying FORMULA, not just when it re-ran, was wrong).
+    const imported = [
+      { id: "a", url: "https://x/a", title: "Braided Pesto Bread" },                 // still flagged
+      { id: "c", url: "https://x/c", title: "Braided Pesto Bread", titleSet: true }, // resolved -- must NOT count
+    ];
+    const counts = buildHealthCounts(src, imported, []);
+    const flagged = buildFlagged(src, imported, []);
+    assert.strictEqual(counts.titles, flagged.length, "the badge count must always equal the list length");
+    assert.strictEqual(counts.titles, 1, "only the unresolved card should count");
+  });
 }
 
 t("flaggedTitleCards is byte-identical between web and pwa (binding parity)", () => {
   assert.strictEqual(extractFn(webHtml, "flaggedTitleCards"), extractFn(pwaHtml, "flaggedTitleCards"),
     "flaggedTitleCards has drifted between web/ and pwa/");
+});
+t("_healthCounts is byte-identical between web and pwa (binding parity)", () => {
+  assert.strictEqual(extractFn(webHtml, "_healthCounts"), extractFn(pwaHtml, "_healthCounts"),
+    "_healthCounts has drifted between web/ and pwa/");
 });
 
 console.log(pass + " passed, " + fail + " failed");
