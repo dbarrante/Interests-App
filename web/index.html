@@ -3477,7 +3477,7 @@ function markFailDone(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   imported.forEach(c=>{ if(c&&ids.has(c.id)){ c.lastResult="ok"; c.lastUpdate=Date.now(); c.capDone=true; c.capReason=""; } });
   persistCards(); updateCounts();
-  if(_healthTab==="failed") renderHealthFailed(document.getElementById("healthList"));
+  if(_healthTab==="failed"){ renderHealthFailed(document.getElementById("healthList")); refreshHealthTabStrip(); }
   if(curTab==="imported") renderImported();
   toast(`Marked ${ids.size} done`, 4000);
 }
@@ -3485,7 +3485,7 @@ function removeFailSelected(){
   const ids=new Set(_failCheckedIds()); if(!ids.size){ toast("Select some cards first"); return; }
   snapshotBeforeDestructive();
   const n = removeCards(ids, {scope:"imported"});   // shared: idb+fp cleanup, splice, persist {confirm:true}
-  if(_healthTab==="failed") renderHealthFailed(document.getElementById("healthList"));
+  if(_healthTab==="failed"){ renderHealthFailed(document.getElementById("healthList")); refreshHealthTabStrip(); }
   if(curTab==="imported") renderImported();
   toast(`Removed ${n} card${n===1?"":"s"}`, 5000);
 }
@@ -5735,7 +5735,7 @@ function groomNoLink(){
   if(!ids.size){ toast("Nothing selected to remove"); return; }
   snapshotBeforeDestructive();
   const n = removeCards(ids, {scope:"imported"});   // shared: idb+fp cleanup, splice, persist {confirm:true}
-  if(_healthTab==="nolink") renderHealthNoLink(document.getElementById("healthList"));
+  if(_healthTab==="nolink"){ renderHealthNoLink(document.getElementById("healthList")); refreshHealthTabStrip(); }
   if(curTab==="imported") renderImported();
   toast("Removed "+n+" link-less card"+(n===1?"":"s"));
 }
@@ -6793,6 +6793,18 @@ function healthTabStripHTML(){
     return `<button class="${t.id===_healthTab?"on":""}" onclick="healthSwitch('${t.id}')">${esc(t.label)}${n?` (${n})`:""}</button>`;
   }).join("")}</div>`;
 }
+// Re-renders ONLY the tab-strip badges (failed/nolink/titles counts) — every
+// in-tab action (retry a failed card, commit a title, etc.) mutates imported/
+// saved and re-renders #healthList, but until now nothing re-ran
+// healthTabStripHTML() until the NEXT full openHealth()/healthSwitch(), so the
+// counts sat stale (unchanged, never decrementing) for the rest of the
+// session (2026-08-07 report: "the numbers next to the tabs aren't
+// updating"). A targeted outerHTML swap, not the heavier full renderHealth(),
+// so the list's scroll position/content is never touched by a count refresh.
+function refreshHealthTabStrip(){
+  const el = document.querySelector("#healthBody .health-tabs");
+  if(el) el.outerHTML = healthTabStripHTML();
+}
 // Render the shared frame + the active tab's body. Runs the tab's lazy scan on first view.
 function renderHealth(){
   const host = document.getElementById("healthBody");
@@ -7543,7 +7555,7 @@ function applyTitleSuggestions(){
   if(!applied){ toast("No titles checked — nothing applied. Your suggestions are still here; check the ones you want, then Apply.", 7000); return; }
   clearTitleSuggestions();
   persistCards(); Store.putSaved(saved); toast("Updated "+applied+" title"+(applied===1?"":"s"));
-  if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
+  if(_healthTab==="titles"){ renderHealthTitles(document.getElementById("healthList")); refreshHealthTabStrip(); }
 }
 // Commit just ONE row's title on Enter, without touching any other pending
 // suggestion still under review in the batch -- Apply stays for bulk-applying
@@ -7569,7 +7581,7 @@ function commitOneTitleSuggestion(key){
   _titleSuggestionsAI.delete(key);
   persistCards(); Store.putSaved(saved);
   toast("Title updated");
-  if(_healthTab==="titles") renderHealthTitles(document.getElementById("healthList"));
+  if(_healthTab==="titles"){ renderHealthTitles(document.getElementById("healthList")); refreshHealthTabStrip(); }
 }
 // Group entries by image similarity. PURE (no globals) so it can be unit-tested.
 // `alreadyGrouped` holds the keys the url/title pass consumed -- skipped
@@ -8679,7 +8691,7 @@ async function drainCaptures(){
   let queue;
   try{ queue = await Store.drainCaptures(); }catch(e){ return; }   // GET /api/captures claims a leased batch; ACK follows durable writes
   if(!Array.isArray(queue)||!queue.length) return;
-  let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0;
+  let changed=false, persisted=false, matched=0, unmatched=0, removedDead=0, flaggedDead=0;
   const pendingAck=[];
   const queueAck = cap => { if(cap && cap._captureId) pendingAck.push({id:cap._captureId, lease:cap._captureLease}); };
   const autoImported=[];   // FB/IG auto-import survivors this run (see ingestImported call below)
@@ -8698,13 +8710,31 @@ async function drainCaptures(){
     console.log("[route] " + cap.url + " -> " + decision.action + " (" + decision.reason + ")");
 
     if(decision.action === "dead"){
-      // remove the matching (or last-opened) card — existing dead-removal logic
+      // Find the matching (or, for an explicit user removal, last-opened) card.
       let di = cap.id ? imported.findIndex(it=>it.id===cap.id) : -1;
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url===cap.url);
       if(di<0 && cap.url) di = imported.findIndex(it=>it.url && normUrl(it.url)===normUrl(cap.url));
       if(di<0 && cap.removeActive){ let lo=null; try{ lo=await Store.kvGet("ia_last_opened"); }catch(e){} if(lo&&lo.id) di=imported.findIndex(it=>it.id===lo.id); }
-      if(di>=0){ const removed=imported.splice(di,1)[0]; _deadUndo=removed; removedDead++; changed=true;
-        console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")"); }
+      // removeActive is set ONLY by the extension's explicit "Remove from
+      // Interests" right-click — an intentional, reviewed user action, which
+      // still deletes outright. Every OTHER "dead" report is an AUTOMATIC
+      // recapture-time detection (e.g. Facebook/Instagram serving "content
+      // isn't available" to a logged-out/rate-limited/bot-shaped tab load —
+      // extremely common as a false positive, NOT proof the post is actually
+      // gone) — silently, permanently deleting on that signal alone lost real,
+      // already-captured cards with zero confirmation (2026-08-07 data-loss
+      // report). Flag it as a failed capture instead — same lastResult:"fail"
+      // convention this function already uses for every other capture failure
+      // a few lines below — so it surfaces in Library Health's "Failed
+      // captures" tab for the user to review/retry/remove, rather than
+      // vanishing.
+      if(di>=0 && !cap.removeActive){
+        const it=imported[di]; it.lastUpdate=now; it.lastResult="fail"; changed=true; flaggedDead++;
+        console.warn("[drainCaptures] flagged (not removed) unreachable card: "+(it.title||cap.url)+" ("+(cap.error||"")+")");
+      } else if(di>=0){
+        const removed=imported.splice(di,1)[0]; _deadUndo=removed; removedDead++; changed=true;
+        console.warn("[drainCaptures] removed unreachable card: "+(removed.title||cap.url)+" ("+(cap.error||"")+")");
+      }
       queueAck(cap);
       continue;
     }
@@ -8823,6 +8853,8 @@ async function drainCaptures(){
     if(curTab==="imported"){ renderImported(); restoreImpScrollSettle(); } else refreshTabsViewIfShowing();
     if(removedDead){
       toast("Removed "+(_deadUndo?("“"+(_deadUndo.title||"card").slice(0,40)+"”"):removedDead+" card(s)")+" — unreachable site. Click to undo.", 9000, undoDead);
+    } else if(flaggedDead){
+      toast(flaggedDead+" card"+(flaggedDead===1?"":"s")+" couldn't be reached on a recapture — flagged in Library Health → Failed captures for review, not removed.", 8000);
     } else {
       toast(assignedTitle ? ("Screenshot saved to: "+assignedTitle) : "Updated cards from extension capture");
     }

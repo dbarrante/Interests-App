@@ -1,6 +1,7 @@
 const assert = require("assert");
 const fs = require("fs"), path = require("path");
 const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+const pwaHtml = fs.readFileSync(path.join(__dirname, "..", "pwa", "index.html"), "utf8");
 const { loadFns } = require("./_extract");
 let passed = 0, failed = 0;
 function t(n, fn){ try { fn(); passed++; } catch(e){ failed++; console.error("FAIL: "+n+"\n  "+(e&&e.message)); } }
@@ -82,7 +83,7 @@ t("fail modal renders live Success/REMOVED/Recapturing status, refreshed by drai
   assert.ok(b.indexOf("isBadImg") >= 0 && b.indexOf('"success"') >= 0, "good image → success");
   assert.ok(html.indexOf("function refreshFailStatuses(") >= 0, "refreshFailStatuses defined");
   const di = html.indexOf("async function drainCaptures(");
-  const dbody = html.slice(di, di + 11000);   // widened for Task 4's import-auto branch (drainCaptures legitimately grew)
+  const dbody = html.slice(di, di + 12000);   // widened again for the automatic-dead-vs-removeActive flag/delete split (2026-08-07, drainCaptures legitimately grew again)
   assert.ok(dbody.indexOf("refreshFailStatuses(") >= 0, "drainCaptures refreshes fail statuses");
   const fi = html.indexOf("function failRowHTML(");
   const fbody = html.slice(fi, fi + 900);
@@ -270,6 +271,36 @@ t("link checks are consolidated into the Library-health 'Dead & unsafe' tab (saf
   assert.ok(html.indexOf("async function runSafetyPass(") >= 0, "runSafetyPass kept (shared)");
   assert.ok(html.indexOf("function _threatLabel(") >= 0, "_threatLabel kept (used by deadRowHTML)");
 });
+
+for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
+  t(label + ": drainCaptures flags (not deletes) a card on an AUTOMATIC dead report, but still deletes on an explicit user removal", () => {
+    const di = src.indexOf("async function drainCaptures(");
+    assert.ok(di >= 0, "drainCaptures present");
+    const db = src.slice(di, src.indexOf("\n}", di) + 2);
+    const compact = db.replace(/\s/g, "");
+    // AUTOMATIC report (no removeActive, e.g. Facebook/Instagram's "content isn't
+    // available" false positive on a recapture — 2026-08-07 data-loss report):
+    // must flag as a failed capture (surfaces in Library Health), never splice.
+    assert.ok(compact.indexOf('if(di>=0&&!cap.removeActive){') >= 0,
+      "must branch on !cap.removeActive before flagging");
+    assert.ok(/if\(di>=0&&!cap\.removeActive\)\{[^}]*lastResult="fail"/.test(compact),
+      "the automatic-dead branch must mark lastResult=\"fail\" (Failed-captures convention), not delete");
+    assert.ok(!/if\(di>=0&&!cap\.removeActive\)\{[^}]*splice/.test(compact),
+      "the automatic-dead branch must NOT splice the card out of imported");
+    // EXPLICIT user removal (extension's "Remove from Interests" sets
+    // removeActive:true) must still delete outright, unchanged.
+    assert.ok(/\}elseif\(di>=0\)\{constremoved=imported\.splice\(di,1\)\[0\];_deadUndo=removed;removedDead\+\+;/.test(compact),
+      "the removeActive branch must still splice+undo exactly as before");
+  });
+
+  t(label + ": drainCaptures toasts a distinct, non-alarming message for flagged (not removed) dead cards, pointing at Failed captures", () => {
+    const di = src.indexOf("async function drainCaptures(");
+    const db = src.slice(di, src.indexOf("\n}", di) + 2);
+    assert.ok(/flaggedDead\+\+/.test(db.replace(/\s/g, "")), "flaggedDead counter is incremented");
+    assert.ok(/else if\(flaggedDead\)\{/.test(db), "a distinct toast branch exists for flaggedDead");
+    assert.ok(db.indexOf("Failed captures") >= 0, "the toast must point the user at Library Health's Failed captures tab");
+  });
+}
 
 console.log(passed + " passed, " + failed + " failed");
 process.exitCode = failed ? 1 : 0;
