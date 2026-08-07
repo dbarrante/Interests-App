@@ -78,7 +78,18 @@ const M = [
   }],
   ["https://instagram.com/p/CODE123/", {
     feedKey: "instagram.com/p/code123", normUrl: "instagram.com/p/code123",
-    dupeKey: "instagram.com/p/code123", clipKey: "instagram.com/p/code123",
+    // SANCTIONED CHANGE: old dupeUrlKey/clipKey => "instagram.com/p/code123" (no
+    // fold). Instagram serves the same post at /p/ and /reel/ (and /tv/) — now
+    // folds to host+shortcode so all three forms agree (see reel/p/tv test below).
+    dupeKey: "instagram.com?CODE123", clipKey: "instagram.com?CODE123",
+  }],
+  ["https://www.instagram.com/reel/CODE123/", {
+    feedKey: "instagram.com/reel/code123", normUrl: "instagram.com/reel/code123",
+    dupeKey: "instagram.com?CODE123", clipKey: "instagram.com?CODE123",
+  }],
+  ["https://instagram.com/tv/CODE123/", {
+    feedKey: "instagram.com/tv/code123", normUrl: "instagram.com/tv/code123",
+    dupeKey: "instagram.com?CODE123", clipKey: "instagram.com?CODE123",
   }],
   ["not a url", {
     feedKey: "not a url", normUrl: "not a url",
@@ -155,6 +166,27 @@ t("SANCTIONED: dupeKey now folds youtu.be id (was: bare path) -> agrees with cli
   const u = "https://youtu.be/short44";
   assert.notStrictEqual(dupeKey(u), "youtu.be/short44");
   assert.strictEqual(dupeKey(u), clipKey(u));
+});
+t("SANCTIONED: dupeKey/clipKey now fold Instagram's /p/, /reel/, and /tv/ forms of the same post to one identity", () => {
+  // Real duplicate pairs found live in the library: the same post captured once
+  // via /reel/ and once via /p/ were never recognized as duplicates by either the
+  // import-time dedup or the Duplicates-tab URL pass, because the base path
+  // (hostPath) differs at /reel/ vs /p/ — no amount of re-running Duplicates
+  // could ever catch it, since the URL keys were simply never equal.
+  const p = "https://instagram.com/p/DZ-f3IkOW1D/";
+  const reel = "https://www.instagram.com/reel/DZ-f3IkOW1D/";
+  const tv = "https://instagram.com/tv/DZ-f3IkOW1D/";
+  assert.notStrictEqual(normUrl(p), normUrl(reel), "normUrl is deliberately unchanged — still host+path, still differs");
+  assert.strictEqual(dupeKey(p), dupeKey(reel));
+  assert.strictEqual(dupeKey(p), dupeKey(tv));
+  assert.strictEqual(clipKey(p), clipKey(reel));
+  assert.strictEqual(clipKey(p), clipKey(tv));
+  assert.strictEqual(dupeKey(p), "instagram.com?DZ-f3IkOW1D");
+});
+t("Instagram fold does not collide two DIFFERENT shortcodes", () => {
+  const a = "https://instagram.com/p/AAAA111/", b = "https://instagram.com/reel/BBBB222/";
+  assert.notStrictEqual(dupeKey(a), dupeKey(b));
+  assert.notStrictEqual(clipKey(a), clipKey(b));
 });
 
 // ---- run ----

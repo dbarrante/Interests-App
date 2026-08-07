@@ -39,6 +39,16 @@
       || "";
   }
 
+  // The Instagram post shortcode for a parsed URL: /p/<code>/, /reel/<code>/, or
+  // /tv/<code>/ (IGTV). Instagram serves the SAME post under both /p/ and /reel/
+  // (and sometimes /tv/) -- unlike FB/YouTube's query-param id, which is appended
+  // to an already-shared base path, these three differ at the base-path level
+  // itself, so folding just an id onto hostPath() wouldn't unify them. Case
+  // preserved (matches ytId's convention) — only the host gets lowercased.
+  function igId(u) {
+    return (/\/(?:p|reel|tv)\/([^/?#]+)/.exec(u.pathname) || [])[1] || "";
+  }
+
   // feedKey (old urlKey): feed-item dedupe. Pure string transform, keeps query+hash.
   function feedKey(u) {
     return (u || "").toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
@@ -60,6 +70,13 @@
   function dupeKey(url) {
     try {
       var u = new URL(url);
+      // Instagram: /p/<code>/ and /reel/<code>/ (and /tv/<code>/) are the SAME
+      // post — fold straight to host+shortcode, bypassing hostPath()'s differing
+      // base path entirely (see igId's comment).
+      if (/instagram\.com/i.test(u.hostname)) {
+        var igid0 = igId(u);
+        if (igid0) return "instagram.com?" + igid0;
+      }
       var base = hostPath(u);
       var id = u.searchParams.get("v") || u.searchParams.get("story_fbid")
         || u.searchParams.get("fbid") || u.searchParams.get("id") || "";
@@ -85,6 +102,12 @@
       if (/youtube\.com|youtu\.be/i.test(q.hostname)) {
         var yid = ytId(q, u);
         if (yid) return base + "?" + yid;
+      }
+      // Instagram: fold /p/<code>/ and /reel/<code>/ (and /tv/<code>/) to one
+      // identity — see igId's comment on why this can't just append onto base.
+      if (/instagram\.com/i.test(q.hostname)) {
+        var igid = igId(q);
+        if (igid) return "instagram.com?" + igid;
       }
     } catch (e) {}
     return base;
