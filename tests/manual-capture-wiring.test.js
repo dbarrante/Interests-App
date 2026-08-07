@@ -60,30 +60,45 @@ t("regionSelectFinalize's delivery carries the tab's real page title, but ONLY f
   // standalone/no-match path (which creates a brand-new card via addClip)
   // needs one, so the title must be conditional on !session.id.
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
-  const body = bg.slice(i, i + 2000);
+  const body = bg.slice(i, i + 2500);
   assert.ok(/if \(!session\.id\) capture\.title = \(sender\.tab && sender\.tab\.title\) \|\| "";/.test(body),
     "title must only be attached for a standalone (id-less) session, never an id-matched recapture");
 });
-t("regionSelectFinalize only closes the tab it owns (app-triggered), never the user's own standalone browsing tab", () => {
+t("regionSelectFinalize closes the tab and calls /api/focus-app for ANY app-triggered session (session.id), not just one the extension itself created", () => {
   const i = bg.indexOf('msg.action === "regionSelectFinalize"');
-  const body = bg.slice(i, i + 2000);
-  assert.ok(/if \(session\.owned\) \{ try \{ await chrome\.tabs\.remove\(tab\.id\); \} catch \(e\) \{\} \}/.test(body),
-    "chrome.tabs.remove must be gated on session.owned so a standalone capture never closes the user's own tab");
+  const body = bg.slice(i, i + 2500);
+  assert.ok(!/session\.owned/.test(body), "must not still gate on session.owned -- that left the tab open in the common case where the app's own openLink tab was found");
+  const gateIdx = body.indexOf("if (session.id) {");
+  assert.ok(gateIdx >= 0, "close+focus must be gated on session.id");
+  const closeIdx = body.indexOf("chrome.tabs.remove(tab.id)", gateIdx);
+  const focusIdx = body.indexOf("/api/focus-app", gateIdx);
+  assert.ok(closeIdx > gateIdx, "chrome.tabs.remove must be inside the session.id gate");
+  assert.ok(focusIdx > closeIdx, "the /api/focus-app call must be inside the gate too, after the tab close");
 });
-t("startManualCapture only sets owned:true for a tab IT created, not one it found already open", () => {
+t("regionSelectFinalize's /api/focus-app call uses findAppPort() and is a fire-and-forget POST (never fails the response)", () => {
+  const i = bg.indexOf('msg.action === "regionSelectFinalize"');
+  const body = bg.slice(i, i + 2500);
+  const gateIdx = body.indexOf("if (session.id) {");
+  const gated = body.slice(gateIdx, body.indexOf("sendResponse({ ok: true });", gateIdx));
+  assert.ok(/findAppPort\(\)/.test(gated));
+  assert.ok(/method: "POST"/.test(gated));
+  assert.ok(/catch \(e\) \{\}/.test(gated), "a focus-app fetch failure must be swallowed, not thrown");
+});
+t("regionSelectFinalize never closes the tab or calls /api/focus-app for a standalone (id-less) session", () => {
+  const i = bg.indexOf('msg.action === "regionSelectFinalize"');
+  const body = bg.slice(i, i + 2500);
+  const gateIdx = body.indexOf("if (session.id) {");
+  const closeIdx = body.indexOf("chrome.tabs.remove(tab.id)");
+  const focusIdx = body.indexOf("/api/focus-app");
+  assert.ok(gateIdx < closeIdx && closeIdx < focusIdx, "both the close and the focus call must live inside the session.id gate, in that order");
+});
+t("startManualCapture still falls back to creating its own tab when no already-open tab is found, and no longer tracks owned (dead since regionSelectFinalize now gates on session.id)", () => {
   const startIdx = bg.indexOf("async function startManualCapture(req) {");
   const startBody = bg.slice(startIdx, startIdx + 2400);
-  assert.ok(/let owned = false;/.test(startBody));
-  assert.ok(/owned = true;/.test(startBody));
+  assert.ok(!/\bowned\b/.test(startBody), "owned must be fully removed -- it was only ever read by regionSelectFinalize's now-superseded session.owned gate");
   assert.ok(/chrome\.tabs\.create\(\{ url: req\.url, active: true \}\)/.test(startBody),
     "still falls back to creating its own tab when no app-opened tab is found");
-  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url, owned \}\)/.test(startBody),
-    "owned must be the variable (true only when this flow created the tab), not a hardcoded true");
-
-  const ctxIdx = bg.indexOf('info.menuItemId === "pointToPointCapture"');
-  const ctxBody = bg.slice(ctxIdx, ctxIdx + 400);
-  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: "", url: tab\.url \|\| "" \}\)/.test(ctxBody),
-    "the standalone context-menu session must NOT set owned:true");
+  assert.ok(/setManualCaptureSession\(tab\.id, \{ id: req\.id \|\| "", url: req\.url \}\)/.test(startBody));
 });
 t("regionSelectCancel only notifies the app for an app-triggered session (has an id), not a standalone one", () => {
   const i = bg.indexOf('msg.action === "regionSelectCancel"');

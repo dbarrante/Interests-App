@@ -1547,9 +1547,7 @@ async function findAppOpenedTab(url) {
 async function startManualCapture(req) {
   await setStatus("Waiting for you to select an image…", true);
   let tab = await findAppOpenedTab(req.url);
-  let owned = false;
   if (!tab) {
-    owned = true;
     try { tab = await chrome.tabs.create({ url: req.url, active: true }); }
     catch (e) { await deliverToApp({ url: req.url, id: req.id || "", attempt: true, ok: false, ts: Date.now() }); return; }
   }
@@ -1571,11 +1569,7 @@ async function startManualCapture(req) {
   // from "nothing happened". Wrapped so a failure here is always reported.
   try {
     await waitTabComplete(tab.id, 30000);
-    // owned:true only for a tab THIS flow created, so regionSelectFinalize may
-    // close it afterward. A tab the app already had open (found above) or the
-    // standalone context-menu flow (pointToPointCapture below) must NOT set
-    // this -- the user may have had it open for their own reasons too.
-    await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url, owned });
+    await setManualCaptureSession(tab.id, { id: req.id || "", url: req.url });
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["region-select.js"] });
   } catch (e) {
     await clearManualCaptureSession(tab.id);
@@ -1896,11 +1890,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!session.id) capture.title = (sender.tab && sender.tab.title) || "";
       await deliverToApp(capture);
       await setStatus("Manual capture saved ✓", true);
-      // Only close a tab THIS feature opened for the capture (session.owned, set
-      // only by startManualCapture's app-triggered flow). The standalone
-      // context-menu flow captures on the user's own already-open tab and must
-      // not close it out from under them.
-      if (session.owned) { try { await chrome.tabs.remove(tab.id); } catch (e) {} }
+      // App-triggered only (session.id set): the app opened this tab specifically for
+      // this capture either way -- whether startManualCapture found it via
+      // findAppOpenedTab or had to create it as a fallback, there's no reason to leave
+      // it open once the user has accepted. Always close it and bring the app back to
+      // front. The standalone context-menu flow (session.id === "") captures on the
+      // user's own already-open tab and must not close it or steal focus from under
+      // them, so this whole block stays gated on session.id.
+      if (session.id) {
+        try { await chrome.tabs.remove(tab.id); } catch (e) {}
+        try {
+          const port = await findAppPort();
+          if (port != null) await fetch("http://127.0.0.1:" + port + "/api/focus-app", { method: "POST" });
+        } catch (e) {}
+      }
       sendResponse({ ok: true });
     })();
     return true;
