@@ -4,7 +4,7 @@
 // asserts byte-identical output to its predecessor — EXCEPT the two sanctioned
 // dupeKey YouTube-shorts/youtu.be cases, which now align to clipKey's handling.
 const assert = require("assert");
-const { feedKey, normUrl, dupeKey, clipKey } = require("../web/lib/urlkey");
+const { feedKey, normUrl, dupeKey, clipKey, isSpecificPostUrl } = require("../web/lib/urlkey");
 let passed = 0, failed = 0;
 const queue = [];
 function t(n, fn){ queue.push([n, fn]); }
@@ -187,6 +187,51 @@ t("Instagram fold does not collide two DIFFERENT shortcodes", () => {
   const a = "https://instagram.com/p/AAAA111/", b = "https://instagram.com/reel/BBBB222/";
   assert.notStrictEqual(dupeKey(a), dupeKey(b));
   assert.notStrictEqual(clipKey(a), clipKey(b));
+});
+
+// ---------------------------------------------------------------------------
+// isSpecificPostUrl — added for autoMergeLinkDuplicates (data-safety review
+// F1): dupeKey alone can't tell "same post" from "same profile/category page,
+// no id ever resolved" (it falls back to bare host+path for the latter), and
+// only the FIRST case is safe to merge without a human looking at it.
+// ---------------------------------------------------------------------------
+t("isSpecificPostUrl: true for a real Facebook post permalink (/posts/<id>)", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/LADbible/posts/pfbid02RmpMLayVAzmCdPdeyWjotSaa483ek3rHxsyXncVRioYwfDQ3RtGmFTqRvkb6gvoRl"), true);
+});
+t("isSpecificPostUrl: false for a bare Facebook profile/category page (facebook.com/watch, no id)", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/watch"), false);
+});
+t("isSpecificPostUrl: true for a Facebook story_fbid query permalink", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/permalink.php?story_fbid=123&id=456"), true);
+});
+t("isSpecificPostUrl: false for a Facebook listing page one level deeper than a bare tab (data-safety review N4)", () => {
+  // A trailing segment after the keyword correctly rejects the bare TAB
+  // (facebook.com/user/photos), but a segment that's a real word rather than
+  // an id -- facebook.com/user/photos/albums -- must ALSO be rejected: it's
+  // still a listing page (every album), not one specific photo.
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/LADbible/photos/albums"), false);
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/LADbible/photos/1234567890"), true, "an actual numeric photo id must still pass");
+  assert.strictEqual(isSpecificPostUrl("https://www.facebook.com/LADbible/posts/pfbid02RmpMLayVAzmCdPdeyWjotSaa483ek3rHxsyXncVRioYwfDQ3RtGmFTqRvkb6gvoRl"), true, "a pfbid post id must still pass");
+});
+t("isSpecificPostUrl: true for an Instagram /p/, /reel/, or /tv/ post, false for a bare profile", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.instagram.com/p/DZ-f3IkOW1D/"), true);
+  assert.strictEqual(isSpecificPostUrl("https://www.instagram.com/reel/DZ-f3IkOW1D/"), true);
+  assert.strictEqual(isSpecificPostUrl("https://www.instagram.com/natgeo/"), false, "a bare profile page must never be treated as a specific post");
+});
+t("isSpecificPostUrl: true for YouTube ?v=/shorts/youtu.be, false for a bare channel/search page", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.youtube.com/watch?v=abc123"), true);
+  assert.strictEqual(isSpecificPostUrl("https://youtube.com/shorts/XYZ789"), true);
+  assert.strictEqual(isSpecificPostUrl("https://youtu.be/short44"), true);
+  assert.strictEqual(isSpecificPostUrl("https://www.youtube.com/@somechannel"), false);
+});
+t("isSpecificPostUrl: true for a Pinterest pin, false for a board/profile page", () => {
+  assert.strictEqual(isSpecificPostUrl("https://www.pinterest.com/pin/123456789/"), true);
+  assert.strictEqual(isSpecificPostUrl("https://www.pinterest.com/dave/"), false);
+});
+t("isSpecificPostUrl: false for a malformed URL (never throws)", () => {
+  assert.strictEqual(isSpecificPostUrl("not a url"), false);
+  assert.strictEqual(isSpecificPostUrl(""), false);
+  assert.strictEqual(isSpecificPostUrl(undefined), false);
 });
 
 // ---- run ----

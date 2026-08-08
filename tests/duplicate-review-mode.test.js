@@ -50,6 +50,16 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
     name + "does not delete a retained image pointer owned by a merged source card");
 
   const block = featureSlice(source);
+  // autoMergeLinkDuplicates (added alongside applyDupeRemoval, unattended
+  // duplicate cleanup) sits earlier in this same feature block and shares
+  // several of applyDupeRemoval's literal call shapes (createDupeSafetySnapshot,
+  // putCards/putSaved, imgDel...) by design -- they reuse the same safety-
+  // snapshot primitives. A few assertions below need to verify ORDERING
+  // specifically WITHIN applyDupeRemoval; block.indexOf(...) would silently
+  // resolve to autoMergeLinkDuplicates' earlier occurrence instead (data-safety
+  // review N2 -- four assertions were passing/failing against the wrong
+  // function once this scoped correctly). Use applyBlock for those.
+  const applyBlock = extractFn(source, "applyDupeRemoval");
   assert.match(block, /groupsToProcess\s*=\s*_dupeReviewMode==="single"\s*\?\s*\[_dupeGroups\[_dupeReviewIndex\]\]\.filter\(Boolean\)\s*:\s*_dupeGroups/,
     name + " scopes focused removal to the visible group only");
   assert.match(block, /async function createDupeSafetySnapshot\(\)/, name + " has an awaited, verifiable duplicate-cleanup snapshot");
@@ -65,9 +75,9 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   assert.doesNotMatch(extractFn(source, "restoreDupeSafetySnapshot"), /_healthScanned\.dupes\s*=\s*false/,
     name + " must not rely on the now-inert _healthScanned.dupes=false reset");
   assert.match(block, /function mergeDupeMetadata\(/, name + " defines the keeper metadata merge policy");
-  assert.match(block, /await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
+  assert.match(applyBlock, /await createDupeSafetySnapshot\(\);[\s\S]*?if\(!safety\)\{[\s\S]*?return;[\s\S]*?\}/,
     name + " fails closed when the safety snapshot cannot be verified");
-  assert.ok(block.indexOf("await createDupeSafetySnapshot()") < block.indexOf("const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)"),
+  assert.ok(applyBlock.indexOf("await createDupeSafetySnapshot()") < applyBlock.indexOf("const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)"),
     name + " verifies the safety snapshot before processing removals");
   assert.match(block, /shouldReuseDupeSafety\(_dupeSafetyCache, ?Date\.now\(\), ?!!window\.IA_IDB\)/,
     name + " reuses a recently-verified desktop safety snapshot instead of taking a fresh one on every card");
@@ -86,13 +96,13 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
     name + " computes surviving image references before cleanup");
   assert.match(block, /if\(liveImageRefs\.has\(ref\.imageId\)\) continue/,
     name + " never deletes an image still referenced by a surviving card");
-  assert.ok(block.indexOf("await Store.putSaved(nextSaved,{confirm:true})") < block.indexOf("await Store.imgDel(imageId)"),
+  assert.ok(applyBlock.indexOf("await Store.putSaved(nextSaved,{confirm:true})") < applyBlock.indexOf("await Store.imgDel(imageId)"),
     name + " deletes obsolete image bytes only after both collections persist");
   assert.doesNotMatch(block, /if\(!checked\.size\)\{\s*toast\("Nothing selected to remove"\);\s*return;/,
     name + "can persist a not-duplicate decision when every remove box is unchecked");
-  assert.ok(block.indexOf("markDupeGroupNotDuplicate(") < block.indexOf("await Store.putCards(nextImported,{confirm:true})"),
+  assert.ok(applyBlock.indexOf("markDupeGroupNotDuplicate(") < applyBlock.indexOf("await Store.putCards(nextImported,{confirm:true})"),
     name + "marks retained groups before the guarded collection writes");
-  assert.ok(block.indexOf("if(!checked.size)") < block.indexOf("await createDupeSafetySnapshot()"),
+  assert.ok(applyBlock.indexOf("if(!checked.size)") < applyBlock.indexOf("await createDupeSafetySnapshot()"),
     name + "routes keep-all decisions around the destructive backup and full-library rewrite path");
   assert.match(block, /for\(const g of applyGroups\)\{\s*const tags=dupePeerTagsFor\(g\.members\);[\s\S]{0,120}await Store\.markNotDuplicates\(tags\.slice\(/,
     name + "persists each group's peer tags with the narrow additive operation, chunked so a large group can't wedge against the server's entry cap");
@@ -108,6 +118,15 @@ for (const [name, source] of [["web", web], ["pwa", pwa]]) {
   // (restoreDupeSafetySnapshot) since the whole library just changed underneath it.
   assert.doesNotMatch(extractFn(source, "applyDupeRemoval"), /_healthScanned\.dupes\s*=\s*false/,
     name + " must never force a rescan from inside applyDupeRemoval -- only the explicit Scan/Rescan button may");
+  // data-safety review F3/N2: applyDupeRemoval and applyDupeRemoveGroup share
+  // _dupeMutationRunning with autoMergeLinkDuplicates so none of the three can
+  // race the other two over the same imported/saved arrays. Scoped per-function
+  // (not just "exists somewhere in block") since the guard now legitimately
+  // appears three times in this file.
+  assert.match(extractFn(source, "applyDupeRemoval"), /if\(_dupeMutationRunning\)/,
+    name + " applyDupeRemoval must check the shared mutation guard before doing anything");
+  assert.match(extractFn(source, "applyDupeRemoveGroup"), /if\(_dupeMutationRunning\)/,
+    name + " applyDupeRemoveGroup must check the shared mutation guard before doing anything");
   assert.match(block, /const applySet=new Set\(applyGroups\);[\s\S]{0,120}_dupeGroups\s*=\s*_dupeGroups\s*\n?\s*\.filter\(g=>!applySet\.has\(g\)\)/,
     name + " prunes the frozen group list in place instead of rescanning");
 }

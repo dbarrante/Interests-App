@@ -14,11 +14,12 @@
 const path = require("path");
 const { extractFn } = require("./_extract");
 const capState = require(path.join(__dirname, "..", "web", "lib", "capture-state.js"));
-const { dupeKey } = require(path.join(__dirname, "..", "web", "lib", "urlkey.js"));
+const { dupeKey, isSpecificPostUrl } = require(path.join(__dirname, "..", "web", "lib", "urlkey.js"));
 const isBadImg = capState.isBadImg;
 
 const NAMES = [
   "applyDupeRemoval", "applyDupeRemoveGroup", "computeDupeApplyGroups", "shouldReuseDupeSafety",
+  "autoMergeLinkDuplicates",
   "scanDuplicates", "dupeGroupKey", "dupeGroupDismissed", "dupePeerTagsFor",
   "markDupeGroupNotDuplicate", "dupeMemberKey", "dupePrimary",
   "dupeImageRefs", "mergeDupeMetadata", "itemImg", "setItemImg",
@@ -62,7 +63,8 @@ function build(src, opts) {
       markNotDup: markDupeGroupNotDuplicate,
       primary: dupePrimary,
       memberKey: dupeMemberKey,
-      get: () => ({ imported, saved, _dupeGroups, _dupeImageTouched, _dupeImageChecked, _dupeReviewIndex }),
+      autoMerge: autoMergeLinkDuplicates,
+      get: () => ({ imported, saved, _dupeGroups, _dupeImageTouched, _dupeImageChecked, _dupeReviewIndex, _dupeSafetyCache }),
       set: (o) => {
         if (o.imported) imported = o.imported;
         if (o.saved) saved = o.saved;
@@ -77,11 +79,11 @@ function build(src, opts) {
     "document", "window", "Store", "toast", "showBusyOverlay", "hideBusyOverlay",
     "updateBusyOverlay", "requestAnimationFrame", "createDupeSafetySnapshot",
     "rollbackDupePersistence", "updateCounts", "_reconcileById", "renderHealth",
-    "renderHealthDupes", "renderImported", "renderSaved", "isBadImg", "dupeKey",
+    "renderHealthDupes", "renderImported", "renderSaved", "isBadImg", "dupeKey", "isSpecificPostUrl",
     "DUPE_SAFETY_REUSE_MS", "imgFp", "_fpMap", "console", "__log", "confirm",
     "let imported=[],saved=[],_dupeGroups=[],_dupeSpared=new Set(),_dupeImageChecked=new Set()," +
     "_dupeImageTouched=new Set(),_dupeReviewMode='all',_dupeReviewIndex=0,_dupeSafetyCache=null," +
-    "_healthScanned={},curTab='none';\n" + body
+    "_healthScanned={},curTab='none',_dupeMutationRunning=false;\n" + body
   );
   const api = factory(
     document, opts.window || {}, Store,
@@ -91,7 +93,7 @@ function build(src, opts) {
     opts.createSnapshot || (async () => ({ kind: "desktop", name: "safety-backup" })),   // snapshot always succeeds unless overridden
     opts.rollback || (async () => false),
     () => {}, () => {}, () => {}, () => {}, () => {}, () => {},
-    isBadImg, dupeKey, 5 * 60 * 1000, () => "fp", fpMap, console, log,
+    isBadImg, dupeKey, isSpecificPostUrl, 5 * 60 * 1000, () => "fp", fpMap, console, log,
     (msg) => { log.confirms.push(msg); return confirmAnswer; }
   );
   api.log = log; api.checkedKeys = checkedKeys; api.imgStore = imgStore; api.fpMap = fpMap;

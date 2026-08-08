@@ -1913,6 +1913,15 @@ async function rehydrateAfterSync(){
   _lastSettingsJson = JSON.stringify(S);   // baseline, not a user edit — must not stamp ia_settings_updatedAt
   rebuildCats();
   updateCounts();
+  // A cross-device duplicate (each device auto-imported the same post before
+  // syncing with the other) becomes visible for the first time right here --
+  // resolve any exact-URL ones automatically, same-tab and fire-and-forget.
+  // Awaited, not fire-and-forget (data-safety review F2c): rehydrateAfterSync's
+  // caller can schedule a same-tab reload shortly after this returns (PWA
+  // autoSync). An in-flight auto-merge cut off mid-write between its two
+  // Store calls would leave a partial, unrecoverable state with no exception
+  // ever thrown to trigger its own rollback. Awaiting closes that window.
+  await autoMergeLinkDuplicates().catch(e=>console.warn("auto-dedup after sync failed",e));
 }
 async function autoSync(trigger){
   if(!_booted || _syncInFlight) return;
@@ -6749,6 +6758,7 @@ function dupePrimary(members){
     const it = mem.card;
     const img = itemImg(it, mem.scope);
     let s = 0;
+    if (it.titleSet || it.origTitle!==undefined) s += 32;  // the title differs from its first-ever captured value -- human edit, human-accepted AI suggestion, OR an automatic bulk AI-refresh (which stamps origTitle but not titleSet, so it can still be improved again later) -- outweighs every other signal combined (max 31) so a duplicate merge never silently discards a better title for a richer-but-untouched copy
     if (img && (String(img).indexOf("idb:")===0 || !isBadImg(resolveImg(img)))) s += 16;   // has a real picture (an idb capture counts even when not in the bounded cache)
     if (it.desc && it.desc.length > 8) s += 8;             // has a description
     if (it.tags && it.tags.length) s += 4;                 // has tags
@@ -6759,7 +6769,19 @@ function dupePrimary(members){
   let best = members[0], bestScore = score(members[0]);
   for (let k=1; k<members.length; k++){
     const sc = score(members[k]);
-    const older = (members[k].card.sdate||members[k].card.ts||0) < (best.card.sdate||best.card.ts||Infinity);
+    const dCur = members[k].card.sdate||members[k].card.ts||0, dBest = best.card.sdate||best.card.ts||0;
+    // Data-safety review F5: the old fallback (0 for the challenger, Infinity
+    // for the incumbent) meant "neither has a date" always handed the win to
+    // the challenger -- i.e. the survivor was just whichever array element
+    // came last, which differs by device (replaceCards persists in whatever
+    // order the client's array happened to be in). A first fix only reached
+    // the deterministic branch when BOTH sides were dateless (dCur||dBest) --
+    // a follow-up review caught that two copies sharing the SAME date (the
+    // common shape for one post imported on two devices, both carrying the
+    // original sdate) still fell through to array order, since dCur<dBest is
+    // false in both directions on a tie. Compare by INEQUALITY instead: only
+    // skip the id tiebreak when the dates actually differ.
+    const older = dCur !== dBest ? dCur < dBest : String(members[k].card.id||"") < String(best.card.id||"");
     if (sc > bestScore || (sc === bestScore && older)) { best = members[k]; bestScore = sc; }
   }
   return best;
@@ -8389,11 +8411,160 @@ async function rollbackDupePersistence(safety){
 // left completely alone by applyDupeRemoval and keeps being offered on the
 // next scan. groupKeyFn is injected, matching groupByImageHash's hammingFn
 // precedent, so tests exercise the real dupeGroupKey derivation.
+// Automatic, unattended duplicate cleanup: merges ONLY exact/canonical-URL
+// matches (scanDuplicates' "link" reason -- the same post, unambiguous).
+// Title-only matches stay manual-review-only in the Duplicates tab, since two
+// DIFFERENT posts can coincidentally share a title -- that softer signal must
+// never delete anything unattended. Runs its OWN scanDuplicates() into local
+// variables and deliberately never touches _dupeGroups/_dupeReviewIndex/
+// _dupeReviewMode, so it can't clobber a review the user might have open in
+// the Duplicates tab -- the next manual "Scan for duplicates" simply won't
+// re-offer whatever this already resolved. Reuses the exact same verified
+// safety-snapshot + rollback primitives applyDupeRemoval uses (one safety
+// mechanism, not two), and the same asOf-preserve contract Store.putCards/
+// putSaved already guarantee against a concurrent manual apply or sync merge
+// (see web/storage.js) -- no additional locking needed. Every non-keep member
+// of a link group is unconditionally removed: unlike the manual flow there is
+// no legitimate reason to keep a second copy of the identical URL.
+// _dupeMutationRunning is SHARED with applyDupeRemoval/applyDupeRemoveGroup
+// (data-safety review finding F3): all three snapshot imported/saved into
+// local next* arrays and then await for seconds (a safety-snapshot backup,
+// image copies) before persisting -- without one shared guard, a manual
+// Apply click during an automatic cycle (or vice versa) would let both
+// writers persist their own stale fork, last-writer-wins, silently losing
+// whichever ran first. Store.putCards/putSaved's asOf-preserve mechanism
+// (web/storage.js) protects against a concurrent SYNC merge landing rows the
+// client hasn't seen yet; it does nothing for two renderer-side writers
+// holding two forks of the same in-memory array, which is what this guards.
+let _dupeMutationRunning = false;
+async function autoMergeLinkDuplicates(){
+  if(_dupeMutationRunning) return;
+  // F1 (CRITICAL, data-safety review): "link" reason alone does NOT mean
+  // "same post" -- dupeKey falls back to bare host+path when a capture's URL
+  // never resolved to a post permalink (extension/capture-core.js stamps the
+  // page URL itself in that fallback), so e.g. three unrelated posts clipped
+  // from instagram.com/natgeo or facebook.com/watch would share one dupeKey.
+  // scanDuplicates' own author already documented this is unsafe for anything
+  // that isn't reviewed by a human. isSpecificPostUrl (web/lib/urlkey.js)
+  // requires every member's URL to actually identify a single post/video --
+  // a bare profile/category page never qualifies -- before this unattended
+  // path is allowed to delete anything.
+  const groups = scanDuplicates().filter(g=>g.reason==="link" && g.members.every(m=>isSpecificPostUrl(m.card.url)));
+  if(!groups.length) return;
+  _dupeMutationRunning = true;
+  try{
+    let safety;
+    if(shouldReuseDupeSafety(_dupeSafetyCache, Date.now(), !!window.IA_IDB)){
+      safety = _dupeSafetyCache.safety;   // read a snapshot a USER-initiated flow armed -- never write it ourselves (F2d)
+    } else {
+      safety = await createDupeSafetySnapshot();
+    }
+    if(!safety) return;   // can't verify safety this cycle -- skip silently, retried next time
+    let nextImported=imported.map(c=>c&&Object.assign({},c));
+    let nextSaved=saved.map(c=>c&&Object.assign({},c));
+    const nextImportedById=new Map(nextImported.filter(Boolean).map(c=>[c.id,c]));
+    const nextSavedById=new Map(nextSaved.filter(Boolean).map(c=>[c.id,c]));
+    const rmImported=new Set(),rmSaved=new Set(),orphanImages=[],imageCopies=[];
+    let removed=0;
+    for(const g of groups){
+      const keep=g.members.find(m=>dupeMemberKey(m)===g.keepKey)||g.members[0];
+      // Same belt-and-braces guard applyDupeRemoval uses: skip a group whose
+      // keeper was already condemned by an earlier group in this same pass.
+      if((keep.scope==="saved"?rmSaved:rmImported).has(keep.card.id)) continue;
+      const k=(keep.scope==="saved"?nextSavedById:nextImportedById).get(keep.card.id); if(!k) continue;
+      for(const mem of g.members){
+        // F6: skip by (id,scope), not object identity -- two DISTINCT in-memory
+        // entries that happen to share the keeper's id+scope must never be
+        // condemned (that would add the keeper's own id to the removal set and
+        // the survivor filter below would then drop the keeper too).
+        if(mem===keep || (mem.card.id===keep.card.id && mem.scope===keep.scope)) continue;
+        const src=itemImg(mem.card,mem.scope),keepImg=itemImg(k,keep.scope);
+        const keepHasImg=keepImg&&(String(keepImg).indexOf("idb:")===0||!isBadImg(resolveImg(keepImg)));
+        const srcIsIdb=src&&String(src).indexOf("idb:")===0;
+        const srcHasImg=src&&(srcIsIdb||!isBadImg(resolveImg(src)));
+        if(!keepHasImg&&srcHasImg){
+          if(srcIsIdb){ const sourceId=String(src).slice(4),targetId=String(k.id); setItemImg(k,keep.scope,"idb:"+targetId); imageCopies.push({sourceId,targetId}); }
+          else setItemImg(k,keep.scope,resolveImg(src));
+        }
+        mergeDupeMetadata(k,mem.card);
+        if(srcIsIdb&&!window.IA_IDB) orphanImages.push({imageId:String(src).slice(4),cardId:mem.card.id});
+        (mem.scope==="saved"?rmSaved:rmImported).add(mem.card.id); removed++;
+      }
+    }
+    if(!removed) return;
+    nextImported=nextImported.filter(c=>c&&!rmImported.has(c.id));
+    nextSaved=nextSaved.filter(c=>c&&!rmSaved.has(c.id));
+    try{
+      for(const copy of imageCopies){ await Store.imgCopy(copy.sourceId,copy.targetId); if(!await Store.imgHas(copy.targetId)) throw new Error("copied image could not be verified"); }
+      const cardsResult=await Store.putCards(nextImported,{confirm:true});
+      if(cardsResult&&cardsResult.preserved) _reconcileById(nextImported,cardsResult.preserved);
+      const savedResult=await Store.putSaved(nextSaved,{confirm:true});
+      if(savedResult&&savedResult.preserved) _reconcileById(nextSaved,savedResult.preserved);
+    }catch(e){
+      // F2a: surface the failure the same way applyDupeRemoval does, keyed on
+      // rollback's ACTUAL return value -- an unattended run failing silently
+      // (the old console.warn-only path) is exactly the kind of thing a data-
+      // safety feature must never do.
+      const recovered=await rollbackDupePersistence(safety);
+      toast(recovered?"Automatic duplicate cleanup stopped safely; the previous library was restored.":"Automatic duplicate cleanup failed. Use the verified safety backup to restore before continuing.",9000);
+      console.warn("automatic duplicate cleanup failed", e);
+      return;
+    }
+    imported=nextImported; saved=nextSaved; updateCounts();
+    const liveImageRefs=dupeImageRefs(nextImported,nextSaved),deletedImageIds=new Set();
+    for(const ref of orphanImages){
+      if(liveImageRefs.has(ref.imageId)) continue;
+      if(deletedImageIds.has(ref.imageId)) continue; deletedImageIds.add(ref.imageId);
+      try{ const imageId=ref.imageId; await Store.imgDel(imageId); if(_fpMap[ref.cardId]){ delete _fpMap[ref.cardId]; await Store.fpDel(ref.cardId); } }catch(e){ console.warn("auto-dedup orphan image cleanup deferred",ref.imageId,e); }
+    }
+    // F4: prune removed ids out of any FROZEN _dupeGroups from the user's last
+    // manual "Scan for duplicates" -- otherwise a stale group keeps offering an
+    // already-merged card, and applying it again double-runs mergeDupeMetadata's
+    // joinText concatenation onto the same keeper. Mirrors applyDupeRemoval's
+    // own member-level prune, but (unlike that function) this can fire WHILE the
+    // user has the Duplicates tab open reviewing a different, unrelated group --
+    // a follow-up data-safety review caught that the first version of this fix
+    // left _dupeReviewIndex pointing at a numeric position instead of the group
+    // itself: if an EARLIER group shrank or was dropped, every later index shifts,
+    // so "group #3" on screen could silently become a DIFFERENT group underneath
+    // the user, and their next destructive one-at-a-time click would act on
+    // whatever is now at that position, not what they're looking at. Track the
+    // on-screen group by reference through the prune and re-locate it, exactly
+    // like applyDupeRemoval already does for its own priorIndex.
+    rmImported.forEach(id=>_dupeSpared.delete("imported:"+id)); rmSaved.forEach(id=>_dupeSpared.delete("saved:"+id));
+    rmImported.forEach(id=>_dupeImageChecked.delete("imported:"+id)); rmSaved.forEach(id=>_dupeImageChecked.delete("saved:"+id));
+    const mapped=_dupeGroups.map(g=>{
+      const members=g.members.filter(m=>!(m.scope==="saved"?rmSaved:rmImported).has(m.card.id));
+      return members.length===g.members.length ? g : Object.assign({},g,{members});
+    });
+    const reviewedAfter=mapped[_dupeReviewIndex];   // map() preserves order/length 1:1, so this IS the same on-screen group, pruned
+    _dupeGroups = mapped.filter(g=>g.members.length>=2);
+    if(reviewedAfter && reviewedAfter.members.length>=2){
+      const relocated=_dupeGroups.indexOf(reviewedAfter);
+      if(relocated>=0) _dupeReviewIndex=relocated;
+    } else {
+      _dupeReviewIndex=Math.min(_dupeReviewIndex,Math.max(0,_dupeGroups.length-1));
+    }
+    if(document.getElementById("healthModal").classList.contains("open")) renderHealthDupes(document.getElementById("healthList"));
+    if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
+    toast("Automatically merged "+removed+" duplicate"+(removed===1?"":"s")+" (exact same post found on another device).",6000);
+  } finally {
+    _dupeMutationRunning = false;
+  }
+}
 function computeDupeApplyGroups(groupsToProcess, imageTouched, groupKeyFn){
   const applyGroups = (groupsToProcess||[]).filter(g => !g.imageMatch || imageTouched.has(groupKeyFn(g.members)));
   return { applyGroups, untouchedImageGroups: (groupsToProcess||[]).length - applyGroups.length };
 }
 async function applyDupeRemoval(){
+  // Shared with autoMergeLinkDuplicates/applyDupeRemoveGroup (data-safety
+  // review F3) -- prevents this manual apply from racing an unattended
+  // auto-merge cycle (or the other manual "remove group" action) over the
+  // same imported/saved arrays. See autoMergeLinkDuplicates' comment on
+  // _dupeMutationRunning for why asOf-preserve doesn't already cover this.
+  if(_dupeMutationRunning){ toast("A duplicate cleanup is already running — try again in a moment.",4000); return; }
+  _dupeMutationRunning = true;
+  try{
   const checked=new Set(Array.prototype.map.call(document.querySelectorAll('#healthBody input[data-rm]:checked'),el=>el.getAttribute("data-rm")));
   const priorIndex=_dupeReviewIndex;
   const groupsToProcess = _dupeReviewMode==="single" ? [_dupeGroups[_dupeReviewIndex]].filter(Boolean) : _dupeGroups;
@@ -8544,6 +8715,7 @@ async function applyDupeRemoval(){
   hideBusyOverlay();
   const marked=notDuplicateGroups?" Retained choices are now marked as not duplicates.":"";
   toast((removed?"Removed "+removed+" duplicate"+(removed===1?"":"s")+" — kept and merged the best copy."+marked:"Kept the cards and marked them as not duplicates.")+leftForReview,6000);
+  } finally { _dupeMutationRunning = false; }
 }
 // "Remove all in this group": deletes EVERY member of the current one-at-a-time
 // group, including the kept card -- for groups where the shared picture isn't
@@ -8560,9 +8732,14 @@ async function applyDupeRemoval(){
 // view is the shape of an accident. skipConfirm exists only for tests/silent
 // callers, mirroring restoreDupeSafetySnapshot(silent).
 async function applyDupeRemoveGroup(skipConfirm){
+  // Shared with autoMergeLinkDuplicates/applyDupeRemoval -- see that
+  // function's comment on _dupeMutationRunning (data-safety review F3).
+  if(_dupeMutationRunning){ toast("A duplicate cleanup is already running — try again in a moment.",4000); return; }
   const g = _dupeGroups[_dupeReviewIndex];
   if(!g) return;
   if(skipConfirm!==true && !confirm(`Remove all ${g.members.length} cards in this group, including the kept copy? This cannot be undone except via the safety snapshot.`)) return;
+  _dupeMutationRunning = true;
+  try{
   const priorIndex=_dupeReviewIndex;
   showBusyOverlay("Creating a verified safety snapshot…");
   await new Promise(resolve=>requestAnimationFrame(resolve));
@@ -8624,6 +8801,7 @@ async function applyDupeRemoveGroup(skipConfirm){
   if(curTab==="imported") renderImported(); else if(curTab==="saved") renderSaved();
   hideBusyOverlay();
   toast(`Removed all ${g.members.length} cards in this group.`,5000);
+  } finally { _dupeMutationRunning = false; }
 }
 
 // ---- Dead-link check → review (mirrors the duplicate review; deletions reuse the same
@@ -9192,6 +9370,7 @@ async function bootData(){
   try{ if(curTab==="imported") renderImported(); }catch(e){ console.warn("imported render failed", e); }
   try{ await storageHealthCheck(); }catch(e){ console.warn("health check failed", e); }
   _booted = true;   // boot complete: capture-drain interval + autobackup may now run against the real library (review A2)
+  await autoMergeLinkDuplicates().catch(e=>console.warn("auto-dedup at boot failed",e));   // clear any backlog from before this feature existed, or from local-only auto-import; awaited for the same reason as the post-sync call site (F2c)
   maybeAutoBackup();
   autoSync("boot");   // fire-and-forget: first sync of the session, now that the real library is loaded
   try{ startSyncIndicatorLoop(); }catch(e){ console.warn("sync indicator init failed", e); }

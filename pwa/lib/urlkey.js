@@ -113,7 +113,52 @@
     return base;
   }
 
-  var api = { feedKey: feedKey, normUrl: normUrl, dupeKey: dupeKey, clipKey: clipKey };
+  // isSpecificPostUrl: true when `url` identifies a single post/video, false for
+  // a bare profile/category/feed page (e.g. instagram.com/natgeo, facebook.com/
+  // watch). dupeKey groups by host+path when no query id is found, WITHOUT this
+  // distinction -- fine for a human reviewing the Duplicates tab (scanDuplicates'
+  // own comment already warns "a profile-PATH URL... can still group unrelated
+  // posts an auto-import mis-stamped with it"), unsafe for anything that deletes
+  // cards unattended (autoMergeLinkDuplicates, index.html). A clip taken while a
+  // permalink can't be resolved is stamped with the page URL itself (see
+  // extension/capture-core.js's isSpecificUrl fallback) -- three unrelated posts
+  // clipped from the same profile grid would otherwise share one dupeKey and get
+  // silently merged into one card, losing the other two.
+  //
+  // Deliberately STRICTER than the extension's fbIsSpecific/igIsSpecific
+  // (capture-configs.js): those are a loose pre-filter before further
+  // verification (findPermalink narrows it down further before ever using the
+  // URL), so bare keywords like "watch" or "videos" are good enough there. Here
+  // a false POSITIVE means an unattended delete of a real, distinct post, so
+  // every path keyword below requires an actual id segment or query id to
+  // follow it -- "facebook.com/watch" (the Watch home tab, no video) and
+  // "facebook.com/user/videos" (a profile's videos TAB, no specific video) must
+  // both be false; "facebook.com/watch?v=123" and ".../videos/456" must be true.
+  function isSpecificPostUrl(url) {
+    try {
+      var u = new URL(url);
+      var host = u.hostname.replace(/^www\./, "");
+      var path = u.pathname;
+      if (/instagram\.com/i.test(host)) return /\/(p|reel|reels|tv)\/[\w.-]+/.test(path);
+      if (/facebook\.com|fb\.watch/i.test(host)) {
+        if (/story_fbid=|[?&]fbid=|[?&]v=|[?&]id=/.test(u.search)) return true;
+        // A trailing segment after the keyword rejects the TAB pages (.../videos,
+        // .../photos with nothing after) -- but a follow-up review found it does
+        // NOT reject a listing page one level deeper (.../photos/albums): "albums"
+        // is a real word, not a post id. Require the segment to actually look like
+        // one -- all-digits, a pfbid-prefixed token, or a long opaque token -- so a
+        // real English word never qualifies.
+        var pm = /\/(?:posts|permalink|videos|reel|reels|photos?|story\.php|share\/[pvr]|groups\/[^/]+\/(?:posts|permalink))\/([^/?#]+)/.exec(path);
+        return !!(pm && /^(?:\d+|pfbid[\w-]+|[\w-]{10,})$/.test(pm[1]));
+      }
+      if (/youtube\.com|youtu\.be/i.test(host)) return !!(u.searchParams.get("v") || /\/shorts\/[^/?#]+/.test(path) || /youtu\.be\/[^/?#]+/i.test(url));
+      if (/pinterest\./i.test(host)) return /\/pin\/[\w-]+/.test(path);
+      // Generic fallback: any query id dupeKey itself would fold in.
+      return !!(u.searchParams.get("v") || u.searchParams.get("story_fbid") || u.searchParams.get("fbid") || u.searchParams.get("id"));
+    } catch (e) { return false; }
+  }
+
+  var api = { feedKey: feedKey, normUrl: normUrl, dupeKey: dupeKey, clipKey: clipKey, isSpecificPostUrl: isSpecificPostUrl };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   // Browser: attach the four names directly to root so index.html's bare calls
@@ -123,5 +168,6 @@
     root.normUrl = normUrl;
     root.dupeKey = dupeKey;
     root.clipKey = clipKey;
+    root.isSpecificPostUrl = isSpecificPostUrl;
   }
 })(typeof self !== "undefined" ? self : this);
