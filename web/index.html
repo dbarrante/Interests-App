@@ -1383,9 +1383,19 @@ function renderSaved(){
 function findItem(id){ return saved.find(i=>i.id===id) || spool.find(i=>i.id===id) || stDeal.find(i=>i.id===id); }
 // Open a link the user clicked. With the "reuse window" setting on, route it to one
 // reused in-app window (window.ia.openInApp); otherwise the normal new-browser-tab path.
-function openLink(url){
+function openLink(url, forceExternal){
   if(!url || !/^https?:\/\//i.test(url)) { if(url) window.open(url, "_blank"); return; }
-  if(S.reuseWindow && window.ia && typeof window.ia.openInApp==="function") window.ia.openInApp(url);
+  // forceExternal skips the reuseWindow path even when the user has it on --
+  // needed by impManualCapture: reuseWindow's linkWin is a bare Electron
+  // BrowserWindow with no Chrome extension loaded, which chrome.tabs.query
+  // (and so findAppOpenedTab) can never see. With reuseWindow on, opening
+  // there left the extension unable to find that window at all, so it always
+  // fell back to creating its OWN separate real Chrome tab for the capture
+  // overlay -- leaving linkWin open and unused alongside it ("spawning
+  // another window with the site... confusing", live 2026-08-08). Manual
+  // capture fundamentally needs a real Chrome tab, so it must always take
+  // this branch regardless of the setting.
+  if(!forceExternal && S.reuseWindow && window.ia && typeof window.ia.openInApp==="function") window.ia.openInApp(url);
   else window.open(url, "_blank");
 }
 function openItem(id,mode){
@@ -5259,7 +5269,11 @@ function impManualCapture(idx){
   it.lastUpdate=Date.now(); if(it.lastResult!=="ok") it.lastResult="pending";
   Store.putCards(imported);
   Store.setCaptureRequest({url:it.url, id:it.id, manual:true});
-  openLink(it.url);
+  // forceExternal (live 2026-08-08): this feature needs a real Chrome tab --
+  // the extension's overlay/tab-close/focus-app flow can never see or use
+  // reuseWindow's Electron linkWin, so opening there just leaves it sitting
+  // open and unused alongside the extension's own separate real tab.
+  openLink(it.url, true);
   toast("Opening the article now — once it loads, wait up to ~30s for the capture overlay, then draw a box around the image you want and click Use this.", 7000);
 }
 async function enrichOnOpen(it, idx){

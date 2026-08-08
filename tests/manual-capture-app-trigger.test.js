@@ -20,10 +20,10 @@ let pass = 0, fail = 0;
 function t(n, fn) { try { fn(); pass++; console.log("  ok  " + n); } catch (e) { fail++; console.log("  FAIL " + n + " — " + (e && e.stack || e)); } }
 
 for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
-  t(label + ": impManualCapture arms a manual:true request with the card's id, and also calls openLink with the card's url", () => {
+  t(label + ": impManualCapture arms a manual:true request with the card's id, and also calls openLink with the card's url and forceExternal:true", () => {
     const imported = [{ id: "c1", url: "https://example.com/a" }];
     const calls = [];
-    let openLinkUrl = null;
+    let openLinkArgs = null;
     const Store = { putCards: () => {}, setCaptureRequest: (req) => calls.push(req) };
     const factory = new Function(
       "imported", "Store", "anchorImpOnCard", "toast", "newId", "openLink",
@@ -31,7 +31,7 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     );
     const impManualCapture = factory(
       imported, Store, () => {}, () => {}, () => "genid",
-      (url) => { openLinkUrl = url; }
+      (...args) => { openLinkArgs = args; }
     );
     impManualCapture(0);
     assert.strictEqual(calls.length, 1);
@@ -42,7 +42,8 @@ for (const [label, src] of [["web", html], ["pwa", pwaHtml]]) {
     // live reproduction found the extension's own chrome.tabs.create path
     // producing no tab at all, even though the poller correctly claimed the
     // request).
-    assert.strictEqual(openLinkUrl, "https://example.com/a", "impManualCapture must open the article itself via openLink, same as impOpen");
+    assert.deepStrictEqual(openLinkArgs, ["https://example.com/a", true],
+      "impManualCapture must open the article itself via openLink with forceExternal:true -- reuseWindow's linkWin is invisible to the extension (live 2026-08-08)");
   });
 
   t(label + ": impManualCapture assigns a new id to an id-less card before arming the request", () => {
